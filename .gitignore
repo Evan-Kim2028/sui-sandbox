@@ -1,0 +1,7 @@
+/target/
+/out/
+/results/*
+!/results/README.md
+!/results/*_submission_summary.json
+.DS_Store
+.env

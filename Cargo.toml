@@ -1,0 +1,23 @@
+[package]
+name = "sui_move_interface_extractor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+sha2 = "0.10"
+
+# Move bytecode parsing (keep aligned with the Sui git dependency).
+move-binary-format = { git = "https://github.com/MystenLabs/sui", package = "move-binary-format" }
+
+# Align with MystenLabs Sui crate requirements.
+tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
+
+# Use real MystenLabs Sui SDK crates from the sui repo.
+# Pin to a rev later once we decide which protocol version to target.
+sui-sdk = { git = "https://github.com/MystenLabs/sui", package = "sui-sdk" }
+sui-types = { git = "https://github.com/MystenLabs/sui", package = "sui-types" }
