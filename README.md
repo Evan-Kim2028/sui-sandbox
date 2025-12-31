@@ -2,12 +2,6 @@
 
 Standalone bytecode-first Rust CLI for parsing Sui Move `.mv` modules and producing deterministic, diff-friendly JSON interfaces.
 
-This crate was initially developed in the private sandbox at:
-
-- `packages/sui-package-benchmark/.local/research/bytecode_no_move_model2/`
-
-and then copied here to be easier to reuse for other bytecode analysis tasks.
-
 It parses compiled `.mv` modules directly and emits canonical JSON for:
 
 - corpus-level scanning/verification (index + counts + diff stability)
