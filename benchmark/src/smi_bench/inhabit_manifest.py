@@ -128,7 +128,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.max_calls_per_package > 0:
             candidates = candidates[: args.max_calls_per_package]
 
-        ptb_spec = {"calls": candidates} if candidates else None
+        # For the plan file, we can only safely include one multi-step plan per package
+        # because merging them requires re-indexing Result() references.
+        # We pick the first one.
+        ptb_spec = {"calls": candidates[0]} if candidates else None
 
         # Collect rejected sample for debug
         if not candidates and analysis.candidates_rejected and len(rejected_samples) < 50:

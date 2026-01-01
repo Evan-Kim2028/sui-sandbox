@@ -14,6 +14,10 @@ SUI_MODULE = "sui"
 SUI_STRUCT = "SUI"
 COIN_MODULE = "coin"
 COIN_STRUCT = "Coin"
+STD_ASCII_MODULE = "ascii"
+STD_STRING_MODULE = "string"
+STD_OPTION_MODULE = "option"
+SUI_URL_MODULE = "url"
 
 
 class ExclusionReason:
@@ -45,14 +49,15 @@ class PackageViability:
 class FunctionAnalysis:
     is_runnable: bool
     reasons: list[str]
-    ptb_args: list[dict] = field(default_factory=list)
+    ptb_calls: list[dict] = field(default_factory=list)
+    final_args: list[dict] = field(default_factory=list)
     ptb_type_args: list[str] = field(default_factory=list)
 
 
 @dataclass
 class PackageAnalysis:
     package_id: str
-    candidates_ok: list[dict]  # list of {"target": "...", "args": [...]}
+    candidates_ok: list[list[dict]]  # list of PTB call sequences
     candidates_rejected: list[dict]  # list of {"target": "...", "reasons": [...]}
     reasons_summary: dict[str, int]
 
@@ -112,6 +117,139 @@ def strip_implicit_tx_context_params(params: list[dict]) -> list[dict]:
     if _is_tx_context_ref_param(last):
         return list(params[:-1])
     return list(params)
+
+
+def json_type_to_string(t: dict) -> str:
+    """
+    Reconstruct a Move type string (e.g., '0x2::sui::SUI') from canonical JSON.
+    """
+    kind = t.get("kind")
+    if kind == "bool":
+        return "bool"
+    if kind == "u8":
+        return "u8"
+    if kind == "u16":
+        return "u16"
+    if kind == "u32":
+        return "u32"
+    if kind == "u64":
+        return "u64"
+    if kind == "u128":
+        return "u128"
+    if kind == "u256":
+        return "u256"
+    if kind == "address":
+        return "address"
+    if kind == "signer":
+        return "signer"
+    if kind == "vector":
+        inner = t.get("type")
+        return f"vector<{json_type_to_string(inner)}>" if isinstance(inner, dict) else "vector"
+    if kind == "datatype":
+        addr = t.get("address", "0x0")
+        mod = t.get("module", "?")
+        name = t.get("name", "?")
+        args = t.get("type_args", [])
+        base = f"{addr}::{mod}::{name}"
+        if args and isinstance(args, list):
+            arg_strs = [json_type_to_string(a) for a in args if isinstance(a, dict)]
+            return f"{base}<{', '.join(arg_strs)}>"
+        return base
+    return "unknown"
+
+
+def construct_arg(t: dict, next_result_idx: int) -> tuple[list[dict], dict] | None:
+    """
+    Generate valid PTB args for a type, potentially using setup calls.
+    Returns (setup_calls, arg_value) or None if unsupported.
+    """
+    # Try pure/object args first (legacy logic)
+    pure = type_to_default_ptb_arg(t)
+    if pure is not None:
+        return [], pure
+
+    # Try construction logic
+    kind = t.get("kind")
+    
+    if kind == "ref":
+        # If we can construct the inner type, we can pass it (VM allows borrow of result).
+        # We recursively construct the inner type.
+        inner = t.get("to")
+        if isinstance(inner, dict):
+            return construct_arg(inner, next_result_idx)
+    
+    if kind == "datatype":
+        addr = t.get("address")
+        mod = t.get("module")
+        name = t.get("name")
+        
+        # 0x1::string::String
+        if addr == DEFAULT_ADDRESS and mod == STD_STRING_MODULE and name == "String":
+            # call 0x1::string::utf8(b"sui") -> Result
+            return [
+                {
+                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::string::utf8",
+                    "type_args": [],
+                    "args": [{"vector_u8_utf8": "sui"}]
+                }
+            ], {"result": next_result_idx}
+
+        # 0x1::ascii::String
+        if addr == DEFAULT_ADDRESS and mod == STD_ASCII_MODULE and name == "String":
+            # call 0x1::ascii::string(b"sui") -> Result
+            return [
+                {
+                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::string",
+                    "type_args": [],
+                    "args": [{"vector_u8_utf8": "sui"}]
+                }
+            ], {"result": next_result_idx}
+
+        # 0x2::url::Url
+        if addr == SUI_FRAMEWORK_ADDRESS and mod == SUI_URL_MODULE and name == "Url":
+            # call 0x2::url::new_unsafe_from_bytes(b"https://sui.io") -> Result
+            return [
+                {
+                    "target": "0x0000000000000000000000000000000000000000000000000000000000000002::url::new_unsafe_from_bytes",
+                    "type_args": [],
+                    "args": [{"vector_u8_utf8": "https://sui.io"}]
+                }
+            ], {"result": next_result_idx}
+
+        # 0x1::option::Option<T>
+        if addr == DEFAULT_ADDRESS and mod == STD_OPTION_MODULE and name == "Option":
+            # call 0x1::option::none<T>() -> Result
+            type_args = t.get("type_args", [])
+            if not isinstance(type_args, list) or len(type_args) != 1:
+                return None
+            inner_type_str = json_type_to_string(type_args[0])
+            # If inner type is a type param we don't know, it will be "unknown".
+            # But analyze_function fills generics with SUI, so it should be concrete here.
+            # However, t comes from the interface JSON, which has T0, T1.
+            # We need to substitute T0 with our heuristic fill (SUI) if it's a generic.
+            # NOTE: analyze_function does NOT replace params in the 't' dict.
+            # It just sets 'ptb_type_args' for the call.
+            # So 't' here might contain 'kind': 'type_param'.
+            # We need to handle that.
+            
+            # For now, let's assume if it's concrete, we use it. If it's type_param, we assume 0x2::sui::SUI.
+            if type_args[0].get("kind") == "type_param":
+                 inner_type_str = f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}"
+
+            return [
+                {
+                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::option::none",
+                    "type_args": [inner_type_str],
+                    "args": []
+                }
+            ], {"result": next_result_idx}
+
+        # Fallback: Emit a placeholder for any other struct.
+        # This allows the runner (if inventory-aware) to fill it later.
+        type_str = json_type_to_string(t)
+        return [], {"$smi_placeholder": type_str}
+
+    return None
 
 
 def type_to_default_ptb_arg(t: dict) -> dict | None:
@@ -191,35 +329,47 @@ def type_to_default_ptb_arg(t: dict) -> dict | None:
 
 def analyze_function(f: dict) -> FunctionAnalysis:
     reasons = []
-
+    
     if f.get("visibility") != "public" or f.get("is_entry") is not True:
         reasons.append(ExclusionReason.NOT_PUBLIC_ENTRY)
-
+    
     type_params = f.get("type_params")
     ptb_type_args: list[str] = []
     if isinstance(type_params, list) and type_params:
         # Heuristic: fill all type params with 0x2::sui::SUI
-        # SUI has key+store+drop (mostly), satisfying many constraints.
         for _ in type_params:
             ptb_type_args.append(f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}")
 
     params = f.get("params")
-    ptb_args = []
+    ptb_calls = []
+    call_args = []
+    
     if isinstance(params, list):
         params = strip_implicit_tx_context_params([p for p in params if isinstance(p, dict)])
         for p in params:
-            arg = type_to_default_ptb_arg(p)
-            if arg is None:
+            # We need to handle type params in 'p' if they exist.
+            # See logic in construct_arg for Option<T>.
+            # For now, construct_arg handles simple substitution for Option.
+            
+            res = construct_arg(p, len(ptb_calls))
+            if res is None:
                 reasons.append(ExclusionReason.UNSUPPORTED_PARAM_TYPE)
-                # We can stop checking params if one is unsupported, or collect all reasons.
-                # For now, just marking unsupported type is enough.
                 break
-            ptb_args.append(arg)
-
+            
+            setup, arg_val = res
+            ptb_calls.extend(setup)
+            call_args.append(arg_val)
+    
     if reasons:
         return FunctionAnalysis(is_runnable=False, reasons=reasons)
-
-    return FunctionAnalysis(is_runnable=True, reasons=[], ptb_args=ptb_args, ptb_type_args=ptb_type_args)
+    
+    return FunctionAnalysis(
+        is_runnable=True,
+        reasons=[],
+        ptb_calls=ptb_calls,
+        final_args=call_args,
+        ptb_type_args=ptb_type_args
+    )
 
 
 def analyze_package(interface_json: dict) -> PackageAnalysis:
@@ -254,15 +404,21 @@ def analyze_package(interface_json: dict) -> PackageAnalysis:
 
             target = f"{pkg_id}::{module_name}::{fun_name}"
             analysis = analyze_function(f)
-
+            
             if analysis.is_runnable:
-                candidates_ok.append({
+                # Construct the full call sequence
+                calls = list(analysis.ptb_calls)
+                calls.append({
                     "target": target,
-                    "args": analysis.ptb_args,
-                    "type_args": analysis.ptb_type_args
+                    "type_args": analysis.ptb_type_args,
+                    "args": analysis.final_args
                 })
+                candidates_ok.append(calls)
             else:
-                candidates_rejected.append({"target": target, "reasons": analysis.reasons})
+                candidates_rejected.append({
+                    "target": target,
+                    "reasons": analysis.reasons
+                })
                 for r in analysis.reasons:
                     reasons_summary[r] = reasons_summary.get(r, 0) + 1
 

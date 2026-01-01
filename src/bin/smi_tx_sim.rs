@@ -18,8 +18,10 @@ use sui_sdk::SuiClientBuilder;
 use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress};
 use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::transaction::{
-    CallArg, ObjectArg, SharedObjectMutability, TransactionData, TransactionKind,
+    Argument, CallArg, Command, ObjectArg, ProgrammableMoveCall, SharedObjectMutability,
+    TransactionData, TransactionKind,
 };
+use sui_types::type_input::TypeInput;
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
 enum Mode {
@@ -333,66 +335,98 @@ fn load_sender_sui_coin(
     Ok(coins[i])
 }
 
-async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<CallArg> {
+async fn resolve_argument(
+    ptb: &mut ProgrammableTransactionBuilder,
+    ctx: Option<&ResolveCtx<'_>>,
+    v: &Value,
+) -> Result<Argument> {
     let obj = v
         .as_object()
-        .ok_or_else(|| anyhow!("PTB arg must be an object like {{\"u64\": 1}} (got {v:?})"))?;
+        .ok_or_else(|| anyhow!("PTB arg must be an object (got {v:?})"))?;
+    
+    if let Some(res) = obj.get("result") {
+        let i = res.as_u64().ok_or_else(|| anyhow!("result index must be u16"))?;
+        return Ok(Argument::Result(i as u16));
+    }
+    
+    if let Some(nested) = obj.get("nested_result") {
+        let arr = nested.as_array().ok_or_else(|| anyhow!("nested_result must be [cmd, res]"))?;
+        if arr.len() != 2 {
+            bail!("nested_result must be [u16, u16]");
+        }
+        let cmd = arr[0].as_u64().ok_or_else(|| anyhow!("nested_result cmd index must be u16"))?;
+        let res = arr[1].as_u64().ok_or_else(|| anyhow!("nested_result res index must be u16"))?;
+        return Ok(Argument::NestedResult(cmd as u16, res as u16));
+    }
+
+    // Otherwise, resolve as CallArg and add as Input
+    resolve_call_arg_as_input(ptb, ctx, v).await
+}
+
+async fn resolve_call_arg_as_input(
+    ptb: &mut ProgrammableTransactionBuilder,
+    ctx: Option<&ResolveCtx<'_>>,
+    v: &Value
+) -> Result<Argument> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| anyhow!("PTB arg must be an object (got {v:?})"))?;
     if obj.len() != 1 {
         bail!("PTB arg must have exactly 1 key (got {obj:?})");
     }
     let (k, vv) = obj.iter().next().expect("len==1");
-    match k.as_str() {
+    let call_arg = match k.as_str() {
         "u8" => {
             let n = vv
                 .as_u64()
                 .ok_or_else(|| anyhow!("u8 must be an integer"))?;
             let x: u8 = n.try_into().context("u8 out of range")?;
-            Ok(CallArg::Pure(bcs::to_bytes(&x).context("bcs u8")?))
+            CallArg::Pure(bcs::to_bytes(&x).context("bcs u8")?)
         }
         "u16" => {
             let n = vv
                 .as_u64()
                 .ok_or_else(|| anyhow!("u16 must be an integer"))?;
             let x: u16 = n.try_into().context("u16 out of range")?;
-            Ok(CallArg::Pure(bcs::to_bytes(&x).context("bcs u16")?))
+            CallArg::Pure(bcs::to_bytes(&x).context("bcs u16")?)
         }
         "u32" => {
             let n = vv
                 .as_u64()
                 .ok_or_else(|| anyhow!("u32 must be an integer"))?;
             let x: u32 = n.try_into().context("u32 out of range")?;
-            Ok(CallArg::Pure(bcs::to_bytes(&x).context("bcs u32")?))
+            CallArg::Pure(bcs::to_bytes(&x).context("bcs u32")?)
         }
-        "u64" => Ok(CallArg::Pure(
+        "u64" => CallArg::Pure(
             bcs::to_bytes(
                 &vv.as_u64()
                     .ok_or_else(|| anyhow!("u64 must be an integer"))?,
             )
             .context("bcs u64")?,
-        )),
-        "bool" => Ok(CallArg::Pure(
+        ),
+        "bool" => CallArg::Pure(
             bcs::to_bytes(
                 &vv.as_bool()
                     .ok_or_else(|| anyhow!("bool must be true/false"))?,
             )
             .context("bcs bool")?,
-        )),
+        ),
         "address" => {
             let s = vv
                 .as_str()
                 .ok_or_else(|| anyhow!("address must be a string"))?;
             let s = normalize_sui_address(s)?;
             let addr = SuiAddress::from_str(&s).with_context(|| format!("parse address: {s}"))?;
-            Ok(CallArg::Pure(bcs::to_bytes(&addr).context("bcs address")?))
+            CallArg::Pure(bcs::to_bytes(&addr).context("bcs address")?)
         }
         "vector_u8_utf8" => {
             let s = vv
                 .as_str()
                 .ok_or_else(|| anyhow!("vector_u8_utf8 must be a string"))?;
             let bytes = s.as_bytes().to_vec();
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&bytes).context("bcs vector<u8>")?,
-            ))
+            )
         }
         "vector_u8_hex" => {
             let s = vv
@@ -407,9 +441,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
                 .collect::<std::result::Result<Vec<u8>, _>>()
                 .context("parse hex bytes")?;
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&bytes).context("bcs vector<u8>")?,
-            ))
+            )
         }
         "vector_address" => {
             let arr = vv
@@ -423,9 +457,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 let s = normalize_sui_address(s)?;
                 out.push(SuiAddress::from_str(&s).with_context(|| format!("parse address: {s}"))?);
             }
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&out).context("bcs vector<address>")?,
-            ))
+            )
         }
         "vector_bool" => {
             let arr = vv
@@ -438,9 +472,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                         .ok_or_else(|| anyhow!("vector_bool elements must be true/false"))?,
                 );
             }
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&out).context("bcs vector<bool>")?,
-            ))
+            )
         }
         "vector_u16" => {
             let arr = vv
@@ -453,9 +487,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                     .ok_or_else(|| anyhow!("vector_u16 elements must be integers"))?;
                 out.push(n.try_into().context("vector_u16 element out of range")?);
             }
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&out).context("bcs vector<u16>")?,
-            ))
+            )
         }
         "vector_u32" => {
             let arr = vv
@@ -468,9 +502,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                     .ok_or_else(|| anyhow!("vector_u32 elements must be integers"))?;
                 out.push(n.try_into().context("vector_u32 element out of range")?);
             }
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&out).context("bcs vector<u32>")?,
-            ))
+            )
         }
         "vector_u64" => {
             let arr = vv
@@ -483,9 +517,9 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                         .ok_or_else(|| anyhow!("vector_u64 elements must be integers"))?,
                 );
             }
-            Ok(CallArg::Pure(
+            CallArg::Pure(
                 bcs::to_bytes(&out).context("bcs vector<u64>")?,
-            ))
+            )
         }
         "gas_coin" => {
             let Some(ctx) = ctx else {
@@ -495,7 +529,7 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 bail!("gas_coin requires a resolved gas coin id");
             };
             let oref = resolve_object_ref(ctx.client, gas_id).await?;
-            Ok(CallArg::Object(ObjectArg::ImmOrOwnedObject(oref)))
+            CallArg::Object(ObjectArg::ImmOrOwnedObject(oref))
         }
         "sender_sui_coin" => {
             let Some(ctx) = ctx else {
@@ -510,7 +544,7 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             let oref = load_sender_sui_coin(ctx, index, exclude_gas)?;
-            Ok(CallArg::Object(ObjectArg::ImmOrOwnedObject(oref)))
+            CallArg::Object(ObjectArg::ImmOrOwnedObject(oref))
         }
         "imm_or_owned_object" => {
             let Some(ctx) = ctx else {
@@ -521,7 +555,7 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 .ok_or_else(|| anyhow!("imm_or_owned_object must be a string object id"))?;
             let id = parse_object_id(s)?;
             let oref = resolve_object_ref(ctx.client, id).await?;
-            Ok(CallArg::Object(ObjectArg::ImmOrOwnedObject(oref)))
+            CallArg::Object(ObjectArg::ImmOrOwnedObject(oref))
         }
         "shared_object" => {
             let Some(ctx) = ctx else {
@@ -559,7 +593,7 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 _ => bail!("object is not shared: {id}"),
             };
 
-            Ok(CallArg::Object(ObjectArg::SharedObject {
+            CallArg::Object(ObjectArg::SharedObject {
                 id,
                 initial_shared_version,
                 mutability: if mutable {
@@ -567,10 +601,11 @@ async fn resolve_call_arg(ctx: Option<&ResolveCtx<'_>>, v: &Value) -> Result<Cal
                 } else {
                     SharedObjectMutability::Immutable
                 },
-            }))
+            })
         }
         other => bail!("unsupported PTB arg kind: {other}"),
-    }
+    };
+    Ok(ptb.input(call_arg).context("ptb.input")?)
 }
 
 async fn pick_gas_coin(
@@ -672,12 +707,17 @@ async fn main() -> Result<()> {
             .iter()
             .map(|s| parse_type_tag(s))
             .collect::<Result<_>>()?;
-        let mut call_args: Vec<CallArg> = Vec::with_capacity(call.args.len());
+        let mut call_args: Vec<Argument> = Vec::with_capacity(call.args.len());
         for a in &call.args {
-            call_args.push(resolve_call_arg(resolve_ctx.as_ref(), a).await?);
+            call_args.push(resolve_argument(&mut ptb, resolve_ctx.as_ref(), a).await?);
         }
-        ptb.move_call(package, module, function, type_args, call_args)
-            .with_context(|| format!("move_call {}", call.target))?;
+        ptb.command(Command::MoveCall(Box::new(ProgrammableMoveCall {
+            package,
+            module: module.to_string(),
+            function: function.to_string(),
+            type_arguments: type_args.into_iter().map(TypeInput::from).collect(),
+            arguments: call_args,
+        })));
     }
 
     let pt = ptb.finish();

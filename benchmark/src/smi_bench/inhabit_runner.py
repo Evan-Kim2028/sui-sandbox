@@ -696,9 +696,11 @@ def run(
                     candidates = candidates[:baseline_max_candidates]
 
                 if not candidates:
-                    plans_to_try = [{"calls": []}]
+                    # No candidates -> one empty plan attempt to record failure/stats
+                    plan_iterator = [{"calls": []}]
                 else:
-                    plans_to_try = [{"calls": [c]} for c in candidates]
+                    for c in candidates:
+                        plan_iterator.append({"calls": c})
             elif agent_name == "mock-empty":
                 plans_to_try = [{"calls": []}]
             elif agent_name == "mock-planfile":
@@ -1160,6 +1162,7 @@ def main(argv: list[str] | None = None) -> None:
             "mock-empty",
             "mock-planfile",
             "real-openai-compatible",
+            "baseline-search",
         ],
     )
     p.add_argument("--plan-file", type=Path, help="JSON mapping package_id -> PTB spec (required for mock-planfile).")
@@ -1194,6 +1197,12 @@ def main(argv: list[str] | None = None) -> None:
         type=int,
         default=2,
         help="Max PTB replanning attempts per package (real agent only).",
+    )
+    p.add_argument(
+        "--baseline-max-candidates",
+        type=int,
+        default=25,
+        help="Max candidates to try per package in baseline-search mode.",
     )
     p.add_argument(
         "--max-heuristic-variants",
@@ -1289,6 +1298,7 @@ def main(argv: list[str] | None = None) -> None:
         gas_coin=args.gas_coin,
         gas_budget_ladder=args.gas_budget_ladder,
         max_plan_attempts=args.max_plan_attempts,
+        baseline_max_candidates=args.baseline_max_candidates,
         max_heuristic_variants=args.max_heuristic_variants,
         plan_file=plan_file,
         env_file=env_file,
