@@ -307,24 +307,28 @@ def run(
         err: str | None = None
         if real_agent is not None:
             cur_max_structs = max_structs_in_prompt
-            last_err: Exception | None = None
+            last_exc: Exception | None = None
             for _attempt in range(4):
                 prompt = _build_agent_prompt(interface_json, max_structs=cur_max_structs)
                 try:
                     predicted = real_agent.complete_type_list(prompt)
+                    last_exc = None
                     break
-                except ValueError as e:
-                    last_err = e
+                except Exception as e:
+                    last_exc = e
                     msg = str(e)
-                    if "empty content" in msg or "hit max_tokens" in msg:
+                    if isinstance(e, ValueError) and ("empty content" in msg or "hit max_tokens" in msg):
                         next_max = max(5, cur_max_structs // 2)
                         if next_max == cur_max_structs:
-                            raise
+                            break
                         cur_max_structs = next_max
                         continue
-                    raise
+                    break
             else:
-                err = f"real-agent failed after prompt shrink retries: {last_err}"
+                last_exc = last_exc or RuntimeError("unknown error")
+
+            if predicted == set() and last_exc is not None:
+                err = f"real-agent call failed: {last_exc}"
                 predicted = set()
         else:
             predicted = agent.predict_key_types(truth_key_types=truth)
