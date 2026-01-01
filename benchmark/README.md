@@ -101,15 +101,55 @@ Diagnostics (prints redacted config and probes `GET /models` + `POST /chat/compl
 uv run smi-bench --corpus-root <sui-packages-checkout>/packages/mainnet_most_used --doctor-agent --agent real-openai-compatible
 ```
 
-### Run (mock agents)
+### Run (Unified Workflow)
 
-You need a local `sui-packages` checkout and a corpus root like `<sui-packages-checkout>/packages/mainnet_most_used`.
+The simplest way to benchmark an agent (or the baseline) is the `run-all` command, which executes Phase I and Phase II sequentially.
 
 ```bash
-uv run smi-bench \
+uv run smi-bench run-all \
   --corpus-root <sui-packages-checkout>/packages/mainnet_most_used \
-  --samples 25 --seed 1 \
-  --agent mock-empty
+  --out-dir results/my_run_01 \
+  --samples 100 \
+  --sender <FUNDED_MAINNET_ADDRESS> \
+  --rpc-url https://fullnode.mainnet.sui.io:443
+```
+
+This will:
+1.  **Phase I**: Run Key Struct Discovery (static analysis).
+2.  **Phase II Manifest**: Select viable candidates from the Phase I corpus.
+3.  **Phase II Execution**: Attempt to execute transactions (using `dry-run` if sender is provided, else `build-only`).
+
+Artifacts will be saved in `results/my_run_01/`.
+
+### Run (Legacy / Modular)
+
+You can still run individual tools for debugging or advanced use cases.
+
+**Phase I only:**
+```bash
+uv run smi-phase1 \
+  --corpus-root ... \
+  --samples 25 \
+  --agent mock-empty \
+  --out results/phase1.json
+```
+
+**Phase II only:**
+```bash
+# 1. Generate Manifest
+uv run smi-phase2-manifest \
+  --corpus-root ... \
+  --out-ids results/p2_ids.txt \
+  --out-plan results/p2_plan.json \
+  --out-report results/p2_report.json
+
+# 2. Run Execution
+uv run smi-inhabit \
+  --corpus-root ... \
+  --package-ids-file results/p2_ids.txt \
+  --agent baseline-search \
+  --simulation-mode dry-run \
+  --out results/p2_exec.json
 ```
 
 ### Output

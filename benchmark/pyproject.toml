@@ -10,8 +10,10 @@ dependencies = [
 ]
 
 [project.scripts]
-smi-bench = "smi_bench.runner:main"
+smi-bench = "smi_bench.cli:main"
+smi-phase1 = "smi_bench.runner:main"
 smi-inhabit = "smi_bench.inhabit_runner:main"
+smi-phase2-manifest = "smi_bench.inhabit_manifest:main"
 
 [dependency-groups]
 dev = [
