@@ -14,6 +14,8 @@
 !/benchmark/results/README.md
 !/benchmark/results/*_example.json
 /benchmark/.python-version
+.eggs/
+*.egg-info/
 .pytest_cache/
 __pycache__/
 .DS_Store
