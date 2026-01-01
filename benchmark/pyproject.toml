@@ -1,0 +1,30 @@
+[project]
+name = "sui-move-interface-extractor-benchmark"
+version = "0.1.0"
+description = "Benchmark harness for sui-move-interface-extractor (key-struct target discovery)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=14.2.0",
+]
+
+[project.scripts]
+smi-bench = "smi_bench.runner:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true

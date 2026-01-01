@@ -3,5 +3,18 @@
 /results/*
 !/results/README.md
 !/results/*_submission_summary.json
+
+# Python benchmark harness (local artifacts only)
+/benchmark/.venv/
+/benchmark/.pytest_cache/
+/benchmark/__pycache__/
+/benchmark/**/__pycache__/
+/benchmark/data/
+/benchmark/results/*
+!/benchmark/results/README.md
+!/benchmark/results/*_example.json
+/benchmark/.python-version
+.pytest_cache/
+__pycache__/
 .DS_Store
 .env
