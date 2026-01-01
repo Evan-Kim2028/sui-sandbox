@@ -65,6 +65,27 @@ For a one-command reproduction of `mainnet_most_used`, use:
 
 - Key-struct target discovery benchmark (Python/uv): `benchmark/README.md`
 
+## Docker
+
+Build:
+
+```bash
+docker build -t sui-move-interface-extractor .
+```
+
+Run the Rust CLI:
+
+```bash
+docker run --rm sui-move-interface-extractor sui_move_interface_extractor --help
+```
+
+Run the benchmark (mount a local `sui-packages` checkout):
+
+```bash
+docker run --rm -v "$(pwd)/../sui-packages:/data/sui-packages" sui-move-interface-extractor \
+  smi-bench --corpus-root /data/sui-packages/packages/mainnet_most_used --samples 25 --seed 1 --agent mock-empty
+```
+
 Build:
 
 ```bash

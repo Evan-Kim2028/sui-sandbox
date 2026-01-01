@@ -21,7 +21,11 @@ console = Console()
 def _default_rust_binary() -> Path:
     repo_root = Path(__file__).resolve().parents[3]
     exe = "sui_move_interface_extractor.exe" if os.name == "nt" else "sui_move_interface_extractor"
-    return repo_root / "target" / "release" / exe
+    local = repo_root / "target" / "release" / exe
+    if local.exists():
+        return local
+    system = Path("/usr/local/bin") / exe
+    return system
 
 
 def _build_rust() -> None:
