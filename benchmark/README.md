@@ -8,7 +8,21 @@ It uses `sui-move-interface-extractor` as the ground-truth parser for `.mv` byte
 
 ```bash
 cd benchmark
-uv sync --group dev
+uv sync --group dev --frozen
+```
+
+### Configure a real agent (optional)
+
+Copy `benchmark/.env.example` to `benchmark/.env` and fill in:
+
+- `SMI_API_KEY`
+- `SMI_MODEL`
+- `SMI_API_BASE_URL` (OpenAI-compatible base; for non-OpenAI providers)
+
+Smoke test (does a single tiny API call and expects `[]` JSON):
+
+```bash
+uv run smi-bench --corpus-root <sui-packages-checkout>/packages/mainnet_most_used --smoke-agent --agent real-openai-compatible
 ```
 
 ### Run (mock agents)
