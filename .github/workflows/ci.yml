@@ -18,3 +18,18 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: test
         run: cargo test --locked
+
+  python-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v3
+      - name: sync
+        working-directory: benchmark
+        run: uv sync --group dev --frozen
+      - name: test
+        working-directory: benchmark
+        run: uv run --group dev pytest -q
