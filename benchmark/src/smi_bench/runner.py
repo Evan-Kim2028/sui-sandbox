@@ -222,6 +222,8 @@ class PackageResult:
     attempts: int | None = None
     max_structs_used: int | None = None
     timed_out: bool | None = None
+    truth_key_types_list: list[str] | None = None
+    predicted_key_types_list: list[str] | None = None
 
 
 def _write_checkpoint(out_path: Path, run_result: RunResult) -> None:
@@ -339,6 +341,7 @@ def run(
     checkpoint_every: int,
     resume: bool,
     per_package_timeout_seconds: float,
+    include_type_lists: bool,
 ) -> RunResult:
     if build_rust:
         console.print("[bold]building rust…[/bold]")
@@ -453,6 +456,8 @@ def run(
 
         score = score_key_types(truth, predicted)
         elapsed_s = time.monotonic() - pkg_started
+        truth_list = sorted(truth) if include_type_lists else None
+        predicted_list = sorted(predicted) if include_type_lists else None
         results.append(
             PackageResult(
                 package_id=pkg.package_id,
@@ -464,6 +469,8 @@ def run(
                 attempts=attempts,
                 max_structs_used=max_structs_used,
                 timed_out=timed_out,
+                truth_key_types_list=truth_list,
+                predicted_key_types_list=predicted_list,
             )
         )
 
@@ -498,6 +505,8 @@ def run(
                         "attempts": r.attempts,
                         "max_structs_used": r.max_structs_used,
                         "timed_out": r.timed_out,
+                        "truth_key_types_list": r.truth_key_types_list,
+                        "predicted_key_types_list": r.predicted_key_types_list,
                     }
                     for r in results
                 ],
@@ -536,6 +545,8 @@ def run(
                 "attempts": r.attempts,
                 "max_structs_used": r.max_structs_used,
                 "timed_out": r.timed_out,
+                "truth_key_types_list": r.truth_key_types_list,
+                "predicted_key_types_list": r.predicted_key_types_list,
             }
             for r in results
         ],
@@ -585,6 +596,11 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         default=120.0,
         help="Maximum wall-clock time to spend per package (real-agent mode).",
+    )
+    parser.add_argument(
+        "--include-type-lists",
+        action="store_true",
+        help="Include full truth/predicted key type lists per package in the output JSON (larger files).",
     )
     parser.add_argument(
         "--smoke-agent",
@@ -639,6 +655,7 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_every=args.checkpoint_every,
         resume=args.resume,
         per_package_timeout_seconds=args.per_package_timeout_seconds,
+        include_type_lists=args.include_type_lists,
     )
 
 
