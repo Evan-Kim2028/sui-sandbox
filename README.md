@@ -61,6 +61,10 @@ For a one-command reproduction of `mainnet_most_used`, use:
 
 - `scripts/reproduce_mainnet_most_used.sh`
 
+## Benchmark Harness
+
+- Key-struct target discovery benchmark (Python/uv): `benchmark/README.md`
+
 Build:
 
 ```bash
