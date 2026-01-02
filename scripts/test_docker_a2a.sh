@@ -111,3 +111,48 @@ done
 echo "FAILURE: Result file not found after 120s."
 docker logs "$CONTAINER_ID"
 exit 1
+
+# --- Production Security Verification ---
+
+echo "Running Security Verification..."
+
+# 1. Non-Root Test
+echo "Test: Running as non-root (UID 1000)..."
+docker run --rm \
+    -u 1000:1000 \
+    $ENV_ARGS \
+    -e SMI_AGENT="mock-empty" \
+    -v "$CORPUS_HOST:/app/corpus" \
+    -v "$RESULTS_HOST:/app/results" \
+    -v "$LOGS_HOST:/app/logs" \
+    smi-bench:test smi-inhabit --corpus-root /app/corpus --samples 1 --agent mock-empty --out /app/results/non_root_test.json --no-log
+
+if [ -f "$RESULTS_HOST/non_root_test.json" ]; then
+    echo "  SUCCESS: Non-root execution passed."
+else
+    echo "  FAILURE: Non-root execution failed."
+    exit 1
+fi
+
+# 2. Read-Only Root FS Test
+echo "Test: Running with Read-Only root filesystem..."
+# Note: we must ensure /tmp is mounted as tmpfs for SMI_TEMP_DIR to work
+docker run --rm \
+    --read-only \
+    --tmpfs /tmp \
+    $ENV_ARGS \
+    -e SMI_AGENT="mock-empty" \
+    -v "$CORPUS_HOST:/app/corpus" \
+    -v "$RESULTS_HOST:/app/results" \
+    -v "$LOGS_HOST:/app/logs" \
+    smi-bench:test smi-inhabit --corpus-root /app/corpus --samples 1 --agent mock-empty --out /app/results/readonly_test.json --no-log
+
+if [ -f "$RESULTS_HOST/readonly_test.json" ]; then
+    echo "  SUCCESS: Read-Only filesystem passed."
+else
+    echo "  FAILURE: Read-Only filesystem failed."
+    exit 1
+fi
+
+echo "ALL TESTS PASSED: Docker image is production-ready."
+

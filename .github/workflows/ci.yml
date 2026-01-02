@@ -42,3 +42,34 @@ jobs:
       - name: test
         working-directory: benchmark
         run: uv run --group dev pytest -q
+
+  docker-a2a-smoke:
+    runs-on: ubuntu-latest
+    needs: [rust]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Install Sui CLI
+        run: |
+          # Use a pre-built binary or simple install script for speed in CI
+          # For now, we'll install via cargo as it is the most reliable way 
+          # to match the environment, or use homebrew on mac (but this is ubuntu).
+          # Pragmatic choice: use the binary if available, or just skip if too slow.
+          # Better: The smoke test creates its own mock if sui isn't found.
+          # I updated prepare_test_corpus.sh to check for 'sui'.
+          echo "Sui CLI install skipped; using mock data if needed."
+      - name: Prepare Test Corpus
+        run: |
+          # If sui isn't found, we'll create a tiny mock corpus manually 
+          # to ensure CI remains fast and doesn't depend on heavy blockchain tools.
+          mkdir -p benchmark/.docker_test_corpus/0x00/fixture/bytecode_modules
+          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > benchmark/.docker_test_corpus/0x00/fixture/metadata.json
+          touch benchmark/.docker_test_corpus/0x00/fixture/bytecode_modules/dummy.mv
+      - name: Run Docker Smoke Test
+        run: |
+          # We force mock-empty agent to avoid needing API keys in CI
+          export SMI_AGENT="mock-empty"
+          chmod +x scripts/test_docker_a2a.sh
+          ./scripts/test_docker_a2a.sh
+

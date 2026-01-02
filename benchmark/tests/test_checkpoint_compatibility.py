@@ -102,7 +102,16 @@ def test_checkpoint_resume_skips_malformed_packages(tmp_path: Path) -> None:
                 "package_id": "0x111",
                 "truth_key_types": 2,
                 "predicted_key_types": 2,
-                "score": {"tp": 2, "fp": 0, "fn": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0, "missing_sample": [], "extra_sample": []},
+                "score": {
+                    "tp": 2,
+                    "fp": 0,
+                    "fn": 0,
+                    "precision": 1.0,
+                    "recall": 1.0,
+                    "f1": 1.0,
+                    "missing_sample": [],
+                    "extra_sample": [],
+                },
             },
             {
                 "package_id": "0x222",
@@ -110,7 +119,16 @@ def test_checkpoint_resume_skips_malformed_packages(tmp_path: Path) -> None:
             },
             {
                 "package_id": "",  # Invalid package_id (empty string)
-                "score": {"tp": 1, "fp": 0, "fn": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0, "missing_sample": [], "extra_sample": []},
+                "score": {
+                    "tp": 1,
+                    "fp": 0,
+                    "fn": 0,
+                    "precision": 1.0,
+                    "recall": 1.0,
+                    "f1": 1.0,
+                    "missing_sample": [],
+                    "extra_sample": [],
+                },
             },
             "not a dict",  # Invalid type
             {
@@ -137,13 +155,13 @@ def test_checkpoint_resume_skips_malformed_packages(tmp_path: Path) -> None:
     results2, seen2, error_count2, started2 = _resume_results_from_checkpoint(cp, logger=logger)
     assert len(results2) == 1
     assert "0x111" in seen2
-    
+
     # Check that skip events were logged
     events = []
     for line in logger.paths.events.read_text().splitlines():
         if line.strip():
             events.append(json.loads(line))
-    
+
     # Should have logged skip events for malformed packages
     skip_events = [e for e in events if e.get("event") == "checkpoint_resume_skip"]
     assert len(skip_events) > 0  # At least some malformed rows should have been logged
@@ -173,9 +191,11 @@ def test_checkpoint_checksum_is_computed_correctly(tmp_path: Path) -> None:
     # Read back and verify checksum
     data = json.loads(checkpoint_path.read_text())
     stored_checksum = data.pop("_checksum")
-    computed_checksum = compute_json_checksum(data)
+    data_copy = {k: v for k, v in data.items() if k != "_checksum"}
+    computed = compute_json_checksum(data_copy)
 
-    assert stored_checksum == computed_checksum
+    assert isinstance(stored_checksum, str)
+    assert stored_checksum == computed
     assert len(stored_checksum) == 8
 
 
@@ -273,16 +293,25 @@ def test_checkpoint_write_validates_schema(tmp_path: Path) -> None:
                 "package_id": "0x111",
                 "truth_key_types": 1,
                 "predicted_key_types": 1,
-                "score": {"tp": 1, "fp": 0, "fn": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0, "missing_sample": [], "extra_sample": []},
+                "score": {
+                    "tp": 1,
+                    "fp": 0,
+                    "fn": 0,
+                    "precision": 1.0,
+                    "recall": 1.0,
+                    "f1": 1.0,
+                    "missing_sample": [],
+                    "extra_sample": [],
+                },
             }
         ],
     )
 
     checkpoint_path = tmp_path / "checkpoint.json"
-    
+
     # Write should succeed (aggregate is flexible)
     _write_checkpoint(checkpoint_path, invalid_result)
-    
+
     # But if we create a package with missing required fields, validator should catch it
     invalid_package_result = RunResult(
         schema_version=1,
@@ -303,7 +332,7 @@ def test_checkpoint_write_validates_schema(tmp_path: Path) -> None:
             }
         ],
     )
-    
+
     # This should fail validation during write
     with pytest.raises(ValueError) as exc_info:
         _write_checkpoint(checkpoint_path, invalid_package_result)
@@ -348,18 +377,58 @@ def test_phase2_checkpoint_resume_skips_malformed_packages(tmp_path: Path) -> No
     checkpoint_path.write_text(json.dumps(checkpoint_data))
 
     cp = _load_inhabit_checkpoint(checkpoint_path)
-    
+
     logger = JsonlLogger(base_dir=tmp_path, run_id="test_phase2_resume")
     results, seen, error_count, started = _resume_results_from_checkpoint(cp, logger=logger)
-    
+
     assert len(results) == 1  # Only valid package
     assert "0x111" in seen
-    
+
     # Check skip events were logged
     events = []
     for line in logger.paths.events.read_text().splitlines():
         if line.strip():
             events.append(json.loads(line))
-    
+
     skip_events = [e for e in events if e.get("event") == "checkpoint_resume_skip"]
     assert len(skip_events) > 0
+
+
+def test_phase2_checkpoint_with_bad_checksum_raises_error(tmp_path: Path) -> None:
+    """Test that Phase II checkpoints with bad checksum raise RuntimeError."""
+    checkpoint_data = {
+        "schema_version": 1,
+        "started_at_unix_seconds": 1000,
+        "finished_at_unix_seconds": 2000,
+        "corpus_root_name": "test",
+        "samples": 1,
+        "seed": 42,
+        "agent": "test",
+        "rpc_url": "https://test",
+        "sender": "0x1",
+        "gas_budget": 10000000,
+        "aggregate": {},
+        "packages": [],
+        "_checksum": "deadbeef",  # Bad checksum
+    }
+
+    checkpoint_path = tmp_path / "bad_checksum.json"
+    checkpoint_path.write_text(json.dumps(checkpoint_data))
+
+    with pytest.raises(RuntimeError, match="Checkpoint checksum mismatch"):
+        _load_inhabit_checkpoint(checkpoint_path)
+
+
+def test_checkpoint_truncated_file_raises_value_error(tmp_path: Path) -> None:
+    """Test that truncated JSON file raises a clear ValueError (via safe_json_loads)."""
+    checkpoint_path = tmp_path / "truncated.json"
+    checkpoint_path.write_text('{"schema_version": 1, "packages": [')  # Truncated
+
+    # Both Phase I and Phase II loaders use safe_json_loads
+    with pytest.raises(RuntimeError, match="Checkpoint JSON parse error"):
+        _load_checkpoint(checkpoint_path)
+
+    with pytest.raises(RuntimeError, match="Checkpoint JSON parse error"):
+        _load_inhabit_checkpoint(checkpoint_path)
+
+

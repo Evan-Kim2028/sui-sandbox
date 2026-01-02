@@ -176,6 +176,40 @@ def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict
     return metrics, error_rows
 
 
+def _summarize_failure_modes(errors: list[dict[str, Any]]) -> dict[str, int]:
+    """
+    Analyze error rows and categorize common failure modes for rapid diagnosis.
+    """
+    summary: dict[str, int] = {}
+
+    for row in errors:
+        err = str(row.get("error") or "").lower()
+        if not err:
+            if row.get("timed_out"):
+                summary["timeout"] = summary.get("timeout", 0) + 1
+            continue
+
+        # Categorization logic based on known error patterns
+        if "rpc" in err or "http" in err or "connection" in err:
+            key = "infrastructure_rpc_failure"
+        elif "rust extractor failed" in err:
+            key = "infrastructure_extractor_failure"
+        elif "missing field calls" in err or "json object" in err:
+            key = "model_schema_violation"
+        elif "causality" in err or "result reference" in err:
+            key = "model_logic_causality_error"
+        elif "bad_magic" in err or "binary header" in err:
+            key = "data_corruption_bad_magic"
+        else:
+            # Group unique/rare errors by their first few words to avoid fragmentation
+            first_words = " ".join(err.split()[:3]).replace(":", "")
+            key = f"other_{first_words}"
+
+        summary[key] = summary.get(key, 0) + 1
+
+    return summary
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         data = safe_json_loads(path.read_text(encoding="utf-8"), context=f"reading {path}")
@@ -423,6 +457,11 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 md = _read_json(run_metadata_path) or {}
                 metrics.setdefault("run_metadata", md)
 
+            # Add high-level failure mode analysis if errors occurred
+            if errors_list:
+                failure_summary = _summarize_failure_modes(errors_list)
+                metrics["failure_modes"] = failure_summary
+
             bundle = {
                 "schema_version": 1,
                 "spec_url": "smi-bench:evaluation_bundle:v1",
@@ -471,7 +510,10 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 )
 
             if rc == 0:
-                await updater.complete()
+                final_msg = "run_finished"
+                if metrics.get("failure_modes"):
+                    final_msg += f" (failures: {metrics['failure_modes']})"
+                await updater.complete(new_agent_text_message(final_msg, task.context_id, task.id))
             else:
                 await updater.failed(
                     new_agent_text_message(
