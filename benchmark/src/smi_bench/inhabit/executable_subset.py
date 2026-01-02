@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-DEFAULT_ADDRESS = "0x" + ("1" * 64)
+DUMMY_ADDRESS = "0x" + ("1" * 64)
+STDLIB_ADDRESS = "0x" + ("0" * 63) + "1"
 SUI_FRAMEWORK_ADDRESS = "0x" + ("0" * 63) + "2"
 SUI_SYSTEM_STATE_OBJECT_ID = "0x5"
 SUI_CLOCK_OBJECT_ID = "0x6"
@@ -81,7 +82,7 @@ def build_constructor_index(modules: dict) -> dict[str, list[str]]:
         # but the struct types inside do.
         # Or we use the package_id from the outer scope?
         # Actually, `mod` usually has "address" field in bytecode json.
-        mod_addr = mod.get("address", DEFAULT_ADDRESS)
+        mod_addr = mod.get("address", DUMMY_ADDRESS)
 
         for fun_name, f in funs.items():
             if not isinstance(f, dict):
@@ -203,7 +204,76 @@ def json_type_to_string(t: dict) -> str:
             arg_strs = [json_type_to_string(a) for a in args if isinstance(a, dict)]
             return f"{base}<{', '.join(arg_strs)}>"
         return base
+    if kind == "ref":
+        to = t.get("to")
+        mut = "&mut " if t.get("mutable") else "&"
+        return f"{mut}{json_type_to_string(to)}" if isinstance(to, dict) else f"{mut}unknown"
     return "unknown"
+
+
+def summarize_interface(interface_json: dict, max_functions: int = 200) -> str:
+    """
+    Generate a concise human-readable summary of public/entry functions.
+    """
+    modules = interface_json.get("modules")
+    if not isinstance(modules, dict):
+        return "No modules found."
+
+    pkg_id = interface_json.get("package_id", "0x0")
+    lines = []
+    lines.append(f"Package: {pkg_id}")
+    lines.append("")
+
+    total_funs_added = 0
+
+    # Sort modules to be deterministic
+    for module_name in sorted(modules.keys()):
+        if total_funs_added >= max_functions:
+            break
+            
+        mod = modules.get(module_name)
+        if not isinstance(mod, dict):
+            continue
+        funs = mod.get("functions")
+        if not isinstance(funs, dict):
+            continue
+        
+        module_lines = []
+        # Prioritize entry functions, then public functions
+        sorted_funs = sorted(
+            funs.items(), 
+            key=lambda x: (not x[1].get("is_entry", False), x[0])
+        )
+        
+        for fun_name, f in sorted_funs:
+            if total_funs_added >= max_functions:
+                break
+            if f.get("visibility") != "public" and f.get("is_entry") is not True:
+                continue
+            
+            # Signature construction
+            vis = f.get("visibility", "private")
+            entry = " entry" if f.get("is_entry") else ""
+            params = f.get("params", [])
+            param_strs = [json_type_to_string(p) for p in params if isinstance(p, dict)]
+            sig = f"{vis}{entry} fun {fun_name}({', '.join(param_strs)})"
+            
+            type_params = f.get("type_params", [])
+            if type_params:
+                sig = f"{vis}{entry} fun {fun_name}<{len(type_params)} type params>({', '.join(param_strs)})"
+            
+            module_lines.append(f"  - {sig}")
+            total_funs_added += 1
+        
+        if module_lines:
+            lines.append(f"Module: {module_name}")
+            lines.extend(module_lines)
+            lines.append("")
+
+    if total_funs_added >= max_functions:
+        lines.append(f"... (truncated after {max_functions} functions)")
+
+    return "\n".join(lines)
 
 
 def construct_arg(
@@ -241,20 +311,22 @@ def construct_arg(
         type_str = json_type_to_string(t)
 
         # 0x1::string::String
-        if addr == DEFAULT_ADDRESS and mod == STD_STRING_MODULE and name == "String":
+        if addr == STDLIB_ADDRESS and mod == STD_STRING_MODULE and name == "String":
+            # call 0x1::string::utf8(b"sui") -> Result
             return [
                 {
-                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::string::utf8",
+                    "target": f"{STDLIB_ADDRESS}::string::utf8",
                     "type_args": [],
                     "args": [{"vector_u8_utf8": "sui"}],
                 }
             ], {"result": next_result_idx}
 
         # 0x1::ascii::String
-        if addr == DEFAULT_ADDRESS and mod == STD_ASCII_MODULE and name == "String":
+        if addr == STDLIB_ADDRESS and mod == STD_ASCII_MODULE and name == "String":
+            # call 0x1::ascii::string(b"sui") -> Result
             return [
                 {
-                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::string",
+                    "target": f"{STDLIB_ADDRESS}::ascii::string",
                     "type_args": [],
                     "args": [{"vector_u8_utf8": "sui"}],
                 }
@@ -271,7 +343,8 @@ def construct_arg(
             ], {"result": next_result_idx}
 
         # 0x1::option::Option<T>
-        if addr == DEFAULT_ADDRESS and mod == STD_OPTION_MODULE and name == "Option":
+        if addr == STDLIB_ADDRESS and mod == STD_OPTION_MODULE and name == "Option":
+            # call 0x1::option::none<T>() -> Result
             type_args = t.get("type_args", [])
             if not isinstance(type_args, list) or len(type_args) != 1:
                 return None
@@ -281,7 +354,7 @@ def construct_arg(
 
             return [
                 {
-                    "target": "0x0000000000000000000000000000000000000000000000000000000000000001::option::none",
+                    "target": f"{STDLIB_ADDRESS}::option::none",
                     "type_args": [inner_type_str],
                     "args": [],
                 }
@@ -436,7 +509,7 @@ def type_to_default_ptb_arg(t: dict) -> dict | None:
     if kind == "u64":
         return {"u64": 1}
     if kind == "address":
-        return {"address": DEFAULT_ADDRESS}
+        return {"address": DUMMY_ADDRESS}
     if kind == "vector":
         inner = t.get("type")
         if isinstance(inner, dict) and inner.get("kind") == "u8":
@@ -450,7 +523,7 @@ def type_to_default_ptb_arg(t: dict) -> dict | None:
         if isinstance(inner, dict) and inner.get("kind") == "u64":
             return {"vector_u64": [1]}
         if isinstance(inner, dict) and inner.get("kind") == "address":
-            return {"vector_address": [DEFAULT_ADDRESS]}
+            return {"vector_address": [DUMMY_ADDRESS]}
         return None
     return None
 

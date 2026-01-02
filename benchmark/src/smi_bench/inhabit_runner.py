@@ -17,7 +17,10 @@ from smi_bench.agents.real_agent import RealAgent, load_real_agent_config
 from smi_bench.dataset import collect_packages, sample_packages
 from smi_bench.env import load_dotenv
 from smi_bench.inhabit.dryrun import DryRunFailure, classify_dry_run_response
-from smi_bench.inhabit.executable_subset import analyze_package
+from smi_bench.inhabit.executable_subset import (
+    analyze_package,
+    summarize_interface,
+)
 from smi_bench.inhabit.score import InhabitationScore, normalize_type_string, score_inhabitation
 from smi_bench.logging import JsonlLogger, default_run_id
 from smi_bench.runner import _extract_key_types_from_interface_json
@@ -272,6 +275,15 @@ def _ptb_variants(base_spec: dict, *, sender: str, max_variants: int) -> list[tu
     return variants[:max_variants]
 
 
+def _summarize_inventory(inventory: dict[str, list[str]]) -> str:
+    if not inventory:
+        return "Your inventory is empty or could not be fetched."
+    lines = ["You own the following objects (grouped by type):"]
+    for t, ids in sorted(inventory.items()):
+        lines.append(f"- {t}: {len(ids)} objects available")
+    return "\n".join(lines)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -470,18 +482,37 @@ def _run_tx_sim_with_fallback(
             pass
 
 
-def _build_real_agent_prompt(*, package_id: str, target_key_types: set[str]) -> str:
+def _build_real_agent_prompt(
+    *,
+    package_id: str,
+    target_key_types: set[str],
+    interface_summary: str,
+    inventory_summary: str,
+) -> str:
     """
-    Prompt the model to output a PTB spec JSON matching the Rust helper schema:
-
-      {"calls":[{"target":"0xADDR::module::function","type_args":[],"args":[...]}]}
+    Prompt the model to output a PTB spec JSON matching the Rust helper schema.
     """
     instructions = (
-        "You are crafting a PTB plan for transaction simulation (dry-run/dev-inspect).\n"
+        "You are an expert Move developer crafting a Programmable Transaction Block (PTB) plan.\n"
+        "Your goal is to inhabit (create) as many of the following target types as possible:\n"
+        f"{sorted(target_key_types)}\n\n"
+        "### Available Functions in Package\n"
+        f"{interface_summary}\n\n"
+        "### Your Inventory\n"
+        f"{inventory_summary}\n\n"
+        "### Standard System Objects\n"
+        "- 0x6::clock::Clock (Shared)\n"
+        "- 0x8::random::Random (Shared)\n"
+        "- 0x403::deny_list::DenyList (Shared)\n\n"
+        "### PTB Schema Rules\n"
         "Return ONLY valid JSON matching this schema:\n"
         '{"calls":[{"target":"0xADDR::module::function","type_args":["<TypeTag>",...],'
-        '"args":[{"u64":1},{"vector_u8_utf8":"hi"},...] }]}\n'
-        "Do not include tx_context arguments (they are implicit).\n"
+        '"args":[{"u64":1},{"vector_u8_utf8":"hi"},{"imm_or_owned_object":"0xID"},...] }]}\n'
+        "- Use 'imm_or_owned_object' for objects you own.\n"
+        "- Use 'shared_object' for shared objects: {\"shared_object\": {\"id\": \"0x...\", \"mutable\": true}}\n"
+        "- Do not include tx_context arguments (implicit).\n"
+        "CRITICAL: If the function name is missing, you MUST INFER it from the API list above. "
+        "Do NOT ask for clarification. Output a valid JSON plan attempt.\n"
     )
     payload = {"package_id": package_id, "target_key_types": sorted(target_key_types)}
     return instructions + json.dumps(payload, indent=2, sort_keys=True)
@@ -496,19 +527,54 @@ def _build_real_agent_retry_prompt(
     """
     Provide a failure-aware retry prompt so the agent can adapt within the per-package timeout.
     """
+    error_detail = ""
+    if "harness_error" in last_failure:
+        error_detail = f"The harness failed to parse your JSON or build the transaction: {last_failure['harness_error']}\n"
+    elif "dry_run_effects_error" in last_failure:
+        error_detail = f"The transaction was built but failed on-chain simulation: {last_failure['dry_run_effects_error']}\n"
+
     instructions = (
-        "Your previous PTB plan failed in dry-run.\n"
-        "Revise the PTB plan to avoid the failure.\n"
+        "Your previous PTB plan failed.\n"
+        f"{error_detail}"
+        "\nRevise the PTB plan to avoid the failure.\n"
         "Return ONLY valid JSON matching this schema:\n"
         '{"calls":[{"target":"0xADDR::module::function","type_args":["<TypeTag>",...],'
         '"args":[{"u64":1},{"vector_u8_utf8":"hi"},...] }]}\n'
         "Do not include tx_context arguments (they are implicit).\n"
+        "CRITICAL: Try a different function or argument strategy. You MUST INFER a valid attempt. "
+        "Do NOT ask for clarification.\n"
     )
     payload = {
         "package_id": package_id,
         "target_key_types": sorted(target_key_types),
         "last_failure": last_failure,
     }
+    return instructions + json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _build_template_agent_prompt(
+    *,
+    package_id: str,
+    target_key_types: set[str],
+    calls: list[dict],
+) -> str:
+    """
+    Prompt the agent to fill in values for a pre-discovered call sequence.
+    """
+    instructions = (
+        "You are an expert Move developer. I have found a sequence of function calls "
+        "that might create the following target objects: "
+        f"{sorted(target_key_types)}\n\n"
+        "Your task is to provide VALID DATA VALUES for the 'args' in the JSON below.\n"
+        "Rules:\n"
+        "1. Return ONLY the 'calls' JSON array.\n"
+        "2. Do NOT change the 'target' or 'type_args'.\n"
+        "3. Replace any placeholder values with realistic data (e.g., sensible u64 amounts, valid string content).\n"
+        "4. If an argument is a result reference (e.g., {'result': 0}), keep it AS IS.\n"
+        "5. If an argument is a placeholder (e.g., {'$smi_placeholder': '...'}), try to find a system object "
+        "or keep it if you cannot (the runner will try to resolve it).\n"
+    )
+    payload = {"package_id": package_id, "skeleton_calls": calls}
     return instructions + json.dumps(payload, indent=2, sort_keys=True)
 
 
@@ -740,6 +806,9 @@ def run(
     if agent_name == "real-openai-compatible":
         cfg = load_real_agent_config(env_overrides)
         real_agent = RealAgent(cfg)
+    elif agent_name == "template-search":
+        cfg = load_real_agent_config(env_overrides)
+        real_agent = RealAgent(cfg)
     elif agent_name in {"mock-empty", "mock-planfile", "baseline-search"}:
         pass
     else:
@@ -777,7 +846,7 @@ def run(
         plan_variant: str | None = None
 
         inventory = {}
-        if agent_name == "baseline-search" and sender and sender != "0x0":
+        if agent_name in {"baseline-search", "real-openai-compatible", "template-search"} and sender and sender != "0x0":
             inventory = _fetch_inventory(rpc_url, sender)
 
         try:
@@ -786,14 +855,14 @@ def run(
 
             # Strategy setup
             plans_to_try = []
-            if agent_name == "baseline-search":
+            if agent_name in {"baseline-search", "template-search"}:
                 analysis = analyze_package(iface)
                 candidates = analysis.candidates_ok
-                if baseline_max_candidates > 0:
-                    candidates = candidates[:baseline_max_candidates]
+                max_cand = baseline_max_candidates if agent_name == "baseline-search" else 5
+                if max_cand > 0:
+                    candidates = candidates[:max_cand]
 
                 if not candidates:
-                    # No candidates -> one empty plan attempt to record failure/stats
                     plans_to_try = [{"calls": []}]
                 else:
                     for c in candidates:
@@ -820,24 +889,58 @@ def run(
                 if remaining <= 0:
                     raise TimeoutError(f"per-package timeout exceeded ({per_package_timeout_seconds}s)")
 
-                if isinstance(plan_item, dict):
-                    ptb_spec_base = copy.deepcopy(plan_item)
-                    if "$smi_placeholder" in json.dumps(ptb_spec_base):
-                        # Try to resolve placeholders
-                        if not _resolve_placeholders(ptb_spec_base, inventory):
-                            # Skip this candidate if we can't resolve deps
-                            continue
-                else:
-                    assert real_agent is not None
-                    if last_failure_ctx is None or plan_i == 0:
-                        prompt = _build_real_agent_prompt(package_id=pkg.package_id, target_key_types=truth_key_types)
-                    else:
-                        prompt = _build_real_agent_retry_prompt(
+                try:
+                    if agent_name == "template-search":
+                        # Prompt the agent to fill in the skeleton
+                        assert real_agent is not None
+                        prompt = _build_template_agent_prompt(
                             package_id=pkg.package_id,
                             target_key_types=truth_key_types,
-                            last_failure=last_failure_ctx,
+                            calls=plan_item["calls"],
                         )
-                    ptb_spec_base = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
+                        # Extract the 'calls' array from the AI response
+                        ai_calls = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
+                        if isinstance(ai_calls, list):
+                            ptb_spec_base = {"calls": ai_calls}
+                        elif isinstance(ai_calls, dict) and "calls" in ai_calls:
+                            ptb_spec_base = ai_calls
+                        else:
+                            # Fallback to baseline if AI response is weird
+                            ptb_spec_base = plan_item
+                    elif isinstance(plan_item, dict):
+                        ptb_spec_base = copy.deepcopy(plan_item)
+                    else:
+                        assert real_agent is not None
+                        if last_failure_ctx is None or plan_i == 0:
+                            prompt = _build_real_agent_prompt(
+                                package_id=pkg.package_id,
+                                target_key_types=truth_key_types,
+                                interface_summary=summarize_interface(iface),
+                                inventory_summary=_summarize_inventory(inventory),
+                            )
+                        else:
+                            prompt = _build_real_agent_retry_prompt(
+                                package_id=pkg.package_id,
+                                target_key_types=truth_key_types,
+                                last_failure=last_failure_ctx,
+                            )
+                        ptb_spec_base = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
+                    
+                    # Resolve any remaining placeholders from inventory
+                    if "$smi_placeholder" in json.dumps(ptb_spec_base):
+                        if not _resolve_placeholders(ptb_spec_base, inventory):
+                            continue
+                except Exception as e:
+                    # If the harness failed to parse the JSON or build the tx, 
+                    # give the agent a chance to retry with the error message.
+                    if plan_i + 1 < len(plans_to_try):
+                        last_failure_ctx = {"harness_error": str(e)}
+                        if logger is not None:
+                            logger.event("plan_attempt_harness_error", package_id=pkg.package_id, error=str(e), i=pkg_i)
+                        continue
+                    else:
+                        # Last attempt failed, bubble up.
+                        raise
 
                 variants = _ptb_variants(
                     ptb_spec_base,
@@ -1267,6 +1370,7 @@ def main(argv: list[str] | None = None) -> None:
             "mock-planfile",
             "real-openai-compatible",
             "baseline-search",
+            "template-search",
         ],
     )
     p.add_argument("--plan-file", type=Path, help="JSON mapping package_id -> PTB spec (required for mock-planfile).")
