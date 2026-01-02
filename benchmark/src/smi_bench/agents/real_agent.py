@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from smi_bench.json_extract import extract_type_list
+from smi_bench.json_extract import extract_type_list, extract_json_value
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class RealAgentConfig:
     base_url: str
     model: str
     temperature: float
-    max_tokens: int
+    max_tokens: int | None
     thinking: str | None
     response_format: str | None
     clear_thinking: bool | None
@@ -65,7 +65,7 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
     model = get("SMI_MODEL", "OPENAI_MODEL") or "gpt-4o-mini"
 
     temperature_s = get("SMI_TEMPERATURE") or "0"
-    max_tokens_s = get("SMI_MAX_TOKENS") or "800"
+    max_tokens_s = get("SMI_MAX_TOKENS")
     thinking_s = get("SMI_THINKING")
     response_format_s = get("SMI_RESPONSE_FORMAT")
     clear_thinking_s = get("SMI_CLEAR_THINKING")
@@ -74,10 +74,16 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
         temperature = float(temperature_s)
     except Exception as e:
         raise ValueError(f"invalid SMI_TEMPERATURE={temperature_s}") from e
-    try:
-        max_tokens = int(max_tokens_s)
-    except Exception as e:
-        raise ValueError(f"invalid SMI_MAX_TOKENS={max_tokens_s}") from e
+
+    max_tokens = None
+    if max_tokens_s:
+        try:
+            val = int(max_tokens_s)
+            if val > 0:
+                max_tokens = val
+        except Exception as e:
+            raise ValueError(f"invalid SMI_MAX_TOKENS={max_tokens_s}") from e
+
     try:
         clear_thinking = _parse_bool(clear_thinking_s) if clear_thinking_s else None
     except Exception as e:
@@ -127,7 +133,6 @@ class RealAgent:
         payload = {
             "model": self.cfg.model,
             "temperature": self.cfg.temperature,
-            "max_tokens": self.cfg.max_tokens,
             "messages": [
                 {
                     "role": "system",
@@ -136,6 +141,8 @@ class RealAgent:
                 {"role": "user", "content": prompt},
             ],
         }
+        if self.cfg.max_tokens is not None:
+            payload["max_tokens"] = self.cfg.max_tokens
         if self.cfg.thinking:
             payload["thinking"] = {"type": self.cfg.thinking}
             if self.cfg.clear_thinking is not None:
@@ -284,7 +291,6 @@ class RealAgent:
         payload = {
             "model": self.cfg.model,
             "temperature": self.cfg.temperature,
-            "max_tokens": self.cfg.max_tokens,
             "messages": [
                 {
                     "role": "system",
@@ -293,6 +299,8 @@ class RealAgent:
                 {"role": "user", "content": prompt},
             ],
         }
+        if self.cfg.max_tokens is not None:
+            payload["max_tokens"] = self.cfg.max_tokens
         if self.cfg.thinking:
             payload["thinking"] = {"type": self.cfg.thinking}
             if self.cfg.clear_thinking is not None:
@@ -417,14 +425,14 @@ class RealAgent:
         if not isinstance(content, str):
             raise ValueError("unexpected response content type")
         if content.strip() == "":
-            raise ValueError("model returned empty content")
+            raise ValueError(f"model returned empty content. full_response={data}")
 
         try:
-            parsed = json.loads(content)
+            parsed = extract_json_value(content)
         except Exception as e:
             raise ValueError(f"model output was not valid JSON: {content[:300]!r}") from e
 
-        if not isinstance(parsed, dict):
-            raise ValueError("model output must be a JSON object")
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError(f"model output must be a JSON object or array, got {type(parsed)}")
 
         return parsed

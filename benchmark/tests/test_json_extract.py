@@ -12,7 +12,7 @@ def test_extract_type_list_plain_array() -> None:
 
 
 def test_extract_type_list_code_fence() -> None:
-    s = "```json\n[\"0x1::m::S\"]\n```"
+    s = '```json\n["0x1::m::S"]\n```'
     out = extract_type_list(s)
     assert out == {"0x1::m::S"}
 
@@ -26,4 +26,3 @@ def test_extract_type_list_object_form() -> None:
 def test_extract_type_list_rejects_no_json() -> None:
     with pytest.raises(JsonExtractError):
         extract_type_list("hello world")
-
