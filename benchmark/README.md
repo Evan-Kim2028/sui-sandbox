@@ -66,6 +66,16 @@ git clone --depth 1 https://github.com/MystenLabs/sui-packages.git
 
 Benchmarks typically target the `mainnet_most_used` subset: `sui-packages/packages/mainnet_most_used`.
 
+### Standard Benchmarks
+
+We provide canonical benchmark manifests in `benchmark/manifests/` to ensure consistent evaluation.
+
+**Phase II Standard Set (n=292):** `benchmark/manifests/standard_phase2_benchmark.txt`
+
+- **Why this list?** The full corpus (~1000 packages) is mostly non-viable for simple transaction simulation (requiring complex admin caps or specific setups).
+- **Origin:** This subset contains ~292 packages from `mainnet_most_used` that have been verified to expose at least one "inhabitable" public entry function compatible with the harness.
+- **Usage:** Always use this list for Phase II leaderboard runs to avoid 98% rejection rates.
+
 ### Configure a real agent (optional)
 
 Copy `benchmark/.env.example` to `benchmark/.env` and fill in:
@@ -120,6 +130,20 @@ This will:
 3.  **Phase II Execution**: Attempt to execute transactions (using `dry-run` if sender is provided, else `build-only`).
 
 Artifacts will be saved in `results/my_run_01/`.
+
+### Run Phase II (Standard Benchmark)
+
+To run the standard Phase II benchmark against the canonical 292 viable packages:
+
+```bash
+uv run smi-inhabit \
+  --corpus-root <sui-packages-checkout>/packages/mainnet_most_used \
+  --package-ids-file manifests/standard_phase2_benchmark.txt \
+  --agent real-openai-compatible \
+  --out results/phase2_standard_run.json \
+  --rpc-url https://fullnode.mainnet.sui.io:443 \
+  --continue-on-error
+```
 
 ### Run (Legacy / Modular)
 
