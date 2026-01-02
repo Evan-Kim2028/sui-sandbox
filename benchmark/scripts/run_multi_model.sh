@@ -39,7 +39,8 @@ Options:
   --samples <int>        (default: 1)            [--a2a]
 
 Examples:
-  ./scripts/run_multi_model.sh --env-file .env.openrouter --models "openai/gpt-5.2,google/gemini-3-flash-preview"
+  # Safe default to avoid RPC rate limits: start with --parallel 1, then increase gradually.
+  ./scripts/run_multi_model.sh --env-file .env.openrouter --models "openai/gpt-5.2,google/gemini-3-flash-preview" --parallel 1
   ./scripts/run_multi_model.sh --env-file .env.openrouter --a2a --models "openai/gpt-5.2" --corpus-root <CORPUS_ROOT>
 EOF
 }

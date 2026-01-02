@@ -1,6 +1,6 @@
 """Property-based tests for PTB Causality Validator.
 
-Ensures that the validator correctly identifies and rejects 
+Ensures that the validator correctly identifies and rejects
 physically impossible transaction plans.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import hypothesis.strategies as st
 from hypothesis import given
 
-from smi_bench.inhabit.validator import validate_ptb_causality, PTBCausalityError
+from smi_bench.inhabit.validator import PTBCausalityError, validate_ptb_causality
 
 
 @st.composite
@@ -30,11 +30,8 @@ def ptb_call_strategy(draw, max_results):
             args.append({"what": "is this"})
         else:
             args.append({arg_type: "0x" + ("a" * 64)})
-            
-    return {
-        "target": "0x2::m::f",
-        "args": args
-    }
+
+    return {"target": "0x2::m::f", "args": args}
 
 
 @st.composite
@@ -54,7 +51,7 @@ def test_validator_detects_causality_violations(ptb_spec):
     """
     try:
         validate_ptb_causality(ptb_spec)
-        
+
         # If it passed, verify it was actually valid according to our rules
         for i, call in enumerate(ptb_spec["calls"]):
             for arg in call.get("args", []):
@@ -63,27 +60,27 @@ def test_validator_detects_causality_violations(ptb_spec):
                     # If it passed, it must be an int and 0 <= idx < i
                     assert isinstance(idx, int)
                     assert 0 <= idx < i
-                    
+
     except PTBCausalityError:
         # If it failed, it should be because of a real violation
         violations_found = False
-        
+
         # Check for non-list calls
         if not isinstance(ptb_spec.get("calls"), list):
             violations_found = True
-            
+
         # Check each call
         if not violations_found:
             for i, call in enumerate(ptb_spec.get("calls", [])):
                 if not isinstance(call, dict):
                     violations_found = True
                     break
-                
+
                 for arg in call.get("args", []):
                     if not isinstance(arg, dict):
                         violations_found = True
                         break
-                    
+
                     if "result" in arg:
                         idx = arg["result"]
                         if not isinstance(idx, int) or not (0 <= idx < i):
@@ -91,5 +88,5 @@ def test_validator_detects_causality_violations(ptb_spec):
                             break
                 if violations_found:
                     break
-                    
+
         assert violations_found, f"Validator raised PTBCausalityError but we couldn't find a violation in {ptb_spec}"

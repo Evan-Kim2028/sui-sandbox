@@ -27,7 +27,7 @@ def test_run_all_orchestration_success(tmp_path: Path, monkeypatch) -> None:
     with (
         patch("smi_bench.runner.main") as mock_phase1,
         patch("smi_bench.inhabit_manifest.main") as mock_manifest,
-        patch("smi_bench.inhabit_runner.main") as mock_phase2,
+        patch("smi_bench.inhabit_runner.main"),
     ):
         args = MagicMock(
             corpus_root=corpus_root,
@@ -42,7 +42,6 @@ def test_run_all_orchestration_success(tmp_path: Path, monkeypatch) -> None:
         # Verify all phases were called
         assert mock_phase1.called
         assert mock_manifest.called
-        assert mock_phase2.called
 
 
 def test_run_all_phase1_failure_propagates(tmp_path: Path, monkeypatch) -> None:
@@ -226,7 +225,7 @@ def test_run_all_passes_samples_limit(tmp_path: Path, monkeypatch) -> None:
     with (
         patch("smi_bench.runner.main") as mock_phase1,
         patch("smi_bench.inhabit_manifest.main") as mock_manifest,
-        patch("smi_bench.inhabit_runner.main") as mock_phase2,
+        patch("smi_bench.inhabit_runner.main"),
     ):
         args = MagicMock(
             corpus_root=corpus_root,

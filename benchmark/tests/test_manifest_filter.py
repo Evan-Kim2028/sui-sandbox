@@ -74,9 +74,7 @@ def test_main_creates_output_manifest_file(tmp_path: Path) -> None:
     out_json = tmp_path / "phase2_output.json"
     out_manifest = tmp_path / "filtered_manifest.txt"
 
-    test_data = {
-        "packages": [{"package_id": "0x1", "score": {"targets": 2}}]
-    }
+    test_data = {"packages": [{"package_id": "0x1", "score": {"targets": 2}}]}
     out_json.write_text(json.dumps(test_data))
 
     args = [str(out_json), "--min-targets", "1", "--out-manifest", str(out_manifest)]
@@ -149,9 +147,7 @@ def test_main_creates_output_directory_if_missing(tmp_path: Path) -> None:
     out_json = tmp_path / "phase2_output.json"
     out_manifest = tmp_path / "nested" / "dir" / "filtered_manifest.txt"
 
-    test_data = {
-        "packages": [{"package_id": "0x1", "score": {"targets": 2}}]
-    }
+    test_data = {"packages": [{"package_id": "0x1", "score": {"targets": 2}}]}
     out_json.write_text(json.dumps(test_data))
 
     args = [str(out_json), "--min-targets", "1", "--out-manifest", str(out_manifest)]

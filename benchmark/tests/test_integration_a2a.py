@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from a2a.types import TaskState, TextPart, AgentCard, Task, Part, AgentCapabilities
+from a2a.types import AgentCapabilities
 
 
 def test_a2a_green_agent_full_request_response_cycle(tmp_path: Path, monkeypatch) -> None:
@@ -37,35 +37,26 @@ def test_a2a_green_agent_full_request_response_cycle(tmp_path: Path, monkeypatch
         )
 
         # Simulate AgentBeats task processing
-        from a2a.server.agent_execution import RequestContext
-        from a2a.types import AgentCard, Task, AgentProvider, AgentSkill, TaskStatus
+        from a2a.types import AgentCard, AgentProvider, AgentSkill
 
-        card = AgentCard(
+        _ = AgentCard(
             name="smi-a2a-green",
             display_name="Green Agent",
-            version="1.0.0",
-            description="Test agent",
-            url="http://test",
-            provider=AgentProvider(organization="test", url="http://test"),
+            description="test",
+            url="http://127.0.0.1:9999",
+            provider=AgentProvider(organization="smi", url="http://127.0.0.1:9999"),
+            version="0.0.1",
             default_input_modes=["application/json"],
             default_output_modes=["application/json"],
-            capabilities=AgentCapabilities(streaming=True, push_notifications=False, state_transition_history=False),
-            skills=[AgentSkill(id="test", name="test", description="test", tags=[])],
+            capabilities=AgentCapabilities(streaming=False),
+            skills=[AgentSkill(id="smi", name="smi", description="", tags=[])],
         )
 
-        context = RequestContext(
-            task_id="task-1",
-            task=Task(
-                id="task-1",
-                context_id="ctx-1",
-                state=TaskState.working,
-                status=TaskStatus(state=TaskState.working),
-                parts=[Part(root=TextPart(text='{"corpus_root": "' + str(corpus_root) + '"}'))],
-            ),
-        )
+        # RequestContext signature is version-dependent; this test doesn't require constructing it.
 
         # Simulate request to agent
         from smi_bench import a2a_green_agent
+
         assert a2a_green_agent is not None
 
 
@@ -79,6 +70,7 @@ def test_a2a_purple_agent_bundle_validation(tmp_path: Path, monkeypatch) -> None
 
         # Verify purple agent module exists
         from smi_bench import a2a_purple_agent
+
         assert a2a_purple_agent is not None
 
 
@@ -96,13 +88,16 @@ def test_a2a_preflight_to_run_flow(tmp_path: Path, monkeypatch) -> None:
     ):
         # All checks should pass when path exists
         args = [
-            "--corpus-root", str(corpus_root),
-            "--rpc-url", "https://test.rpc",
+            "--corpus-root",
+            str(corpus_root),
+            "--rpc-url",
+            "https://test.rpc",
         ]
 
         # Should succeed without errors
         try:
             from smi_bench import a2a_preflight
+
             a2a_preflight.main(args)
         except SystemExit as e:
             # Exit code 0 is success
@@ -219,7 +214,7 @@ def test_a2a_green_agent_safe_float_conversion(tmp_path: Path) -> None:
 def test_a2a_green_agent_bundle_extraction(tmp_path: Path, monkeypatch) -> None:
     """Bundle extraction from request context works correctly."""
     from smi_bench import a2a_green_agent
-    
+
     context = MagicMock()
     context.get_user_input.return_value = '{"corpus_root": "/test/corpus"}'
 
@@ -242,19 +237,18 @@ def test_a2a_green_agent_result_summarization(tmp_path: Path, monkeypatch) -> No
                 "score": {"targets": 3, "created_distinct": 2, "created_hits": 2, "missing": 1},
             },
         ],
-        "aggregate": {
-            "avg_hit_rate": 0.5,
-            "errors": 0
-        }
+        "aggregate": {"avg_hit_rate": 0.5, "errors": 0},
     }
 
     import json
+
     out_json = tmp_path / "results.json"
     out_json.write_text(json.dumps(mock_output))
 
     # Verify summarization function exists
     from smi_bench import a2a_green_agent
+
     metrics, errors = a2a_green_agent._summarize_phase2_results(out_json)
-    
+
     assert metrics["packages_total"] == 2
     assert metrics["avg_hit_rate"] == 0.5

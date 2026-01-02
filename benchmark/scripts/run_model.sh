@@ -165,6 +165,7 @@ if [ "$MODE" = "a2a" ]; then
 
     SCAN_OUT="$SIGNAL_DIR/phase2_targets_scan.json"
     MANIFEST_OUT="$SIGNAL_DIR/manifest_targets_ge${MIN_TARGETS}.txt"
+    MANIFEST_2_OUT="$SIGNAL_DIR/manifest_targets_ge${MIN_TARGETS}_first2.txt"
     RESPONSE_OUT="$SIGNAL_DIR/a2a_response.json"
     SMOKE_LOG="$SIGNAL_DIR/a2a.log"
 
@@ -188,18 +189,20 @@ if [ "$MODE" = "a2a" ]; then
         --min-targets "$MIN_TARGETS" \
         --out-manifest "$MANIFEST_OUT"
 
+    # For fast iteration, only run the first 2 packages from the signal manifest.
+    # (The full manifest is still written to $MANIFEST_OUT for reproducibility.)
+    head -n 2 "$MANIFEST_OUT" > "$MANIFEST_2_OUT"
+
     SMI_MODEL="$MODEL" \
     SMI_API_BASE_URL="https://openrouter.ai/api/v1" \
     uv run smi-a2a-smoke \
         --env-file "$ENV_FILE" \
         --scenario "$SCENARIO" \
         --corpus-root "$CORPUS_ROOT" \
-        --package-ids-file "$MANIFEST_OUT" \
-        --samples "$RUN_SAMPLES" \
+        --package-ids-file "$MANIFEST_2_OUT" \
+        --samples 2 \
         --per-package-timeout-seconds "$PER_PKG_TIMEOUT" \
         --max-plan-attempts "$MAX_PLAN_ATTEMPTS" \
-        --max-planning-calls 50 \
-        --continue-on-error \
         --rpc-url "$RPC_URL" \
         --out-response "$RESPONSE_OUT" \
         > "$SMOKE_LOG" 2>&1
@@ -212,6 +215,7 @@ if [ "$MODE" = "a2a" ]; then
     echo "A2A Phase II run complete"
     echo "  scan_out=$SCAN_OUT"
     echo "  manifest_out=$MANIFEST_OUT"
+    echo "  manifest_2_out=$MANIFEST_2_OUT"
     echo "  response_out=$RESPONSE_OUT"
     echo "  log=$SMOKE_LOG"
     exit 0
@@ -272,7 +276,6 @@ SMI_MODEL="$MODEL" \
 SMI_API_BASE_URL="https://openrouter.ai/api/v1" \
 uv run smi-phase2-targeted-run \
     --env-file "$ENV_FILE" \
-    --parent-pid "$$" \
     $( [ -n "$MAX_RUN_SECONDS" ] && echo --max-run-seconds "$MAX_RUN_SECONDS" ) \
     --corpus-root "$CORPUS_ROOT" \
     --base-manifest "$BASE_MANIFEST" \

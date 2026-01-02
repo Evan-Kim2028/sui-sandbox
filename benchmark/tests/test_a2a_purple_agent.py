@@ -8,10 +8,6 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-import pytest
-
 from smi_bench.a2a_purple_agent import _card
 
 
@@ -26,7 +22,6 @@ def test_card_returns_valid_agentcard() -> None:
 
 def test_card_url_parameter_required() -> None:
     """Card creation requires url parameter."""
-    from a2a.types import AgentCard
 
     card = _card(url="http://test.url")
 

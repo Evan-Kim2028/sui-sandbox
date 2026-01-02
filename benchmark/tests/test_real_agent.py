@@ -32,7 +32,9 @@ def test_load_real_agent_config_supports_fallback_keys_in_dotenv(monkeypatch) ->
 
 def test_load_real_agent_config_env_overrides_win_over_process_env(monkeypatch) -> None:
     monkeypatch.setenv("SMI_API_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
-    cfg = load_real_agent_config({"SMI_API_BASE_URL": "https://openrouter.ai/api/v1", "SMI_API_KEY": "k"})
+    cfg = load_real_agent_config(
+        {"SMI_API_BASE_URL": "https://openrouter.ai/api/v1", "SMI_API_KEY": "k", "SMI_MODEL": "m"}
+    )
     assert cfg.base_url == "https://api.z.ai/api/coding/paas/v4"
 
 

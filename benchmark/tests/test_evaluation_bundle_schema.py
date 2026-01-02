@@ -11,7 +11,7 @@ from typing import Any
 
 def validate_evaluation_bundle(bundle: dict[str, Any]) -> None:
     """Validate an evaluation bundle against the spec.
-    
+
     Raises ValueError with descriptive message if validation fails.
     """
     # Top-level required fields
@@ -33,7 +33,7 @@ def validate_evaluation_bundle(bundle: dict[str, Any]) -> None:
     # Validate types and values
     if bundle["schema_version"] != 1:
         raise ValueError(f"Unsupported schema_version: {bundle['schema_version']}")
-    
+
     if bundle["spec_url"] != "smi-bench:evaluation_bundle:v1":
         raise ValueError(f"Invalid spec_url: {bundle['spec_url']}")
 
@@ -117,7 +117,7 @@ def test_missing_field_fails_validation() -> None:
 def test_invalid_version_fails_validation() -> None:
     """Test that incorrect schema versions trigger validation errors."""
     invalid_bundle = {
-        "schema_version": 2, # Wrong version
+        "schema_version": 2,  # Wrong version
         "spec_url": "smi-bench:evaluation_bundle:v1",
         "benchmark": "phase2_inhabit",
         "run_id": "test",

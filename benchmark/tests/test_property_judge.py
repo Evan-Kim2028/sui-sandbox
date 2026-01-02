@@ -72,9 +72,7 @@ def test_score_key_types_symmetric_difference() -> None:
 
         # Symmetric difference property: |A-B| = (A-B) U (B-A)
         # |A-B| size should equal fn + fp
-        expected_size = len(truth_key_types - predicted_key_types) + len(
-            predicted_key_types - truth_key_types
-        )
+        expected_size = len(truth_key_types - predicted_key_types) + len(predicted_key_types - truth_key_types)
         actual_size = len(score.missing_sample) + len(score.extra_sample)
 
         assert actual_size == expected_size

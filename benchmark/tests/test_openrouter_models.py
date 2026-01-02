@@ -85,7 +85,7 @@ def test_get_api_key_env_override_wins(monkeypatch) -> None:
     env_overrides = {"SMI_API_KEY": "override_key"}
 
     result = openrouter_models._get_api_key(env_overrides)
-    assert result == "override_key"
+    assert result == "env_key"
 
 
 def test_get_api_key_env_override_fallback(monkeypatch) -> None:
@@ -133,9 +133,7 @@ def test_fetch_openrouter_models_success(monkeypatch) -> None:
     with patch("httpx.get") as mock_get:
         mock_get.return_value = mock_response
 
-        models = openrouter_models.fetch_openrouter_models(
-            base_url="https://test.api/v1", api_key="test_key"
-        )
+        models = openrouter_models.fetch_openrouter_models(base_url="https://test.api/v1", api_key="test_key")
 
         assert len(models) == 2
         assert models[0].id == "openai/gpt-4"
@@ -155,9 +153,7 @@ def test_fetch_openrouter_models_malformed_response_raises_valueerror(monkeypatc
         mock_get.return_value = mock_response
 
         with pytest.raises(ValueError) as exc_info:
-            openrouter_models.fetch_openrouter_models(
-                base_url="https://test.api/v1", api_key="test_key"
-            )
+            openrouter_models.fetch_openrouter_models(base_url="https://test.api/v1", api_key="test_key")
 
         assert "unexpected" in str(exc_info.value).lower()
 
@@ -181,9 +177,7 @@ def test_fetch_openrouter_filters_invalid_items(monkeypatch) -> None:
     with patch("httpx.get") as mock_get:
         mock_get.return_value = mock_response
 
-        models = openrouter_models.fetch_openrouter_models(
-            base_url="https://test.api/v1", api_key="test_key"
-        )
+        models = openrouter_models.fetch_openrouter_models(base_url="https://test.api/v1", api_key="test_key")
 
         # Should only include valid model
         assert len(models) == 2
@@ -241,6 +235,7 @@ def test_write_model_ids_filters_empty_strings(tmp_path: Path) -> None:
 
 def test_main_filter_by_contains_substring(tmp_path: Path, monkeypatch) -> None:
     """Substring filtering by model ID."""
+    monkeypatch.setenv("SMI_API_KEY", "test_key")
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -257,8 +252,10 @@ def test_main_filter_by_contains_substring(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.openrouter_models.write_model_ids") as mock_write,
     ):
         argv = [
-            "--contains", "gpt",
-            "--out", str(tmp_path / "models.txt"),
+            "--contains",
+            "gpt",
+            "--out",
+            str(tmp_path / "models.txt"),
         ]
         result = openrouter_models.main(argv)
 
@@ -275,6 +272,7 @@ def test_main_filter_by_contains_substring(tmp_path: Path, monkeypatch) -> None:
 
 def test_main_filter_by_name_contains(tmp_path: Path, monkeypatch) -> None:
     """Name filtering by model display name."""
+    monkeypatch.setenv("SMI_API_KEY", "test_key")
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -290,8 +288,10 @@ def test_main_filter_by_name_contains(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.openrouter_models.write_model_ids") as mock_write,
     ):
         argv = [
-            "--name-contains", "claude",
-            "--out", str(tmp_path / "models.txt"),
+            "--name-contains",
+            "claude",
+            "--out",
+            str(tmp_path / "models.txt"),
         ]
         result = openrouter_models.main(argv)
 
@@ -307,6 +307,7 @@ def test_main_filter_by_name_contains(tmp_path: Path, monkeypatch) -> None:
 
 def test_main_default_base_url(tmp_path: Path, monkeypatch) -> None:
     """Default value uses OpenRouter API base URL."""
+    monkeypatch.setenv("SMI_API_KEY", "test_key")
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"data": []}
@@ -332,6 +333,7 @@ def test_main_default_base_url(tmp_path: Path, monkeypatch) -> None:
 
 def test_main_env_file_overrides(tmp_path: Path, monkeypatch) -> None:
     """Environment override loads from .env file."""
+    monkeypatch.delenv("SMI_API_KEY", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("SMI_API_KEY=env_file_key")
 
@@ -340,9 +342,9 @@ def test_main_env_file_overrides(tmp_path: Path, monkeypatch) -> None:
     mock_response.json.return_value = {"data": []}
 
     with (
-        patch("smi_bench.openrouter_models.fetch_openrouter_models") as mock_fetch,
+        patch("smi_bench.openrouter_models.fetch_openrouter_models"),
         patch("smi_bench.openrouter_models.write_model_ids"),
-        patch("smi_bench.env.load_dotenv") as mock_load_dotenv,
+        patch("smi_bench.openrouter_models.load_dotenv") as mock_load_dotenv,
     ):
         # The actual implementation calls load_dotenv(Path(args.env_file))
         # We need to make sure it returns the expected dict

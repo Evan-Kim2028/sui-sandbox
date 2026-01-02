@@ -17,7 +17,7 @@ def evaluation_bundle_strategy(draw):
     started_at = draw(st.integers(min_value=1000000000, max_value=2000000000))
     elapsed = draw(st.floats(min_value=0.0, max_value=10000.0))
     finished_at = int(started_at + elapsed)
-    
+
     return {
         "schema_version": 1,
         "spec_url": "smi-bench:evaluation_bundle:v1",

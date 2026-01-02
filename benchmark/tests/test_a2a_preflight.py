@@ -109,8 +109,10 @@ def test_is_listening_false_when_port_closed(monkeypatch) -> None:
 def test_main_corpusr_root_missing_required_error(tmp_path: Path, monkeypatch) -> None:
     """Arg validation requires corpus_root."""
     args = [
-        "--corpus-root", str(tmp_path / "missing"),
-        "--rpc-url", "https://test.rpc",
+        "--corpus-root",
+        str(tmp_path / "missing"),
+        "--rpc-url",
+        "https://test.rpc",
     ]
 
     with pytest.raises(SystemExit) as exc_info:
@@ -119,17 +121,18 @@ def test_main_corpusr_root_missing_required_error(tmp_path: Path, monkeypatch) -
     assert "missing" in str(exc_info.value).lower()
 
 
-def test_main_scenario_launches_server_when_not_listening(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_main_scenario_launches_server_when_not_listening(tmp_path: Path, monkeypatch) -> None:
     """Server startup logic launches scenario server when port not listening."""
     corpus_root = tmp_path / "corpus"
     corpus_root.mkdir()
 
     args = [
-        "--corpus-root", str(corpus_root),
-        "--scenario", str(tmp_path / "scenario"),
-        "--rpc-url", "https://test.rpc",
+        "--corpus-root",
+        str(corpus_root),
+        "--scenario",
+        str(tmp_path / "scenario"),
+        "--rpc-url",
+        "https://test.rpc",
     ]
 
     with (
@@ -149,17 +152,18 @@ def test_main_scenario_launches_server_when_not_listening(
         assert "smi-agentbeats-scenario" in call_args
 
 
-def test_main_scenario_skips_server_when_already_listening(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_main_scenario_skips_server_when_already_listening(tmp_path: Path, monkeypatch) -> None:
     """Server skip logic skips launch when port already listening."""
     corpus_root = tmp_path / "corpus"
     corpus_root.mkdir()
 
     args = [
-        "--corpus-root", str(corpus_root),
-        "--scenario", str(tmp_path / "scenario"),
-        "--rpc-url", "https://test.rpc",
+        "--corpus-root",
+        str(corpus_root),
+        "--scenario",
+        str(tmp_path / "scenario"),
+        "--rpc-url",
+        "https://test.rpc",
     ]
 
     with (
@@ -184,9 +188,12 @@ def test_main_calls_smoke_tool_after_checks(tmp_path: Path, monkeypatch) -> None
     manifest.touch()
 
     args = [
-        "--corpus-root", str(corpus_root),
-        "--package-ids-file", str(manifest),
-        "--rpc-url", "https://test.rpc",
+        "--corpus-root",
+        str(corpus_root),
+        "--package-ids-file",
+        str(manifest),
+        "--rpc-url",
+        "https://test.rpc",
     ]
 
     with (
@@ -215,9 +222,12 @@ def test_main_success_prints_ready_for_full_run(tmp_path: Path, monkeypatch, cap
     manifest.touch()
 
     args = [
-        "--corpus-root", str(corpus_root),
-        "--package-ids-file", str(manifest),
-        "--rpc-url", "https://test.rpc",
+        "--corpus-root",
+        str(corpus_root),
+        "--package-ids-file",
+        str(manifest),
+        "--rpc-url",
+        "https://test.rpc",
     ]
 
     with (

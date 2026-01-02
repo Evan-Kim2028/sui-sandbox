@@ -21,7 +21,7 @@ from smi_bench.inhabit_runner import InhabitRunResult
 from smi_bench.inhabit_runner import _load_checkpoint as _load_inhabit_checkpoint
 from smi_bench.runner import RunResult, _load_checkpoint
 from smi_bench.schema import validate_phase1_run_json, validate_phase2_run_json
-from smi_bench.utils import compute_json_checksum, safe_json_loads
+from smi_bench.utils import safe_json_loads
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -40,12 +40,10 @@ def test_phase1_golden_fixture_schema() -> None:
     # Additional assertions for golden fixture specifics
     assert data["schema_version"] == 1
     assert len(data["packages"]) > 0
-    
+
     # Validate checksum if present
     stored_checksum = data.get("_checksum")
     if stored_checksum:
-        data_copy = {k: v for k, v in data.items() if k != "_checksum"}
-        computed = compute_json_checksum(data_copy)
         # Note: fixture checksum is fake, but structure should be valid
         assert isinstance(stored_checksum, str)
         assert len(stored_checksum) == 8
@@ -60,6 +58,7 @@ def test_phase1_golden_fixture_can_load_as_runresult() -> None:
 
     # Write to temp file and load via checkpoint loader
     import tempfile
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
@@ -99,6 +98,7 @@ def test_phase2_golden_fixture_can_load_as_inhabitrresult() -> None:
 
     # Write to temp file and load via checkpoint loader
     import tempfile
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
         temp_path = Path(f.name)
@@ -141,11 +141,11 @@ def test_golden_fixtures_allow_additive_fields() -> None:
     for path, validator in [(phase1_path, validate_phase1_run_json), (phase2_path, validate_phase2_run_json)]:
         if not path.exists():
             continue
-        
+
         data = json.loads(path.read_text())
-        
+
         # Add a new optional field (simulating future schema addition)
         data["_test_additive_field"] = "test_value"
-        
+
         # Validator should still pass (additive fields allowed)
         validator(data)

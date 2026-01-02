@@ -43,6 +43,21 @@ This directory contains the test suite for the `sui-move-interface-extractor` be
 - `test_phase2_checkpoint_and_resume`
 - `test_a2a_green_agent_full_request_response_cycle`
 
+### End-to-End Tests (2% of tests)
+
+**Purpose**: Test complete A2A protocol workflows from request to completion.
+
+**Characteristics:**
+- Use TestClient for in-process HTTP testing
+- Mock subprocess execution to avoid real command execution
+- Test full task lifecycle, cancellation, error recovery
+- Validate A2A protocol compliance end-to-end
+
+**Examples:**
+- `test_full_task_lifecycle` - Complete task submission to completion
+- `test_task_cancellation` - Task cancellation workflow
+- `test_concurrent_tasks` - Multiple simultaneous tasks
+
 ### Property-Based Tests (2% of tests)
 
 **Purpose**: Use property-based testing (Hypothesis) to find edge cases.

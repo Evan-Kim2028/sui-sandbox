@@ -430,5 +430,3 @@ def test_checkpoint_truncated_file_raises_value_error(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="Checkpoint JSON parse error"):
         _load_inhabit_checkpoint(checkpoint_path)
-
-

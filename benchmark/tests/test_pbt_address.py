@@ -55,9 +55,10 @@ def test_normalize_type_string_preserves_structure(addresses: str) -> None:
     # Construct a fake type string: 0x1::m::S<0x2::m::S>
     type_str = "::".join(addresses) + "<" + ",".join(addresses) + ">"
     norm = normalize_type_string(type_str)
-    
+
     # Every 0x... in the output should be padded to 66 chars
     import re
+
     all_addr = re.findall(r"0x[0-9a-fA-F]+", norm)
     for a in all_addr:
         assert len(a) == 66

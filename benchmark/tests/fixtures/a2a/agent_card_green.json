@@ -1,0 +1,29 @@
+{
+  "name": "smi-bench-green",
+  "description": "Green agent wrapper for the Sui Move Interface Extractor benchmark (Phase II).",
+  "url": "http://127.0.0.1:9999/",
+  "version": "0.1.0",
+  "protocol_version": "0.3.0",
+  "provider": {
+    "organization": "sui-move-interface-extractor",
+    "url": "http://127.0.0.1:9999/"
+  },
+  "default_input_modes": ["application/json"],
+  "default_output_modes": ["application/json"],
+  "capabilities": {
+    "streaming": true,
+    "push_notifications": false,
+    "state_transition_history": false
+  },
+  "skills": [
+    {
+      "id": "run_phase2",
+      "name": "Run Phase II",
+      "description": "Run Phase II (PTB inhabitation) over a manifest and return results as artifacts.",
+      "tags": ["benchmark", "sui", "move", "phase2"],
+      "examples": ["Run Phase II on standard manifest"],
+      "input_modes": ["application/json"],
+      "output_modes": ["application/json"]
+    }
+  ]
+}

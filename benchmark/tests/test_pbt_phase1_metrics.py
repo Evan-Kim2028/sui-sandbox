@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hypothesis.strategies as st
 from hypothesis import given
+
 from smi_bench.judge import score_key_types
 
 
@@ -17,7 +18,7 @@ from smi_bench.judge import score_key_types
 def test_f1_score_is_always_between_precision_and_recall(truth, predicted):
     """Invariant: F1 score must lie between precision and recall (or be zero)."""
     score = score_key_types(truth, predicted)
-    
+
     if score.precision == 0 or score.recall == 0:
         assert score.f1 == 0
     else:
@@ -52,7 +53,7 @@ def test_all_predictions_correct_gives_perfect_precision(predicted):
 @given(
     st.sets(st.text(min_size=1), min_size=1, max_size=10),
     st.sets(st.text(min_size=1), min_size=1, max_size=10),
-    st.integers(min_value=1, max_value=5)
+    st.integers(min_value=1, max_value=5),
 )
 def test_max_samples_clipping(truth, predicted, max_s):
     """Invariant: samples lists must not exceed max_samples."""

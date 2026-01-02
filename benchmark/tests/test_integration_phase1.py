@@ -41,24 +41,32 @@ def test_phase1_full_run_with_mock_agent(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.runner._build_rust"),
         patch("smi_bench.runner.JsonlLogger"),
     ):
-        mock_collect.return_value = []
+        # Mock a package for the runner to process
+        mock_pkg = MagicMock()
+        mock_pkg.package_id = "0x1"
+        mock_pkg.package_dir = pkg_dir
+        mock_collect.return_value = [mock_pkg]
         mock_validate.return_value = Path("fake_rust")
         mock_emit.return_value = {"package_id": "0x1", "modules": {}}
 
         argv = [
-            "--corpus-root", str(corpus_root),
-            "--samples", "1",
-            "--agent", "mock-empty",
-            "--out", str(out_json),
+            "--corpus-root",
+            str(corpus_root),
+            "--samples",
+            "1",
+            "--agent",
+            "mock-empty",
+            "--out",
+            str(out_json),
         ]
 
         with patch("sys.argv", ["smi-phase1"] + argv):
-            with pytest.raises(SystemExit) as exc_info:
-                from smi_bench import runner
-                runner.main(argv)
+            from smi_bench import runner
 
-            # Should exit with code 0 (success)
-            assert exc_info.value.code == 0
+            runner.main(argv)
+
+            # Should complete successfully
+            assert out_json.exists()
 
 
 def test_phase1_checkpoint_and_resume(tmp_path: Path) -> None:
@@ -130,22 +138,26 @@ def test_phase1_continue_on_error(tmp_path: Path, monkeypatch) -> None:
         mock_emit.return_value = {"package_id": "0x1", "modules": {}}
 
         argv = [
-            "--corpus-root", str(corpus_root),
-            "--samples", "1",
-            "--agent", "mock-empty",
-            "--out", str(out_json),
+            "--corpus-root",
+            str(corpus_root),
+            "--samples",
+            "1",
+            "--agent",
+            "mock-empty",
+            "--out",
+            str(out_json),
             "--continue-on-error",
-            "--max-errors", "1",
+            "--max-errors",
+            "1",
         ]
 
         with patch("sys.argv", ["smi-phase1"] + argv):
-            with pytest.raises(SystemExit) as exc_info:
-                from smi_bench import runner
-                runner.main(argv)
+            from smi_bench import runner
 
-            # Should exit successfully despite potential errors
-            # The test doesn't actually fail, so exit code should be 0
-            # In real scenario, continue-on-error would allow non-zero exit codes
+            runner.main(argv)
+
+            # Should complete successfully with continue-on-error
+            assert out_json.exists()
 
 
 def test_phase1_samples_from_corpus_file(tmp_path: Path, monkeypatch) -> None:
@@ -170,16 +182,22 @@ def test_phase1_samples_from_corpus_file(tmp_path: Path, monkeypatch) -> None:
         mock_emit.return_value = {"package_id": "0x1", "modules": {}}
 
         argv = [
-            "--corpus-root", str(corpus_root),
-            "--package-ids-file", str(ids_file),
-            "--samples", "2",  # Sample 2 from file of 3
-            "--agent", "mock-empty",
-            "--out", str(out_json),
+            "--corpus-root",
+            str(corpus_root),
+            "--package-ids-file",
+            str(ids_file),
+            "--samples",
+            "2",  # Sample 2 from file of 3
+            "--agent",
+            "mock-empty",
+            "--out",
+            str(out_json),
         ]
 
         with patch("sys.argv", ["smi-phase1"] + argv):
             with pytest.raises(SystemExit):
                 from smi_bench import runner
+
                 runner.main(argv)
 
 
@@ -271,6 +289,7 @@ def test_phase1_output_schema_matches_validator(tmp_path: Path) -> None:
 
     # Should not raise exception
     from smi_bench.schema import validate_phase1_run_json
+
     validate_phase1_run_json(data)
 
 
@@ -359,15 +378,14 @@ def test_phase1_resume_loads_packages_from_checkpoint(tmp_path: Path) -> None:
 
     # Load checkpoint and verify packages loaded correctly
     from smi_bench.runner import _resume_results_from_checkpoint
-    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(
-        _load_checkpoint(checkpoint_path)
-    )
+
+    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(_load_checkpoint(checkpoint_path))
 
     assert len(loaded_packages) == 2
     assert "0x1" in seen
     assert "0x2" in seen
     assert error_count == 0
-    assert started == 2000
+    assert started == 1000  # started_at_unix_seconds, not finished_at
 
 
 def test_phase1_deterministic_output_with_same_seed(tmp_path: Path) -> None:

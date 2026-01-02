@@ -44,6 +44,7 @@ def test_run_loop_retries_on_harness_error(
 ) -> None:
     # Setup mocks
     monkeypatch.setenv("SMI_API_KEY", "test_key")
+    monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
     mock_pkg = MagicMock()
     mock_pkg.package_id = "0x123"
@@ -130,6 +131,7 @@ def test_run_loop_progressive_need_more_uses_multiple_planning_calls(
     mock_sim, mock_collect, mock_emit, mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
+    monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
     mock_pkg = MagicMock()
     mock_pkg.package_id = "0x123"
@@ -198,6 +200,7 @@ def test_run_guard_exits_when_parent_pid_missing(
     mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
+    monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
 
     mock_pkg = MagicMock()
@@ -211,38 +214,38 @@ def test_run_guard_exits_when_parent_pid_missing(
 
     out_path = tmp_path / "results.json"
     run(
-            corpus_root=Path("/tmp/corpus"),
-            samples=1,
-            seed=0,
-            package_ids_file=None,
-            agent_name="baseline-search",
-            rust_bin=Path("fake_rust"),
-            dev_inspect_bin=Path("fake_sim"),
-            rpc_url="https://fake_rpc",
-            sender="0x1",
-            gas_budget=1000,
-            gas_coin=None,
-            gas_budget_ladder="",
-            max_planning_calls=1,
-            max_plan_attempts=1,
-            baseline_max_candidates=1,
-            max_heuristic_variants=1,
-            plan_file=None,
-            env_file=None,
-            out_path=out_path,
-            resume=False,
-            continue_on_error=True,
-            max_errors=1,
-            checkpoint_every=0,
-            per_package_timeout_seconds=10,
-            include_created_types=False,
-            require_dry_run=False,
-            simulation_mode="build-only",
-            log_dir=None,
-            run_id=None,
-            parent_pid=12345,
-            max_run_seconds=None,
-        )
+        corpus_root=Path("/tmp/corpus"),
+        samples=1,
+        seed=0,
+        package_ids_file=None,
+        agent_name="baseline-search",
+        rust_bin=Path("fake_rust"),
+        dev_inspect_bin=Path("fake_sim"),
+        rpc_url="https://fake_rpc",
+        sender="0x1",
+        gas_budget=1000,
+        gas_coin=None,
+        gas_budget_ladder="",
+        max_planning_calls=1,
+        max_plan_attempts=1,
+        baseline_max_candidates=1,
+        max_heuristic_variants=1,
+        plan_file=None,
+        env_file=None,
+        out_path=out_path,
+        resume=False,
+        continue_on_error=True,
+        max_errors=1,
+        checkpoint_every=0,
+        per_package_timeout_seconds=10,
+        include_created_types=False,
+        require_dry_run=False,
+        simulation_mode="build-only",
+        log_dir=None,
+        run_id=None,
+        parent_pid=12345,
+        max_run_seconds=None,
+    )
 
     data = json.loads(out_path.read_text())
     assert data["aggregate"]["errors"] == 1
@@ -257,6 +260,7 @@ def test_run_guard_exits_when_max_run_seconds_exceeded(
     mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
+    monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
 
     mock_pkg = MagicMock()
@@ -270,38 +274,38 @@ def test_run_guard_exits_when_max_run_seconds_exceeded(
 
     out_path = tmp_path / "results.json"
     run(
-            corpus_root=Path("/tmp/corpus"),
-            samples=1,
-            seed=0,
-            package_ids_file=None,
-            agent_name="baseline-search",
-            rust_bin=Path("fake_rust"),
-            dev_inspect_bin=Path("fake_sim"),
-            rpc_url="https://fake_rpc",
-            sender="0x1",
-            gas_budget=1000,
-            gas_coin=None,
-            gas_budget_ladder="",
-            max_planning_calls=1,
-            max_plan_attempts=1,
-            baseline_max_candidates=1,
-            max_heuristic_variants=1,
-            plan_file=None,
-            env_file=None,
-            out_path=out_path,
-            resume=False,
-            continue_on_error=True,
-            max_errors=1,
-            checkpoint_every=0,
-            per_package_timeout_seconds=10,
-            include_created_types=False,
-            require_dry_run=False,
-            simulation_mode="build-only",
-            log_dir=None,
-            run_id=None,
-            parent_pid=None,
-            max_run_seconds=0.0,
-        )
+        corpus_root=Path("/tmp/corpus"),
+        samples=1,
+        seed=0,
+        package_ids_file=None,
+        agent_name="baseline-search",
+        rust_bin=Path("fake_rust"),
+        dev_inspect_bin=Path("fake_sim"),
+        rpc_url="https://fake_rpc",
+        sender="0x1",
+        gas_budget=1000,
+        gas_coin=None,
+        gas_budget_ladder="",
+        max_planning_calls=1,
+        max_plan_attempts=1,
+        baseline_max_candidates=1,
+        max_heuristic_variants=1,
+        plan_file=None,
+        env_file=None,
+        out_path=out_path,
+        resume=False,
+        continue_on_error=True,
+        max_errors=1,
+        checkpoint_every=0,
+        per_package_timeout_seconds=10,
+        include_created_types=False,
+        require_dry_run=False,
+        simulation_mode="build-only",
+        log_dir=None,
+        run_id=None,
+        parent_pid=None,
+        max_run_seconds=0.0,
+    )
 
     data = json.loads(out_path.read_text())
     assert data["aggregate"]["errors"] == 1

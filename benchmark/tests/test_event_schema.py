@@ -51,27 +51,27 @@ KNOWN_EVENT_NAMES = {
 
 def validate_event(event: dict, line_num: int | None = None) -> None:
     """Validate a single event against schema.
-    
+
     Raises ValueError with descriptive message if validation fails.
     """
     prefix = f"Event {line_num}: " if line_num is not None else "Event: "
-    
+
     # Check required fields
     for field in REQUIRED_EVENT_FIELDS:
         if field not in event:
             raise ValueError(f"{prefix}missing required field: {field}")
-    
+
     # Validate types
     if not isinstance(event["t"], int):
         raise ValueError(f"{prefix}'t' must be integer, got {type(event['t']).__name__}")
-    
+
     if not isinstance(event["event"], str):
         raise ValueError(f"{prefix}'event' must be string, got {type(event['event']).__name__}")
-    
+
     # Validate timestamp is positive
     if event["t"] <= 0:
         raise ValueError(f"{prefix}'t' must be positive Unix timestamp, got {event['t']}")
-    
+
     # Warn about unknown event names (helps catch typos)
     event_name = event["event"]
     if event_name not in KNOWN_EVENT_NAMES:
@@ -81,7 +81,7 @@ def validate_event(event: dict, line_num: int | None = None) -> None:
 
 def test_golden_events_jsonl_schema(tmp_path: Path) -> None:
     """Validate golden events.jsonl fixture matches expected schema.
-    
+
     Reads events.jsonl from a small mocked run and asserts required keys exist on every line.
     """
     fixture_path = FIXTURES_DIR / "events_golden.jsonl"
@@ -102,7 +102,7 @@ def test_golden_events_jsonl_schema(tmp_path: Path) -> None:
             pytest.fail(f"Line {line_num} validation failed: {e}")
 
     assert len(events) > 0, "No events found in fixture"
-    
+
     # Additional validation: check that known event names are spelled correctly
     for event in events:
         event_name = event["event"]
@@ -212,13 +212,13 @@ def test_event_schema_requires_t_and_event(tmp_path: Path) -> None:
 def test_event_schema_validates_all_events_in_file(tmp_path: Path) -> None:
     """Test that we can validate all events in an events.jsonl file."""
     logger = JsonlLogger(base_dir=tmp_path, run_id="test_run")
-    
+
     # Emit multiple events
     logger.event("run_started", started_at_unix_seconds=1000, agent="test")
     logger.event("package_started", package_id="0x111", i=1)
     logger.event("package_finished", package_id="0x111", elapsed_seconds=0.5)
     logger.event("run_finished", finished_at_unix_seconds=2000, packages_total=1)
-    
+
     # Read and validate all events
     events_path = logger.paths.events
     for line_num, line in enumerate(events_path.read_text().splitlines(), start=1):
@@ -226,7 +226,7 @@ def test_event_schema_validates_all_events_in_file(tmp_path: Path) -> None:
             continue
         event = json.loads(line)
         validate_event(event, line_num=line_num)
-    
+
     # All events should pass validation
     assert True  # If we get here, validation passed
 
@@ -234,17 +234,17 @@ def test_event_schema_validates_all_events_in_file(tmp_path: Path) -> None:
 def test_event_name_registry_catches_typos(tmp_path: Path) -> None:
     """Test that event name registry helps catch typos."""
     logger = JsonlLogger(base_dir=tmp_path, run_id="test_run")
-    
+
     # Emit event with potential typo (should still work, but we can detect it)
     logger.event("inventroy_fetch_failed", package_id="0x111")  # Typo: "inventroy" instead of "inventory"
-    
+
     events_path = logger.paths.events
     events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
-    
+
     # Event should still be valid (has required fields)
     assert len(events) == 1
     validate_event(events[0])
-    
+
     # But event name is not in registry (typo detection)
     assert events[0]["event"] not in KNOWN_EVENT_NAMES
 
