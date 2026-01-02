@@ -101,7 +101,7 @@ def test_analyze_package_chains_string_construction() -> None:
                         ],
                         "returns": [],
                     }
-                }
+                },
             }
         },
     }
@@ -128,16 +128,20 @@ def test_analyze_package_recursive_constructor() -> None:
                         "is_entry": False,
                         "type_params": [],
                         "params": [{"kind": "u64"}],
-                        "returns": [{"kind": "datatype", "address": pkg, "module": "m", "name": "Widget", "type_args": []}],
+                        "returns": [
+                            {"kind": "datatype", "address": pkg, "module": "m", "name": "Widget", "type_args": []}
+                        ],
                     },
                     "use_widget": {
                         "visibility": "public",
                         "is_entry": True,
                         "type_params": [],
-                        "params": [{"kind": "datatype", "address": pkg, "module": "m", "name": "Widget", "type_args": []}],
+                        "params": [
+                            {"kind": "datatype", "address": pkg, "module": "m", "name": "Widget", "type_args": []}
+                        ],
                         "returns": [],
-                    }
-                }
+                    },
+                },
             }
         },
     }
@@ -166,7 +170,7 @@ def test_analyze_package_fills_type_params_with_sui() -> None:
                         "params": [{"kind": "u64"}],
                         "returns": [],
                     }
-                }
+                },
             }
         },
     }

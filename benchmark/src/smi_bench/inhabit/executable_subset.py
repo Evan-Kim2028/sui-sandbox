@@ -230,41 +230,38 @@ def summarize_interface(interface_json: dict, max_functions: int = 200) -> str:
     for module_name in sorted(modules.keys()):
         if total_funs_added >= max_functions:
             break
-            
+
         mod = modules.get(module_name)
         if not isinstance(mod, dict):
             continue
         funs = mod.get("functions")
         if not isinstance(funs, dict):
             continue
-        
+
         module_lines = []
         # Prioritize entry functions, then public functions
-        sorted_funs = sorted(
-            funs.items(), 
-            key=lambda x: (not x[1].get("is_entry", False), x[0])
-        )
-        
+        sorted_funs = sorted(funs.items(), key=lambda x: (not x[1].get("is_entry", False), x[0]))
+
         for fun_name, f in sorted_funs:
             if total_funs_added >= max_functions:
                 break
             if f.get("visibility") != "public" and f.get("is_entry") is not True:
                 continue
-            
+
             # Signature construction
             vis = f.get("visibility", "private")
             entry = " entry" if f.get("is_entry") else ""
             params = f.get("params", [])
             param_strs = [json_type_to_string(p) for p in params if isinstance(p, dict)]
             sig = f"{vis}{entry} fun {fun_name}({', '.join(param_strs)})"
-            
+
             type_params = f.get("type_params", [])
             if type_params:
                 sig = f"{vis}{entry} fun {fun_name}<{len(type_params)} type params>({', '.join(param_strs)})"
-            
+
             module_lines.append(f"  - {sig}")
             total_funs_added += 1
-        
+
         if module_lines:
             lines.append(f"Module: {module_name}")
             lines.extend(module_lines)

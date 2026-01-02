@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import os
 import time
 from dataclasses import dataclass
 
 import httpx
 
-from smi_bench.json_extract import extract_type_list, extract_json_value
+from smi_bench.json_extract import extract_json_value, extract_type_list
 
 
 @dataclass(frozen=True)
@@ -432,7 +431,7 @@ class RealAgent:
         except Exception as e:
             raise ValueError(f"model output was not valid JSON: {content[:300]!r}") from e
 
-        if not isinstance(parsed, (dict, list)):
-            raise ValueError(f"model output must be a JSON object or array, got {type(parsed)}")
+        if not isinstance(parsed, dict):
+            raise ValueError(f"model output must be a JSON object, got {type(parsed)}")
 
         return parsed

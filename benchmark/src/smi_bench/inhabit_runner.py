@@ -509,7 +509,7 @@ def _build_real_agent_prompt(
         '{"calls":[{"target":"0xADDR::module::function","type_args":["<TypeTag>",...],'
         '"args":[{"u64":1},{"vector_u8_utf8":"hi"},{"imm_or_owned_object":"0xID"},...] }]}\n'
         "- Use 'imm_or_owned_object' for objects you own.\n"
-        "- Use 'shared_object' for shared objects: {\"shared_object\": {\"id\": \"0x...\", \"mutable\": true}}\n"
+        '- Use \'shared_object\' for shared objects: {"shared_object": {"id": "0x...", "mutable": true}}\n'
         "- Do not include tx_context arguments (implicit).\n"
         "CRITICAL: If the function name is missing, you MUST INFER it from the API list above. "
         "Do NOT ask for clarification. Output a valid JSON plan attempt.\n"
@@ -529,9 +529,11 @@ def _build_real_agent_retry_prompt(
     """
     error_detail = ""
     if "harness_error" in last_failure:
-        error_detail = f"The harness failed to parse your JSON or build the transaction: {last_failure['harness_error']}\n"
+        harness_err = last_failure["harness_error"]
+        error_detail = f"The harness failed to parse your JSON or build the transaction: {harness_err}\n"
     elif "dry_run_effects_error" in last_failure:
-        error_detail = f"The transaction was built but failed on-chain simulation: {last_failure['dry_run_effects_error']}\n"
+        effects_err = last_failure["dry_run_effects_error"]
+        error_detail = f"The transaction was built but failed on-chain simulation: {effects_err}\n"
 
     instructions = (
         "Your previous PTB plan failed.\n"
@@ -846,7 +848,8 @@ def run(
         plan_variant: str | None = None
 
         inventory = {}
-        if agent_name in {"baseline-search", "real-openai-compatible", "template-search"} and sender and sender != "0x0":
+        needs_inventory = agent_name in {"baseline-search", "real-openai-compatible", "template-search"}
+        if needs_inventory and sender and sender != "0x0":
             inventory = _fetch_inventory(rpc_url, sender)
 
         try:
@@ -925,13 +928,13 @@ def run(
                                 last_failure=last_failure_ctx,
                             )
                         ptb_spec_base = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
-                    
+
                     # Resolve any remaining placeholders from inventory
                     if "$smi_placeholder" in json.dumps(ptb_spec_base):
                         if not _resolve_placeholders(ptb_spec_base, inventory):
                             continue
                 except Exception as e:
-                    # If the harness failed to parse the JSON or build the tx, 
+                    # If the harness failed to parse the JSON or build the tx,
                     # give the agent a chance to retry with the error message.
                     if plan_i + 1 < len(plans_to_try):
                         last_failure_ctx = {"harness_error": str(e)}
