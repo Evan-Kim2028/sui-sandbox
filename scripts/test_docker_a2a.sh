@@ -9,8 +9,16 @@ MANIFEST_HOST="$CORPUS_HOST/manifest.txt"
 
 # Ensure corpus exists
 if [ ! -d "$CORPUS_HOST" ]; then
-    echo "Corpus not found. Running prepare_test_corpus.sh..."
-    "$REPO_ROOT/scripts/prepare_test_corpus.sh"
+    echo "Corpus not found. Attempting to run prepare_test_corpus.sh..."
+    if [ -f "$REPO_ROOT/scripts/prepare_test_corpus.sh" ] && command -v sui &> /dev/null; then
+        "$REPO_ROOT/scripts/prepare_test_corpus.sh"
+    else
+        echo "Warning: could not run prepare_test_corpus.sh (sui missing or script not found)."
+        echo "Creating minimal fallback mock corpus..."
+        mkdir -p "$CORPUS_HOST/0x00/fixture/bytecode_modules"
+        echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > "$CORPUS_HOST/0x00/fixture/metadata.json"
+        touch "$CORPUS_HOST/0x00/fixture/bytecode_modules/dummy.mv"
+    fi
 fi
 
 # Create manifest file

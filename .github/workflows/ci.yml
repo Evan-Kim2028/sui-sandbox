@@ -59,13 +59,6 @@ jobs:
           # Better: The smoke test creates its own mock if sui isn't found.
           # I updated prepare_test_corpus.sh to check for 'sui'.
           echo "Sui CLI install skipped; using mock data if needed."
-      - name: Prepare Test Corpus
-        run: |
-          # If sui isn't found, we'll create a tiny mock corpus manually 
-          # to ensure CI remains fast and doesn't depend on heavy blockchain tools.
-          mkdir -p benchmark/.docker_test_corpus/0x00/fixture/bytecode_modules
-          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > benchmark/.docker_test_corpus/0x00/fixture/metadata.json
-          touch benchmark/.docker_test_corpus/0x00/fixture/bytecode_modules/dummy.mv
       - name: Run Docker Smoke Test
         run: |
           # We force mock-empty agent to avoid needing API keys in CI

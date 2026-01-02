@@ -26,3 +26,13 @@
 .pytest_cache/
 __pycache__/
 .DS_Store
+# Benchmark
+benchmark/.venv
+benchmark/.uv-cache
+benchmark/.docker_test_corpus
+benchmark/.docker_test_results
+benchmark/.docker_test_logs
+benchmark/.tmp*
+benchmark/logs/*
+benchmark/results/a2a/*
+benchmark/tmp_dbg*
