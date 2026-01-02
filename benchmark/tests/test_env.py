@@ -20,4 +20,3 @@ EMPTY=
     assert env["SMI_API_KEY"] == "abc"
     assert env["SMI_MODEL"] == "m"
     assert env["EMPTY"] == ""
-

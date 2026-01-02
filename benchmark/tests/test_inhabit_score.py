@@ -31,6 +31,23 @@ def test_extract_created_object_types_from_object_changes() -> None:
     assert out == {"0x2::coin::Coin<0x2::sui::SUI>"}
 
 
+def test_extract_created_object_types_from_dry_run_shape() -> None:
+    dev = {
+        "objectChanges": [
+            {
+                "type": "created",
+                "objectType": "0x2::coin::Coin<0x2::sui::SUI>",
+            },
+            {
+                "type": "mutated",
+                "objectType": "0x2::object::UID",
+            },
+        ]
+    }
+    out = extract_created_object_types(dev)
+    assert out == {"0x2::coin::Coin<0x2::sui::SUI>"}
+
+
 def test_score_inhabitation_matches_on_base_types() -> None:
     targets = {"0x2::coin::Coin", "0x2::object::UID"}
     created = {"0x2::coin::Coin<0x2::sui::SUI>", "0x2::random::Random"}
