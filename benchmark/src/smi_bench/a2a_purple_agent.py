@@ -12,6 +12,12 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill, Part, TaskState, TextPart
 from a2a.utils import new_agent_text_message, new_task
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+# A2A Protocol version this implementation supports
+A2A_PROTOCOL_VERSION = "0.3.0"
 
 
 def _card(*, url: str) -> AgentCard:
@@ -29,6 +35,7 @@ def _card(*, url: str) -> AgentCard:
         description="Baseline purple agent for AgentBeats (stub).",
         url=url,
         version="0.1.0",
+        protocol_version=A2A_PROTOCOL_VERSION,  # Add explicit A2A protocol version
         provider=AgentProvider(organization="sui-move-interface-extractor", url=url),
         default_input_modes=["text/plain", "application/json"],
         default_output_modes=["text/plain", "application/json"],
@@ -61,12 +68,38 @@ class PurpleExecutor(AgentExecutor):
         await updater.complete()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise RuntimeError("cancel not implemented")
+        """
+        Purple agent (stub) doesn't support cancellation.
+        Tasks complete immediately, so cancellation is not applicable.
+        """
+        task = context.current_task
+        if task is None:
+            raise ValueError("No current task to cancel")
+
+        # Purple agent tasks complete immediately, so they're always in terminal state
+        raise RuntimeError(f"Task {task.id} cannot be cancelled (purple agent tasks are immediate)")
+
+
+class A2AVersionMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add A2A-Version header to all responses.
+    Implements A2A protocol version signaling per spec section 14.2.1.
+    """
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = await call_next(request)
+        response.headers["A2A-Version"] = A2A_PROTOCOL_VERSION
+        return response
 
 
 def build_app(*, public_url: str) -> Any:
     handler = DefaultRequestHandler(agent_executor=PurpleExecutor(), task_store=InMemoryTaskStore())
-    return A2AStarletteApplication(agent_card=_card(url=public_url), http_handler=handler).build()
+    app = A2AStarletteApplication(agent_card=_card(url=public_url), http_handler=handler).build()
+
+    # Add A2A version header middleware
+    app.add_middleware(A2AVersionMiddleware)
+
+    return app
 
 
 def main(argv: list[str] | None = None) -> None:

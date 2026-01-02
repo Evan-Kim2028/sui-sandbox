@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -103,15 +102,15 @@ def _doctor_real_agent(cfg_env: dict[str, str]) -> None:
 def _build_agent_prompt(interface_json: dict[str, Any], *, max_structs: int) -> str:
     """
     Build a prompt that hides `abilities` to avoid trivial extraction.
-    
+
     The model must infer likely `key` structs from structure/fields alone.
     This prevents the benchmark from being trivial (if abilities were shown,
     the model could just return all structs with "key" ability).
-    
+
     Args:
         interface_json: Parsed bytecode interface JSON (from Rust extractor).
         max_structs: Maximum number of structs to include in prompt (truncation limit).
-    
+
     Returns:
         Formatted prompt string for the LLM.
     """
@@ -177,13 +176,13 @@ def _build_agent_prompt(interface_json: dict[str, Any], *, max_structs: int) -> 
 def _extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> set[str]:
     """
     Extract all struct types with 'key' ability from interface JSON.
-    
+
     This is the ground truth for Phase I evaluation. The benchmark compares
     model predictions against this set.
-    
+
     Args:
         interface_json: Parsed bytecode interface JSON (from Rust extractor).
-    
+
     Returns:
         Set of canonical type strings (format: "0xADDR::module::Struct").
     """
@@ -215,10 +214,10 @@ def _extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> se
 def _find_git_root(start: Path) -> Path | None:
     """
     Find the git repository root by walking up from start path.
-    
+
     Args:
         start: Starting directory path.
-    
+
     Returns:
         Path to .git directory's parent, or None if not found.
     """
@@ -234,12 +233,12 @@ def _find_git_root(start: Path) -> Path | None:
 def _git_head_for_path(path: Path) -> dict[str, str] | None:
     """
     Get git HEAD commit SHA for a path's repository.
-    
+
     Used for run attribution metadata to track which corpus version was used.
-    
+
     Args:
         path: Path within a git repository.
-    
+
     Returns:
         Dict with "head" key containing commit SHA, or None if not in git repo or git fails.
     """
@@ -297,15 +296,15 @@ class PackageResult:
 def _write_checkpoint(out_path: Path, run_result: RunResult) -> None:
     """
     Write checkpoint atomically with checksum validation.
-    
+
     Uses a temporary file (.tmp suffix) and atomic replace to ensure checkpoint
     integrity. Validates schema before writing and adds checksum for corruption detection.
     Always cleans up .tmp file on failure.
-    
+
     Args:
         out_path: Path to checkpoint file.
         run_result: Run result to serialize.
-    
+
     Raises:
         ValueError: If schema validation fails.
         OSError: If file write fails.
@@ -334,16 +333,16 @@ def _write_checkpoint(out_path: Path, run_result: RunResult) -> None:
 def _load_checkpoint(out_path: Path) -> RunResult:
     """
     Load checkpoint with checksum validation.
-    
+
     Reads checkpoint file, validates checksum if present, and deserializes to RunResult.
     Provides detailed error messages for common failure modes.
-    
+
     Args:
         out_path: Path to checkpoint file.
-    
+
     Returns:
         Deserialized RunResult.
-    
+
     Raises:
         FileNotFoundError: If checkpoint file doesn't exist.
         RuntimeError: If file read fails, JSON parse fails, checksum mismatch, or invalid shape.
@@ -358,9 +357,7 @@ def _load_checkpoint(out_path: Path) -> RunResult:
         ) from exc
     except (OSError, PermissionError) as exc:
         raise RuntimeError(
-            f"Failed to read checkpoint file: {out_path}\n"
-            f"  Error: {exc}\n"
-            f"  Check file permissions and disk space."
+            f"Failed to read checkpoint file: {out_path}\n  Error: {exc}\n  Check file permissions and disk space."
         ) from exc
 
     try:
@@ -436,14 +433,14 @@ def _resume_results_from_checkpoint(
 ) -> tuple[list[PackageResult], set[str], int, int]:
     """
     Resume package results from a checkpoint.
-    
+
     Extracts completed packages from checkpoint and reconstructs PackageResult objects.
     Gracefully skips malformed package rows and logs skip events.
-    
+
     Args:
         cp: Checkpoint RunResult to resume from.
         logger: Optional logger for skip events.
-    
+
     Returns:
         Tuple of (results_list, seen_package_ids_set, error_count, started_timestamp).
     """
@@ -504,7 +501,8 @@ class RunResult:
     Field contracts:
     - `schema_version`: integer, must match expected version for strict validation.
     - `aggregate`: dict with keys like `"avg_f1"`, `"avg_precision"`, `"avg_recall"`, `"errors"`, `"timeouts"`.
-    - `packages`: list of dicts, each with `"package_id"`, `"score"` (KeyTypeScore dict), `"truth_key_types"`, `"predicted_key_types"`.
+    - `packages`: list of dicts, each with `"package_id"`, `"score"` (KeyTypeScore dict),
+      `"truth_key_types"`, `"predicted_key_types"`.
     """
 
     schema_version: int
@@ -546,10 +544,10 @@ def run(
 ) -> RunResult:
     """
     Run Phase I benchmark (key-struct discovery).
-    
+
     Processes packages from corpus, extracts key types from bytecode, prompts LLM
     to predict key types, and scores predictions. Supports checkpointing and resume.
-    
+
     Args:
         corpus_root: Root directory of sui-packages-style corpus.
         samples: Number of packages to sample (0 = all).
@@ -571,10 +569,10 @@ def run(
         include_type_lists: If True, include type lists in output.
         log_dir: Directory for JSONL logs (None = disabled).
         run_id: Optional run ID for logs (auto-generated if None).
-    
+
     Returns:
         RunResult with aggregated scores and package results.
-    
+
     Raises:
         SystemExit: If binary validation fails or too many errors encountered.
     """

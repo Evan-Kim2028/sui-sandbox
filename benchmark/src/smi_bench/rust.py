@@ -9,7 +9,13 @@ from pathlib import Path
 from smi_bench.utils import BinaryNotExecutableError, BinaryNotFoundError, safe_json_loads, validate_binary
 
 # Re-export for convenience
-__all__ = ["default_rust_binary", "validate_rust_binary", "emit_bytecode_json", "BinaryNotFoundError", "BinaryNotExecutableError"]
+__all__ = [
+    "default_rust_binary",
+    "validate_rust_binary",
+    "emit_bytecode_json",
+    "BinaryNotFoundError",
+    "BinaryNotExecutableError",
+]
 
 
 def default_rust_binary() -> Path:
@@ -91,7 +97,7 @@ def emit_bytecode_json(*, package_dir: Path, rust_bin: Path, timeout_s: float = 
             f"  Try: Increase timeout or check system resources."
         ) from e
     except subprocess.CalledProcessError as e:
-        stderr_snippet = (e.stderr[:300] if e.stderr else "N/A") if hasattr(e, 'stderr') else "N/A"
+        stderr_snippet = (e.stderr[:300] if e.stderr else "N/A") if hasattr(e, "stderr") else "N/A"
         raise RuntimeError(
             f"Rust extractor failed\n"
             f"  Package: {package_dir}\n"

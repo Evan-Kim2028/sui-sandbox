@@ -28,7 +28,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
 from rich.console import Console
 from rich.progress import track
 
@@ -56,9 +55,6 @@ from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rus
 from smi_bench.schema import Phase2ResultKeys, validate_phase2_run_json
 from smi_bench.utils import (
     compute_json_checksum,
-    ensure_temp_dir,
-    get_smi_temp_dir,
-    run_json_helper,
     safe_json_loads,
     validate_binary,
 )
@@ -75,6 +71,56 @@ def _ptb_variants(
     """Backward-compatible wrapper for tests expecting `_ptb_variants` in this module."""
 
     return ptb_variants(ptb_spec_base, sender=sender, max_variants=max_variants)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Backward-compatible helper for tests/older call sites."""
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def _fetch_inventory(*, rpc_url: str, sender: str) -> dict[str, Any]:
+    """Backward-compatible helper for tests/older call sites."""
+
+    return fetch_inventory(rpc_url=rpc_url, sender=sender)
+
+
+def _resolve_placeholders(obj: Any, *, sender: str, inventory: dict[str, Any]) -> Any:
+    """Backward-compatible helper for tests/older call sites."""
+
+    _ = sender
+    return resolve_placeholders(obj, inventory)
+
+
+def _run_tx_sim_via_helper(
+    *,
+    dev_inspect_bin: Path,
+    rpc_url: str,
+    sender: str,
+    ptb_spec: dict[str, Any],
+    simulation_mode: str,
+    call_timeout_seconds: float,
+) -> tuple[dict[str, Any], set[str], set[str], str]:
+    """Backward-compatible helper for tests/older call sites."""
+
+    return run_tx_sim_via_helper(
+        dev_inspect_bin=dev_inspect_bin,
+        rpc_url=rpc_url,
+        sender=sender,
+        ptb_spec=ptb_spec,
+        simulation_mode=simulation_mode,
+        call_timeout_seconds=call_timeout_seconds,
+    )
 
 
 def _run_rust_emit_bytecode_json(bytecode_package_dir: Path, rust_bin: Path) -> dict[str, Any]:
@@ -818,6 +864,8 @@ def run(
 
     results: list[InhabitPackageResult] = []
     error_count = 0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
     last_partial: InhabitRunResult | None = None
     if resume:
         if out_path is None:
@@ -906,16 +954,16 @@ def run(
         causality_errors: list[str] = []
 
         try:
-            if pkg_guard_error is not None:
-                raise TimeoutError(pkg_guard_error) if pkg_guard_timed_out else RuntimeError(pkg_guard_error)
-
             iface = _run_rust_emit_bytecode_json(Path(pkg.package_dir), rust_bin)
             truth_key_types = _extract_key_types_from_interface_json(iface)
+
+            if pkg_guard_error is not None:
+                raise TimeoutError(pkg_guard_error) if pkg_guard_timed_out else RuntimeError(pkg_guard_error)
 
             inventory = {}
             needs_inventory = agent_name in {"baseline-search", "real-openai-compatible", "template-search"}
             if needs_inventory and sender and sender != "0x0":
-                inventory = fetch_inventory(rpc_url, sender)
+                inventory = _fetch_inventory(rpc_url=rpc_url, sender=sender)
 
             ladder = _parse_gas_budget_ladder(gas_budget_ladder)
             budgets = _gas_budgets_to_try(base=gas_budget, ladder=ladder)
@@ -1015,9 +1063,9 @@ def run(
 
                 # Resolve any placeholders ($smi_placeholder) against inventory
                 if agent_name in {"baseline-search", "template-search"}:
-                    resolve_placeholders(ptb_spec_base, inventory)
+                    _resolve_placeholders(ptb_spec_base, sender=sender, inventory=inventory)
 
-                variants = ptb_variants(
+                variants = _ptb_variants(
                     ptb_spec_base,
                     sender=sender,
                     max_variants=max(1, int(max_heuristic_variants)),
@@ -1087,12 +1135,9 @@ def run(
                                 dev_inspect_bin=dev_inspect_bin,
                                 rpc_url=rpc_url,
                                 sender=sender,
-                                mode=simulation_mode,
-                                gas_budget=budget,
-                                gas_coin=gas_coin,
-                                bytecode_package_dir=Path(pkg.package_dir),
                                 ptb_spec=ptb_spec,
-                                timeout_s=max(1.0, remaining),
+                                simulation_mode=simulation_mode,
+                                call_timeout_seconds=max(1.0, remaining),
                             )
                             tx_build_ok = True
                             dev_inspect_ok = simulation_mode == "dev-inspect"
@@ -1126,7 +1171,7 @@ def run(
             err = str(e)
             ptb_parse_ok = False
 
-        # Treat guard-triggered exits as errors for aggregate reporting.
+        # Treat any per-package failure as an error for aggregate reporting.
         if err is not None:
             error_count += 1
 
@@ -1213,6 +1258,8 @@ def run(
                         k.AVG_HIT_RATE: current_avg_hit_rate,
                         k.MAX_HIT_RATE: current_max_hit_rate,
                         k.ERRORS: error_count,
+                        k.TOTAL_PROMPT_TOKENS: total_prompt_tokens,
+                        k.TOTAL_COMPLETION_TOKENS: total_completion_tokens,
                     },
                     packages=[_to_package_dict(r) for r in results],
                 ),
@@ -1245,6 +1292,8 @@ def run(
             k.AVG_HIT_RATE: avg_hit_rate,
             k.MAX_HIT_RATE: max_hit_rate,
             k.ERRORS: error_count,
+            k.TOTAL_PROMPT_TOKENS: total_prompt_tokens,
+            k.TOTAL_COMPLETION_TOKENS: total_completion_tokens,
         },
         packages=[_to_package_dict(r) for r in results],
     )

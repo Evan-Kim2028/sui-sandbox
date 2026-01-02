@@ -116,6 +116,8 @@ class Phase2ResultKeys:
     FORMATTING_ONLY_FAILURES = "formatting_only_failures"
     CAUSALITY_SUCCESS_RATE = "causality_success_rate"
     FORMATTING_CORRECTIONS_HISTOGRAM = "formatting_corrections_histogram"
+    TOTAL_PROMPT_TOKENS = "total_prompt_tokens"
+    TOTAL_COMPLETION_TOKENS = "total_completion_tokens"
 
     # Package fields
     PACKAGE_ID = "package_id"

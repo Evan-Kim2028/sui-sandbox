@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import collections
+import inspect
 import json
 import os
 import time
@@ -133,6 +134,8 @@ def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict
             k.FORMATTING_ONLY_FAILURES,
             k.CAUSALITY_SUCCESS_RATE,
             k.FORMATTING_CORRECTIONS_HISTOGRAM,
+            k.TOTAL_PROMPT_TOKENS,
+            k.TOTAL_COMPLETION_TOKENS,
         ):
             if key in aggregate:
                 metrics[key] = aggregate.get(key)
@@ -251,77 +254,147 @@ class SmiBenchGreenExecutor(AgentExecutor):
         # Track running subprocesses for cancellation support
         self._task_processes: dict[str, asyncio.subprocess.Process] = {}
         self._task_cancel_events: dict[str, asyncio.Event] = {}
+        # Limit concurrency to prevent OOM and RPC stampedes
+        self._concurrency_semaphore: asyncio.Semaphore | None = None
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        if self._concurrency_semaphore is None:
+            self._concurrency_semaphore = asyncio.Semaphore(1)
+
         task = context.current_task
         if task is None:
             if context.message is None:
                 raise ValueError("RequestContext.message is missing")
             task = new_task(context.message)
+            context.current_task = task  # CRITICAL: assign to context
             await event_queue.enqueue_event(task)
         updater = TaskUpdater(event_queue, task.id, task.context_id)
 
-        # Create cancellation event for this task
-        cancel_event = asyncio.Event()
-        self._task_cancel_events[task.id] = cancel_event
+        # Use a semaphore to ensure only one task runs at a time
+        async with self._concurrency_semaphore:
+            max_infra_retries = 3
+            for attempt in range(max_infra_retries):
+                # Create cancellation event for this task
+                cancel_event = asyncio.Event()
+                self._task_cancel_events[task.id] = cancel_event
 
-        started_at = time.time()
-        await updater.update_status(
-            TaskState.working,
-            new_agent_text_message("starting", task.context_id, task.id),
-        )
+                started_at = time.time()
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message(
+                        f"starting (attempt {attempt + 1}/{max_infra_retries})" if attempt > 0 else "starting",
+                        task.context_id,
+                        task.id,
+                    ),
+                )
 
-        try:
-            payload = _extract_payload(context)
-            cfg = _load_cfg(payload.get("config") if isinstance(payload, dict) else {})
+                try:
+                    await self._run_task_logic(context, updater, cancel_event, started_at)
+                    # If we reach here without exception, the task finished (successfully or with model errors)
+                    return
+                except A2AError as e:
+                    # Specific protocol errors should not be retried, but must be reported
+                    self._task_processes.pop(task.id, None)
+                    self._task_cancel_events.pop(task.id, None)
+                    await updater.failed(new_agent_text_message(str(e), task.context_id, task.id))
+                    return
+                except Exception as e:
+                    err_str = str(e).lower()
+                    is_infra_failure = any(
+                        x in err_str
+                        for x in [
+                            "rpc",
+                            "timeout",
+                            "connection",
+                            "http",
+                            "network",
+                            "no such file",
+                            "not found",
+                            "enoent",
+                        ]
+                    )
 
-            out_dir = Path(payload.get("out_dir") or "results/a2a")
-            repo_root = Path(__file__).resolve().parents[2]
-            out_dir = (repo_root / out_dir) if not out_dir.is_absolute() else out_dir
-            out_dir.mkdir(parents=True, exist_ok=True)
-            run_id = cfg.run_id or f"a2a_phase2_{int(time.time())}"
+                    # If it's a transient infra failure and we have retries left, loop again
+                    if is_infra_failure and attempt < max_infra_retries - 1:
+                        await updater.update_status(
+                            TaskState.working,
+                            new_agent_text_message(
+                                f"Infrastructure failure detected: {e}. Retrying in 5s...",
+                                task.context_id,
+                                task.id,
+                            ),
+                        )
+                        await asyncio.sleep(5)
+                        continue
 
-            out_json = out_dir / f"{run_id}.json"
-            log_dir = repo_root / "logs"
-            events_path = log_dir / run_id / "events.jsonl"
-            run_metadata_path = log_dir / run_id / "run_metadata.json"
+                    # Otherwise, fail permanently
+                    self._task_processes.pop(task.id, None)
+                    self._task_cancel_events.pop(task.id, None)
+                    await updater.failed(
+                        new_agent_text_message(
+                            f"unexpected error: {type(e).__name__}: {e}",
+                            task.context_id,
+                            task.id,
+                        )
+                    )
+                    return
 
-            args = [
-                "uv",
-                "run",
-                "smi-inhabit",
-                "--corpus-root",
-                cfg.corpus_root,
-                "--package-ids-file",
-                cfg.package_ids_file,
-                "--agent",
-                cfg.agent,
-                "--rpc-url",
-                cfg.rpc_url,
-                "--simulation-mode",
-                cfg.simulation_mode,
-                "--per-package-timeout-seconds",
-                str(cfg.per_package_timeout_seconds),
-                "--max-plan-attempts",
-                str(cfg.max_plan_attempts),
+    async def _run_task_logic(
+        self, context: RequestContext, updater: TaskUpdater, cancel_event: asyncio.Event, started_at: float
+    ) -> None:
+        task = context.current_task
+        assert task is not None
+
+        payload = _extract_payload(context)
+        cfg = _load_cfg(payload.get("config") if isinstance(payload, dict) else {})
+
+        out_dir = Path(payload.get("out_dir") or "results/a2a")
+        repo_root = Path(__file__).resolve().parents[2]
+        out_dir = (repo_root / out_dir) if not out_dir.is_absolute() else out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        run_id = cfg.run_id or f"a2a_phase2_{int(time.time())}"
+
+        out_json = out_dir / f"{run_id}.json"
+        log_dir = repo_root / "logs"
+        events_path = log_dir / run_id / "events.jsonl"
+        run_metadata_path = log_dir / run_id / "run_metadata.json"
+
+        args = [
+            "uv",
+            "run",
+            "smi-inhabit",
+            "--corpus-root",
+            cfg.corpus_root,
+            "--package-ids-file",
+            cfg.package_ids_file,
+            "--agent",
+            cfg.agent,
+            "--rpc-url",
+            cfg.rpc_url,
+            "--simulation-mode",
+            cfg.simulation_mode,
+            "--per-package-timeout-seconds",
+            str(cfg.per_package_timeout_seconds),
+            "--max-plan-attempts",
+            str(cfg.max_plan_attempts),
+        ]
+        if "max_planning_calls" in payload.get("config", {}):
+            args.extend(["--max-planning-calls", str(int(payload["config"]["max_planning_calls"]))])
+
+        args.extend(
+            [
+                "--out",
+                str(out_json),
+                "--run-id",
+                run_id,
             ]
-            if "max_planning_calls" in payload.get("config", {}):
-                args.extend(["--max-planning-calls", str(int(payload["config"]["max_planning_calls"]))])
-
-            args.extend(
-                [
-                    "--out",
-                    str(out_json),
-                    "--run-id",
-                    run_id,
-                ]
-            )
-            if cfg.samples and cfg.samples > 0:
-                args.extend(["--samples", str(cfg.samples)])
-            if cfg.continue_on_error:
-                args.append("--continue-on-error")
-            if cfg.resume:
-                args.append("--resume")
+        )
+        if cfg.samples and cfg.samples > 0:
+            args.extend(["--samples", str(cfg.samples)])
+        if cfg.continue_on_error:
+            args.append("--continue-on-error")
+        if cfg.resume:
+            args.append("--resume")
 
             # Sanitize environment to prevent accidental bleed-through
             # while preserving essential system paths and SMI configuration.
@@ -523,17 +596,6 @@ class SmiBenchGreenExecutor(AgentExecutor):
                     )
                 )
 
-        except A2AError as e:
-            # Clean up on error
-            self._task_processes.pop(task.id, None)
-            self._task_cancel_events.pop(task.id, None)
-            await updater.failed(new_agent_text_message(str(e), task.context_id, task.id))
-        except Exception as e:
-            # Clean up on error
-            self._task_processes.pop(task.id, None)
-            self._task_cancel_events.pop(task.id, None)
-            await updater.failed(new_agent_text_message(f"unexpected error: {e}", task.context_id, task.id))
-
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """
         Cancel a running task by gracefully terminating its subprocess.
@@ -566,7 +628,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
 
         try:
             # Send SIGTERM for graceful shutdown
-            proc.terminate()
+            maybe_awaitable = proc.terminate()
+            if inspect.isawaitable(maybe_awaitable):
+                await maybe_awaitable
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message(
@@ -581,7 +645,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 # Force kill if still running
-                proc.kill()
+                maybe_awaitable = proc.kill()
+                if inspect.isawaitable(maybe_awaitable):
+                    await maybe_awaitable
                 await updater.update_status(
                     TaskState.working,
                     new_agent_text_message(

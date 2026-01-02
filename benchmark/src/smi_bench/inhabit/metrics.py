@@ -12,11 +12,19 @@ class Phase2Metrics:
     targets: int
     created_distinct_sum: int
     macro_avg_hit_rate: float
+    # New planning-focused metrics
+    planning_only_packages: int = 0
+    planning_only_hit_rate: float = 0.0
+    formatting_only_failures: int = 0
+    causality_valid_count: int = 0
+    causality_success_rate: float = 0.0
 
 
 def compute_phase2_metrics(*, rows: list[dict], aggregate: dict | None = None) -> Phase2Metrics:
     """
     Compute Phase II aggregate metrics from a run JSON's `packages[]` rows.
+
+    Includes planning-only metrics that exclude pure formatting failures.
     """
     n = 0
     dry_run_ok = 0
@@ -25,6 +33,12 @@ def compute_phase2_metrics(*, rows: list[dict], aggregate: dict | None = None) -
     targets = 0
     created_distinct_sum = 0
     macro_sum = 0.0
+
+    # Planning-only metrics
+    planning_only_packages = 0
+    planning_only_macro_sum = 0.0
+    formatting_only_failures = 0
+    causality_valid_count = 0
 
     for r in rows:
         if not isinstance(r, dict):
@@ -43,9 +57,31 @@ def compute_phase2_metrics(*, rows: list[dict], aggregate: dict | None = None) -
         created_distinct_sum += cd
         if h > 0:
             any_hit += 1
-        macro_sum += (h / t) if t else 0.0
+        pkg_hit_rate = (h / t) if t else 0.0
+        macro_sum += pkg_hit_rate
+
+        # Check for pure formatting failure (schema violations but no semantic failures)
+        schema_violations = int(r.get("schema_violation_count", 0) or 0)
+        semantic_failures = int(r.get("semantic_failure_count", 0) or 0)
+
+        is_formatting_only_failure = schema_violations > 0 and semantic_failures == 0 and h == 0
+
+        if is_formatting_only_failure:
+            formatting_only_failures += 1
+        else:
+            # Include in planning-only metrics
+            planning_only_packages += 1
+            planning_only_macro_sum += pkg_hit_rate
+
+        # Check causality validity
+        causality_valid = r.get("causality_valid")
+        if causality_valid is True:
+            causality_valid_count += 1
 
     macro = (macro_sum / n) if n else 0.0
+    planning_only_hit_rate = (planning_only_macro_sum / planning_only_packages) if planning_only_packages else 0.0
+    causality_success_rate = (causality_valid_count / n) if n else 0.0
+
     # Prefer recorded macro if present (should match our computed macro).
     if isinstance(aggregate, dict):
         m = aggregate.get("avg_hit_rate")
@@ -60,4 +96,9 @@ def compute_phase2_metrics(*, rows: list[dict], aggregate: dict | None = None) -
         targets=targets,
         created_distinct_sum=created_distinct_sum,
         macro_avg_hit_rate=macro,
+        planning_only_packages=planning_only_packages,
+        planning_only_hit_rate=planning_only_hit_rate,
+        formatting_only_failures=formatting_only_failures,
+        causality_valid_count=causality_valid_count,
+        causality_success_rate=causality_success_rate,
     )

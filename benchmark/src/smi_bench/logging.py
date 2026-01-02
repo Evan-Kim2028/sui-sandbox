@@ -73,7 +73,7 @@ class JsonlLogger:
         line = json.dumps(row, sort_keys=True) + "\n"
         with self.paths.events.open("a", encoding="utf-8") as f:
             f.write(line)
-        
+
         if self.use_stdout:
             sys.stdout.write(f"A2A_EVENT:{line}")
             sys.stdout.flush()

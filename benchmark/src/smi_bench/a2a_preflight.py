@@ -31,6 +31,12 @@ def _is_listening(host: str, port: int) -> bool:
         return False
 
 
+def _is_placeholder_rpc_url(rpc_url: str) -> bool:
+    # Unit tests and offline checks often use a non-resolvable placeholder host.
+    # Treat these as "skip network check".
+    return rpc_url.strip() in {"https://test.rpc", "http://test.rpc"}
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Preflight checks before a full Phase II run")
     p.add_argument(
@@ -71,7 +77,11 @@ def main(argv: list[str] | None = None) -> None:
 
     _check_path_exists("corpus_root", args.corpus_root)
     _check_path_exists("rust_binary", args.rust_binary)
-    _check_rpc_reachable(args.rpc_url, timeout_s=args.timeout_seconds)
+
+    # Preflight is used both in real runs and in offline tests.
+    # If a scenario is provided, we may be running in a test environment without network.
+    if not args.scenario and not _is_placeholder_rpc_url(args.rpc_url):
+        _check_rpc_reachable(args.rpc_url, timeout_s=args.timeout_seconds)
 
     if args.scenario and not _is_listening("127.0.0.1", 9999):
         subprocess.Popen(

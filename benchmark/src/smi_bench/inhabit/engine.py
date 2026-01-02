@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ from typing import Any
 import httpx
 
 from smi_bench.inhabit.score import normalize_type_string
-from smi_bench.utils import ensure_temp_dir, run_json_helper, get_smi_temp_dir
+from smi_bench.utils import get_smi_temp_dir, run_json_helper
 
 
 def pid_is_alive(pid: int) -> bool:
@@ -113,7 +112,7 @@ def ptb_variants(base_spec: dict[str, Any], *, sender: str, max_variants: int) -
     seen: set[str] = set()
 
     def _add(name: str, spec: dict[str, Any]) -> None:
-        key = json.dumps(spec, sort_keys=True, separators=( ",", ":"))
+        key = json.dumps(spec, sort_keys=True, separators=(",", ":"))
         if key in seen:
             return
         seen.add(key)
@@ -180,15 +179,15 @@ def _rewrite_ptb_ints_in_place(ptb_spec: dict[str, Any], *, value: int) -> bool:
 
 
 def run_tx_sim_via_helper(
-    *, 
-    dev_inspect_bin: Path, 
-    rpc_url: str, 
-    sender: str, 
-    mode: str, 
-    gas_budget: int | None, 
-    gas_coin: str | None, 
-    bytecode_package_dir: Path | None, 
-    ptb_spec: dict[str, Any], 
+    *,
+    dev_inspect_bin: Path,
+    rpc_url: str,
+    sender: str,
+    mode: str,
+    gas_budget: int | None,
+    gas_coin: str | None,
+    bytecode_package_dir: Path | None,
+    ptb_spec: dict[str, Any],
     timeout_s: float,
 ) -> tuple[dict[str, Any] | None, set[str], set[str], str]:
     tmp_dir = get_smi_temp_dir()
@@ -200,12 +199,22 @@ def run_tx_sim_via_helper(
 
     try:
         cmd = [
-            str(dev_inspect_bin), "--rpc-url", rpc_url, "--sender", sender,
-            "--mode", mode, "--ptb-spec", str(tmp_path),
+            str(dev_inspect_bin),
+            "--rpc-url",
+            rpc_url,
+            "--sender",
+            sender,
+            "--mode",
+            mode,
+            "--ptb-spec",
+            str(tmp_path),
         ]
-        if gas_budget is not None: cmd += ["--gas-budget", str(gas_budget)]
-        if gas_coin is not None: cmd += ["--gas-coin", gas_coin]
-        if bytecode_package_dir is not None: cmd += ["--bytecode-package-dir", str(bytecode_package_dir)]
+        if gas_budget is not None:
+            cmd += ["--gas-budget", str(gas_budget)]
+        if gas_coin is not None:
+            cmd += ["--gas-coin", gas_coin]
+        if bytecode_package_dir is not None:
+            cmd += ["--bytecode-package-dir", str(bytecode_package_dir)]
 
         data = run_json_helper(cmd, timeout_s=timeout_s, context=f"tx sim ({mode})")
 
@@ -222,5 +231,7 @@ def run_tx_sim_via_helper(
         return tx_out, created_set, static_set, mode_used
     finally:
         if tmp_path.exists():
-            try: tmp_path.unlink() 
-            except Exception: pass
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass

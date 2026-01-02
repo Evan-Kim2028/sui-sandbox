@@ -222,4 +222,3 @@ def get_smi_temp_dir() -> Path:
     else:
         p = Path(tempfile.gettempdir()) / "smi_bench_tmp"
     return ensure_temp_dir(p)
-

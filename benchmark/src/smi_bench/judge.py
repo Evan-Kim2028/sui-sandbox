@@ -21,6 +21,18 @@ def score_key_types(
     *,
     max_samples: int = 20,
 ) -> KeyTypeScore:
+    if not truth and not predicted:
+        return KeyTypeScore(
+            tp=0,
+            fp=0,
+            fn=0,
+            precision=1.0,
+            recall=1.0,
+            f1=1.0,
+            missing_sample=[],
+            extra_sample=[],
+        )
+
     tp_set = truth & predicted
     fp_set = predicted - truth
     fn_set = truth - predicted
@@ -31,7 +43,9 @@ def score_key_types(
 
     precision = (tp / (tp + fp)) if (tp + fp) > 0 else 0.0
     recall = (tp / (tp + fn)) if (tp + fn) > 0 else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    # Compute F1 from counts to minimize floating-point drift in invariants.
+    denom = 2 * tp + fp + fn
+    f1 = (2 * tp / denom) if denom > 0 else 0.0
 
     missing_sample = sorted(fn_set)[:max_samples]
     extra_sample = sorted(fp_set)[:max_samples]

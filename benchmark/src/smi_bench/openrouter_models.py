@@ -20,6 +20,8 @@ class OpenRouterModel:
 def _extract_price(v: object) -> float | None:
     if v is None:
         return None
+    if isinstance(v, bool):
+        return None
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, str):

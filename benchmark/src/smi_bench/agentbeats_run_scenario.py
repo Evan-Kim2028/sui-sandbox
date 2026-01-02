@@ -52,8 +52,26 @@ def main(argv: list[str] | None = None) -> None:
             if not shutil.which("lsof"):
                 return "unknown (lsof missing)"
             try:
-                res = subprocess.check_output(["lsof", "-t", f"-i:{port}"], stderr=subprocess.DEVNULL)
-                return res.decode().strip().replace("\n", ", ")
+                lines = (
+                    subprocess.check_output(
+                        [
+                            "lsof",
+                            "-nP",
+                            f"-iTCP:{port}",
+                            "-sTCP:LISTEN",
+                            "-t",
+                            f"-i:{port}",
+                        ],
+                        stderr=subprocess.DEVNULL,
+                    )
+                    .decode()
+                    .strip()
+                    .split("\n")
+                )
+                if lines:
+                    return lines[0]
+                else:
+                    return None
             except Exception:
                 return None
 
@@ -102,12 +120,20 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"pid_not_found={pid}")
             except Exception as e:
                 print(f"kill_error={e}")
-        
+
         # Best-effort: also kill anything on the default ports if we are on a system with lsof
         if shutil.which("lsof"):
             for port in [9999, 9998]:
                 try:
-                    pids_on_port = subprocess.check_output(["lsof", "-t", f"-i:{port}"], stderr=subprocess.DEVNULL).decode().strip().split("\n")
+                    pids_on_port = (
+                        subprocess.check_output(
+                            ["lsof", "-t", f"-i:{port}"],
+                            stderr=subprocess.DEVNULL,
+                        )
+                        .decode()
+                        .strip()
+                        .split("\n")
+                    )
                     for p in pids_on_port:
                         if p:
                             print(f"terminating_port_process={p}_on_{port}")
@@ -129,11 +155,14 @@ def main(argv: list[str] | None = None) -> None:
     # Ensure we load `.env` from the benchmark project dir so the launched agents
     # inherit keys (OPENROUTER_API_KEY, etc.).
     env = load_dotenv(args.env_file)
+    # IMPORTANT: override, don't setdefault.
+    # Otherwise, an already-exported SMI_MODEL/SMI_* in the parent shell can leak into
+    # subprocesses and cause confusing model switches across runs.
+    import os
+
     for k, v in env.items():
         if k.endswith("_API_KEY") or k.startswith("SMI_"):
-            import os
-
-            os.environ.setdefault(k, v)
+            os.environ[k] = v
 
     manager = ScenarioManager(scenario_root=scenario_root, project_dir=Path.cwd())
 
@@ -162,7 +191,6 @@ def main(argv: list[str] | None = None) -> None:
     # Best-effort: persist PID for later --kill.
     try:
         import json
-        import os
 
         pids = {
             "scenario_manager_pid": os.getpid(),

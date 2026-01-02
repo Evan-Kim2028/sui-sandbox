@@ -4,6 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -421,11 +422,11 @@ class RealAgent:
         timeout_s: float | None = None,
         logger: object | None = None,
         log_context: dict[str, object] | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Request an OpenAI-compatible chat completion and parse the assistant content as a JSON object.
 
-        This is intentionally strict: it must parse, and it must be a JSON object (dict).
+        Returns (parsed_dict, usage_dict).
         """
         url = f"{self.cfg.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
