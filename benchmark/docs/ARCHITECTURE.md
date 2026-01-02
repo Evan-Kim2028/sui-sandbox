@@ -49,6 +49,20 @@ Both Phase I and Phase II consume a local `sui-packages` checkout (bytecode corp
     - shallow recursive constructor discovery,
     - prompt-oriented interface summaries (`summarize_interface`).
 
+- `smi_bench/inhabit/normalize.py`
+  - Auto-corrects common LLM formatting mistakes in PTB plans before simulation.
+  - Fixes: `"object"` → `"imm_or_owned_object"`, string integers/bools, missing `0x` prefixes.
+  - Returns normalized PTB + list of corrections applied.
+
+- `smi_bench/inhabit/validator.py`
+  - Validates PTB causality (result references point to earlier calls).
+  - Computes `causality_score` independent of execution success.
+  - Performs schema validation for PTB structure.
+
+- `smi_bench/inhabit/metrics.py`
+  - Computes aggregate metrics including `planning_only_hit_rate` (excludes pure formatting failures).
+  - Tracks formatting corrections vs semantic failures.
+
 - `smi_bench/inhabit/score.py`
   - Phase II scoring: normalize type strings, compare **base types** (type args ignored).
 
@@ -76,18 +90,24 @@ Both Phase I and Phase II consume a local `sui-packages` checkout (bytecode corp
 The A2A layer wraps the benchmark harness in a standardized AgentBeats-compatible protocol.
 It provides: streaming execution, artifact encapsulation, and scenario lifecycle management.
 
+**A2A Protocol Compliance & Testing:** This implementation is fully compliant with Google's A2A Protocol v0.3.0, including task cancellation, version headers, and streaming support. See [A2A_COMPLIANCE.md](A2A_COMPLIANCE.md) for detailed compliance and testing documentation.
+
 ### Components
 
 - `smi_bench/a2a_green_agent.py` - Green agent (Phase II runner)
   - `SmiBenchGreenExecutor`: Implements AgentExecutor interface
-  - Spawns `smi-inhabit` subprocesses
+  - Spawns `smi-inhabit` subprocesses with cancellation support
   - Streams live events via TaskUpdater
   - Returns `evaluation_bundle` artifact
   - Tailors `evaluation_bundle` from Phase II output JSON
+  - **NEW:** Supports graceful task cancellation (SIGTERM → SIGKILL)
+  - **NEW:** Injects A2A-Version headers via middleware
+  - **NEW:** Explicit protocol_version in agent card
 
 - `smi_bench/a2a_purple_agent.py` - Purple agent (stub)
   - `PurpleExecutor`: Echo/test harness
   - Validates A2A wiring without LLM costs
+  - **NEW:** Protocol version support matching green agent
 
 - `smi_bench/a2a_smoke.py` - Smoke test client
   - Starts scenario (optional)

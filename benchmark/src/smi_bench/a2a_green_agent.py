@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,19 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill, Part, TaskState, TextPart
 from a2a.utils import new_agent_text_message, new_task
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+from smi_bench.a2a_errors import A2AError, InvalidConfigError, TaskNotCancelableError
+from smi_bench.schema import Phase2ResultKeys
+from smi_bench.utils import safe_json_loads
+
+# A2A Protocol version this implementation supports
+A2A_PROTOCOL_VERSION = "0.3.0"
+
+# Supported content types (for future content validation)
+SUPPORTED_CONTENT_TYPES = {"application/json", "text/plain"}
 
 
 @dataclass(frozen=True)
@@ -23,6 +38,7 @@ class EvalConfig:
     corpus_root: str
     package_ids_file: str
     samples: int
+    agent: str
     rpc_url: str
     simulation_mode: str
     per_package_timeout_seconds: float
@@ -48,20 +64,21 @@ def _safe_float(v: Any, default: float) -> float:
 
 def _load_cfg(raw: Any) -> EvalConfig:
     if not isinstance(raw, dict):
-        raise ValueError("config must be a JSON object")
+        raise InvalidConfigError("config", "must be a JSON object")
 
     corpus_root = str(raw.get("corpus_root") or "")
     package_ids_file = str(raw.get("package_ids_file") or raw.get("manifest") or "")
 
     if not corpus_root:
-        raise ValueError("missing config.corpus_root")
+        raise InvalidConfigError("corpus_root", "missing or empty")
     if not package_ids_file:
-        raise ValueError("missing config.package_ids_file")
+        raise InvalidConfigError("package_ids_file", "missing or empty")
 
     return EvalConfig(
         corpus_root=corpus_root,
         package_ids_file=package_ids_file,
         samples=_safe_int(raw.get("samples"), 0),
+        agent=str(raw.get("agent") or "real-openai-compatible"),
         rpc_url=str(raw.get("rpc_url") or "https://fullnode.mainnet.sui.io:443"),
         simulation_mode=str(raw.get("simulation_mode") or "dry-run"),
         per_package_timeout_seconds=_safe_float(raw.get("per_package_timeout_seconds"), 300.0),
@@ -76,7 +93,7 @@ def _extract_payload(context: RequestContext) -> dict[str, Any]:
     raw = context.get_user_input()
     if raw:
         try:
-            v = json.loads(raw)
+            v = safe_json_loads(raw, context="user input payload")
             if isinstance(v, dict):
                 return v
         except Exception:
@@ -93,7 +110,7 @@ def _extract_payload(context: RequestContext) -> dict[str, Any]:
 
 def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     try:
-        data = json.loads(out_json.read_text(encoding="utf-8"))
+        data = safe_json_loads(out_json.read_text(encoding="utf-8"), context="phase2 results")
     except Exception:
         return {}, []
 
@@ -104,47 +121,64 @@ def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict
     aggregate = data.get("aggregate")
     packages = data.get("packages")
 
+    k = Phase2ResultKeys
     metrics: dict[str, Any] = {}
     if isinstance(aggregate, dict):
-        metrics["avg_hit_rate"] = aggregate.get("avg_hit_rate")
-        metrics["errors"] = aggregate.get("errors")
+        metrics[k.AVG_HIT_RATE] = aggregate.get(k.AVG_HIT_RATE)
+        metrics[k.ERRORS] = aggregate.get(k.ERRORS)
+        # New aggregate metrics (present in schema_version>=2 when enabled)
+        for key in (
+            k.PLANNING_ONLY_HIT_RATE,
+            k.PLANNING_ONLY_PACKAGES,
+            k.FORMATTING_ONLY_FAILURES,
+            k.CAUSALITY_SUCCESS_RATE,
+            k.FORMATTING_CORRECTIONS_HISTOGRAM,
+        ):
+            if key in aggregate:
+                metrics[key] = aggregate.get(key)
 
     error_rows: list[dict[str, Any]] = []
     if isinstance(packages, list):
         for row in packages:
             if not isinstance(row, dict):
                 continue
-            err = row.get("error")
-            timed_out = row.get("timed_out")
+            err = row.get(k.ERROR)
+            timed_out = row.get(k.TIMED_OUT)
             if err or timed_out:
-                score = row.get("score") if isinstance(row.get("score"), dict) else {}
+                score = row.get(k.SCORE) if isinstance(row.get(k.SCORE), dict) else {}
                 error_rows.append(
                     {
-                        "package_id": row.get("package_id"),
-                        "error": err,
-                        "timed_out": timed_out,
-                        "elapsed_seconds": row.get("elapsed_seconds"),
-                        "plan_attempts": row.get("plan_attempts"),
-                        "sim_attempts": row.get("sim_attempts"),
-                        "score": {
+                        k.PACKAGE_ID: row.get(k.PACKAGE_ID),
+                        k.ERROR: err,
+                        k.TIMED_OUT: timed_out,
+                        k.ELAPSED_SECONDS: row.get(k.ELAPSED_SECONDS),
+                        k.PLAN_ATTEMPTS: row.get(k.PLAN_ATTEMPTS),
+                        k.SIM_ATTEMPTS: row.get(k.SIM_ATTEMPTS),
+                        k.SCORE: {
                             "targets": score.get("targets"),
                             "created_hits": score.get("created_hits"),
                             "created_distinct": score.get("created_distinct"),
                         },
+                        # New per-package intelligence signals
+                        k.PTB_PARSE_OK: row.get(k.PTB_PARSE_OK),
+                        k.FORMATTING_CORRECTIONS: row.get(k.FORMATTING_CORRECTIONS),
+                        k.CAUSALITY_VALID: row.get(k.CAUSALITY_VALID),
+                        k.CAUSALITY_SCORE: row.get(k.CAUSALITY_SCORE),
+                        k.CAUSALITY_ERRORS: row.get(k.CAUSALITY_ERRORS),
                     }
                 )
 
     if isinstance(packages, list):
         metrics["packages_total"] = len(packages)
         metrics["packages_with_error"] = len(error_rows)
-        metrics["packages_timed_out"] = sum(1 for e in error_rows if e.get("timed_out"))
+        metrics["packages_timed_out"] = sum(1 for e in error_rows if e.get(k.TIMED_OUT))
 
     return metrics, error_rows
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = safe_json_loads(path.read_text(encoding="utf-8"), context=f"reading {path}")
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -168,6 +202,7 @@ def _card(*, url: str) -> AgentCard:
         description="Green agent wrapper for the Sui Move Interface Extractor benchmark (Phase II).",
         url=url,
         version="0.1.0",
+        protocol_version=A2A_PROTOCOL_VERSION,  # Add explicit A2A protocol version
         provider=AgentProvider(organization="sui-move-interface-extractor", url=url),
         default_input_modes=["application/json"],
         default_output_modes=["application/json"],
@@ -176,31 +211,13 @@ def _card(*, url: str) -> AgentCard:
     )
 
 
-async def _tail_events(updater: TaskUpdater, events_path: Path, stop: asyncio.Event) -> None:
-    last_pos = 0
-    while not stop.is_set():
-        try:
-            if not events_path.exists():
-                await asyncio.sleep(0.25)
-                continue
-            with events_path.open("r", encoding="utf-8") as f:
-                f.seek(last_pos)
-                lines = f.readlines()
-                last_pos = f.tell()
-            for line in lines:
-                s = line.strip()
-                if not s:
-                    continue
-                await updater.update_status(
-                    TaskState.working,
-                    new_agent_text_message(s, updater.context_id, updater.task_id),
-                )
-        except Exception:
-            await asyncio.sleep(0.5)
-        await asyncio.sleep(0.25)
-
-
 class SmiBenchGreenExecutor(AgentExecutor):
+    def __init__(self) -> None:
+        super().__init__()
+        # Track running subprocesses for cancellation support
+        self._task_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._task_cancel_events: dict[str, asyncio.Event] = {}
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task = context.current_task
         if task is None:
@@ -209,6 +226,10 @@ class SmiBenchGreenExecutor(AgentExecutor):
             task = new_task(context.message)
             await event_queue.enqueue_event(task)
         updater = TaskUpdater(event_queue, task.id, task.context_id)
+
+        # Create cancellation event for this task
+        cancel_event = asyncio.Event()
+        self._task_cancel_events[task.id] = cancel_event
 
         started_at = time.time()
         await updater.update_status(
@@ -221,11 +242,13 @@ class SmiBenchGreenExecutor(AgentExecutor):
             cfg = _load_cfg(payload.get("config") if isinstance(payload, dict) else {})
 
             out_dir = Path(payload.get("out_dir") or "results/a2a")
+            repo_root = Path(__file__).resolve().parents[2]
+            out_dir = (repo_root / out_dir) if not out_dir.is_absolute() else out_dir
             out_dir.mkdir(parents=True, exist_ok=True)
             run_id = cfg.run_id or f"a2a_phase2_{int(time.time())}"
 
             out_json = out_dir / f"{run_id}.json"
-            log_dir = Path("logs")
+            log_dir = repo_root / "logs"
             events_path = log_dir / run_id / "events.jsonl"
             run_metadata_path = log_dir / run_id / "run_metadata.json"
 
@@ -238,7 +261,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 "--package-ids-file",
                 cfg.package_ids_file,
                 "--agent",
-                "real-openai-compatible",
+                cfg.agent,
                 "--rpc-url",
                 cfg.rpc_url,
                 "--simulation-mode",
@@ -247,11 +270,18 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 str(cfg.per_package_timeout_seconds),
                 "--max-plan-attempts",
                 str(cfg.max_plan_attempts),
-                "--out",
-                str(out_json),
-                "--run-id",
-                run_id,
             ]
+            if "max_planning_calls" in payload.get("config", {}):
+                args.extend(["--max-planning-calls", str(int(payload["config"]["max_planning_calls"]))])
+
+            args.extend(
+                [
+                    "--out",
+                    str(out_json),
+                    "--run-id",
+                    run_id,
+                ]
+            )
             if cfg.samples and cfg.samples > 0:
                 args.extend(["--samples", str(cfg.samples)])
             if cfg.continue_on_error:
@@ -259,32 +289,112 @@ class SmiBenchGreenExecutor(AgentExecutor):
             if cfg.resume:
                 args.append("--resume")
 
-            stop = asyncio.Event()
-            tail_task = asyncio.create_task(_tail_events(updater, events_path, stop))
+            # Sanitize environment to prevent accidental bleed-through
+            # while preserving essential system paths and SMI configuration.
+            # We must pass enough for 'uv' and the shell to function.
+            allowed_prefixes = (
+                "SMI_",
+                "RUST_",
+                "CARGO_",
+                "PATH",
+                "HOME",
+                "LANG",
+                "LC_",
+                "TERM",
+                "UV_",
+                "PYTHON",
+                "OPENAI_",
+                "OPENROUTER_",
+                "ZAI_",
+                "ZHIPUAI_",
+            )
+            sub_env = {k: v for k, v in os.environ.items() if any(k.startswith(p) for p in allowed_prefixes)}
 
             proc = await asyncio.create_subprocess_exec(
                 *args,
-                cwd=str(Path(__file__).resolve().parents[2]),
+                cwd=str(repo_root),
+                env=sub_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            assert proc.stdout is not None
-            async for b in proc.stdout:
-                line = b.decode("utf-8", errors="replace").rstrip("\n")
-                if line:
-                    await updater.update_status(
-                        TaskState.working,
-                        new_agent_text_message(line, updater.context_id, updater.task_id),
-                    )
-            rc = await proc.wait()
 
-            stop.set()
+            # Store process for cancellation support
+            self._task_processes[task.id] = proc
+
+            assert proc.stdout is not None
+            proc_lines: collections.deque[str] = collections.deque(maxlen=2000)
+
+            # Monitor both stdout and cancellation event
             try:
-                await tail_task
-            except Exception:
-                pass
+                async for b in proc.stdout:
+                    # Check for cancellation
+                    if cancel_event.is_set():
+                        await updater.update_status(
+                            TaskState.working,
+                            new_agent_text_message(
+                                "Cancellation requested, terminating process...",
+                                updater.context_id,
+                                updater.task_id,
+                            ),
+                        )
+                        break
+
+                    line = b.decode("utf-8", errors="replace").rstrip("\n")
+                    if not line:
+                        continue
+
+                    if line.startswith("A2A_EVENT:"):
+                        # Structured event - update status
+                        try:
+                            raw_event = line[10:]
+                            evt = safe_json_loads(raw_event, context="A2A event stream")
+                            # Format a nice status message
+                            msg = f"{evt.get('event', 'update')}"
+                            if "package_id" in evt:
+                                msg += f": {evt['package_id']}"
+                            if "error" in evt and evt["error"]:
+                                msg += f" (error: {evt['error']})"
+                            elif "created_hits" in evt:
+                                msg += f" (hits: {evt['created_hits']}/{evt.get('targets')})"
+
+                            await updater.update_status(
+                                TaskState.working,
+                                new_agent_text_message(msg, updater.context_id, updater.task_id),
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # Normal log line - buffer for tail report but don't spam status
+                        proc_lines.append(line)
+            except asyncio.CancelledError:
+                # Task was cancelled externally
+                cancel_event.set()
+                raise
+
+            # If cancelled, handle graceful termination
+            if cancel_event.is_set():
+                await self._terminate_process(proc, updater)
+                rc = proc.returncode if proc.returncode is not None else -1
+            else:
+                rc = await proc.wait()
+
+            # Clean up process tracking
+            self._task_processes.pop(task.id, None)
+            self._task_cancel_events.pop(task.id, None)
 
             finished_at = time.time()
+
+            # If task was cancelled, update status and return
+            if cancel_event.is_set():
+                await updater.update_status(
+                    TaskState.canceled,
+                    new_agent_text_message(
+                        f"Task cancelled (exit_code={rc})",
+                        updater.context_id,
+                        updater.task_id,
+                    ),
+                )
+                return
 
             metrics: dict[str, Any] = {}
             errors_list: list[dict[str, Any]] = []
@@ -337,6 +447,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 },
                 "metrics": metrics,
                 "errors": errors_list,
+                "runner_output_tail": "\n".join(list(proc_lines)[-200:]),
                 "artifacts": {
                     "results_path": str(out_json),
                     "run_metadata_path": str(run_metadata_path),
@@ -370,11 +481,89 @@ class SmiBenchGreenExecutor(AgentExecutor):
                     )
                 )
 
+        except A2AError as e:
+            # Clean up on error
+            self._task_processes.pop(task.id, None)
+            self._task_cancel_events.pop(task.id, None)
+            await updater.failed(new_agent_text_message(str(e), task.context_id, task.id))
         except Exception as e:
-            await updater.failed(new_agent_text_message(f"error: {e}", task.context_id, task.id))
+            # Clean up on error
+            self._task_processes.pop(task.id, None)
+            self._task_cancel_events.pop(task.id, None)
+            await updater.failed(new_agent_text_message(f"unexpected error: {e}", task.context_id, task.id))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise RuntimeError("cancel not implemented")
+        """
+        Cancel a running task by gracefully terminating its subprocess.
+        Implements A2A protocol cancellation support.
+        """
+        task = context.current_task
+        if task is None:
+            raise ValueError("No current task to cancel")
+
+        # Check if task is in a terminal state
+        if task.status in [TaskState.completed, TaskState.failed, TaskState.canceled, TaskState.rejected]:
+            raise TaskNotCancelableError(task.id, getattr(task.status, "value", str(task.status)))
+
+        # Signal cancellation to the execute() coroutine
+        cancel_event = self._task_cancel_events.get(task.id)
+        if cancel_event:
+            cancel_event.set()
+
+        proc = self._task_processes.get(task.id)
+        if proc and proc.returncode is None:
+            updater = TaskUpdater(event_queue, task.id, task.context_id)
+            await self._terminate_process(proc, updater)
+
+    async def _terminate_process(self, proc: asyncio.subprocess.Process, updater: TaskUpdater) -> None:
+        """
+        Gracefully terminate a subprocess using SIGTERM → SIGKILL pattern.
+        """
+        if proc.returncode is not None:
+            return  # Already terminated
+
+        try:
+            # Send SIGTERM for graceful shutdown
+            proc.terminate()
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message(
+                    "Sent SIGTERM, waiting for graceful shutdown...",
+                    updater.context_id,
+                    updater.task_id,
+                ),
+            )
+
+            # Wait up to 5 seconds for graceful termination
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # Force kill if still running
+                proc.kill()
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message(
+                        "Graceful shutdown timed out, sent SIGKILL",
+                        updater.context_id,
+                        updater.task_id,
+                    ),
+                )
+                await proc.wait()
+        except ProcessLookupError:
+            # Process already died
+            pass
+
+
+class A2AVersionMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add A2A-Version header to all responses.
+    Implements A2A protocol version signaling per spec section 14.2.1.
+    """
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = await call_next(request)
+        response.headers["A2A-Version"] = A2A_PROTOCOL_VERSION
+        return response
 
 
 def build_app(*, public_url: str) -> Any:
@@ -383,7 +572,12 @@ def build_app(*, public_url: str) -> Any:
         agent_executor=SmiBenchGreenExecutor(),
         task_store=InMemoryTaskStore(),
     )
-    return A2AStarletteApplication(agent_card=card, http_handler=handler).build()
+    app = A2AStarletteApplication(agent_card=card, http_handler=handler).build()
+
+    # Add A2A version header middleware
+    app.add_middleware(A2AVersionMiddleware)
+
+    return app
 
 
 def main(argv: list[str] | None = None) -> None:

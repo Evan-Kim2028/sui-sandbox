@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from smi_bench.json_extract import extract_type_list
+from smi_bench.json_extract import JsonExtractError, extract_json_value, extract_type_list
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,9 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
         get("SMI_API_BASE_URL", "OPENROUTER_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
         or "https://api.openai.com/v1"
     )
-    model = get("SMI_MODEL", "OPENAI_MODEL") or "gpt-4o-mini"
+    model = get("SMI_MODEL", "OPENAI_MODEL")
+    if not model:
+        raise ValueError("missing model (set SMI_MODEL or OPENAI_MODEL)")
 
     temperature_s = get("SMI_TEMPERATURE") or "0"
     max_tokens_s = get("SMI_MAX_TOKENS")
@@ -144,7 +146,9 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
     try:
         clear_thinking = _parse_bool(clear_thinking_s) if clear_thinking_s else None
     except ValueError as e:
-        raise ValueError(f"invalid SMI_CLEAR_THINKING={clear_thinking_s!r} (expected 'true', 'false', '1', '0', 'yes', 'no')") from e
+        raise ValueError(
+            f"invalid SMI_CLEAR_THINKING={clear_thinking_s!r} (expected 'true', 'false', '1', '0', 'yes', 'no')"
+        ) from e
 
     return RealAgentConfig(
         provider=provider,
@@ -352,7 +356,7 @@ class RealAgent:
                 break
             except Exception as e:
                 last_exc = e
-                if (l := logger) is not None:
+                if (log := logger) is not None:
                     ctx = dict(log_context or {})
                     ctx.update(
                         {
@@ -368,7 +372,7 @@ class RealAgent:
                             "exc": str(e),
                         }
                     )
-                    l.event("llm_request_error", **ctx)
+                    log.event("llm_request_error", **ctx)
                 sleep_s = backoff_s
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
@@ -578,7 +582,7 @@ class RealAgent:
             except Exception as e:
                 raise ValueError(f"unexpected response shape: {data}") from e
 
-        if (l := logger) is not None:
+        if (log := logger) is not None:
             ctx = dict(log_context or {})
             ctx.update(
                 {
@@ -589,7 +593,7 @@ class RealAgent:
                     "content": content,
                 }
             )
-            l.event("llm_response", **ctx)
+            log.event("llm_response", **ctx)
 
         if not isinstance(content, str):
             raise ValueError("unexpected response content type")
@@ -607,23 +611,41 @@ class RealAgent:
         try:
             parsed = json.loads(content)
         except Exception as e:
-            if (l := logger) is not None:
-                ctx = dict(log_context or {})
-                ctx.update(
-                    {
-                        "endpoint": url,
-                        "model": self.cfg.model,
-                        "base_url": self.cfg.base_url,
-                        "timeout_s": timeout_s,
-                        "exc_type": type(e).__name__,
-                        "exc": str(e),
-                        "content": content,
-                    }
-                )
-                l.event("llm_json_parse_error", **ctx)
-            raise
+            # For Phase II planning, some models return JSON wrapped in prose or ```json fences.
+            # Prefer scoring intelligence over strict formatting while keeping observability.
+            try:
+                parsed = extract_json_value(content)
+                if (log := logger) is not None:
+                    ctx = dict(log_context or {})
+                    ctx.update(
+                        {
+                            "endpoint": url,
+                            "model": self.cfg.model,
+                            "base_url": self.cfg.base_url,
+                            "timeout_s": timeout_s,
+                            "exc_type": type(e).__name__,
+                            "exc": str(e),
+                        }
+                    )
+                    log.event("llm_json_extracted", **ctx)
+            except JsonExtractError:
+                if (log := logger) is not None:
+                    ctx = dict(log_context or {})
+                    ctx.update(
+                        {
+                            "endpoint": url,
+                            "model": self.cfg.model,
+                            "base_url": self.cfg.base_url,
+                            "timeout_s": timeout_s,
+                            "exc_type": type(e).__name__,
+                            "exc": str(e),
+                            "content": content,
+                        }
+                    )
+                    log.event("llm_json_parse_error", **ctx)
+                raise
 
-        if (l := logger) is not None:
+        if (log := logger) is not None:
             ctx = dict(log_context or {})
             ctx.update(
                 {
@@ -634,7 +656,7 @@ class RealAgent:
                     "parsed": parsed,
                 }
             )
-            l.event("llm_json_parsed", **ctx)
+            log.event("llm_json_parsed", **ctx)
 
         if not isinstance(parsed, dict):
             raise ValueError("expected a JSON object")

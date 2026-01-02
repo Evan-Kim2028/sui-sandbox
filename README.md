@@ -8,12 +8,24 @@ It parses compiled `.mv` modules directly and emits canonical JSON for:
 - bytecode-derived interfaces (`--emit-bytecode-json`) including private functions and full signature types
 - rigorous comparison against RPC normalized interfaces (`--compare-bytecode-rpc`)
 
-## Docs
+## Documentation Map
 
-- Start here: `docs/README.md`
-- Schema: `docs/SCHEMA.md`
-- Run commands: `docs/RUNBOOK.md`
-- Methodology/limits: `docs/METHODOLOGY.md`
+### 🚀 Getting Started
+- **[Benchmark Quickstart](benchmark/GETTING_STARTED.md)** - Run Phase II benchmarks in 5 minutes.
+- **[Rust CLI Runbook](docs/RUNBOOK.md)** - Reproducible extraction and verification commands.
+
+### 📖 Reference
+- **[Methodology](docs/METHODOLOGY.md)** - Bytecode extraction logic and benchmark scoring rules.
+- **[JSON Schema](docs/SCHEMA.md)** - Exact interface and artifact schemas.
+- **[A2A Compliance](benchmark/docs/A2A_COMPLIANCE.md)** - Protocol implementation and testing strategy.
+- **[A2A Examples](benchmark/docs/A2A_EXAMPLES.md)** - JSON-RPC request/response walkthroughs.
+
+### 🛠️ Integration & Ops
+- **[AgentBeats Guide](docs/AGENTBEATS.md)** - Platform mapping and local scenario management.
+- **[Dataset Snapshots](docs/DATASET_SNAPSHOTS.md)** - Managing the bytecode corpus.
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and fixes.
+
+---
 
 ## Dataset (bytecode corpus) location
 

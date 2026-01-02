@@ -9,6 +9,48 @@ from typing import Any
 import httpx
 
 
+def _port_is_listening(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _kill_listeners(port: int) -> None:
+    import subprocess
+
+    # Best-effort: find PIDs listening on the port and terminate them.
+    out = subprocess.run(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids = []
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if line.isdigit():
+            pids.append(int(line))
+    if not pids:
+        return
+
+    for pid in pids:
+        subprocess.run(["kill", str(pid)], check=False)
+
+
+def _truncate_manifest(in_path: Path, *, n: int, out_path: Path) -> None:
+    lines: list[str] = []
+    for raw in in_path.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        lines.append(s)
+        if len(lines) >= n:
+            break
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
 def _default_request(
     *,
     corpus_root: str,
@@ -82,6 +124,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--corpus-root", type=str, required=True)
     p.add_argument("--package-ids-file", type=str, default=None)
     p.add_argument("--samples", type=int, default=1)
+    p.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Fast feedback mode (default: 2 packages, 120s timeout, low budgets).",
+    )
+    p.add_argument(
+        "--smoke-packages",
+        type=int,
+        default=2,
+        help="How many packages to run in --smoke mode (default: 2).",
+    )
+    p.add_argument(
+        "--kill-stale",
+        action="store_true",
+        help="If ports are already in use, attempt to kill listeners on 9999/9998 before starting scenario.",
+    )
     p.add_argument("--rpc-url", type=str, default="https://fullnode.mainnet.sui.io:443")
     p.add_argument("--simulation-mode", type=str, default="dry-run")
     p.add_argument(
@@ -116,10 +174,50 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out-response", type=Path, default=Path("results/a2a_smoke_response.json"))
     args = p.parse_args(argv)
 
+    # Default to smoke behavior unless the caller is explicitly doing a larger run.
+    if not args.smoke:
+        args.smoke = True
+
+    if args.smoke:
+        # Clamp to avoid accidental long runs.
+        args.samples = max(1, int(args.smoke_packages))
+        args.per_package_timeout_seconds = float(args.per_package_timeout_seconds or 120.0)
+        if args.per_package_timeout_seconds < 1:
+            args.per_package_timeout_seconds = 120.0
+        if args.max_plan_attempts > 2:
+            # Keep smoke attempts small by default.
+            args.max_plan_attempts = 2
+        if args.max_planning_calls is None:
+            args.max_planning_calls = 10
+
+    if not args.package_ids_file:
+        raise SystemExit("--package-ids-file is required")
+
+    package_ids_file = Path(args.package_ids_file)
+    if not package_ids_file.exists():
+        raise SystemExit(f"package ids file not found: {package_ids_file}")
+
+    # In smoke mode, always truncate the manifest so 'samples' truly means 'packages to attempt'.
+    if args.smoke:
+        truncated = args.out_response.parent / f"smoke_manifest_{int(time.time())}.txt"
+        args.out_response.parent.mkdir(parents=True, exist_ok=True)
+        _truncate_manifest(package_ids_file, n=int(args.smoke_packages), out_path=truncated)
+        package_ids_file = truncated
+
     started_pid: int | None = None
     try:
         if args.scenario:
             import subprocess
+
+            # Preflight: ensure ports are available (or kill stale listeners if requested).
+            for port in (9999, 9998):
+                if _port_is_listening(port):
+                    if args.kill_stale:
+                        _kill_listeners(port)
+                    if _port_is_listening(port):
+                        raise SystemExit(
+                            f"A2A port already in use: {port} (try stopping stale agents or pass --kill-stale)"
+                        )
 
             args.out_response.parent.mkdir(parents=True, exist_ok=True)
             log_path = args.out_response.parent / "a2a_smoke_scenario.log"
@@ -158,7 +256,7 @@ def main(argv: list[str] | None = None) -> None:
 
         req = _default_request(
             corpus_root=args.corpus_root,
-            package_ids_file=args.package_ids_file,
+            package_ids_file=str(package_ids_file),
             samples=args.samples,
             timeout_s=args.per_package_timeout_seconds,
             rpc_url=args.rpc_url,

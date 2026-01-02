@@ -30,6 +30,15 @@ jobs:
       - name: sync
         working-directory: benchmark
         run: uv sync --group dev --frozen
+      - name: lint
+        working-directory: benchmark
+        run: uv run ruff check .
+      - name: format
+        working-directory: benchmark
+        run: uv run ruff format --check .
+      - name: type-check
+        working-directory: benchmark
+        run: uv run ty check src
       - name: test
         working-directory: benchmark
         run: uv run --group dev pytest -q

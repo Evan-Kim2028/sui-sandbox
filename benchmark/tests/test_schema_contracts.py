@@ -179,9 +179,45 @@ def test_packages_list_should_be_sorted_for_determinism() -> None:
     """
     # Create a sample with unsorted package_ids
     packages_data = [
-        {"package_id": "0xccc", "score": {"tp": 1, "fp": 0, "fn": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0, "missing_sample": [], "extra_sample": []}},
-        {"package_id": "0xaaa", "score": {"tp": 2, "fp": 0, "fn": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0, "missing_sample": [], "extra_sample": []}},
-        {"package_id": "0xbbb", "score": {"tp": 1, "fp": 1, "fn": 0, "precision": 0.5, "recall": 1.0, "f1": 0.666, "missing_sample": [], "extra_sample": []}},
+        {
+            "package_id": "0xccc",
+            "score": {
+                "tp": 1,
+                "fp": 0,
+                "fn": 0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1": 1.0,
+                "missing_sample": [],
+                "extra_sample": [],
+            },
+        },
+        {
+            "package_id": "0xaaa",
+            "score": {
+                "tp": 2,
+                "fp": 0,
+                "fn": 0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "f1": 1.0,
+                "missing_sample": [],
+                "extra_sample": [],
+            },
+        },
+        {
+            "package_id": "0xbbb",
+            "score": {
+                "tp": 1,
+                "fp": 1,
+                "fn": 0,
+                "precision": 0.5,
+                "recall": 1.0,
+                "f1": 0.666,
+                "missing_sample": [],
+                "extra_sample": [],
+            },
+        },
     ]
 
     # For determinism, packages should be sorted by package_id

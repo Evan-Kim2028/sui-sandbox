@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +44,7 @@ class JsonlLogger:
     - packages.jsonl: JSONL stream of per-package result rows (finished only)
     """
 
-    def __init__(self, *, base_dir: Path, run_id: str) -> None:
+    def __init__(self, *, base_dir: Path, run_id: str, use_stdout: bool = False) -> None:
         run_id = _safe_filename(run_id)
         root = base_dir / run_id
         root.mkdir(parents=True, exist_ok=True)
@@ -53,6 +54,7 @@ class JsonlLogger:
             events=root / "events.jsonl",
             packages=root / "packages.jsonl",
         )
+        self.use_stdout = use_stdout
 
     def write_run_metadata(self, obj: dict) -> None:
         self.paths.run_metadata.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")
@@ -68,8 +70,13 @@ class JsonlLogger:
         Additional fields are included as provided.
         """
         row = {"t": _now_unix(), "event": name, **fields}
+        line = json.dumps(row, sort_keys=True) + "\n"
         with self.paths.events.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, sort_keys=True) + "\n")
+            f.write(line)
+        
+        if self.use_stdout:
+            sys.stdout.write(f"A2A_EVENT:{line}")
+            sys.stdout.flush()
 
     def package_row(self, row: dict) -> None:
         with self.paths.packages.open("a", encoding="utf-8") as f:
