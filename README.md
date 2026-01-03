@@ -52,6 +52,7 @@ cd benchmark
 
 ### 🚀 Getting Started
 - **[Benchmark Guide](docs/BENCHMARK_GUIDE.md)** - Comprehensive walkthrough for Phase I & II.
+- **[Life of a Hit](docs/WALKTHROUGH.md)** - Step-by-step example of a successful benchmark run.
 - **[CLI Reference](docs/CLI_REFERENCE.md)** - Commands for direct bytecode extraction and verification.
 - **[A2A Protocol](docs/A2A_PROTOCOL.md)** - Agent-to-Agent integration and tuning guide.
 

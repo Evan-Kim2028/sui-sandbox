@@ -346,172 +346,209 @@ def construct_arg(
 ) -> tuple[list[dict], dict] | None:
     """
     Generate valid PTB args for a type, potentially using setup calls.
-    Returns (setup_calls, arg_value) or None if unsupported.
+
+    This is the core recursive engine for the mechanical baseline. It attempts to:
+    1. Resolve direct pure/object values (e.g. numbers, system objects).
+    2. Handle standard library wrappers (String, ASCII, Url, Option).
+    3. Perform recursive discovery of constructor functions up to a fixed depth.
+
+    Args:
+        t: The Move type to construct.
+        next_result_idx: The result index to assign to the first generated call.
+        constructor_index: Map of Type -> [Constructor Functions].
+        modules_map: The full package interface for signature lookups.
+        recursion_depth: Current depth (capped at 3).
+
+    Returns:
+        (setup_calls, arg_value) or None if the type is inhabitable by the baseline.
     """
     if recursion_depth > 3:
         return None
 
-    # Try pure/object args first (legacy logic)
+    # 1. Try primitive/direct args first
     pure = type_to_default_ptb_arg(t)
     if pure is not None:
         return [], pure
 
-    # Try construction logic
     kind = t.get("kind")
 
+    # 2. Handle References (VM allows borrowing results)
     if kind == "ref":
-        # If we can construct the inner type, we can pass it (VM allows borrow of result).
         inner = t.get("to")
         if isinstance(inner, dict):
             return construct_arg(inner, next_result_idx, constructor_index, modules_map, recursion_depth)
 
+    # 3. Handle Datatypes (Structs)
     if kind == "datatype":
-        addr = t.get("address")
-        mod = t.get("module")
-        name = t.get("name")
-        type_str = json_type_to_string(t)
+        # Check for Standard Library Types first
+        std_res = _try_construct_standard_type(t, next_result_idx)
+        if std_res:
+            return std_res
 
-        # 0x1::string::String
-        if addr == STDLIB_ADDRESS and mod == STD_STRING_MODULE and name == "String":
-            # call 0x1::string::utf8(b"sui") -> Result
-            return [
-                {
-                    "target": f"{STDLIB_ADDRESS}::string::utf8",
-                    "type_args": [],
-                    "args": [{"vector_u8_utf8": "sui"}],
-                }
-            ], {"result": next_result_idx}
-
-        # 0x1::ascii::String
-        if addr == STDLIB_ADDRESS and mod == STD_ASCII_MODULE and name == "String":
-            # call 0x1::ascii::string(b"sui") -> Result
-            return [
-                {
-                    "target": f"{STDLIB_ADDRESS}::ascii::string",
-                    "type_args": [],
-                    "args": [{"vector_u8_utf8": "sui"}],
-                }
-            ], {"result": next_result_idx}
-
-        # 0x2::url::Url
-        if addr == SUI_FRAMEWORK_ADDRESS and mod == SUI_URL_MODULE and name == "Url":
-            return [
-                {
-                    "target": (f"{SUI_FRAMEWORK_ADDRESS}::{SUI_URL_MODULE}::new_unsafe_from_bytes"),
-                    "type_args": [],
-                    "args": [{"vector_u8_utf8": "https://sui.io"}],
-                }
-            ], {"result": next_result_idx}
-
-        # 0x1::option::Option<T>
-        if addr == STDLIB_ADDRESS and mod == STD_OPTION_MODULE and name == "Option":
-            # call 0x1::option::none<T>() -> Result
-            type_args = t.get("type_args", [])
-            if not isinstance(type_args, list) or len(type_args) != 1:
-                return None
-            inner_type_str = json_type_to_string(type_args[0])
-            if type_args[0].get("kind") == "type_param":
-                inner_type_str = f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}"
-
-            return [
-                {
-                    "target": f"{STDLIB_ADDRESS}::option::none",
-                    "type_args": [inner_type_str],
-                    "args": [],
-                }
-            ], {"result": next_result_idx}
-
-        # Constructor Discovery
+        # Attempt Recursive Discovery
         if constructor_index and modules_map:
-            # Look up potential constructors
-            constructors = constructor_index.get(type_str, [])
-            for c_target in constructors:
-                # Parse target to find module/function def
-                # Expected: 0xADDR::mod::func
-                parts = c_target.split("::")
-                if len(parts) != 3:
-                    continue
-                # module name is parts[1], function is parts[2]
-                c_mod_name = parts[1]
-                c_fun_name = parts[2]
-
-                c_mod = modules_map.get(c_mod_name)
-                if not c_mod:
-                    continue
-                c_f = c_mod.get("functions", {}).get(c_fun_name)
-                if not c_f:
-                    continue
-
-                # Recursively analyze this constructor
-                # We need to pass recursion_depth + 1
-                # And we need to accumulate setup calls
-
-                # Check constraints: no type params (or fillable), supported args
-                # We can reuse analyze_function?
-                # analyze_function returns FunctionAnalysis.
-                # But analyze_function currently builds `ptb_calls` for *that* function.
-                # We need to chain it.
-
-                # We can call analyze_function recursively?
-                # But analyze_function calls construct_arg.
-                # We need to pass the context.
-
-                # Refactor: construct_arg needs to call analyze_function logic for the constructor.
-                # But avoiding circular import or complex dependency.
-                # I'll implement simple checks here.
-
-                if c_f.get("type_params"):
-                    # Skip generic constructors for now (unless we fill them?)
-                    # Let's skip to keep it simple.
-                    continue
-
-                c_params = c_f.get("params", [])
-                c_params = strip_implicit_tx_context_params(c_params)
-
-                c_setup_calls = []
-                c_final_args = []
-                c_ok = True
-
-                # Current offset for result index in the constructor chain
-                # We start with next_result_idx.
-                # The constructor's setup calls will consume indices starting at next_result_idx.
-                # The constructor *itself* will be at index (next_result_idx + len(c_setup_calls)).
-                # BUT wait, the recursive calls will return setup_calls.
-
-                current_idx = next_result_idx
-
-                for p in c_params:
-                    # RECURSE
-                    res = construct_arg(p, current_idx, constructor_index, modules_map, recursion_depth + 1)
-                    if res is None:
-                        c_ok = False
-                        break
-
-                    sub_setup, sub_arg = res
-                    c_setup_calls.extend(sub_setup)
-                    c_final_args.append(sub_arg)
-                    current_idx += len(sub_setup)
-
-                if c_ok:
-                    # Found a valid constructor!
-                    # Add the constructor call itself
-                    constructor_call = {
-                        "target": c_target,
-                        "type_args": [],  # assumed empty
-                        "args": c_final_args,
-                    }
-                    c_setup_calls.append(constructor_call)
-
-                    # The result of this constructor is the last call in c_setup_calls.
-                    # Index = next_result_idx + len(c_setup_calls) - 1
-                    res_idx = next_result_idx + len(c_setup_calls) - 1
-
-                    return c_setup_calls, {"result": res_idx}
+            discovery_res = _discover_constructor_chain(
+                t, next_result_idx, constructor_index, modules_map, recursion_depth
+            )
+            if discovery_res:
+                return discovery_res
 
         # Fallback: Emit a placeholder for any other struct.
-        return [], {"$smi_placeholder": type_str}
+        return [], {"$smi_placeholder": json_type_to_string(t)}
 
     return None
+
+
+def _try_construct_standard_type(t: dict, next_idx: int) -> tuple[list[dict], dict] | None:
+    """Special-case handling for common Sui/Move standard types."""
+    addr = t.get("address")
+    mod = t.get("module")
+    name = t.get("name")
+
+    # 0x1::string::String
+    if addr == STDLIB_ADDRESS and mod == STD_STRING_MODULE and name == "String":
+        return [
+            {
+                "target": f"{STDLIB_ADDRESS}::string::utf8",
+                "type_args": [],
+                "args": [{"vector_u8_utf8": "sui"}],
+            }
+        ], {"result": next_idx}
+
+    # 0x1::ascii::String
+    if addr == STDLIB_ADDRESS and mod == STD_ASCII_MODULE and name == "String":
+        return [
+            {
+                "target": f"{STDLIB_ADDRESS}::ascii::string",
+                "type_args": [],
+                "args": [{"vector_u8_utf8": "sui"}],
+            }
+        ], {"result": next_idx}
+
+    # 0x2::url::Url
+    if addr == SUI_FRAMEWORK_ADDRESS and mod == SUI_URL_MODULE and name == "Url":
+        return [
+            {
+                "target": f"{SUI_FRAMEWORK_ADDRESS}::{SUI_URL_MODULE}::new_unsafe_from_bytes",
+                "type_args": [],
+                "args": [{"vector_u8_utf8": "https://sui.io"}],
+            }
+        ], {"result": next_idx}
+
+    # 0x1::option::Option<T>
+    if addr == STDLIB_ADDRESS and mod == STD_OPTION_MODULE and name == "Option":
+        type_args = t.get("type_args", [])
+        if not isinstance(type_args, list) or len(type_args) != 1:
+            return None
+        inner_type_str = json_type_to_string(type_args[0])
+        if type_args[0].get("kind") == "type_param":
+            inner_type_str = f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}"
+
+        return [
+            {
+                "target": f"{STDLIB_ADDRESS}::option::none",
+                "type_args": [inner_type_str],
+                "args": [],
+            }
+        ], {"result": next_idx}
+
+    return None
+
+
+def _discover_constructor_chain(
+    t: dict,
+    next_result_idx: int,
+    constructor_index: dict[str, list[str]],
+    modules_map: dict,
+    recursion_depth: int,
+) -> tuple[list[dict], dict] | None:
+    """Search for a valid path of public functions to create the target type."""
+    type_str = json_type_to_string(t)
+    constructors = constructor_index.get(type_str, [])
+
+    for c_target in constructors:
+        parts = c_target.split("::")
+        if len(parts) != 3:
+            continue
+        c_mod_name, c_fun_name = parts[1], parts[2]
+
+        c_mod = modules_map.get(c_mod_name)
+        if not c_mod:
+            continue
+        c_f = c_mod.get("functions", {}).get(c_fun_name)
+        if not c_f or c_f.get("type_params"):
+            continue
+
+        c_params = strip_implicit_tx_context_params(c_f.get("params", []))
+        c_setup_calls = []
+        c_final_args = []
+        c_ok = True
+        current_idx = next_result_idx
+
+        for p in c_params:
+            res = construct_arg(p, current_idx, constructor_index, modules_map, recursion_depth + 1)
+            if res is None:
+                c_ok = False
+                break
+
+            sub_setup, sub_arg = res
+            c_setup_calls.extend(sub_setup)
+            c_final_args.append(sub_arg)
+            current_idx += len(sub_setup)
+
+        if c_ok:
+            constructor_call = {
+                "target": c_target,
+                "type_args": [],
+                "args": c_final_args,
+            }
+            c_setup_calls.append(constructor_call)
+            return c_setup_calls, {"result": next_result_idx + len(c_setup_calls) - 1}
+
+    return None
+
+
+def analyze_function(
+    f: dict, constructor_index: dict[str, list[str]] | None = None, modules_map: dict | None = None
+) -> FunctionAnalysis:
+    """
+    Determine if an entry function is runnable and generate its PTB sequence.
+    """
+    reasons = []
+
+    if f.get("visibility") != "public" or f.get("is_entry") is not True:
+        reasons.append(ExclusionReason.NOT_PUBLIC_ENTRY)
+
+    ptb_type_args = _fill_type_arguments(f.get("type_params", []))
+    ptb_calls = []
+    call_args = []
+
+    params = f.get("params", [])
+    if isinstance(params, list):
+        params = strip_implicit_tx_context_params([p for p in params if isinstance(p, dict)])
+        for p in params:
+            res = construct_arg(p, len(ptb_calls), constructor_index, modules_map, 0)
+            if res is None:
+                reasons.append(ExclusionReason.UNSUPPORTED_PARAM_TYPE)
+                break
+
+            setup, arg_val = res
+            ptb_calls.extend(setup)
+            call_args.append(arg_val)
+
+    if reasons:
+        return FunctionAnalysis(is_runnable=False, reasons=reasons)
+
+    return FunctionAnalysis(
+        is_runnable=True, reasons=[], ptb_calls=ptb_calls, final_args=call_args, ptb_type_args=ptb_type_args
+    )
+
+
+def _fill_type_arguments(type_params: list) -> list[str]:
+    """Provide a default type argument (SUI) for generic functions."""
+    if not isinstance(type_params, list):
+        return []
+    return [f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}"] * len(type_params)
 
 
 def type_to_default_ptb_arg(t: dict) -> dict | None:
@@ -588,45 +625,6 @@ def type_to_default_ptb_arg(t: dict) -> dict | None:
         return None
     return None
 
-
-def analyze_function(
-    f: dict, constructor_index: dict[str, list[str]] | None = None, modules_map: dict | None = None
-) -> FunctionAnalysis:
-    reasons = []
-
-    if f.get("visibility") != "public" or f.get("is_entry") is not True:
-        reasons.append(ExclusionReason.NOT_PUBLIC_ENTRY)
-
-    type_params = f.get("type_params")
-    ptb_type_args: list[str] = []
-    if isinstance(type_params, list) and type_params:
-        # Heuristic: fill all type params with 0x2::sui::SUI
-        for _ in type_params:
-            ptb_type_args.append(f"{SUI_FRAMEWORK_ADDRESS}::{SUI_MODULE}::{SUI_STRUCT}")
-
-    params = f.get("params")
-    ptb_calls = []
-    call_args = []
-
-    if isinstance(params, list):
-        params = strip_implicit_tx_context_params([p for p in params if isinstance(p, dict)])
-        for p in params:
-            # We pass index/map context here
-            res = construct_arg(p, len(ptb_calls), constructor_index, modules_map, 0)
-            if res is None:
-                reasons.append(ExclusionReason.UNSUPPORTED_PARAM_TYPE)
-                break
-
-            setup, arg_val = res
-            ptb_calls.extend(setup)
-            call_args.append(arg_val)
-
-    if reasons:
-        return FunctionAnalysis(is_runnable=False, reasons=reasons)
-
-    return FunctionAnalysis(
-        is_runnable=True, reasons=[], ptb_calls=ptb_calls, final_args=call_args, ptb_type_args=ptb_type_args
-    )
 
 
 def analyze_package(interface_json: dict) -> PackageAnalysis:

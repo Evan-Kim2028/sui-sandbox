@@ -1,3 +1,10 @@
+"""
+Scoring logic for Phase II (Type Inhabitation).
+
+Calculates hit rates by comparing created object types against target key types
+using base-type matching rules.
+"""
+
 from __future__ import annotations
 
 import re

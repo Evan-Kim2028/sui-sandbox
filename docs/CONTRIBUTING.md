@@ -58,6 +58,32 @@ cargo test
 - Prefer explicit structs for JSON schemas (and canonicalize output before writing).
 - Keep docs current when adding new flags or outputs.
 
+## Extending the Benchmark
+
+The framework is designed to be modular. Follow these guides to add new capabilities.
+
+### 1. Adding a New Agent
+To add a new LLM or deterministic agent:
+1. **Define the Logic**: Create a new class in `benchmark/src/smi_bench/agents/`.
+   - For Phase I: Implement `predict_key_types(truth_key_types)`.
+   - For Phase II: Implement `complete_json(prompt)`.
+2. **Register in Runners**:
+   - For Phase I: Update `runner.py`'s `run()` function to instantiate your agent based on the `--agent` flag.
+   - For Phase II: Update `inhabit_runner.py`'s `run()` function.
+3. **Add CLI Choice**: Add your agent name to the `choices` list in the `argparse` section of the relevant runner.
+
+### 2. Adding a Normalization Rule
+If you find that models consistently make a specific formatting error that should be ignored:
+1. **Define the Correction**: Add a new member to the `CorrectionType` enum in `benchmark/src/smi_bench/inhabit/normalize.py`.
+2. **Implement the Logic**: Add a new `elif` block in `_normalize_arg()` to detect the pattern and apply the fix.
+3. **Log the Event**: Ensure you append a descriptive string to the `corrections` list so the researcher can see that a fix was applied.
+
+### 3. Adding a Simulation Mode
+To add a new way of verifying transactions (e.g., a local fork):
+1. **Update Rust Simulator**: Add the mode logic to `src/bin/smi_tx_sim.rs`.
+2. **Update Python Runner**: Update `run_tx_sim_via_helper()` in `benchmark/src/smi_bench/inhabit/engine.py` to support the new mode string.
+3. **Register CLI Flag**: Add the mode to the `choices` of `--simulation-mode` in `inhabit_runner.py`.
+
 ## Documentation Testing Standards
 
 All documentation must be executable, verifiable, and maintainable.

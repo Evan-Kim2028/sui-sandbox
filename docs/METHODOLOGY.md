@@ -94,7 +94,22 @@ When using **Progressive Exposure** (via `need_more` requests), the harness moni
 
 ---
 
-## 3. Limitations and Edge Cases
+## 3. Benchmark Difficulty Classification
+
+To provide deeper insight into model performance, we categorize packages by their **Inhabitation Difficulty**. Scoring a "Hit" on a Level 3 package represents significantly higher semantic reasoning than a Level 1 package.
+
+| Difficulty | Classification | Logic Requirements | Example Pattern |
+|------------|----------------|--------------------|-----------------|
+| **Level 1** | Pure / Simple | Single `public entry` call with primitive arguments. | `mint(amount: u64)` |
+| **Level 2** | Object-Aware | Requires existing objects from inventory or system (Clock, Random). | `stake(coin: Coin, clock: &Clock)` |
+| **Level 3** | Multi-Step | Requires recursive constructor discovery (2-3 steps). | `create_cap()` → `mint(cap)` |
+| **Level 4** | Generic-Heavy | Requires correctly filling multiple complex type parameters. | `swap<T1, T2>(pool, coin)` |
+
+Researchers should correlate `avg_hit_rate` with these levels to identify if an agent struggles with **Logic Depth** (Level 3) or **Signature Complexity** (Level 4).
+
+---
+
+## 4. Limitations and Edge Cases
 
 - **Private Visibility**: Our bytecode extractor captures **private** functions, which help identify constructors that RPC-based tools might miss.
 - **Inventory Dependency**: Many functions require existing objects. The benchmark results depend on the sender's on-chain inventory.
