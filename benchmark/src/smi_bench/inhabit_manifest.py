@@ -14,8 +14,8 @@ from smi_bench.inhabit.executable_subset import (
     analyze_package,
     compute_package_viability,
 )
-from smi_bench.runner import _extract_key_types_from_interface_json
 from smi_bench.rust import default_rust_binary, emit_bytecode_json
+from smi_bench.utils import extract_key_types_from_interface_json
 
 console = Console()
 
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> None:
         viability_public_entry_no_type_params_total += v.public_entry_no_type_params_total
         viability_public_entry_supported_total += v.public_entry_no_type_params_supported_args_total
 
-        key_targets = _extract_key_types_from_interface_json(iface)
+        key_targets = extract_key_types_from_interface_json(iface)
         if key_targets:
             viability_packages_with_key_targets += 1
             viability_key_targets_total += len(key_targets)

@@ -13,9 +13,20 @@ __all__ = [
     "default_rust_binary",
     "validate_rust_binary",
     "emit_bytecode_json",
+    "build_rust",
     "BinaryNotFoundError",
     "BinaryNotExecutableError",
 ]
+
+
+def build_rust() -> None:
+    """
+    Build the Rust extractor binary in release mode.
+
+    Runs `cargo build --release --locked` from the repository root.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    subprocess.check_call(["cargo", "build", "--release", "--locked"], cwd=repo_root)
 
 
 def default_rust_binary() -> Path:

@@ -188,7 +188,7 @@ def cleanup_old_temp_files(tmp_dir: Path, *, max_age_seconds: int = 86400) -> in
             if now - p.stat().st_mtime > max_age_seconds:
                 p.unlink()
                 removed += 1
-        except Exception:
+        except (OSError, PermissionError):
             # Best-effort cleanup; ignore errors
             pass
     return removed
@@ -222,3 +222,57 @@ def get_smi_temp_dir() -> Path:
     else:
         p = Path(tempfile.gettempdir()) / "smi_bench_tmp"
     return ensure_temp_dir(p)
+
+
+def find_git_root(start: Path) -> Path | None:
+    """
+    Find the git repository root by walking up from start path.
+
+    Args:
+        start: Starting directory path.
+
+    Returns:
+        Path to .git directory's parent, or None if not found.
+    """
+    cur = start.resolve()
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> set[str]:
+    """
+    Extract all struct types with 'key' ability from interface JSON.
+
+    Args:
+        interface_json: Parsed bytecode interface JSON (from Rust extractor).
+
+    Returns:
+        Set of canonical type strings (format: "0xADDR::module::Struct").
+    """
+    out: set[str] = set()
+    modules = interface_json.get("modules")
+    if not isinstance(modules, dict):
+        return out
+
+    for module_name, module_def in modules.items():
+        if not isinstance(module_name, str) or not isinstance(module_def, dict):
+            continue
+        address = module_def.get("address")
+        if not isinstance(address, str):
+            continue
+        structs = module_def.get("structs")
+        if not isinstance(structs, dict):
+            continue
+        for struct_name, struct_def in structs.items():
+            if not isinstance(struct_name, str) or not isinstance(struct_def, dict):
+                continue
+            abilities = struct_def.get("abilities")
+            if not isinstance(abilities, list):
+                continue
+            if "key" in abilities:
+                out.add(f"{address}::{module_name}::{struct_name}")
+    return out
