@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ import httpx
 
 from smi_bench.json_extract import JsonExtractError, extract_json_value, extract_type_list
 from smi_bench.logging import JsonlLogger
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -245,6 +248,8 @@ class RealAgent:
         logger: JsonlLogger | None = None,
         log_context: dict[str, object] | None = None,
     ) -> set[str]:
+        # Use jsonl_logger for event() calls, module logger for debug/info/error
+        jsonl_logger = logger
         url = f"{self.cfg.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
         if self.is_openrouter:
@@ -282,7 +287,8 @@ class RealAgent:
         def body_prefix(r: httpx.Response) -> str:
             try:
                 t = r.text
-            except Exception:
+            except httpx.StreamError as e:
+                logging.getLogger(__name__).debug("Failed to read response text: %s", e)
                 return "<unavailable>"
             t = t.replace("\n", " ").replace("\r", " ")
             return t[:400]
@@ -290,7 +296,8 @@ class RealAgent:
         def extract_api_error(r: httpx.Response) -> str | None:
             try:
                 data = r.json()
-            except Exception:
+            except (json.JSONDecodeError, httpx.ResponseNotRead) as e:
+                logging.getLogger(__name__).debug("Failed to parse API error response as JSON: %s", e)
                 return None
             if isinstance(data, dict):
                 err = data.get("error")
@@ -341,9 +348,21 @@ class RealAgent:
                     if retry_after:
                         try:
                             sleep_s = float(retry_after)
-                        except Exception:
+                            logging.getLogger(__name__).info(
+                                f"Rate-limited by API (status={r.status_code}), "
+                                f"retry-after={retry_after}s, backing off"
+                            )
+                        except (ValueError, TypeError) as e:
+                            logging.getLogger(__name__).warning(
+                                f"Failed to parse retry-after header '{retry_after}': {e}, "
+                                f"using default backoff={backoff_s}s"
+                            )
                             sleep_s = backoff_s
                     else:
+                        logging.getLogger(__name__).info(
+                            f"Rate-limited by API (status={r.status_code}), "
+                            f"no retry-after header, using backoff={backoff_s}s"
+                        )
                         sleep_s = backoff_s
                     if deadline is not None:
                         remaining = deadline - time.monotonic()
@@ -357,8 +376,7 @@ class RealAgent:
                 data = r.json()
                 break
             except Exception as e:
-                last_exc = e
-                if (log := logger) is not None:
+                if jsonl_logger is not None:
                     ctx = dict(log_context or {})
                     ctx.update(
                         {
@@ -374,7 +392,7 @@ class RealAgent:
                             "exc": str(e),
                         }
                     )
-                    log.event("llm_request_error", **ctx)
+                    jsonl_logger.event("llm_request_error", **ctx)
                 sleep_s = backoff_s
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
@@ -394,11 +412,19 @@ class RealAgent:
         content = None
         try:
             content = data["choices"][0]["message"]["content"]
-        except Exception:
+        except (KeyError, IndexError, TypeError) as e:
+            logging.getLogger(__name__).debug(f"Response missing choices[0].message.content: {e}, trying legacy format")
             try:
                 content = data["choices"][0]["text"]
-            except Exception as e:
-                raise ValueError(f"unexpected response shape: {data}") from e
+                logging.getLogger(__name__).debug("Successfully extracted content from legacy 'text' field")
+            except (KeyError, IndexError, TypeError) as e2:
+                data_summary = list(data.keys()) if isinstance(data, dict) else type(data)
+                jsonl_logger.event(
+                    "llm_content_extraction_error",
+                    error=str(e2),
+                    data_keys=data_summary,
+                )
+                raise ValueError(f"unexpected response shape: {data}") from e2
 
         if not isinstance(content, str):
             raise ValueError("unexpected response content type")
@@ -407,8 +433,8 @@ class RealAgent:
             finish_reason = None
             try:
                 finish_reason = data["choices"][0].get("finish_reason")
-            except Exception:
-                pass
+            except (KeyError, IndexError, TypeError):
+                logging.getLogger(__name__).debug("Could not extract finish_reason from response")
             hint = ""
             if finish_reason == "length":
                 hint = " (model hit max_tokens; increase SMI_MAX_TOKENS or reduce prompt size)"
@@ -429,6 +455,7 @@ class RealAgent:
 
         Returns (parsed_dict, usage_dict).
         """
+        jsonl_logger = logger
         url = f"{self.cfg.base_url}/chat/completions"
         headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
         if self.is_openrouter:
@@ -466,7 +493,8 @@ class RealAgent:
         def body_prefix(r: httpx.Response) -> str:
             try:
                 t = r.text
-            except Exception:
+            except httpx.StreamError as e:
+                logging.getLogger(__name__).debug("Failed to read response text: %s", e)
                 return "<unavailable>"
             t = t.replace("\n", " ").replace("\r", " ")
             return t[:400]
@@ -474,7 +502,8 @@ class RealAgent:
         def extract_api_error(r: httpx.Response) -> str | None:
             try:
                 data = r.json()
-            except Exception:
+            except (json.JSONDecodeError, httpx.ResponseNotRead) as e:
+                logging.getLogger(__name__).debug("Failed to parse API error response as JSON: %s", e)
                 return None
             if isinstance(data, dict):
                 err = data.get("error")
@@ -524,9 +553,21 @@ class RealAgent:
                     if retry_after:
                         try:
                             sleep_s = float(retry_after)
-                        except Exception:
+                            logging.getLogger(__name__).info(
+                                f"Rate-limited by API (status={r.status_code}), "
+                                f"retry-after={retry_after}s, backing off"
+                            )
+                        except (ValueError, TypeError) as e:
+                            logging.getLogger(__name__).warning(
+                                f"Failed to parse retry-after header '{retry_after}': {e}, "
+                                f"using default backoff={backoff_s}s"
+                            )
                             sleep_s = backoff_s
                     else:
+                        logging.getLogger(__name__).info(
+                            f"Rate-limited by API (status={r.status_code}), "
+                            f"no retry-after header, using backoff={backoff_s}s"
+                        )
                         sleep_s = backoff_s
                     if deadline is not None:
                         remaining = deadline - time.monotonic()
@@ -578,11 +619,19 @@ class RealAgent:
         content = None
         try:
             content = data["choices"][0]["message"]["content"]
-        except Exception:
+        except (KeyError, IndexError, TypeError) as e:
+            logging.getLogger(__name__).debug(f"Response missing choices[0].message.content: {e}, trying legacy format")
             try:
                 content = data["choices"][0]["text"]
-            except Exception as e:
-                raise ValueError(f"unexpected response shape: {data}") from e
+                logging.getLogger(__name__).debug("Successfully extracted content from legacy 'text' field")
+            except (KeyError, IndexError, TypeError) as e2:
+                data_summary = list(data.keys()) if isinstance(data, dict) else type(data)
+                jsonl_logger.event(
+                    "llm_content_extraction_error",
+                    error=str(e2),
+                    data_keys=data_summary,
+                )
+                raise ValueError(f"unexpected response shape: {data}") from e2
 
         if (log := logger) is not None:
             ctx = dict(log_context or {})
@@ -603,8 +652,8 @@ class RealAgent:
             finish_reason = None
             try:
                 finish_reason = data["choices"][0].get("finish_reason")
-            except Exception:
-                pass
+            except (KeyError, IndexError, TypeError):
+                logging.getLogger(__name__).debug("Could not extract finish_reason from response")
             hint = ""
             if finish_reason == "length":
                 hint = " (model hit max_tokens; increase SMI_MAX_TOKENS or reduce prompt size)"
@@ -617,7 +666,7 @@ class RealAgent:
             # Prefer scoring intelligence over strict formatting while keeping observability.
             try:
                 parsed = extract_json_value(content)
-                if (log := logger) is not None:
+                if (log := jsonl_logger) is not None:
                     ctx = dict(log_context or {})
                     ctx.update(
                         {
@@ -629,9 +678,9 @@ class RealAgent:
                             "exc": str(e),
                         }
                     )
-                    log.event("llm_json_extracted", **ctx)
+                    jsonl_logger.event("llm_json_extracted", **ctx)
             except JsonExtractError:
-                if (log := logger) is not None:
+                if (log := jsonl_logger) is not None:
                     ctx = dict(log_context or {})
                     ctx.update(
                         {

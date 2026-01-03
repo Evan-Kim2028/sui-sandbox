@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -28,10 +29,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 from rich.console import Console
 from rich.progress import track
 
 from smi_bench.agents.real_agent import RealAgent, load_real_agent_config
+from smi_bench.checkpoint import load_checkpoint, write_checkpoint
+from smi_bench.constants import DEFAULT_RPC_URL
 from smi_bench.dataset import collect_packages, sample_packages
 from smi_bench.env import load_dotenv
 from smi_bench.inhabit.dryrun import DryRunFailure, classify_dry_run_response
@@ -50,98 +54,15 @@ from smi_bench.inhabit.normalize import normalize_ptb_spec
 from smi_bench.inhabit.score import InhabitationScore, normalize_type_string, score_inhabitation
 from smi_bench.inhabit.validator import validate_ptb_causality_detailed
 from smi_bench.logging import JsonlLogger, default_run_id
-from smi_bench.runner import _extract_key_types_from_interface_json
 from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rust_binary
 from smi_bench.schema import Phase2ResultKeys, validate_phase2_run_json
 from smi_bench.utils import (
-    compute_json_checksum,
-    safe_json_loads,
+    extract_key_types_from_interface_json,
     validate_binary,
 )
 
 console = Console()
-
-
-def _ptb_variants(
-    ptb_spec_base: dict,
-    *,
-    sender: str,
-    max_variants: int,
-) -> list[tuple[str, dict[str, Any]]]:
-    """Backward-compatible wrapper for tests expecting `_ptb_variants` in this module."""
-
-    return ptb_variants(ptb_spec_base, sender=sender, max_variants=max_variants)
-
-
-def _pid_is_alive(pid: int) -> bool:
-    """Backward-compatible helper for tests/older call sites."""
-
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except Exception:
-        return False
-    return True
-
-
-def _fetch_inventory(*, rpc_url: str, sender: str) -> dict[str, Any]:
-    """Backward-compatible helper for tests/older call sites."""
-
-    return fetch_inventory(rpc_url=rpc_url, sender=sender)
-
-
-def _resolve_placeholders(obj: Any, *, sender: str, inventory: dict[str, Any]) -> Any:
-    """Backward-compatible helper for tests/older call sites."""
-
-    _ = sender
-    return resolve_placeholders(obj, inventory)
-
-
-def _run_tx_sim_via_helper(
-    *,
-    dev_inspect_bin: Path,
-    rpc_url: str,
-    sender: str,
-    ptb_spec: dict[str, Any],
-    simulation_mode: str,
-    call_timeout_seconds: float,
-) -> tuple[dict[str, Any] | None, set[str], set[str], str]:
-    """Backward-compatible helper for tests/older call sites."""
-
-    return run_tx_sim_via_helper(
-        dev_inspect_bin=dev_inspect_bin,
-        rpc_url=rpc_url,
-        sender=sender,
-        ptb_spec=ptb_spec,
-        mode=simulation_mode,
-        timeout_s=call_timeout_seconds,
-        gas_budget=None,
-        gas_coin=None,
-        bytecode_package_dir=None,
-    )
-
-
-def _run_rust_emit_bytecode_json(bytecode_package_dir: Path, rust_bin: Path) -> dict[str, Any]:
-    """
-    Backward-compatible shim for older code/tests.
-
-    Historically, Phase II used a local helper named `_run_rust_emit_bytecode_json(...)`.
-    We now centralize the logic in `smi_bench.rust.emit_bytecode_json`, but keep this
-    wrapper to avoid drift in call sites and to preserve stable patch targets in tests.
-
-    Args:
-        bytecode_package_dir: Path to bytecode package directory.
-        rust_bin: Path to Rust extractor binary.
-
-    Returns:
-        Parsed interface JSON dict.
-    """
-    return emit_bytecode_json(package_dir=bytecode_package_dir, rust_bin=rust_bin)
+logger = logging.getLogger(__name__)
 
 
 def _parse_gas_budget_ladder(s: str) -> list[int]:
@@ -224,6 +145,49 @@ def _resolve_sender_and_gas_coin(
     resolved_sender = sender or env_overrides.get("SMI_SENDER") or "0x0"
     resolved_gas_coin = gas_coin or env_overrides.get("SMI_GAS_COIN")
     return resolved_sender, resolved_gas_coin
+
+
+def _run_preflight_checks(
+    *,
+    rpc_url: str,
+    sender: str,
+    simulation_mode: str,
+) -> None:
+    """
+    Fail fast if the environment is not ready for the requested simulation mode.
+    """
+    console.print(f"[bold]Pre-flight:[/bold] Checking environment for mode={simulation_mode}...")
+
+    # 1. RPC Check
+    try:
+        # Simple health check payload
+        payload = {"jsonrpc": "2.0", "id": 1, "method": "rpc.discover", "params": []}
+        r = httpx.post(rpc_url, json=payload, timeout=5.0)
+        if r.status_code != 200:
+            raise RuntimeError(f"RPC {rpc_url} returned status {r.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"RPC connection failed: {e}") from e
+
+    # 2. Sender Check (Critical for dry-run)
+    if simulation_mode == "dry-run":
+        if sender == "0x0" or not sender:
+            raise RuntimeError(
+                "FAIL FAST: simulation_mode='dry-run' requires a valid sender address.\n"
+                "  Current sender: 0x0\n"
+                "  Fix: Set --sender (or SMI_SENDER env var) to a funded address."
+            )
+
+        # Check balance
+        try:
+            payload = {"jsonrpc": "2.0", "id": 1, "method": "suix_getCoins", "params": [sender, "0x2::sui::SUI"]}
+            r = httpx.post(rpc_url, json=payload, timeout=10.0)
+            data = r.json()
+            coins = data.get("result", {}).get("data", [])
+            if not coins:
+                raise RuntimeError(f"FAIL FAST: Sender {sender} has no SUI coins on {rpc_url}.")
+            console.print(f"[green]OK:[/green] Sender {sender} is funded (found {len(coins)} coins).")
+        except Exception as e:
+            raise RuntimeError(f"Could not verify sender balance: {e}") from e
 
 
 def _summarize_inventory(inventory: dict[str, list[str]]) -> str:
@@ -392,6 +356,8 @@ def _build_real_agent_prompt(
         "### Progressive Exposure (IMPORTANT)\n"
         "You may request more interface details if needed by returning ONLY this JSON object:\n"
         '{"need_more":["0xADDR::module::function",...],"reason":"..."}\n'
+        "- Use '0xADDR::module' to request all functions in a module.\n"
+        "- The 'init' function is private and cannot be called; do not request it.\n"
         f"You have at most {max_planning_calls} planning calls total for this package; prefer succeeding in 1.\n"
         "If you do not need more details, return ONLY a PTB JSON plan matching the schema.\n"
         "CRITICAL: Do NOT ask natural-language questions. Output either a PTB plan OR a need_more JSON object.\n"
@@ -556,124 +522,6 @@ class InhabitRunResult:
     packages: list[dict[str, Any]]
 
 
-def _write_checkpoint(out_path: Path, run_result: InhabitRunResult) -> None:
-    """
-    Write checkpoint atomically with checksum validation.
-
-    Uses a temporary file (.tmp suffix) and atomic replace to ensure checkpoint
-    integrity. Validates schema before writing and adds checksum for corruption detection.
-    Always cleans up .tmp file on failure.
-
-    Args:
-        out_path: Path to checkpoint file.
-        run_result: Run result to serialize.
-
-    Raises:
-        ValueError: If schema validation fails.
-        OSError: If file write fails.
-    """
-    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-    try:
-        data = asdict(run_result)
-        # Validate schema before writing
-        validate_phase2_run_json(data)
-        # Add checksum for corruption detection
-        checksum = compute_json_checksum(data)
-        data["_checksum"] = checksum
-        json_str = json.dumps(data, indent=2, sort_keys=True) + "\n"
-        tmp.write_text(json_str)
-        tmp.replace(out_path)
-    except Exception:
-        # Clean up .tmp file on failure to prevent accumulation
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass  # Best-effort cleanup
-        raise
-
-
-def _load_checkpoint(out_path: Path) -> InhabitRunResult:
-    """
-    Load checkpoint with checksum validation.
-
-    Reads checkpoint file, validates checksum if present, and deserializes to InhabitRunResult.
-    Provides detailed error messages for common failure modes.
-
-    Args:
-        out_path: Path to checkpoint file.
-
-    Returns:
-        Deserialized InhabitRunResult.
-
-    Raises:
-        FileNotFoundError: If checkpoint file doesn't exist.
-        RuntimeError: If file read fails, JSON parse fails, checksum mismatch, or invalid shape.
-    """
-    try:
-        text = out_path.read_text()
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(
-            f"Checkpoint file not found: {out_path}\n"
-            f"  Did you mean to run without --resume?\n"
-            f"  Or check that the file path is correct."
-        ) from exc
-    except (OSError, PermissionError) as exc:
-        raise RuntimeError(
-            f"Failed to read checkpoint file: {out_path}\n  Error: {exc}\n  Check file permissions and disk space."
-        ) from exc
-
-    try:
-        data = safe_json_loads(text, context=f"checkpoint file {out_path}")
-    except ValueError as e:
-        raise RuntimeError(
-            f"Checkpoint JSON parse error: {out_path}\n"
-            f"  {e}\n"
-            f"  The checkpoint file may be corrupted. Consider removing it and restarting."
-        ) from e
-
-    # Validate checksum if present
-    stored_checksum = data.pop("_checksum", None)
-    if stored_checksum:
-        computed_checksum = compute_json_checksum(data)
-        if stored_checksum != computed_checksum:
-            raise RuntimeError(
-                f"Checkpoint checksum mismatch: {out_path}\n"
-                f"  Stored checksum: {stored_checksum}\n"
-                f"  Computed checksum: {computed_checksum}\n"
-                f"  This indicates file corruption.\n"
-                f"  Fix: Remove the checkpoint file and restart without --resume."
-            )
-
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"Invalid checkpoint shape: {out_path}\n"
-            f"  Expected top-level dict, got {type(data).__name__}\n"
-            f"  The checkpoint file may be corrupted or from an incompatible version."
-        )
-    if not isinstance(data.get("packages"), list):
-        raise RuntimeError(
-            f"Invalid checkpoint shape: {out_path}\n"
-            f"  Expected 'packages' to be list, got {type(data.get('packages')).__name__}\n"
-            f"  The checkpoint file may be corrupted or from an incompatible version."
-        )
-    return InhabitRunResult(
-        schema_version=int(data["schema_version"]),
-        started_at_unix_seconds=int(data["started_at_unix_seconds"]),
-        finished_at_unix_seconds=int(data["finished_at_unix_seconds"]),
-        corpus_root_name=str(data["corpus_root_name"]),
-        samples=int(data["samples"]),
-        seed=int(data["seed"]),
-        agent=str(data["agent"]),
-        rpc_url=str(data["rpc_url"]),
-        sender=str(data["sender"]),
-        gas_budget=(int(data["gas_budget"]) if "gas_budget" in data else 10_000_000),
-        gas_coin=(str(data["gas_coin"]) if isinstance(data.get("gas_coin"), str) else None),
-        aggregate=data.get("aggregate") if isinstance(data.get("aggregate"), dict) else {},
-        packages=data["packages"],
-    )
-
-
 def _resume_results_from_checkpoint(
     cp: InhabitRunResult,
     *,
@@ -815,6 +663,10 @@ def run(
 
     env_overrides = load_dotenv(env_file) if env_file is not None else {}
     sender, gas_coin = _resolve_sender_and_gas_coin(sender=sender, gas_coin=gas_coin, env_overrides=env_overrides)
+
+    # Run preflight checks before starting any heavy work
+    _run_preflight_checks(rpc_url=rpc_url, sender=sender, simulation_mode=simulation_mode)
+
     plan_by_id: dict[str, dict[str, Any]] = {}
     if plan_file is not None:
         plan_by_id = _load_plan_file(plan_file)
@@ -874,7 +726,7 @@ def run(
         if out_path is None:
             raise SystemExit("--resume requires --out")
         if out_path.exists():
-            cp = _load_checkpoint(out_path)
+            cp = InhabitRunResult(**load_checkpoint(out_path))
             if cp.agent != agent_name or cp.seed != seed or cp.rpc_url != rpc_url or cp.sender != sender:
                 raise SystemExit("checkpoint mismatch: expected same agent/seed/rpc_url/sender for resume")
             if cp.gas_budget != gas_budget:
@@ -957,8 +809,8 @@ def run(
         causality_errors: list[str] = []
 
         try:
-            iface = _run_rust_emit_bytecode_json(Path(pkg.package_dir), rust_bin)
-            truth_key_types = _extract_key_types_from_interface_json(iface)
+            iface = emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin)
+            truth_key_types = extract_key_types_from_interface_json(iface)
 
             if pkg_guard_error is not None:
                 raise TimeoutError(pkg_guard_error) if pkg_guard_timed_out else RuntimeError(pkg_guard_error)
@@ -966,7 +818,7 @@ def run(
             inventory = {}
             needs_inventory = agent_name in {"baseline-search", "real-openai-compatible", "template-search"}
             if needs_inventory and sender and sender != "0x0":
-                inventory = _fetch_inventory(rpc_url=rpc_url, sender=sender)
+                inventory = fetch_inventory(rpc_url=rpc_url, sender=sender)
 
             ladder = _parse_gas_budget_ladder(gas_budget_ladder)
             budgets = _gas_budgets_to_try(base=gas_budget, ladder=ladder)
@@ -1027,48 +879,129 @@ def run(
                     ptb_spec_base = copy.deepcopy(plan_item)
                 elif agent_name == "real-openai-compatible":
                     assert real_agent is not None
-                    iface_summary = summarize_interface(iface, max_functions=60, mode="entry_only")
-                    prompt = (
-                        _build_real_agent_retry_prompt(
-                            package_id=pkg.package_id,
-                            target_key_types=truth_key_types,
-                            last_failure=last_failure_ctx,
+
+                    # Progressive exposure loop
+                    planning_calls_remaining = int(max_planning_calls)
+                    current_requested_targets: set[str] = set()
+                    already_requested_targets: set[str] = set()
+                    ptb_spec_base = None
+
+                    for planning_call_i in range(1, planning_calls_remaining + 1):
+                        check_run_guards(parent_pid=parent_pid, run_deadline=run_deadline)
+                        remaining = max(0.0, deadline - time.monotonic())
+                        if remaining <= 0:
+                            raise TimeoutError(f"per-package timeout exceeded ({per_package_timeout_seconds}s)")
+
+                        if current_requested_targets:
+                            iface_summary = summarize_interface(
+                                iface, max_functions=60, mode="focused", requested_targets=current_requested_targets
+                            )
+                        else:
+                            iface_summary = summarize_interface(iface, max_functions=60, mode="entry_then_public")
+
+                        prompt = (
+                            _build_real_agent_retry_prompt(
+                                package_id=pkg.package_id,
+                                target_key_types=truth_key_types,
+                                last_failure=last_failure_ctx,
+                                interface_summary=iface_summary if last_failure_ctx is not None else None,
+                                max_planning_calls=planning_calls_remaining - planning_call_i + 1,
+                            )
+                            if (plan_attempts > 1 and last_failure_ctx is not None)
+                            else _build_real_agent_prompt(
+                                package_id=pkg.package_id,
+                                target_key_types=truth_key_types,
+                                interface_summary=iface_summary,
+                                inventory_summary=_summarize_inventory(inventory),
+                                max_planning_calls=planning_calls_remaining - planning_call_i + 1,
+                            )
                         )
-                        if (plan_attempts > 1 and last_failure_ctx is not None)
-                        else _build_real_agent_prompt(
-                            package_id=pkg.package_id,
-                            target_key_types=truth_key_types,
-                            interface_summary=iface_summary,
-                            inventory_summary=_summarize_inventory(inventory),
-                            max_planning_calls=int(max_planning_calls),
-                        )
-                    )
-                    try:
-                        ptb_spec_base = real_agent.complete_json(
-                            prompt,
-                            timeout_s=max(1.0, remaining),
-                            logger=logger,
-                            log_context={
-                                "package_id": pkg.package_id,
-                                "plan_attempt": plan_attempts,
-                                "planning_call": 1,
-                            },
-                        )
-                        if not isinstance(ptb_spec_base, dict) or "calls" not in ptb_spec_base:
-                            raise ValueError("missing field calls")
-                    except Exception as e:
-                        last_failure_ctx = {"harness_error": str(e)}
-                        # Let the next plan attempt retry; if we run out of attempts,
-                        # the package will be recorded as failed below.
+
+                        try:
+                            ai_response = real_agent.complete_json(
+                                prompt,
+                                timeout_s=max(1.0, remaining),
+                                logger=logger,
+                                log_context={
+                                    "package_id": pkg.package_id,
+                                    "plan_attempt": plan_attempts,
+                                    "planning_call": planning_call_i,
+                                },
+                            )
+
+                            if isinstance(ai_response, dict) and "need_more" in ai_response:
+                                # Update targets for next focused summary
+                                new_targets = ai_response["need_more"]
+                                if isinstance(new_targets, list):
+                                    targets_to_add = [
+                                        str(t) for t in new_targets if str(t) not in already_requested_targets
+                                    ]
+                                    if not targets_to_add:
+                                        # Model is asking for same things again - force it to plan
+                                        # Terminate progressive loop and re-invoke with "force plan" instruction
+                                        iface_summary = summarize_interface(
+                                            iface,
+                                            max_functions=60,
+                                            mode="focused",
+                                            requested_targets=current_requested_targets,
+                                        )
+                                        prompt = _build_real_agent_retry_prompt(
+                                            package_id=pkg.package_id,
+                                            target_key_types=truth_key_types,
+                                            last_failure={
+                                                "harness_error": (
+                                                    "You already requested those details. "
+                                                    "No other public functions found. "
+                                                    "Please provide a best-effort PTB plan now "
+                                                    "using only public functions."
+                                                )
+                                            },
+                                            interface_summary=iface_summary,
+                                        )
+                                        ai_response = real_agent.complete_json(
+                                            prompt,
+                                            timeout_s=max(1.0, remaining),
+                                            logger=logger,
+                                            log_context={
+                                                "package_id": pkg.package_id,
+                                                "plan_attempt": plan_attempts,
+                                                "planning_call": planning_call_i + 1,
+                                            },
+                                        )
+                                        if isinstance(ai_response, dict) and "calls" in ai_response:
+                                            ptb_spec_base = ai_response
+                                        break
+
+                                    current_requested_targets.update(targets_to_add)
+                                    already_requested_targets.update(targets_to_add)
+                                continue
+
+                            if isinstance(ai_response, dict) and "calls" in ai_response:
+                                ptb_spec_base = ai_response
+                                break
+
+                            keys_summary = (
+                                list(ai_response.keys()) if isinstance(ai_response, dict) else type(ai_response)
+                            )
+                            raise ValueError(f"unexpected response keys: {keys_summary}")
+
+                        except Exception as e:
+                            last_failure_ctx = {"harness_error": str(e)}
+                            break
+
+                    if ptb_spec_base is None:
+                        # Failed to get a plan within the planning call budget or hit an error
+                        if last_failure_ctx is None:
+                            last_failure_ctx = {"harness_error": "reached max planning calls without plan"}
                         continue
                 else:
                     ptb_spec_base = {"calls": []}
 
                 # Resolve any placeholders ($smi_placeholder) against inventory
                 if agent_name in {"baseline-search", "template-search"}:
-                    _resolve_placeholders(ptb_spec_base, sender=sender, inventory=inventory)
+                    _ = resolve_placeholders(ptb_spec_base, inventory=inventory)
 
-                variants = _ptb_variants(
+                variants = ptb_variants(
                     ptb_spec_base,
                     sender=sender,
                     max_variants=max(1, int(max_heuristic_variants)),
@@ -1134,7 +1067,7 @@ def run(
                             if fell_back:
                                 attempt_created_types = attempt_created_types | attempt_static_types
                         else:
-                            _tx_out, attempt_created_types, attempt_static_types, sim_mode = _run_tx_sim_via_helper(
+                            _tx_out, attempt_created_types, attempt_static_types, sim_mode = run_tx_sim_via_helper(
                                 dev_inspect_bin=dev_inspect_bin,
                                 rpc_url=rpc_url,
                                 sender=sender,
@@ -1170,7 +1103,7 @@ def run(
         except subprocess.TimeoutExpired:
             timed_out = True
             err = f"tx-sim timeout exceeded ({per_package_timeout_seconds}s)"
-        except Exception as e:
+        except (RuntimeError, ValueError, httpx.RequestError) as e:
             err = str(e)
             ptb_parse_ok = False
 
@@ -1243,7 +1176,7 @@ def run(
             current_max_hit_rate = max(current_hit_rates) if current_hit_rates else 0.0
 
             k = Phase2ResultKeys
-            _write_checkpoint(
+            write_checkpoint(
                 out_path,
                 InhabitRunResult(
                     schema_version=2,
@@ -1266,6 +1199,7 @@ def run(
                     },
                     packages=[_to_package_dict(r) for r in results],
                 ),
+                validate_fn=validate_phase2_run_json,
             )
             if logger is not None:
                 logger.event("checkpoint_written", path=str(out_path), packages_count=len(results))
@@ -1301,7 +1235,7 @@ def run(
         packages=[_to_package_dict(r) for r in results],
     )
     if out_path is not None:
-        _write_checkpoint(out_path, run_result)
+        write_checkpoint(out_path, run_result, validate_fn=validate_phase2_run_json)
 
     if logger is not None:
         logger.event(
@@ -1360,7 +1294,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--plan-file", type=Path, help="JSON mapping package_id -> PTB spec (required for mock-planfile).")
     p.add_argument("--rust-bin", type=Path, default=default_rust_binary())
     p.add_argument("--dev-inspect-bin", type=Path, default=_default_dev_inspect_binary())
-    p.add_argument("--rpc-url", type=str, default="https://fullnode.mainnet.sui.io:443")
+    p.add_argument("--rpc-url", type=str, default=DEFAULT_RPC_URL)
     p.add_argument(
         "--sender",
         type=str,
@@ -1485,6 +1419,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.dataset and args.subset:
         raise SystemExit("Use only one of --dataset or --subset")
 
+    # Resolve --dataset to package_ids_file path
+    package_ids_file = args.package_ids_file
+    if args.dataset:
+        if args.package_ids_file:
+            raise SystemExit("Use only one of --dataset or --package-ids-file")
+        dataset_path = Path("manifests/datasets") / f"{args.dataset}.txt"
+        if not dataset_path.exists():
+            raise SystemExit(f"Dataset not found: {dataset_path}")
+        package_ids_file = dataset_path
+
     env_file = args.env_file if args.env_file.exists() else None
     if env_file is None:
         fallback = Path("benchmark/.env")
@@ -1501,7 +1445,7 @@ def main(argv: list[str] | None = None) -> None:
         corpus_root=args.corpus_root,
         samples=args.samples,
         seed=args.seed,
-        package_ids_file=args.package_ids_file,
+        package_ids_file=package_ids_file,
         agent_name=args.agent,
         rust_bin=args.rust_bin,
         dev_inspect_bin=args.dev_inspect_bin,

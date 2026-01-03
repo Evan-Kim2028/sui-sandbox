@@ -31,20 +31,17 @@ from rich.progress import track
 
 from smi_bench.agents.mock_agent import MockAgent
 from smi_bench.agents.real_agent import RealAgent, load_real_agent_config
+from smi_bench.checkpoint import load_checkpoint, write_checkpoint
 from smi_bench.dataset import collect_packages, sample_packages
 from smi_bench.env import load_dotenv
 from smi_bench.judge import KeyTypeScore, score_key_types
 from smi_bench.logging import JsonlLogger, default_run_id
+from smi_bench.rust import build_rust as run_build_rust
 from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rust_binary
 from smi_bench.schema import validate_phase1_run_json
-from smi_bench.utils import compute_json_checksum, safe_json_loads
+from smi_bench.utils import extract_key_types_from_interface_json, find_git_root
 
 console = Console()
-
-
-def _build_rust() -> None:
-    repo_root = Path(__file__).resolve().parents[3]
-    subprocess.check_call(["cargo", "build", "--release", "--locked"], cwd=repo_root)
 
 
 def _redact_secret(v: str | None) -> str:
@@ -173,63 +170,6 @@ def _build_agent_prompt(interface_json: dict[str, Any], *, max_structs: int) -> 
     return instructions + json.dumps(payload, indent=2, sort_keys=True)
 
 
-def _extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> set[str]:
-    """
-    Extract all struct types with 'key' ability from interface JSON.
-
-    This is the ground truth for Phase I evaluation. The benchmark compares
-    model predictions against this set.
-
-    Args:
-        interface_json: Parsed bytecode interface JSON (from Rust extractor).
-
-    Returns:
-        Set of canonical type strings (format: "0xADDR::module::Struct").
-    """
-    out: set[str] = set()
-    modules = interface_json.get("modules")
-    if not isinstance(modules, dict):
-        return out
-
-    for module_name, module_def in modules.items():
-        if not isinstance(module_name, str) or not isinstance(module_def, dict):
-            continue
-        address = module_def.get("address")
-        if not isinstance(address, str):
-            continue
-        structs = module_def.get("structs")
-        if not isinstance(structs, dict):
-            continue
-        for struct_name, struct_def in structs.items():
-            if not isinstance(struct_name, str) or not isinstance(struct_def, dict):
-                continue
-            abilities = struct_def.get("abilities")
-            if not isinstance(abilities, list):
-                continue
-            if "key" in abilities:
-                out.add(f"{address}::{module_name}::{struct_name}")
-    return out
-
-
-def _find_git_root(start: Path) -> Path | None:
-    """
-    Find the git repository root by walking up from start path.
-
-    Args:
-        start: Starting directory path.
-
-    Returns:
-        Path to .git directory's parent, or None if not found.
-    """
-    cur = start.resolve()
-    while True:
-        if (cur / ".git").exists():
-            return cur
-        if cur.parent == cur:
-            return None
-        cur = cur.parent
-
-
 def _git_head_for_path(path: Path) -> dict[str, str] | None:
     """
     Get git HEAD commit SHA for a path's repository.
@@ -242,7 +182,7 @@ def _git_head_for_path(path: Path) -> dict[str, str] | None:
     Returns:
         Dict with "head" key containing commit SHA, or None if not in git repo or git fails.
     """
-    root = _find_git_root(path)
+    root = find_git_root(path)
     if root is None:
         return None
     try:
@@ -291,141 +231,6 @@ class PackageResult:
     timed_out: bool | None = None
     truth_key_types_list: list[str] | None = None
     predicted_key_types_list: list[str] | None = None
-
-
-def _write_checkpoint(out_path: Path, run_result: RunResult) -> None:
-    """
-    Write checkpoint atomically with checksum validation.
-
-    Uses a temporary file (.tmp suffix) and atomic replace to ensure checkpoint
-    integrity. Validates schema before writing and adds checksum for corruption detection.
-    Always cleans up .tmp file on failure.
-
-    Args:
-        out_path: Path to checkpoint file.
-        run_result: Run result to serialize.
-
-    Raises:
-        ValueError: If schema validation fails.
-        OSError: If file write fails.
-    """
-    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-    try:
-        data = asdict(run_result)
-        # Validate schema before writing
-        validate_phase1_run_json(data)
-        # Add checksum for corruption detection
-        checksum = compute_json_checksum(data)
-        data["_checksum"] = checksum
-        json_str = json.dumps(data, indent=2, sort_keys=True) + "\n"
-        tmp.write_text(json_str)
-        tmp.replace(out_path)
-    except Exception:
-        # Clean up .tmp file on failure to prevent accumulation
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass  # Best-effort cleanup
-        raise
-
-
-def _load_checkpoint(out_path: Path) -> RunResult:
-    """
-    Load checkpoint with checksum validation.
-
-    Reads checkpoint file, validates checksum if present, and deserializes to RunResult.
-    Provides detailed error messages for common failure modes.
-
-    Args:
-        out_path: Path to checkpoint file.
-
-    Returns:
-        Deserialized RunResult.
-
-    Raises:
-        FileNotFoundError: If checkpoint file doesn't exist.
-        RuntimeError: If file read fails, JSON parse fails, checksum mismatch, or invalid shape.
-    """
-    try:
-        text = out_path.read_text()
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(
-            f"Checkpoint file not found: {out_path}\n"
-            f"  Did you mean to run without --resume?\n"
-            f"  Or check that the file path is correct."
-        ) from exc
-    except (OSError, PermissionError) as exc:
-        raise RuntimeError(
-            f"Failed to read checkpoint file: {out_path}\n  Error: {exc}\n  Check file permissions and disk space."
-        ) from exc
-
-    try:
-        data = safe_json_loads(text, context=f"checkpoint file {out_path}")
-    except ValueError as e:
-        raise RuntimeError(
-            f"Checkpoint JSON parse error: {out_path}\n"
-            f"  {e}\n"
-            f"  The checkpoint file may be corrupted. Consider removing it and restarting."
-        ) from e
-
-    # Validate checksum if present
-    stored_checksum = data.pop("_checksum", None)
-    if stored_checksum:
-        computed_checksum = compute_json_checksum(data)
-        if stored_checksum != computed_checksum:
-            raise RuntimeError(
-                f"Checkpoint checksum mismatch: {out_path}\n"
-                f"  Stored checksum: {stored_checksum}\n"
-                f"  Computed checksum: {computed_checksum}\n"
-                f"  This indicates file corruption.\n"
-                f"  Fix: Remove the checkpoint file and restart without --resume."
-            )
-
-    try:
-        schema_version = int(data["schema_version"])
-        started = int(data["started_at_unix_seconds"])
-        finished = int(data["finished_at_unix_seconds"])
-        corpus_root_name = str(data["corpus_root_name"])
-        corpus_git = data.get("corpus_git")
-        target_ids_file = data.get("target_ids_file")
-        target_ids_total = data.get("target_ids_total")
-        samples = int(data["samples"])
-        seed = int(data["seed"])
-        agent = str(data["agent"])
-        aggregate = data.get("aggregate")
-        packages = data.get("packages")
-    except (KeyError, ValueError, TypeError) as e:
-        missing_field = str(e).split("'")[1] if "'" in str(e) else "unknown"
-        raise RuntimeError(
-            f"Invalid checkpoint shape: {out_path}\n"
-            f"  Missing or invalid field: {missing_field}\n"
-            f"  Error: {e}\n"
-            f"  The checkpoint may be from an incompatible version. Check schema_version."
-        ) from e
-
-    if not isinstance(aggregate, dict) or not isinstance(packages, list):
-        raise RuntimeError(
-            f"Invalid checkpoint shape: {out_path}\n"
-            f"  Expected 'aggregate' to be dict, got {type(aggregate).__name__}\n"
-            f"  Expected 'packages' to be list, got {type(packages).__name__}\n"
-            f"  The checkpoint file may be corrupted or from an incompatible version."
-        )
-
-    return RunResult(
-        schema_version=schema_version,
-        started_at_unix_seconds=started,
-        finished_at_unix_seconds=finished,
-        corpus_root_name=corpus_root_name,
-        corpus_git=corpus_git if isinstance(corpus_git, dict) else None,
-        target_ids_file=target_ids_file if isinstance(target_ids_file, str) else None,
-        target_ids_total=int(target_ids_total) if isinstance(target_ids_total, int) else None,
-        samples=samples,
-        seed=seed,
-        agent=agent,
-        aggregate=aggregate,
-        packages=packages,
-    )
 
 
 def _resume_results_from_checkpoint(
@@ -578,7 +383,7 @@ def run(
     """
     if build_rust:
         console.print("[bold]building rust…[/bold]")
-        _build_rust()
+        run_build_rust()
 
     # Validate binary exists and is executable
     try:
@@ -640,7 +445,7 @@ def run(
         if out_path is None:
             raise SystemExit("--resume requires --out")
         if out_path.exists():
-            cp = _load_checkpoint(out_path)
+            cp = RunResult(**load_checkpoint(out_path))
             if cp.agent != agent_name or cp.seed != seed:
                 raise SystemExit(
                     "checkpoint mismatch: out has agent="
@@ -672,7 +477,7 @@ def run(
         if logger is not None:
             logger.event("package_started", package_id=pkg.package_id, i=pkg_i)
         interface_json = emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin)
-        truth = _extract_key_types_from_interface_json(interface_json)
+        truth = extract_key_types_from_interface_json(interface_json)
         predicted: set[str] = set()
         err: str | None = None
         attempts = 0
@@ -694,9 +499,8 @@ def run(
                     predicted = real_agent.complete_type_list(prompt, timeout_s=max(1.0, remaining))
                     last_exc = None
                     break
-                except Exception as e:  # pylint: disable=broad-except
-                    # Catch all exceptions: agent may raise TimeoutError, ValueError, or other errors.
-                    # We handle specific cases and break on others.
+                except (RuntimeError, ValueError, httpx.RequestError, TimeoutError) as e:
+                    # Catch specific exceptions from agent or logic.
                     last_exc = e
                     msg = str(e)
                     if isinstance(e, TimeoutError):
@@ -818,7 +622,7 @@ def run(
                     for r in results
                 ],
             )
-            _write_checkpoint(out_path, partial)
+            write_checkpoint(out_path, partial, validate_fn=validate_phase1_run_json)
 
     finished = int(time.time())
 
@@ -866,7 +670,7 @@ def run(
 
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_checkpoint(out_path, run_result)
+        write_checkpoint(out_path, run_result, validate_fn=validate_phase1_run_json)
 
     if logger is not None:
         logger.event(
