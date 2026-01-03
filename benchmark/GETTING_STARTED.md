@@ -4,6 +4,7 @@ This guide is the canonical entrypoint for running the Phase II (Type Inhabitati
 
 ## Quick start (5 minutes)
 
+1. **Setup dependencies and corpus:**
 ```bash
 cd benchmark
 uv sync --group dev --frozen
@@ -12,12 +13,10 @@ git clone --depth 1 https://github.com/MystenLabs/sui-packages.git ../sui-packag
 cp .env.example .env
 ```
 
-Then run a small Phase II targeted sample:
-
+2. **Run a high-signal Phase II sample (Gemini 3 Flash):**
 ```bash
-cd benchmark
-./scripts/run_model.sh --env-file ./.env --model openai/gpt-5.2 \
-  --phase2-targeted --scan-samples 50 --run-samples 10 --per-package-timeout-seconds 60
+./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
+  --scan-samples 100 --run-samples 5 --per-package-timeout-seconds 90
 ```
 
 ---
@@ -80,8 +79,8 @@ Use this when you want to quickly iterate on benchmarking and see a JSON output 
 
 ```bash
 cd benchmark
-./scripts/run_model.sh --env-file ./.env --model openai/gpt-5.2 \
-  --phase2-targeted --scan-samples 50 --run-samples 10 --per-package-timeout-seconds 60
+./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
+  --scan-samples 100 --run-samples 5 --per-package-timeout-seconds 90
 ```
 
 Model slug sanity check (avoids "no requests" surprises):
@@ -97,26 +96,57 @@ Use this when you want the same workload executed across multiple models.
 
 ```bash
 cd benchmark
-./scripts/run_multi_model.sh --env-file ./.env \
-  --models "openai/gpt-5.2,google/gemini-3-flash-preview" \
+./scripts/run_multi_model.sh --env-file .env \
+  --models "google/gemini-3-flash-preview,anthropic/claude-3.5-sonnet" \
   --parallel 1 \
-  --scan-samples 50 --run-samples 10 --per-package-timeout-seconds 60
+  --scan-samples 100 --run-samples 5 --per-package-timeout-seconds 90
 ```
 
-Notes:
+**Notes:**
 - Start with `--parallel 1` to avoid RPC rate limits; increase gradually.
 
-### C) A2A / AgentBeats integration
+---
 
-Use this when you want the A2A scenario (green/purple agents) and JSON-RPC artifacts.
+### D) Using Datasets
 
+Use this when you want to run benchmarks on curated package lists.
+
+**Quick iteration with top-25 dataset:**
 ```bash
-cd benchmark
-uv run smi-agentbeats-scenario scenario_smi --launch-mode current
-uv run smi-a2a-smoke --scenario scenario_smi --corpus-root ../sui-packages/packages/mainnet_most_used --samples 1
+uv run smi-inhabit \
+  --corpus-root ../../sui-packages/packages/mainnet_most_used \
+  --dataset type_inhabitation_top25 \
+  --samples 1 \
+  --agent mock-empty \
+  --out results/top25_test.json
 ```
 
-See `docs/A2A_EXAMPLES.md` for copy-paste request/response examples.
+**Standard Phase II benchmark:**
+```bash
+uv run smi-inhabit \
+  --corpus-root ../../sui-packages/packages/mainnet_most_used \
+  --dataset standard_phase2_benchmark \
+  --samples 10 \
+  --agent real-openai-compatible \
+  --out results/phase2_run.json
+```
+
+**Available datasets:**
+- `type_inhabitation_top25` - 25 packages for fast iteration
+- `packages_with_keys` - Packages with key structs (variable count)
+- `standard_phase2_benchmark` - Primary Phase II benchmark (292 packages)
+
+**Custom manifest files:**
+For custom package lists, use `--package-ids-file` with the full path:
+```bash
+uv run smi-inhabit \
+  --corpus-root ../../sui-packages/packages/mainnet_most_used \
+  --package-ids-file /path/to/my_manifest.txt \
+  --agent real-openai-compatible \
+  --out results/custom_run.json
+```
+
+**See `DATASETS.md`** for comprehensive guide on creating and using datasets.
 
 ---
 
