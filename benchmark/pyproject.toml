@@ -73,5 +73,14 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:The `on_event` decorator is deprecated:DeprecationWarning:starlette.*",
+    "ignore:The `route` decorator is deprecated:DeprecationWarning:starlette.*",
+    "ignore:HTTP_413_REQUEST_ENTITY_TOO_LARGE is deprecated:DeprecationWarning:a2a.*",
+    "ignore:.*is deprecated. Use 'HTTP_413_CONTENT_TOO_LARGE' instead:DeprecationWarning:a2a.*",
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
+
 [tool.uv]
 package = true

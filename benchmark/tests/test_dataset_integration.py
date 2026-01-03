@@ -1,32 +1,47 @@
-"""Integration tests for dataset CLI functionality."""
+"""
+Integration tests for dataset CLI functionality."""
 
 from __future__ import annotations
 
 import json
 import subprocess
 import tempfile
+import shutil
 from pathlib import Path
+from typing import Generator
 
 import pytest
 
-# Corpus path for integration tests
-CORPUS_ROOT = (
-    Path(__file__).parent.parent.parent
-    / "sui-package-benchmark"
-    / ".local"
-    / "research"
-    / "sui-packages"
-    / "packages"
-    / "mainnet_most_used"
-)
+
+@pytest.fixture
+def mock_corpus(tmp_path: Path) -> Generator[Path, None, None]:
+    """Create a minimal mock corpus for testing."""
+    corpus_root = tmp_path / "mock_corpus"
+
+    # Create structure for a few packages
+    # Use IDs that match what's in our dataset manifests
+    pkg_ids = [
+        "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+        "0x2df868f30120484cc5e900c3b8b7a04561596cf15a9751159a207930471afff2",
+        "0x059f94b85c07eb74d2847f8255d8cc0a67c9a8dcc039eabf9f8b9e23a0de2700",
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+    ]
+
+    for pkg_id in pkg_ids:
+        # Standard sui-packages structure: <corpus_root>/0x00/<pkgid>
+        # Note: the extractor expects 0xXX/PKGNAMEOID format
+        # Actually iter_package_dirs does: for prefix in corpus_root.iterdir() -> prefix.iterdir()
+        prefix = "0x00"
+        pkg_dir = corpus_root / prefix / pkg_id
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        (pkg_dir / "bytecode_modules").mkdir(exist_ok=True)
+        (pkg_dir / "metadata.json").write_text(json.dumps({"id": pkg_id}))
+
+    yield corpus_root
 
 
-def test_type_inhabitation_top25_dataset_runs() -> None:
+def test_type_inhabitation_top25_dataset_runs(mock_corpus: Path) -> None:
     """Test that type_inhabitation_top25 dataset runs with mock-empty agent."""
-
-    if not CORPUS_ROOT.exists():
-        pytest.skip(f"Corpus not found at {CORPUS_ROOT}")
-
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         tmp_path = Path(tmp.name)
 
@@ -44,20 +59,18 @@ def test_type_inhabitation_top25_dataset_runs() -> None:
                 "--agent",
                 "mock-empty",
                 "--corpus-root",
-                str(CORPUS_ROOT),
+                str(mock_corpus),
                 "--out",
                 str(tmp_path),
                 "--no-log",
             ],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=Path(__file__).parent.parent,
         )
 
         # Check success
-        assert result.returncode == 0, f"Benchmark failed: {result.stderr}"
-
-        # Check output exists and is valid JSON
+        assert result.returncode == 0, f"Benchmark failed: {result.stderr}\nSTDOUT: {result.stdout}"
         assert tmp_path.exists(), "Expected output JSON to exist"
 
         output_data = json.loads(tmp_path.read_text())
@@ -65,16 +78,11 @@ def test_type_inhabitation_top25_dataset_runs() -> None:
         assert len(output_data["packages"]) == 1, "Expected 1 package in output"
 
     finally:
-        # Clean up
         tmp_path.unlink(missing_ok=True)
 
 
-def test_packages_with_keys_dataset_runs() -> None:
+def test_packages_with_keys_dataset_runs(mock_corpus: Path) -> None:
     """Test that packages_with_keys dataset runs with mock-empty agent."""
-
-    if not CORPUS_ROOT.exists():
-        pytest.skip(f"Corpus not found at {CORPUS_ROOT}")
-
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         tmp_path = Path(tmp.name)
 
@@ -92,37 +100,31 @@ def test_packages_with_keys_dataset_runs() -> None:
                 "--agent",
                 "mock-empty",
                 "--corpus-root",
-                str(CORPUS_ROOT),
+                str(mock_corpus),
                 "--out",
                 str(tmp_path),
                 "--no-log",
             ],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=Path(__file__).parent.parent,
         )
 
         # Check success
         assert result.returncode == 0, f"Benchmark failed: {result.stderr}"
-
-        # Check output exists
         assert tmp_path.exists(), "Expected output JSON to exist"
 
     finally:
         tmp_path.unlink(missing_ok=True)
 
 
-def test_dataset_with_real_agent_simulation() -> None:
+def test_dataset_with_real_agent_simulation(mock_corpus: Path) -> None:
     """Test that dataset works with real agent in simulation mode."""
-
-    if not CORPUS_ROOT.exists():
-        pytest.skip(f"Corpus not found at {CORPUS_ROOT}")
-
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         tmp_path = Path(tmp.name)
 
     try:
-        # Run benchmark with baseline-search agent (real agent, but simulation mode)
+        # Run benchmark with baseline-search agent
         result = subprocess.run(
             [
                 "uv",
@@ -135,7 +137,7 @@ def test_dataset_with_real_agent_simulation() -> None:
                 "--agent",
                 "baseline-search",
                 "--corpus-root",
-                str(CORPUS_ROOT),
+                str(mock_corpus),
                 "--out",
                 str(tmp_path),
                 "--no-log",
@@ -144,13 +146,11 @@ def test_dataset_with_real_agent_simulation() -> None:
             ],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=Path(__file__).parent.parent,
         )
 
         # Check success
         assert result.returncode == 0, f"Benchmark failed: {result.stderr}"
-
-        # Check output exists
         assert tmp_path.exists(), "Expected output JSON to exist"
 
     finally:
@@ -159,23 +159,14 @@ def test_dataset_with_real_agent_simulation() -> None:
 
 def test_all_datasets_are_accessible() -> None:
     """Test that all datasets in manifests/datasets/ are accessible via --dataset flag."""
-    datasets_dir = Path(__file__).parent / "manifests" / "datasets"
-
-    if not datasets_dir.exists():
-        pytest.skip(f"Datasets directory not found at {datasets_dir}")
+    datasets_dir = Path(__file__).parent.parent / "manifests" / "datasets"
 
     # Find all dataset files
     dataset_files = [f for f in datasets_dir.glob("*.txt") if f.is_file()]
 
-    if not dataset_files:
-        pytest.skip("No dataset files found")
-
     # Test each dataset can be accessed
     for dataset_file in dataset_files:
         dataset_name = dataset_file.stem  # Remove .txt extension
-
-        # Test that dataset exists
-        assert dataset_file.exists(), f"Dataset file not found: {dataset_file}"
 
         # Test dataset has valid content
         content = dataset_file.read_text(encoding="utf-8").splitlines()
@@ -188,15 +179,9 @@ def test_all_datasets_are_accessible() -> None:
         assert all(line.startswith("0x") for line in package_lines), f"Dataset {dataset_name} has invalid package IDs"
 
 
-def test_dataset_vs_package_ids_file_equivalence() -> None:
+def test_dataset_vs_package_ids_file_equivalence(mock_corpus: Path) -> None:
     """Test that --dataset and --package-ids-file produce equivalent results."""
-
-    if not CORPUS_ROOT.exists():
-        pytest.skip(f"Corpus not found at {CORPUS_ROOT}")
-
-    dataset_path = Path(__file__).parent / "manifests" / "datasets" / "type_inhabitation_top25.txt"
-    if not dataset_path.exists():
-        pytest.skip(f"Dataset not found: {dataset_path}")
+    dataset_path = Path(__file__).parent.parent / "manifests" / "datasets" / "type_inhabitation_top25.txt"
 
     # Create temp output files
     with (
@@ -220,16 +205,16 @@ def test_dataset_vs_package_ids_file_equivalence() -> None:
                 "--agent",
                 "mock-empty",
                 "--corpus-root",
-                str(CORPUS_ROOT),
+                str(mock_corpus),
                 "--out",
                 str(dataset_out),
                 "--no-log",
                 "--seed",
-                "42",  # Use fixed seed for reproducibility
+                "42",
             ],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=Path(__file__).parent.parent,
         )
 
         assert result1.returncode == 0, f"Benchmark with --dataset failed: {result1.stderr}"
@@ -247,16 +232,16 @@ def test_dataset_vs_package_ids_file_equivalence() -> None:
                 "--agent",
                 "mock-empty",
                 "--corpus-root",
-                str(CORPUS_ROOT),
+                str(mock_corpus),
                 "--out",
                 str(file_out),
                 "--no-log",
                 "--seed",
-                "42",  # Same seed for reproducibility
+                "42",
             ],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent,
+            cwd=Path(__file__).parent.parent,
         )
 
         assert result2.returncode == 0, f"Benchmark with --package-ids-file failed: {result2.stderr}"
@@ -272,6 +257,5 @@ def test_dataset_vs_package_ids_file_equivalence() -> None:
         assert len(data1["packages"]) == len(data2["packages"]), "Both should process the same number of packages"
 
     finally:
-        # Clean up
         dataset_out.unlink(missing_ok=True)
         file_out.unlink(missing_ok=True)

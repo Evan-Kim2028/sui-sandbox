@@ -64,13 +64,9 @@ async def test_cancellation_handles_timeout_and_kills():
 
     mock_proc = AsyncMock(spec=asyncio.subprocess.Process)
     mock_proc.returncode = None
-
-    # Simulate wait_for timeout by making wait() take a long time
-    async def slow_wait():
-        await asyncio.sleep(10)
-        return 0
-
-    mock_proc.wait = AsyncMock(side_effect=slow_wait)
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock(return_value=0)
 
     executor._task_processes[task_id] = mock_proc
     executor._task_cancel_events[task_id] = asyncio.Event()
@@ -82,6 +78,10 @@ async def test_cancellation_handles_timeout_and_kills():
 
     async def mock_timeout_wait_for(fut, timeout):
         if timeout == 5.0:  # Match the code's timeout
+            # Still must deal with the future to avoid warnings
+            if asyncio.iscoroutine(fut):
+                # Schedule it but don't wait
+                asyncio.create_task(fut)
             raise aio.TimeoutError()
         return await aio.wait_for(fut, timeout)
 
@@ -90,6 +90,9 @@ async def test_cancellation_handles_timeout_and_kills():
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(smi_bench.a2a_green_agent.asyncio, "wait_for", mock_timeout_wait_for)
         await executor.cancel(mock_context, mock_event_queue)
+
+    # Await the coroutine to resolve the warning
+    await mock_proc.wait()
 
     # Verify kill was called after terminate timed out
     mock_proc.terminate.assert_called_once()

@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -759,7 +760,7 @@ def build_app(*, public_url: str) -> Any:
         agent_executor=SmiBenchGreenExecutor(),
         task_store=InMemoryTaskStore(),
     )
-    app = A2AStarletteApplication(agent_card=card, http_handler=handler).build()
+    app = A2AStarletteApplication(agent_card=card, http_handler=handler).build()  # type: ignore
 
     # Register shutdown handler
     @app.on_event("shutdown")
