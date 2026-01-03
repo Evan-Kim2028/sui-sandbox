@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from smi_bench.checkpoint import load_checkpoint
 from smi_bench.inhabit_runner import InhabitRunResult
-from smi_bench.inhabit_runner import _load_checkpoint as _load_inhabit_checkpoint
-from smi_bench.runner import RunResult, _load_checkpoint
+from smi_bench.runner import RunResult
 from smi_bench.schema import validate_phase1_run_json, validate_phase2_run_json
 from smi_bench.utils import safe_json_loads
 
@@ -64,7 +64,8 @@ def test_phase1_golden_fixture_can_load_as_runresult() -> None:
         temp_path = Path(f.name)
 
     try:
-        result = _load_checkpoint(temp_path)
+        result_dict = load_checkpoint(temp_path)
+        result = RunResult(**result_dict)
         assert isinstance(result, RunResult)
         assert result.schema_version == 1
         assert len(result.packages) == 2
@@ -104,7 +105,8 @@ def test_phase2_golden_fixture_can_load_as_inhabitrresult() -> None:
         temp_path = Path(f.name)
 
     try:
-        result = _load_inhabit_checkpoint(temp_path)
+        result_dict = load_checkpoint(temp_path)
+        result = InhabitRunResult(**result_dict)
         assert isinstance(result, InhabitRunResult)
         assert result.schema_version == 1
         assert len(result.packages) == 2

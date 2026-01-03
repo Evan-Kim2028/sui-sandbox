@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from smi_bench.inhabit_runner import _ptb_variants
+from smi_bench.inhabit.engine import ptb_variants
 
 
 def test_ptb_variants_deterministic_and_bounded() -> None:
@@ -20,8 +20,8 @@ def test_ptb_variants_deterministic_and_bounded() -> None:
         ]
     }
 
-    v1 = _ptb_variants(base, sender="0xabc", max_variants=10)
-    v2 = _ptb_variants(base, sender="0xabc", max_variants=10)
+    v1 = ptb_variants(base, sender="0xabc", max_variants=10)
+    v2 = ptb_variants(base, sender="0xabc", max_variants=10)
 
     assert [n for n, _ in v1] == [n for n, _ in v2]
     assert [json.dumps(s, sort_keys=True) for _, s in v1] == [json.dumps(s, sort_keys=True) for _, s in v2]
@@ -45,5 +45,6 @@ def test_ptb_variants_deterministic_and_bounded() -> None:
     ints_0 = dict(v1)["ints_0"]
     assert ints_0["calls"][0]["args"][1]["u64"] == 0
 
-    limited = _ptb_variants(base, sender="0xabc", max_variants=2)
+    limited = ptb_variants(base, sender="0xabc", max_variants=2)
     assert len(limited) == 2
+

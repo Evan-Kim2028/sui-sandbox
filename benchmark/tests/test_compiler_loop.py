@@ -36,16 +36,27 @@ def test_build_real_agent_retry_prompt_includes_dry_run_error() -> None:
 
 @patch("pathlib.Path.exists")
 @patch("smi_bench.inhabit_runner.RealAgent")
-@patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json")
+@patch("smi_bench.inhabit_runner.emit_bytecode_json")
 @patch("smi_bench.inhabit_runner.collect_packages")
 @patch("smi_bench.inhabit_runner._run_tx_sim_with_fallback")
+@patch("smi_bench.inhabit_runner.fetch_inventory")
+@patch("smi_bench.inhabit_runner._run_preflight_checks")
 def test_run_loop_retries_on_harness_error(
-    mock_sim, mock_collect, mock_emit, mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
+    _mock_preflight,
+    mock_fetch_inventory,
+    mock_sim,
+    mock_collect,
+    mock_emit,
+    mock_agent_class,
+    mock_exists,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     # Setup mocks
     monkeypatch.setenv("SMI_API_KEY", "test_key")
     monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
+    mock_fetch_inventory.return_value = {}  # Empty inventory for test
     mock_pkg = MagicMock()
     mock_pkg.package_id = "0x123"
     mock_pkg.package_dir = "/tmp/pkg"
@@ -124,15 +135,26 @@ def test_run_loop_retries_on_harness_error(
 
 @patch("pathlib.Path.exists")
 @patch("smi_bench.inhabit_runner.RealAgent")
-@patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json")
+@patch("smi_bench.inhabit_runner.emit_bytecode_json")
 @patch("smi_bench.inhabit_runner.collect_packages")
 @patch("smi_bench.inhabit_runner._run_tx_sim_with_fallback")
+@patch("smi_bench.inhabit_runner.fetch_inventory")
+@patch("smi_bench.inhabit_runner._run_preflight_checks")
 def test_run_loop_progressive_need_more_uses_multiple_planning_calls(
-    mock_sim, mock_collect, mock_emit, mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
+    _mock_preflight,
+    mock_fetch_inventory,
+    mock_sim,
+    mock_collect,
+    mock_emit,
+    mock_agent_class,
+    mock_exists,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
     monkeypatch.setenv("SMI_MODEL", "m")
     mock_exists.return_value = True
+    mock_fetch_inventory.return_value = {}  # Empty inventory for test
     mock_pkg = MagicMock()
     mock_pkg.package_id = "0x123"
     mock_pkg.package_dir = "/tmp/pkg"
@@ -194,10 +216,11 @@ def test_run_loop_progressive_need_more_uses_multiple_planning_calls(
 
 @patch("pathlib.Path.exists")
 @patch("smi_bench.inhabit_runner.RealAgent")
-@patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json")
+@patch("smi_bench.inhabit_runner.emit_bytecode_json")
 @patch("smi_bench.inhabit_runner.collect_packages")
+@patch("smi_bench.inhabit_runner._run_preflight_checks")
 def test_run_guard_exits_when_parent_pid_missing(
-    mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
+    _mock_preflight, mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
     monkeypatch.setenv("SMI_MODEL", "m")
@@ -210,7 +233,7 @@ def test_run_guard_exits_when_parent_pid_missing(
     mock_emit.return_value = {"modules": {}}
 
     # Make the parent PID check deterministically fail.
-    monkeypatch.setattr("smi_bench.inhabit_runner._pid_is_alive", lambda _pid: False)
+    monkeypatch.setattr("smi_bench.inhabit.engine.pid_is_alive", lambda _pid: False)
 
     out_path = tmp_path / "results.json"
     run(
@@ -254,10 +277,11 @@ def test_run_guard_exits_when_parent_pid_missing(
 
 @patch("pathlib.Path.exists")
 @patch("smi_bench.inhabit_runner.RealAgent")
-@patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json")
+@patch("smi_bench.inhabit_runner.emit_bytecode_json")
 @patch("smi_bench.inhabit_runner.collect_packages")
+@patch("smi_bench.inhabit_runner._run_preflight_checks")
 def test_run_guard_exits_when_max_run_seconds_exceeded(
-    mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
+    _mock_preflight, mock_collect, mock_emit, _mock_agent_class, mock_exists, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("SMI_API_KEY", "test_key")
     monkeypatch.setenv("SMI_MODEL", "m")

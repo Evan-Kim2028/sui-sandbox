@@ -15,10 +15,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from smi_bench.checkpoint import load_checkpoint, write_checkpoint
 from smi_bench.inhabit_runner import (
     InhabitRunResult,
-    _load_checkpoint,
-    _write_checkpoint,
 )
 
 
@@ -32,9 +31,10 @@ def test_phase2_full_run_with_baseline_agent(tmp_path: Path) -> None:
     with (
         patch("smi_bench.inhabit_runner.collect_packages") as mock_collect,
         patch("smi_bench.inhabit_runner.validate_rust_binary") as mock_validate,
-        patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json") as mock_emit,
-        patch("smi_bench.inhabit_runner._run_tx_sim_via_helper") as mock_sim,
+        patch("smi_bench.inhabit_runner.emit_bytecode_json") as mock_emit,
+        patch("smi_bench.inhabit_runner.run_tx_sim_via_helper") as mock_sim,
         patch("smi_bench.inhabit_runner.JsonlLogger"),
+        patch("smi_bench.inhabit_runner._run_preflight_checks"),
     ):
         mock_pkg = MagicMock()
         mock_pkg.package_id = "0x1"
@@ -101,15 +101,18 @@ def test_phase2_checkpoint_and_resume(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, initial_result)
+    write_checkpoint(checkpoint_path, initial_result)
 
     # Load checkpoint and verify
-    loaded = _load_checkpoint(checkpoint_path)
-    assert loaded.schema_version == initial_result.schema_version
-    assert loaded.agent == initial_result.agent
-    assert len(loaded.packages) == len(initial_result.packages)
-    assert loaded.packages[0]["package_id"] == "0x1"
-    assert loaded.packages[1]["package_id"] == "0x2"
+    # Note: load_checkpoint returns a dict, unlike _load_checkpoint (legacy).
+    # The new checkpoint.load_checkpoint returns a generic dict.
+    # We should reconstruct if needed, but for testing attributes we can check the dict.
+    loaded_dict = load_checkpoint(checkpoint_path)
+    assert loaded_dict["schema_version"] == initial_result.schema_version
+    assert loaded_dict["agent"] == initial_result.agent
+    assert len(loaded_dict["packages"]) == len(initial_result.packages)
+    assert loaded_dict["packages"][0]["package_id"] == "0x1"
+    assert loaded_dict["packages"][1]["package_id"] == "0x2"
 
 
 def test_phase2_dry_run_mode(tmp_path: Path, monkeypatch) -> None:
@@ -122,9 +125,10 @@ def test_phase2_dry_run_mode(tmp_path: Path, monkeypatch) -> None:
     with (
         patch("smi_bench.inhabit_runner.collect_packages") as mock_collect,
         patch("smi_bench.inhabit_runner.validate_rust_binary") as mock_validate,
-        patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json") as mock_emit,
+        patch("smi_bench.inhabit_runner.emit_bytecode_json") as mock_emit,
         patch("smi_bench.inhabit_runner._run_tx_sim_with_fallback") as mock_sim,
         patch("smi_bench.inhabit_runner.JsonlLogger"),
+        patch("smi_bench.inhabit_runner._run_preflight_checks"),
     ):
         mock_pkg = MagicMock()
         mock_pkg.package_id = "0x1"
@@ -179,9 +183,10 @@ def test_phase2_build_only_mode(tmp_path: Path) -> None:
     with (
         patch("smi_bench.inhabit_runner.collect_packages") as mock_collect,
         patch("smi_bench.inhabit_runner.validate_rust_binary") as mock_validate,
-        patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json") as mock_emit,
-        patch("smi_bench.inhabit_runner._run_tx_sim_via_helper") as mock_sim,
+        patch("smi_bench.inhabit_runner.emit_bytecode_json") as mock_emit,
+        patch("smi_bench.inhabit_runner.run_tx_sim_via_helper") as mock_sim,
         patch("smi_bench.inhabit_runner.JsonlLogger"),
+        patch("smi_bench.inhabit_runner._run_preflight_checks"),
     ):
         mock_pkg = MagicMock()
         mock_pkg.package_id = "0x1"
@@ -231,11 +236,12 @@ def test_phase2_inventory_fetch_and_resolution(tmp_path: Path, monkeypatch) -> N
     with (
         patch("smi_bench.inhabit_runner.collect_packages") as mock_collect,
         patch("smi_bench.inhabit_runner.validate_rust_binary") as mock_validate,
-        patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json") as mock_emit,
-        patch("smi_bench.inhabit_runner._fetch_inventory") as mock_inventory,
-        patch("smi_bench.inhabit_runner._resolve_placeholders") as mock_resolve,
+        patch("smi_bench.inhabit_runner.emit_bytecode_json") as mock_emit,
+        patch("smi_bench.inhabit_runner.fetch_inventory") as mock_inventory,
+        patch("smi_bench.inhabit_runner.resolve_placeholders") as mock_resolve,
         patch("smi_bench.inhabit_runner._run_tx_sim_with_fallback") as mock_sim,
         patch("smi_bench.inhabit_runner.JsonlLogger"),
+        patch("smi_bench.inhabit_runner._run_preflight_checks"),
     ):
         mock_pkg = MagicMock()
         mock_pkg.package_id = "0x1"
@@ -315,9 +321,11 @@ def test_phase2_gas_budget_ladder_retries(tmp_path: Path) -> None:
     with (
         patch("smi_bench.inhabit_runner.collect_packages") as mock_collect,
         patch("smi_bench.inhabit_runner.validate_rust_binary") as mock_validate,
-        patch("smi_bench.inhabit_runner._run_rust_emit_bytecode_json") as mock_emit,
+        patch("smi_bench.inhabit_runner.emit_bytecode_json") as mock_emit,
         patch("smi_bench.inhabit_runner._run_tx_sim_with_fallback") as mock_sim,
+        patch("smi_bench.inhabit_runner.fetch_inventory") as mock_inventory,
         patch("smi_bench.inhabit_runner.JsonlLogger"),
+        patch("smi_bench.inhabit_runner._run_preflight_checks"),
     ):
         mock_pkg = MagicMock()
         mock_pkg.package_id = "0x1"
@@ -325,6 +333,7 @@ def test_phase2_gas_budget_ladder_retries(tmp_path: Path) -> None:
         mock_collect.return_value = [mock_pkg]
         mock_validate.return_value = Path("fake_rust")
         mock_emit.return_value = {"package_id": "0x1", "modules": {}}
+        mock_inventory.return_value = {}  # Empty inventory for test
 
         # Simulate gas error on first attempt, success on second
         call_count = [0]
@@ -410,11 +419,11 @@ def test_phase2_checkpoint_checksum_validated(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load checkpoint (checksum should be validated)
-    loaded = _load_checkpoint(checkpoint_path)
-    assert loaded.schema_version == result.schema_version
+    loaded = load_checkpoint(checkpoint_path)
+    assert loaded["schema_version"] == result.schema_version
 
     # Read raw file to verify checksum exists
     raw_data = json.loads(checkpoint_path.read_text())
@@ -451,12 +460,23 @@ def test_phase2_resume_loads_packages_from_checkpoint(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load checkpoint and verify packages loaded correctly
     from smi_bench.inhabit_runner import _resume_results_from_checkpoint
 
-    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(_load_checkpoint(checkpoint_path))
+    # Note: _resume_results_from_checkpoint currently expects InhabitRunResult object.
+    # We need to wrap the dict returned by load_checkpoint.
+    # We must wrap dict in InhabitRunResult for compatibility with resume logic.
+    # to take a dict or InhabitRunResult.
+    # For now, let's assume we update _resume_results_from_checkpoint to take a dict or we wrap it here.
+    # Let's recreate the object for the test to be safe until we refactor _resume_results_from_checkpoint.
+    loaded_dict = load_checkpoint(checkpoint_path)
+    # We need to construct InhabitRunResult from dict to pass to _resume_results_from_checkpoint
+    # This mimics what _load_checkpoint used to do.
+    loaded_obj = InhabitRunResult(**loaded_dict)
+    
+    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(loaded_obj)
 
     assert len(loaded_packages) == 2
     assert "0x1" in seen
@@ -492,13 +512,13 @@ def test_phase2_deterministic_output_with_same_seed(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint1, result)
-    _write_checkpoint(checkpoint2, result)
+    write_checkpoint(checkpoint1, result)
+    write_checkpoint(checkpoint2, result)
 
     # Load both and compare (should be identical)
-    loaded1 = _load_checkpoint(checkpoint1)
-    loaded2 = _load_checkpoint(checkpoint2)
+    loaded1 = load_checkpoint(checkpoint1)
+    loaded2 = load_checkpoint(checkpoint2)
 
-    assert loaded1.schema_version == loaded2.schema_version
-    assert loaded1.seed == loaded2.seed
-    assert loaded1.packages == loaded2.packages
+    assert loaded1["schema_version"] == loaded2["schema_version"]
+    assert loaded1["seed"] == loaded2["seed"]
+    assert loaded1["packages"] == loaded2["packages"]

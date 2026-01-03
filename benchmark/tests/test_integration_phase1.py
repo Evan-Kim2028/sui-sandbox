@@ -17,7 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smi_bench.runner import RunResult, _load_checkpoint, _write_checkpoint
+from smi_bench.checkpoint import load_checkpoint, write_checkpoint
+from smi_bench.runner import RunResult
 
 
 def test_phase1_full_run_with_mock_agent(tmp_path: Path, monkeypatch) -> None:
@@ -34,11 +35,12 @@ def test_phase1_full_run_with_mock_agent(tmp_path: Path, monkeypatch) -> None:
 
     out_json = tmp_path / "phase1_output.json"
 
+    # We need to patch build_rust now that it's in smi_bench.rust but imported in runner
     with (
         patch("smi_bench.runner.collect_packages") as mock_collect,
         patch("smi_bench.runner.validate_rust_binary") as mock_validate,
         patch("smi_bench.runner.emit_bytecode_json") as mock_emit,
-        patch("smi_bench.runner._build_rust"),
+        patch("smi_bench.runner.run_build_rust"), # Updated from _build_rust
         patch("smi_bench.runner.JsonlLogger"),
     ):
         # Mock a package for the runner to process
@@ -105,10 +107,11 @@ def test_phase1_checkpoint_and_resume(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, initial_result)
+    write_checkpoint(checkpoint_path, initial_result)
 
     # Load checkpoint and verify
-    loaded = _load_checkpoint(checkpoint_path)
+    loaded_dict = load_checkpoint(checkpoint_path)
+    loaded = RunResult(**loaded_dict)
     assert loaded.schema_version == initial_result.schema_version
     assert loaded.agent == initial_result.agent
     assert len(loaded.packages) == len(initial_result.packages)
@@ -126,7 +129,7 @@ def test_phase1_continue_on_error(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.runner.collect_packages") as mock_collect,
         patch("smi_bench.runner.validate_rust_binary") as mock_validate,
         patch("smi_bench.runner.emit_bytecode_json") as mock_emit,
-        patch("smi_bench.runner._build_rust"),
+        patch("smi_bench.runner.run_build_rust"),
         patch("smi_bench.runner.JsonlLogger"),
     ):
         # Mock collect to return one package
@@ -175,7 +178,7 @@ def test_phase1_samples_from_corpus_file(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.runner.collect_packages"),
         patch("smi_bench.runner.validate_rust_binary") as mock_validate,
         patch("smi_bench.runner.emit_bytecode_json") as mock_emit,
-        patch("smi_bench.runner._build_rust"),
+        patch("smi_bench.runner.run_build_rust"),
         patch("smi_bench.runner.JsonlLogger"),
     ):
         mock_validate.return_value = Path("fake_rust")
@@ -220,10 +223,11 @@ def test_phase1_git_metadata_included(tmp_path: Path, monkeypatch) -> None:
         packages=[],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load and verify git metadata preserved
-    loaded = _load_checkpoint(checkpoint_path)
+    loaded_dict = load_checkpoint(checkpoint_path)
+    loaded = RunResult(**loaded_dict)
     assert loaded.corpus_git is not None
     assert loaded.corpus_git.get("head") == "abc123"
     assert loaded.corpus_git.get("head_commit_time") == "2024-01-01T00:00:00Z"
@@ -244,7 +248,7 @@ def test_phase1_output_schema_matches_validator(tmp_path: Path) -> None:
         samples=10,
         seed=42,
         agent="test-agent",
-        aggregate={
+        aggregate= {
             "avg_f1": 0.85,
             "errors": 0,
             "packages_total": 1,
@@ -268,10 +272,11 @@ def test_phase1_output_schema_matches_validator(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load and validate with schema validator
-    loaded = _load_checkpoint(checkpoint_path)
+    loaded_dict = load_checkpoint(checkpoint_path)
+    loaded = RunResult(**loaded_dict)
     data = {
         "schema_version": loaded.schema_version,
         "started_at_unix_seconds": loaded.started_at_unix_seconds,
@@ -312,10 +317,11 @@ def test_phase1_checkpoint_checksum_validated(tmp_path: Path) -> None:
         packages=[],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load checkpoint (checksum should be validated)
-    loaded = _load_checkpoint(checkpoint_path)
+    loaded_dict = load_checkpoint(checkpoint_path)
+    loaded = RunResult(**loaded_dict)
     assert loaded.schema_version == result.schema_version
 
     # Read raw file to verify checksum exists
@@ -374,12 +380,13 @@ def test_phase1_resume_loads_packages_from_checkpoint(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint_path, result)
+    write_checkpoint(checkpoint_path, result)
 
     # Load checkpoint and verify packages loaded correctly
     from smi_bench.runner import _resume_results_from_checkpoint
 
-    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(_load_checkpoint(checkpoint_path))
+    cp = RunResult(**load_checkpoint(checkpoint_path))
+    loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(cp)
 
     assert len(loaded_packages) == 2
     assert "0x1" in seen
@@ -425,12 +432,14 @@ def test_phase1_deterministic_output_with_same_seed(tmp_path: Path) -> None:
         ],
     )
 
-    _write_checkpoint(checkpoint1, result)
-    _write_checkpoint(checkpoint2, result)
+    write_checkpoint(checkpoint1, result)
+    write_checkpoint(checkpoint2, result)
 
     # Load both and compare (should be identical)
-    loaded1 = _load_checkpoint(checkpoint1)
-    loaded2 = _load_checkpoint(checkpoint2)
+    loaded1_dict = load_checkpoint(checkpoint1)
+    loaded2_dict = load_checkpoint(checkpoint2)
+    loaded1 = RunResult(**loaded1_dict)
+    loaded2 = RunResult(**loaded2_dict)
 
     assert loaded1.schema_version == loaded2.schema_version
     assert loaded1.seed == loaded2.seed
