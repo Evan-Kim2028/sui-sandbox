@@ -475,7 +475,7 @@ def test_phase2_resume_loads_packages_from_checkpoint(tmp_path: Path) -> None:
     # We need to construct InhabitRunResult from dict to pass to _resume_results_from_checkpoint
     # This mimics what _load_checkpoint used to do.
     loaded_obj = InhabitRunResult(**loaded_dict)
-    
+
     loaded_packages, seen, error_count, started = _resume_results_from_checkpoint(loaded_obj)
 
     assert len(loaded_packages) == 2

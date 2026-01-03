@@ -520,6 +520,7 @@ def run(
                 err = f"real-agent call failed: {last_exc}"
                 predicted = set()
         else:
+            assert agent is not None
             predicted = agent.predict_key_types(truth_key_types=truth)
 
         if err is not None:

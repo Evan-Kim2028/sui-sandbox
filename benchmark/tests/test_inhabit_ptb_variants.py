@@ -47,4 +47,3 @@ def test_ptb_variants_deterministic_and_bounded() -> None:
 
     limited = ptb_variants(base, sender="0xabc", max_variants=2)
     assert len(limited) == 2
-

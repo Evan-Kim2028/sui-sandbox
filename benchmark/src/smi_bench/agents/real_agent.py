@@ -349,8 +349,7 @@ class RealAgent:
                         try:
                             sleep_s = float(retry_after)
                             logging.getLogger(__name__).info(
-                                f"Rate-limited by API (status={r.status_code}), "
-                                f"retry-after={retry_after}s, backing off"
+                                f"Rate-limited by API (status={r.status_code}), retry-after={retry_after}s, backing off"
                             )
                         except (ValueError, TypeError) as e:
                             logging.getLogger(__name__).warning(
@@ -419,11 +418,12 @@ class RealAgent:
                 logging.getLogger(__name__).debug("Successfully extracted content from legacy 'text' field")
             except (KeyError, IndexError, TypeError) as e2:
                 data_summary = list(data.keys()) if isinstance(data, dict) else type(data)
-                jsonl_logger.event(
-                    "llm_content_extraction_error",
-                    error=str(e2),
-                    data_keys=data_summary,
-                )
+                if jsonl_logger is not None:
+                    jsonl_logger.event(
+                        "llm_content_extraction_error",
+                        error=str(e2),
+                        data_keys=data_summary,
+                    )
                 raise ValueError(f"unexpected response shape: {data}") from e2
 
         if not isinstance(content, str):
@@ -554,8 +554,7 @@ class RealAgent:
                         try:
                             sleep_s = float(retry_after)
                             logging.getLogger(__name__).info(
-                                f"Rate-limited by API (status={r.status_code}), "
-                                f"retry-after={retry_after}s, backing off"
+                                f"Rate-limited by API (status={r.status_code}), retry-after={retry_after}s, backing off"
                             )
                         except (ValueError, TypeError) as e:
                             logging.getLogger(__name__).warning(
@@ -626,11 +625,12 @@ class RealAgent:
                 logging.getLogger(__name__).debug("Successfully extracted content from legacy 'text' field")
             except (KeyError, IndexError, TypeError) as e2:
                 data_summary = list(data.keys()) if isinstance(data, dict) else type(data)
-                jsonl_logger.event(
-                    "llm_content_extraction_error",
-                    error=str(e2),
-                    data_keys=data_summary,
-                )
+                if jsonl_logger is not None:
+                    jsonl_logger.event(
+                        "llm_content_extraction_error",
+                        error=str(e2),
+                        data_keys=data_summary,
+                    )
                 raise ValueError(f"unexpected response shape: {data}") from e2
 
         if (log := logger) is not None:
@@ -666,7 +666,7 @@ class RealAgent:
             # Prefer scoring intelligence over strict formatting while keeping observability.
             try:
                 parsed = extract_json_value(content)
-                if (log := jsonl_logger) is not None:
+                if jsonl_logger is not None:
                     ctx = dict(log_context or {})
                     ctx.update(
                         {

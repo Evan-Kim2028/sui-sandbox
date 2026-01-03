@@ -146,7 +146,7 @@ def test_checkpoint_resume_skips_malformed_packages(tmp_path: Path) -> None:
 
     # Load checkpoint
     cp_dict = load_checkpoint(checkpoint_path)
-    # We must wrap it, but it contains malformed packages. 
+    # We must wrap it, but it contains malformed packages.
     # RunResult expects packages to be list[dict]. It doesn't validate package content deeply on init?
     # Actually RunResult definition in runner.py: packages: list[dict[str, Any]]
     # But checking types in list is tricky.
@@ -261,9 +261,9 @@ def test_checkpoint_missing_required_fields_raises_error(tmp_path: Path) -> None
     # But here we are loading.
     # The runners validate by unpacking `RunResult(**data)`.
     # So we should test that `RunResult(**data)` raises error.
-    
+
     data = load_checkpoint(checkpoint_path)
-    with pytest.raises(TypeError): # Dataclass init raises TypeError for missing args
+    with pytest.raises(TypeError):  # Dataclass init raises TypeError for missing args
         RunResult(**data)
 
 
@@ -309,7 +309,7 @@ def test_checkpoint_write_validates_schema(tmp_path: Path) -> None:
     # So I LOST schema validation on write!
     # I should have passed `validate_fn=validate_phase1_run_json` in `runner.py`.
     # And `validate_phase2_run_json` in `inhabit_runner.py`.
-    
+
     # I will fix this in the code after updating the test.
     pass
 

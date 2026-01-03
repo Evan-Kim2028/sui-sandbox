@@ -40,7 +40,7 @@ def test_phase1_full_run_with_mock_agent(tmp_path: Path, monkeypatch) -> None:
         patch("smi_bench.runner.collect_packages") as mock_collect,
         patch("smi_bench.runner.validate_rust_binary") as mock_validate,
         patch("smi_bench.runner.emit_bytecode_json") as mock_emit,
-        patch("smi_bench.runner.run_build_rust"), # Updated from _build_rust
+        patch("smi_bench.runner.run_build_rust"),  # Updated from _build_rust
         patch("smi_bench.runner.JsonlLogger"),
     ):
         # Mock a package for the runner to process
@@ -248,7 +248,7 @@ def test_phase1_output_schema_matches_validator(tmp_path: Path) -> None:
         samples=10,
         seed=42,
         agent="test-agent",
-        aggregate= {
+        aggregate={
             "avg_f1": 0.85,
             "errors": 0,
             "packages_total": 1,
