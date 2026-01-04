@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from smi_bench.dataset import iter_package_dirs
+from smi_bench.utils import safe_read_lines
 
 console = Console()
 
@@ -61,12 +62,12 @@ def check_corpus(corpus_root: Path) -> bool:
 
 def check_manifest(corpus_root: Path, manifest_path: Path) -> bool:
     console.print(f"[bold]Checking manifest:[/bold] {manifest_path}")
-    if not manifest_path.exists():
+    lines = safe_read_lines(manifest_path, context="doctor-manifest")
+    if not lines and not manifest_path.exists():
         console.print(f"[red]Error: manifest file does not exist: {manifest_path}[/red]")
         return False
 
-    with open(manifest_path, "r") as f:
-        package_ids = [line.split("#")[0].strip() for line in f if line.split("#")[0].strip()]
+    package_ids = [line.split("#")[0].strip() for line in lines if line.split("#")[0].strip()]
 
     missing_in_corpus = []
     for pkg_id in package_ids:

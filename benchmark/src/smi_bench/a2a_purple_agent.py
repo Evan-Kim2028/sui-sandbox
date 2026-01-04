@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
+import sys
 from typing import Any, cast
 
 import uvicorn
@@ -102,12 +104,27 @@ def build_app(*, public_url: str) -> Any:
     return app
 
 
+def _setup_signal_handlers() -> None:
+    """
+    Set up signal handlers for graceful shutdown.
+    """
+
+    def handler(signum: int, frame: Any) -> None:
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="A2A baseline purple agent (stub)")
     p.add_argument("--host", type=str, default="0.0.0.0")
     p.add_argument("--port", type=int, default=9998)
     p.add_argument("--card-url", type=str, default=None)
     args = p.parse_args(argv)
+
+    # Set up signal handlers before starting server
+    _setup_signal_handlers()
 
     url = args.card_url or f"http://{args.host}:{args.port}/"
     app = build_app(public_url=url)
