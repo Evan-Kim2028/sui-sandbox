@@ -11,6 +11,7 @@ import httpx
 
 from smi_bench.json_extract import JsonExtractError, extract_json_value, extract_type_list
 from smi_bench.logging import JsonlLogger
+from smi_bench.utils import safe_parse_float, safe_parse_int
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
     if not model:
         raise ValueError("missing model (set SMI_MODEL or OPENAI_MODEL)")
 
-    temperature_s = get("SMI_TEMPERATURE") or "0"
+    temperature_s = get("SMI_TEMPERATURE")
     max_tokens_s = get("SMI_MAX_TOKENS")
     thinking_s = get("SMI_THINKING")
     response_format_s = get("SMI_RESPONSE_FORMAT")
@@ -125,28 +126,11 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
     min_request_timeout_s = get("SMI_MIN_REQUEST_TIMEOUT_SECONDS", "SMI_MIN_REQUEST_TIMEOUT_S")
     max_request_retries_s = get("SMI_MAX_REQUEST_RETRIES")
 
-    try:
-        temperature = float(temperature_s)
-        if not (0.0 <= temperature <= 2.0):
-            raise ValueError(f"SMI_TEMPERATURE must be between 0.0 and 2.0, got {temperature}")
-    except (ValueError, TypeError) as e:
-        if isinstance(e, ValueError) and "must be between" in str(e):
-            raise
-        raise ValueError(f"invalid SMI_TEMPERATURE={temperature_s!r} (expected float between 0.0 and 2.0)") from e
+    temperature = safe_parse_float(temperature_s, 0.0, min_val=0.0, max_val=2.0, name="SMI_TEMPERATURE")
 
     max_tokens = None
     if max_tokens_s:
-        try:
-            val = int(max_tokens_s)
-            if val <= 0:
-                raise ValueError(f"SMI_MAX_TOKENS must be positive, got {val}")
-            if val > 100000:
-                raise ValueError(f"SMI_MAX_TOKENS seems unreasonably large: {val} (max recommended: 100000)")
-            max_tokens = val
-        except (ValueError, TypeError) as e:
-            if isinstance(e, ValueError) and ("must be" in str(e) or "unreasonably" in str(e)):
-                raise
-            raise ValueError(f"invalid SMI_MAX_TOKENS={max_tokens_s!r} (expected positive integer)") from e
+        max_tokens = safe_parse_int(max_tokens_s, 4096, min_val=1, max_val=100000, name="SMI_MAX_TOKENS")
 
     try:
         clear_thinking = _parse_bool(clear_thinking_s) if clear_thinking_s else None
@@ -165,8 +149,16 @@ def load_real_agent_config(env_overrides: dict[str, str] | None = None) -> RealA
         thinking=thinking_s,
         response_format=response_format_s,
         clear_thinking=clear_thinking,
-        min_request_timeout_s=float(min_request_timeout_s) if min_request_timeout_s else None,
-        max_request_retries=int(max_request_retries_s) if max_request_retries_s else None,
+        min_request_timeout_s=(
+            safe_parse_float(min_request_timeout_s, 60.0, min_val=1.0, max_val=3600.0, name="SMI_MIN_REQUEST_TIMEOUT")
+            if min_request_timeout_s
+            else None
+        ),
+        max_request_retries=(
+            safe_parse_int(max_request_retries_s, 6, min_val=0, max_val=20, name="SMI_MAX_REQUEST_RETRIES")
+            if max_request_retries_s
+            else None
+        ),
     )
 
 

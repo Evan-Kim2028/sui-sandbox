@@ -34,7 +34,11 @@ from rich.console import Console
 from rich.progress import track
 
 from smi_bench.agents.real_agent import RealAgent, load_real_agent_config
-from smi_bench.checkpoint import load_checkpoint, write_checkpoint
+from smi_bench.checkpoint import (
+    load_checkpoint,
+    validate_checkpoint_compatibility,
+    write_checkpoint,
+)
 from smi_bench.constants import DEFAULT_RPC_URL
 from smi_bench.dataset import collect_packages, sample_packages
 from smi_bench.env import load_dotenv
@@ -58,6 +62,10 @@ from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rus
 from smi_bench.schema import Phase2ResultKeys, validate_phase2_run_json
 from smi_bench.utils import (
     extract_key_types_from_interface_json,
+    log_exception,
+    retry_with_backoff,
+    safe_read_json,
+    safe_read_text,
     validate_binary,
 )
 
@@ -79,11 +87,6 @@ def _parse_gas_budget_ladder(s: str) -> list[int]:
 
     Raises:
         ValueError: If string format is invalid.
-    """
-    """
-    Parse a comma-separated list of integer gas budgets.
-
-    Example: "20000000,50000000"
     """
     s = s.strip()
     if not s:
@@ -228,7 +231,7 @@ def _default_dev_inspect_binary() -> Path:
 
 
 def _load_plan_file(path: Path) -> dict[str, dict]:
-    data = json.loads(path.read_text())
+    data = safe_read_json(path, context=f"plan-file {path}")
     if not isinstance(data, dict):
         raise SystemExit(f"--plan-file must be a JSON object mapping package_id -> PTB spec: {path}")
     out: dict[str, dict] = {}
@@ -240,7 +243,10 @@ def _load_plan_file(path: Path) -> dict[str, dict]:
 
 def _load_ids_file_ordered(path: Path) -> list[str]:
     out: list[str] = []
-    for line in path.read_text().splitlines():
+    text = safe_read_text(path, context=f"ids-file {path}")
+    if text is None:
+        return []
+    for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
             continue
@@ -735,15 +741,18 @@ def run(
         if out_path is None:
             raise SystemExit("--resume requires --out")
         if out_path.exists():
-            cp = InhabitRunResult(**load_checkpoint(out_path))
-            if cp.agent != agent_name or cp.seed != seed or cp.rpc_url != rpc_url or cp.sender != sender:
-                raise SystemExit("checkpoint mismatch: expected same agent/seed/rpc_url/sender for resume")
-            if cp.gas_budget != gas_budget:
-                raise SystemExit(
-                    f"checkpoint mismatch: out has gas_budget={cp.gas_budget}, expected gas_budget={gas_budget}"
-                )
-            if cp.gas_coin != gas_coin:
-                raise SystemExit(f"checkpoint mismatch: out has gas_coin={cp.gas_coin}, expected gas_coin={gas_coin}")
+            cp_data = load_checkpoint(out_path)
+            validate_checkpoint_compatibility(
+                cp_data,
+                {
+                    "agent": agent_name,
+                    "seed": seed,
+                    "rpc_url": rpc_url,
+                    "sender": sender,
+                    "schema_version": 2,
+                },
+            )
+            cp = InhabitRunResult(**cp_data)
             results, seen, error_count, started = _resume_results_from_checkpoint(cp, logger=logger)
             picked = [p for p in picked if p.package_id not in seen]
             console.print(f"[yellow]resuming:[/yellow] already_done={len(seen)} remaining={len(picked)}")
@@ -818,7 +827,12 @@ def run(
         causality_errors: list[str] = []
 
         try:
-            iface = emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin)
+            iface = retry_with_backoff(
+                lambda: emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin),
+                max_attempts=3,
+                base_delay=2.0,
+                retryable_exceptions=(RuntimeError, TimeoutError),
+            )
             truth_key_types = extract_key_types_from_interface_json(iface)
 
             if pkg_guard_error is not None:
@@ -1112,12 +1126,15 @@ def run(
         except TimeoutError as e:
             timed_out = True
             err = str(e)
+            log_exception("Package timed out", extra={"package_id": pkg.package_id, "timed_out": True})
         except subprocess.TimeoutExpired:
             timed_out = True
             err = f"tx-sim timeout exceeded ({per_package_timeout_seconds}s)"
+            log_exception("Subprocess timeout", extra={"package_id": pkg.package_id, "timed_out": True})
         except (RuntimeError, ValueError, httpx.RequestError) as e:
             err = str(e)
             ptb_parse_ok = False
+            log_exception("Package processing failed", extra={"package_id": pkg.package_id})
 
         # Treat any per-package failure as an error for aggregate reporting.
         if err is not None:

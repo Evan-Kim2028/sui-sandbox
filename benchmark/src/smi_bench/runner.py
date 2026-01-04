@@ -31,7 +31,11 @@ from rich.progress import track
 
 from smi_bench.agents.mock_agent import MockAgent
 from smi_bench.agents.real_agent import RealAgent, load_real_agent_config
-from smi_bench.checkpoint import load_checkpoint, write_checkpoint
+from smi_bench.checkpoint import (
+    load_checkpoint,
+    validate_checkpoint_compatibility,
+    write_checkpoint,
+)
 from smi_bench.dataset import collect_packages, sample_packages
 from smi_bench.env import load_dotenv
 from smi_bench.judge import KeyTypeScore, score_key_types
@@ -39,7 +43,13 @@ from smi_bench.logging import JsonlLogger, default_run_id
 from smi_bench.rust import build_rust as run_build_rust
 from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rust_binary
 from smi_bench.schema import validate_phase1_run_json
-from smi_bench.utils import extract_key_types_from_interface_json, find_git_root
+from smi_bench.utils import (
+    extract_key_types_from_interface_json,
+    find_git_root,
+    log_exception,
+    retry_with_backoff,
+    safe_read_lines,
+)
 
 console = Console()
 
@@ -207,7 +217,7 @@ def _load_ids_file_ordered(path: Path) -> list[str]:
     """
     seen: set[str] = set()
     out: list[str] = []
-    for line in path.read_text().splitlines():
+    for line in safe_read_lines(path, context=f"ids-file {path}"):
         s = line.strip()
         if not s or s.startswith("#"):
             continue
@@ -445,12 +455,16 @@ def run(
         if out_path is None:
             raise SystemExit("--resume requires --out")
         if out_path.exists():
-            cp = RunResult(**load_checkpoint(out_path))
-            if cp.agent != agent_name or cp.seed != seed:
-                raise SystemExit(
-                    "checkpoint mismatch: out has agent="
-                    f"{cp.agent} seed={cp.seed}, expected agent={agent_name} seed={seed}"
-                )
+            cp_data = load_checkpoint(out_path)
+            validate_checkpoint_compatibility(
+                cp_data,
+                {
+                    "agent": agent_name,
+                    "seed": seed,
+                    "schema_version": 1,
+                },
+            )
+            cp = RunResult(**cp_data)
             results, seen, error_count, started = _resume_results_from_checkpoint(cp)
             picked = [p for p in picked if p.package_id not in seen]
             console.print(f"[yellow]resuming:[/yellow] already_done={len(seen)} remaining={len(picked)}")
@@ -476,7 +490,19 @@ def run(
         deadline = pkg_started + per_package_timeout_seconds
         if logger is not None:
             logger.event("package_started", package_id=pkg.package_id, i=pkg_i)
-        interface_json = emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin)
+
+        try:
+            interface_json = retry_with_backoff(
+                lambda: emit_bytecode_json(package_dir=Path(pkg.package_dir), rust_bin=rust_bin),
+                max_attempts=3,
+                base_delay=2.0,
+                retryable_exceptions=(RuntimeError, TimeoutError),
+            )
+        except (RuntimeError, TimeoutError) as e:
+            # Handle failure early before scoring
+            err = f"bytecode extraction failed after retries: {e}"
+            interface_json = {"package_id": pkg.package_id, "modules": {}}
+
         truth = extract_key_types_from_interface_json(interface_json)
         predicted: set[str] = set()
         err: str | None = None
@@ -525,6 +551,7 @@ def run(
 
         if err is not None:
             error_count += 1
+            log_exception("Package processing failed", extra={"package_id": pkg.package_id, "error": err})
             if not continue_on_error:
                 raise RuntimeError(
                     f"Package processing failed: {pkg.package_id}\n"
