@@ -2,15 +2,106 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import os
+import random
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
+import traceback
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def retry_with_backoff(
+    fn: Callable[[], T],
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+) -> T:
+    """
+    Retry a synchronous function with exponential backoff and jitter.
+
+    Args:
+        fn: The function to retry.
+        max_attempts: Maximum number of attempts (must be >= 1).
+        base_delay: Initial delay in seconds.
+        max_delay: Maximum delay in seconds.
+        retryable_exceptions: Tuple of exception types that trigger a retry.
+
+    Returns:
+        The return value of fn.
+
+    Raises:
+        The last exception encountered if all attempts fail.
+    """
+    if max_attempts < 1:
+        return fn()
+
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except retryable_exceptions as e:
+            last_exc = e
+            if attempt == max_attempts - 1:
+                break
+
+            delay = min(max_delay, base_delay * (2**attempt) + random.uniform(0, 1))
+            logger.warning(f"Retry {attempt + 1}/{max_attempts} after {delay:.1f}s (reason: {type(e).__name__}: {e})")
+            time.sleep(delay)
+
+    if last_exc is not None:
+        raise last_exc
+    return fn()  # Should not reach here if max_attempts >= 1
+
+
+async def async_retry_with_backoff(
+    fn: Callable[[], Any],
+    *,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+) -> Any:
+    """
+    Retry an awaitable function with exponential backoff and jitter.
+    """
+    if max_attempts < 1:
+        return await fn()
+
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return await fn()
+        except retryable_exceptions as e:
+            last_exc = e
+            if attempt == max_attempts - 1:
+                break
+
+            delay = min(max_delay, base_delay * (2**attempt) + random.uniform(0, 1))
+            logger.warning(
+                f"Async retry {attempt + 1}/{max_attempts} after {delay:.1f}s (reason: {type(e).__name__}: {e})"
+            )
+            await asyncio.sleep(delay)
+
+    if last_exc is not None:
+        raise last_exc
+    return await fn()
 
 
 class BinaryNotFoundError(FileNotFoundError):
@@ -23,6 +114,196 @@ class BinaryNotExecutableError(PermissionError):
     """Raised when a binary exists but is not executable."""
 
     pass
+
+
+def safe_read_lines(path: Path, context: str = "") -> list[str]:
+    """
+    Read lines from a file with comprehensive error handling.
+    """
+    text = safe_read_text(path, context=context)
+    if text is None:
+        return []
+    return text.splitlines()
+
+
+def safe_read_json(path: Path, context: str = "", raise_on_error: bool = False) -> Any | None:
+    """
+    Read and parse JSON from a file with comprehensive error handling.
+
+    Args:
+        path: Path to the JSON file.
+        context: Context for error messages.
+        raise_on_error: If True, re-raises errors instead of returning None.
+
+    Returns:
+        Parsed JSON data, or None if reading/parsing failed.
+    """
+    text = safe_read_text(path, context=context)
+    if text is None:
+        if raise_on_error:
+            raise FileNotFoundError(f"File not found: {path} ({context})")
+        return None
+    try:
+        return safe_json_loads(text, context=context)
+    except ValueError as e:
+        logger.error(f"Invalid JSON in {path} ({context}): {e}")
+        if raise_on_error:
+            raise
+        return None
+
+
+def safe_read_text(path: Path, context: str = "") -> str | None:
+    """
+    Read text from a file with comprehensive error handling.
+
+    Args:
+        path: Path to the file.
+        context: Context for error messages.
+
+    Returns:
+        File content as string, or None if reading failed.
+    """
+    if not path.exists():
+        logger.debug(f"File not found: {path} ({context})")
+        return None
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, PermissionError) as e:
+        logger.error(f"Failed to read {path} ({context}): {e}")
+        return None
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """
+    Write text to a file atomically using a temporary file and rename.
+
+    Args:
+        path: Destination path.
+        content: Text content to write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        logger.error(f"Atomic write to {path} failed: {e}")
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """
+    Write data to a JSON file atomically.
+
+    Args:
+        path: Destination path.
+        data: Data to serialize to JSON.
+    """
+    json_str = json.dumps(data, indent=2, sort_keys=True)
+    atomic_write_text(path, json_str)
+
+
+@asynccontextmanager
+async def managed_subprocess(*args: Any, **kwargs: Any):
+    """
+    Async context manager for subprocesses ensuring cleanup on failure or exit.
+
+    Args:
+        *args: Arguments for asyncio.create_subprocess_exec.
+        **kwargs: Keyword arguments for asyncio.create_subprocess_exec.
+
+    Yields:
+        The created process object.
+    """
+    proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+    try:
+        yield proc
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(f"Error cleaning up subprocess: {e}")
+
+
+def safe_parse_float(
+    val: Any, default: float, min_val: float = -float("inf"), max_val: float = float("inf"), name: str = "value"
+) -> float:
+    """
+    Safe float parsing with range validation.
+    """
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid {name}={val!r}, using default {default}")
+        return default
+
+    if f < min_val or f > max_val:
+        logger.warning(f"{name}={f} out of range [{min_val}, {max_val}], clamping")
+        return max(min_val, min(max_val, f))
+    return f
+
+
+def safe_parse_int(
+    val: Any, default: int, min_val: int = -sys.maxsize, max_val: int = sys.maxsize, name: str = "value"
+) -> int:
+    """
+    Safe integer parsing with range validation.
+    """
+    try:
+        i = int(val)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid {name}={val!r}, using default {default}")
+        return default
+
+    if i < min_val or i > max_val:
+        logger.warning(f"{name}={i} out of range [{min_val}, {max_val}], clamping")
+        return max(min_val, min(max_val, i))
+    return i
+
+
+def setup_signal_handlers(cleanup_fn: Any) -> None:
+    """
+    Setup signal handlers for SIGTERM and SIGINT to ensure cleanup.
+
+    Args:
+        cleanup_fn: Function to call on signal.
+    """
+
+    def _handler(sig, frame):
+        logger.info(f"Received signal {sig}, cleaning up...")
+        cleanup_fn()
+        sys.exit(128 + sig)
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
+def log_exception(msg: str, extra: dict[str, Any] | None = None) -> None:
+    """
+    Log an exception with traceback and optional extra structured info.
+    """
+    err_info = {
+        "error_type": sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Unknown",
+        "error_message": str(sys.exc_info()[1]),
+        "traceback": traceback.format_exc(),
+    }
+    if extra:
+        err_info.update(extra)
+    logger.error(f"{msg}: {err_info['error_message']}", extra={"structured_error": err_info})
 
 
 def validate_binary(path: Path, *, binary_name: str = "binary") -> Path:
