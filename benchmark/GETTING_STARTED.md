@@ -4,19 +4,20 @@ This guide is the canonical entrypoint for running the Phase II (Type Inhabitati
 
 ## Quick start (5 minutes)
 
-1. **Setup dependencies and corpus:**
+### Option A: Docker (Recommended)
+The easiest way to get started. Handles dependencies, binaries, and environment automatically.
+```bash
+./scripts/docker_quickstart.sh
+```
+
+### Option B: Local Setup
+For developers working directly on the Python/Rust source code.
 ```bash
 cd benchmark
 uv sync --group dev --frozen
 cd .. && cargo build --release --locked && cd benchmark
 git clone --depth 1 https://github.com/MystenLabs/sui-packages.git ../sui-packages
 cp .env.example .env
-```
-
-2. **Run a high-signal Phase II sample (Gemini 3 Flash):**
-```bash
-./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
-  --scan-samples 100 --run-samples 5 --per-package-timeout-seconds 90
 ```
 
 ---
@@ -73,7 +74,24 @@ If your near-term goal is **framework stability**, prioritize `dry_run_ok` and t
 
 ## 2) Choose your entrypoint
 
-### A) Fast local run (single model)
+### A) Docker Quickstart (Recommended for new users)
+
+Use this if you have Docker installed and want the easiest possible setup. It automatically configures your environment, builds the image, and runs a sample benchmark.
+
+```bash
+# From the repository root
+./scripts/docker_quickstart.sh
+```
+
+**What this does:**
+1. Prompts for your `OPENROUTER_API_KEY` (if not set).
+2. Builds the `smi-bench` Docker image.
+3. Sets up a minimal test corpus (if the real one is missing).
+4. Runs a 1-package benchmark to verify the full stack.
+
+---
+
+### B) Fast local run (single model)
 
 Use this when you want to quickly iterate on benchmarking and see a JSON output file.
 
