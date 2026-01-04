@@ -23,6 +23,7 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill, Part, TaskState, TextPart
 from a2a.utils import new_agent_text_message, new_task
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -33,7 +34,12 @@ from smi_bench.constants import (
     HEALTH_CHECK_TIMEOUT_SECONDS,
 )
 from smi_bench.schema import Phase2ResultKeys
-from smi_bench.utils import safe_json_loads
+from smi_bench.utils import (
+    managed_subprocess,
+    safe_json_loads,
+    safe_parse_float,
+    safe_parse_int,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +49,95 @@ A2A_PROTOCOL_VERSION = "0.3.0"
 # Supported content types (for future content validation)
 SUPPORTED_CONTENT_TYPES = {"application/json", "text/plain"}
 
+# Environment variable for max concurrent tasks
+MAX_CONCURRENT_TASKS_ENV = "SMI_MAX_CONCURRENT_TASKS"
+DEFAULT_MAX_CONCURRENT_TASKS = 1
+
+# Known config fields for strict validation
+KNOWN_CONFIG_FIELDS = frozenset(
+    {
+        "corpus_root",
+        "package_ids_file",
+        "manifest",  # manifest is alias
+        "samples",
+        "agent",
+        "rpc_url",
+        "simulation_mode",
+        "per_package_timeout_seconds",
+        "max_plan_attempts",
+        "continue_on_error",
+        "resume",
+        "run_id",
+        "model",
+        # P0 fields
+        "seed",
+        "sender",
+        "gas_budget",
+        "gas_coin",
+        "gas_budget_ladder",
+        "max_errors",
+        "max_run_seconds",
+        # P1 fields
+        "max_planning_calls",
+        "checkpoint_every",
+        "max_heuristic_variants",
+        "baseline_max_candidates",
+        "include_created_types",
+        "require_dry_run",
+        # Webhook/async
+        "callback_url",
+        # Meta fields
+        "out_dir",
+    }
+)
+
+# Prometheus metrics
+TASK_REQUESTS = Counter(
+    "smi_bench_task_requests_total",
+    "Total task requests received",
+    ["agent_type", "simulation_mode"],
+)
+TASK_DURATION = Histogram(
+    "smi_bench_task_duration_seconds",
+    "Task execution duration in seconds",
+    ["agent_type", "simulation_mode", "status"],
+    buckets=(5, 10, 30, 60, 120, 300, 600, 1800, 3600),
+)
+TASK_ERRORS = Counter(
+    "smi_bench_task_errors_total",
+    "Total task errors by type",
+    ["error_type"],
+)
+ACTIVE_TASKS = Gauge(
+    "smi_bench_active_tasks",
+    "Number of currently active tasks",
+)
+CONFIG_VALIDATION_REQUESTS = Counter(
+    "smi_bench_config_validation_requests_total",
+    "Config validation requests",
+    ["valid"],
+)
+PACKAGES_PROCESSED = Counter(
+    "smi_bench_packages_processed_total",
+    "Total packages processed",
+    ["agent_type", "result"],
+)
+HTTP_REQUESTS = Counter(
+    "smi_bench_http_requests_total",
+    "HTTP requests by endpoint and status",
+    ["method", "endpoint", "status_code"],
+)
+HTTP_REQUEST_DURATION = Histogram(
+    "smi_bench_http_request_duration_seconds",
+    "HTTP request duration",
+    ["method", "endpoint"],
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0),
+)
+
 
 @dataclass(frozen=True)
 class EvalConfig:
+    # Core required fields
     corpus_root: str
     package_ids_file: str
     samples: int
@@ -57,6 +149,24 @@ class EvalConfig:
     continue_on_error: bool
     resume: bool
     run_id: str | None
+    # Optional with defaults - P0 critical
+    model: str | None = None
+    seed: int = 0
+    sender: str | None = None
+    gas_budget: int = 10_000_000
+    gas_coin: str | None = None
+    gas_budget_ladder: str = "20000000,50000000"
+    max_errors: int = 25
+    max_run_seconds: float | None = None
+    # P1 flexibility
+    max_planning_calls: int = 50
+    checkpoint_every: int = 10
+    max_heuristic_variants: int = 4
+    baseline_max_candidates: int = 25
+    include_created_types: bool = False
+    require_dry_run: bool = False
+    # Webhook/async support
+    callback_url: str | None = None
 
 
 def _safe_int(v: Any, default: int) -> int:
@@ -73,6 +183,16 @@ def _safe_float(v: Any, default: float) -> float:
         return default
 
 
+def _safe_bool(v: Any, default: bool) -> bool:
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
 def _load_cfg(raw: Any) -> EvalConfig:
     if not isinstance(raw, dict):
         raise InvalidConfigError("config", "must be a JSON object")
@@ -87,26 +207,341 @@ def _load_cfg(raw: Any) -> EvalConfig:
 
     # Fail-fast validation: simulation modes that require sender
     simulation_mode = str(raw.get("simulation_mode") or "dry-run")
-    sender = raw.get("sender")
+    sender_raw = raw.get("sender")
+    sender = str(sender_raw) if sender_raw else None
     if simulation_mode in ("dev-inspect", "execute") and not sender:
         raise InvalidConfigError(
             "sender",
             f"required for simulation_mode={simulation_mode} (provide a valid Sui address)",
         )
 
+    # Validate model if provided
+    model_raw = raw.get("model")
+    if model_raw is not None:
+        model = str(model_raw).strip()
+        if not model:
+            raise InvalidConfigError("model", "must not be an empty string if provided")
+    else:
+        model = None
+
+    # P0: Parse critical production fields
+    seed = safe_parse_int(raw.get("seed"), 0, min_val=0, name="seed")
+    gas_budget = safe_parse_int(raw.get("gas_budget"), 10_000_000, min_val=1, name="gas_budget")
+
+    gas_coin_raw = raw.get("gas_coin")
+    gas_coin = str(gas_coin_raw) if gas_coin_raw else None
+
+    gas_budget_ladder = str(raw.get("gas_budget_ladder") or "20000000,50000000")
+
+    max_errors = safe_parse_int(raw.get("max_errors"), 25, min_val=1, name="max_errors")
+
+    max_run_seconds_raw = raw.get("max_run_seconds")
+    max_run_seconds: float | None = None
+    if max_run_seconds_raw is not None:
+        max_run_seconds = safe_parse_float(max_run_seconds_raw, 0.0, min_val=0.01, name="max_run_seconds")
+
+    # P1: Parse flexibility fields
+    max_planning_calls = safe_parse_int(raw.get("max_planning_calls"), 50, min_val=1, name="max_planning_calls")
+    checkpoint_every = safe_parse_int(raw.get("checkpoint_every"), 10, min_val=1, name="checkpoint_every")
+    max_heuristic_variants = safe_parse_int(
+        raw.get("max_heuristic_variants"), 4, min_val=1, name="max_heuristic_variants"
+    )
+    baseline_max_candidates = safe_parse_int(
+        raw.get("baseline_max_candidates"), 25, min_val=1, name="baseline_max_candidates"
+    )
+
+    include_created_types = _safe_bool(raw.get("include_created_types"), False)
+    require_dry_run = _safe_bool(raw.get("require_dry_run"), False)
+
+    # Webhook/async support
+    callback_url_raw = raw.get("callback_url")
+    callback_url = str(callback_url_raw) if callback_url_raw else None
+
+    # Cross-field validation
+    if require_dry_run and simulation_mode != "dry-run":
+        raise InvalidConfigError(
+            "require_dry_run",
+            "can only be true when simulation_mode is 'dry-run'",
+        )
+
     return EvalConfig(
         corpus_root=corpus_root,
         package_ids_file=package_ids_file,
-        samples=_safe_int(raw.get("samples"), 0),
+        samples=safe_parse_int(raw.get("samples"), 0, min_val=0, name="samples"),
         agent=str(raw.get("agent") or "real-openai-compatible"),
         rpc_url=str(raw.get("rpc_url") or DEFAULT_RPC_URL),
         simulation_mode=simulation_mode,
-        per_package_timeout_seconds=_safe_float(raw.get("per_package_timeout_seconds"), 300.0),
-        max_plan_attempts=_safe_int(raw.get("max_plan_attempts"), 2),
-        continue_on_error=bool(raw.get("continue_on_error", True)),
-        resume=bool(raw.get("resume", True)),
+        per_package_timeout_seconds=safe_parse_float(
+            raw.get("per_package_timeout_seconds"), 300.0, min_val=0.1, name="per_package_timeout_seconds"
+        ),
+        max_plan_attempts=safe_parse_int(raw.get("max_plan_attempts"), 2, min_val=1, name="max_plan_attempts"),
+        continue_on_error=_safe_bool(raw.get("continue_on_error"), True),
+        resume=_safe_bool(raw.get("resume"), True),
         run_id=str(raw.get("run_id")) if raw.get("run_id") else None,
+        model=model,
+        # P0 fields
+        seed=seed,
+        sender=sender,
+        gas_budget=gas_budget,
+        gas_coin=gas_coin,
+        gas_budget_ladder=gas_budget_ladder,
+        max_errors=max_errors,
+        max_run_seconds=max_run_seconds,
+        # P1 fields
+        max_planning_calls=max_planning_calls,
+        checkpoint_every=checkpoint_every,
+        max_heuristic_variants=max_heuristic_variants,
+        baseline_max_candidates=baseline_max_candidates,
+        include_created_types=include_created_types,
+        require_dry_run=require_dry_run,
+        callback_url=callback_url,
     )
+
+
+async def _send_webhook_callback(url: str, payload: dict[str, Any]) -> None:
+    """
+    Send task completion results to webhook URL.
+
+    Non-blocking, fire-and-forget with basic error logging.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            if response.status_code >= 400:
+                logger.warning(f"Webhook callback failed: {url} returned {response.status_code}")
+            else:
+                logger.info(f"Webhook callback successful: {url}")
+    except Exception as e:
+        logger.error(f"Webhook callback error to {url}: {e}", exc_info=True)
+
+
+def _detect_unknown_fields(raw: dict[str, Any]) -> list[str]:
+    """Return list of unknown field names in the config."""
+    if not isinstance(raw, dict):
+        return []
+    return [k for k in raw.keys() if k not in KNOWN_CONFIG_FIELDS]
+
+
+def _validate_config_dry_run(raw: Any) -> dict[str, Any]:
+    """
+    Validate config without executing. Returns validation result.
+
+    Returns dict with:
+        - valid: bool
+        - config: parsed EvalConfig as dict (if valid)
+        - error: error message (if invalid)
+        - warnings: list of warnings (e.g., unknown fields)
+    """
+    result: dict[str, Any] = {"valid": False, "warnings": []}
+
+    if not isinstance(raw, dict):
+        result["error"] = "config must be a JSON object"
+        return result
+
+    # Check for unknown fields
+    unknown = _detect_unknown_fields(raw)
+    if unknown:
+        result["warnings"].append(f"Unknown config fields (will be ignored): {unknown}")
+
+    # Try to parse
+    try:
+        cfg = _load_cfg(raw)
+        result["valid"] = True
+        result["config"] = {
+            "corpus_root": cfg.corpus_root,
+            "package_ids_file": cfg.package_ids_file,
+            "samples": cfg.samples,
+            "agent": cfg.agent,
+            "rpc_url": cfg.rpc_url,
+            "simulation_mode": cfg.simulation_mode,
+            "per_package_timeout_seconds": cfg.per_package_timeout_seconds,
+            "max_plan_attempts": cfg.max_plan_attempts,
+            "continue_on_error": cfg.continue_on_error,
+            "resume": cfg.resume,
+            "run_id": cfg.run_id,
+            "model": cfg.model,
+            "seed": cfg.seed,
+            "sender": cfg.sender,
+            "gas_budget": cfg.gas_budget,
+            "gas_coin": cfg.gas_coin,
+            "gas_budget_ladder": cfg.gas_budget_ladder,
+            "max_errors": cfg.max_errors,
+            "max_run_seconds": cfg.max_run_seconds,
+            "max_planning_calls": cfg.max_planning_calls,
+            "checkpoint_every": cfg.checkpoint_every,
+            "max_heuristic_variants": cfg.max_heuristic_variants,
+            "baseline_max_candidates": cfg.baseline_max_candidates,
+            "include_created_types": cfg.include_created_types,
+            "require_dry_run": cfg.require_dry_run,
+            "callback_url": cfg.callback_url,
+        }
+    except InvalidConfigError as e:
+        result["error"] = str(e)
+    except Exception as e:
+        result["error"] = f"Unexpected error: {type(e).__name__}: {e}"
+
+    return result
+
+
+def _get_config_schema() -> dict[str, Any]:
+    """Return JSON Schema for EvalConfig."""
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "EvalConfig",
+        "description": "Configuration for SMI Bench Phase II evaluation task",
+        "type": "object",
+        "required": ["corpus_root", "package_ids_file"],
+        "properties": {
+            "corpus_root": {
+                "type": "string",
+                "description": "Path to bytecode corpus directory",
+                "minLength": 1,
+            },
+            "package_ids_file": {
+                "type": "string",
+                "description": "Path to manifest file (one package ID per line)",
+                "minLength": 1,
+            },
+            "samples": {
+                "type": "integer",
+                "description": "Number of packages to process (0 = all)",
+                "default": 0,
+                "minimum": 0,
+            },
+            "agent": {
+                "type": "string",
+                "description": "Agent type to use",
+                "default": "real-openai-compatible",
+                "enum": ["mock-empty", "mock-planfile", "real-openai-compatible", "baseline-search", "template-search"],
+            },
+            "rpc_url": {
+                "type": "string",
+                "description": "Sui fullnode RPC URL for simulation",
+                "default": DEFAULT_RPC_URL,
+            },
+            "simulation_mode": {
+                "type": "string",
+                "description": "Transaction simulation mode",
+                "default": "dry-run",
+                "enum": ["dry-run", "dev-inspect", "build-only"],
+            },
+            "per_package_timeout_seconds": {
+                "type": "number",
+                "description": "Wall-clock budget per package in seconds",
+                "default": 300.0,
+                "exclusiveMinimum": 0,
+            },
+            "max_plan_attempts": {
+                "type": "integer",
+                "description": "Max PTB replanning attempts per package",
+                "default": 2,
+                "minimum": 1,
+            },
+            "continue_on_error": {
+                "type": "boolean",
+                "description": "Continue benchmark if a package fails",
+                "default": True,
+            },
+            "resume": {
+                "type": "boolean",
+                "description": "Resume from existing output file",
+                "default": True,
+            },
+            "run_id": {
+                "type": ["string", "null"],
+                "description": "Custom run identifier",
+                "default": None,
+            },
+            "model": {
+                "type": ["string", "null"],
+                "description": "Per-request model override (takes precedence over SMI_MODEL env var)",
+                "default": None,
+            },
+            "seed": {
+                "type": "integer",
+                "description": "Random seed for reproducible sampling",
+                "default": 0,
+                "minimum": 0,
+            },
+            "sender": {
+                "type": ["string", "null"],
+                "description": "Sui address for tx simulation (required for dev-inspect/execute modes)",
+                "default": None,
+            },
+            "gas_budget": {
+                "type": "integer",
+                "description": "Gas budget for dry-run simulation",
+                "default": 10000000,
+                "minimum": 1,
+            },
+            "gas_coin": {
+                "type": ["string", "null"],
+                "description": "Specific gas coin object ID",
+                "default": None,
+            },
+            "gas_budget_ladder": {
+                "type": "string",
+                "description": "Comma-separated retry budgets on InsufficientGas",
+                "default": "20000000,50000000",
+            },
+            "max_errors": {
+                "type": "integer",
+                "description": "Stop run after N package errors",
+                "default": 25,
+                "minimum": 1,
+            },
+            "max_run_seconds": {
+                "type": ["number", "null"],
+                "description": "Wall-clock budget for entire run in seconds",
+                "default": None,
+                "exclusiveMinimum": 0,
+            },
+            "max_planning_calls": {
+                "type": "integer",
+                "description": "Max LLM calls per package (progressive exposure)",
+                "default": 50,
+                "minimum": 1,
+            },
+            "checkpoint_every": {
+                "type": "integer",
+                "description": "Save partial results every N packages",
+                "default": 10,
+                "minimum": 1,
+            },
+            "max_heuristic_variants": {
+                "type": "integer",
+                "description": "Max deterministic PTB variants per plan attempt",
+                "default": 4,
+                "minimum": 1,
+            },
+            "baseline_max_candidates": {
+                "type": "integer",
+                "description": "Max candidates in baseline-search mode",
+                "default": 25,
+                "minimum": 1,
+            },
+            "include_created_types": {
+                "type": "boolean",
+                "description": "Include full created object type lists in output",
+                "default": False,
+            },
+            "require_dry_run": {
+                "type": "boolean",
+                "description": "Fail if dry-run unavailable (no dev-inspect fallback)",
+                "default": False,
+            },
+            "callback_url": {
+                "type": ["string", "null"],
+                "description": "HTTP URL to POST task results when completed (webhook callback for async workflows)",
+                "default": None,
+            },
+        },
+        "additionalProperties": False,
+    }
 
 
 def _extract_payload(context: RequestContext) -> dict[str, Any]:
@@ -133,11 +568,10 @@ def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict
         data = safe_json_loads(out_json.read_text(encoding="utf-8"), context="phase2 results")
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
         logger.error("Failed to load phase2 results JSON: %s", e, exc_info=True)
-        return {}, []
-
+        return ({},)
     # Return as much as we can even if some fields are missing.
     if not isinstance(data, dict):
-        return {}, []
+        return ({},)
 
     aggregate = data.get("aggregate")
     packages = data.get("packages")
@@ -248,9 +682,13 @@ def _card(*, url: str) -> AgentCard:
     skill = AgentSkill(
         id="run_phase2",
         name="Run Phase II",
-        description="Run Phase II (PTB inhabitation) over a manifest and return results as artifacts.",
+        description=(
+            "Run Phase II (PTB inhabitation) over a manifest and return results as artifacts. "
+            "Optional 'model' field in config allows per-request model override "
+            "(takes precedence over SMI_MODEL environment variable)."
+        ),
         tags=["benchmark", "sui", "move", "phase2"],
-        examples=["Run Phase II on standard manifest"],
+        examples=["Run Phase II with default model", "Run Phase II with specific model override"],
         input_modes=["application/json"],
         output_modes=["application/json"],
     )
@@ -272,6 +710,9 @@ def _card(*, url: str) -> AgentCard:
 # Global reference for shutdown handling
 _global_executor: SmiBenchGreenExecutor | None = None
 
+# Global task results store for partial results endpoint
+_task_results: dict[str, dict[str, Any]] = {}
+
 
 class SmiBenchGreenExecutor(AgentExecutor):
     def __init__(self) -> None:
@@ -279,8 +720,12 @@ class SmiBenchGreenExecutor(AgentExecutor):
         # Track running subprocesses for cancellation support
         self._task_processes: dict[str, asyncio.subprocess.Process] = {}
         self._task_cancel_events: dict[str, asyncio.Event] = {}
-        # Limit concurrency to prevent OOM and RPC stampedes
+        # Limit concurrency to prevent OOM and RPC stampedes (configurable via env var)
+        self._max_concurrent_tasks = _safe_int(os.environ.get(MAX_CONCURRENT_TASKS_ENV), DEFAULT_MAX_CONCURRENT_TASKS)
+        if self._max_concurrent_tasks < 1:
+            self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
         self._concurrency_semaphore: asyncio.Semaphore | None = None
+        logger.info(f"Max concurrent tasks: {self._max_concurrent_tasks} (set {MAX_CONCURRENT_TASKS_ENV} to change)")
 
         # Register this instance globally for signal/shutdown handling
         global _global_executor
@@ -326,7 +771,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if self._concurrency_semaphore is None:
-            self._concurrency_semaphore = asyncio.Semaphore(1)
+            self._concurrency_semaphore = asyncio.Semaphore(self._max_concurrent_tasks)
 
         task = context.current_task
         if task is None:
@@ -339,6 +784,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
 
         # Use a semaphore to ensure only one task runs at a time
         async with self._concurrency_semaphore:
+            ACTIVE_TASKS.inc()
             max_infra_retries = 3
             for attempt in range(max_infra_retries):
                 # Create cancellation event for this task
@@ -358,9 +804,12 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 try:
                     await self._run_task_logic(context, updater, cancel_event, started_at)
                     # If we reach here without exception, the task finished (successfully or with model errors)
+                    ACTIVE_TASKS.dec()
                     return
                 except A2AError as e:
                     # Specific protocol errors should not be retried, but must be reported
+                    ACTIVE_TASKS.dec()
+                    TASK_ERRORS.labels(error_type="a2a_error").inc()
                     self._task_processes.pop(task.id, None)
                     self._task_cancel_events.pop(task.id, None)
                     await updater.failed(new_agent_text_message(str(e), task.context_id, task.id))
@@ -395,6 +844,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
                         continue
 
                     # Otherwise, fail permanently
+                    ACTIVE_TASKS.dec()
+                    error_type = "infra_error" if is_infra_failure else "unexpected_error"
+                    TASK_ERRORS.labels(error_type=error_type).inc()
                     self._task_processes.pop(task.id, None)
                     self._task_cancel_events.pop(task.id, None)
                     await updater.failed(
@@ -416,6 +868,21 @@ class SmiBenchGreenExecutor(AgentExecutor):
         payload = _extract_payload(context)
         config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
         cfg = _load_cfg(config)
+
+        # Record task request metrics
+        TASK_REQUESTS.labels(agent_type=cfg.agent, simulation_mode=cfg.simulation_mode).inc()
+
+        # Initialize task results store
+        _task_results[task.id] = {
+            "task_id": task.id,
+            "status": "running",
+            "started_at": int(started_at),
+            "agent": cfg.agent,
+            "simulation_mode": cfg.simulation_mode,
+            "run_id": None,  # Will be set once known
+            "partial_metrics": {},
+            "error": None,
+        }
 
         # Default manifest path
         default_manifest = repo_root / "manifests/datasets/type_inhabitation_top25.txt"
@@ -457,29 +924,39 @@ class SmiBenchGreenExecutor(AgentExecutor):
             run_id,
             "--samples",
             str(cfg.samples),
+            # P0: Always pass critical production fields
+            "--seed",
+            str(cfg.seed),
+            "--gas-budget",
+            str(cfg.gas_budget),
+            "--gas-budget-ladder",
+            cfg.gas_budget_ladder,
+            "--max-errors",
+            str(cfg.max_errors),
+            # P1: Always pass flexibility fields
+            "--max-planning-calls",
+            str(cfg.max_planning_calls),
+            "--checkpoint-every",
+            str(cfg.checkpoint_every),
+            "--max-heuristic-variants",
+            str(cfg.max_heuristic_variants),
+            "--baseline-max-candidates",
+            str(cfg.baseline_max_candidates),
         ]
 
-        # Pass through tunable parameters from config
-        if config:
-            if "max_planning_calls" in config:
-                args.extend(["--max-planning-calls", str(int(config["max_planning_calls"]))])
-
+        # Conditional flags
         if cfg.continue_on_error:
             args.append("--continue-on-error")
-
-        # Add additional tunable parameters
-        if config:
-            sender = config.get("sender")
-            if sender:
-                args.extend(["--sender", str(sender)])
-
-            gas_budget = config.get("gas_budget")
-            if gas_budget:
-                args.extend(["--gas-budget", str(gas_budget)])
-
-            checkpoint_every = config.get("checkpoint_every")
-            if checkpoint_every:
-                args.extend(["--checkpoint-every", str(checkpoint_every)])
+        if cfg.sender:
+            args.extend(["--sender", cfg.sender])
+        if cfg.gas_coin:
+            args.extend(["--gas-coin", cfg.gas_coin])
+        if cfg.max_run_seconds is not None:
+            args.extend(["--max-run-seconds", str(cfg.max_run_seconds)])
+        if cfg.include_created_types:
+            args.append("--include-created-types")
+        if cfg.require_dry_run:
+            args.append("--require-dry-run")
 
         # Sanitize environment to prevent accidental bleed-through
         # while preserving essential system paths and SMI configuration.
@@ -502,73 +979,78 @@ class SmiBenchGreenExecutor(AgentExecutor):
         )
         sub_env = {k: v for k, v in os.environ.items() if any(k.startswith(p) for p in allowed_prefixes)}
 
-        proc = await asyncio.create_subprocess_exec(
+        # Override SMI_MODEL if provided in config
+        if cfg.model:
+            sub_env["SMI_MODEL"] = cfg.model
+            logger.info(f"Model override active: SMI_MODEL={cfg.model}")
+
+        async with managed_subprocess(
             *args,
             cwd=str(repo_root),
             env=sub_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-        )
+        ) as proc:
 
-        # Store process for cancellation support
-        self._task_processes[task.id] = proc
+            # Store process for cancellation support
+            self._task_processes[task.id] = proc
 
-        assert proc.stdout is not None
-        proc_lines: collections.deque[str] = collections.deque(maxlen=2000)
+            assert proc.stdout is not None
+            proc_lines: collections.deque[str] = collections.deque(maxlen=2000)
 
-        # Monitor both stdout and cancellation event
-        try:
-            async for b in proc.stdout:
-                # Check for cancellation
-                if cancel_event.is_set():
-                    await updater.update_status(
-                        TaskState.working,
-                        new_agent_text_message(
-                            "Cancellation requested, terminating process...",
-                            updater.context_id,
-                            updater.task_id,
-                        ),
-                    )
-                    break
-
-                line = b.decode("utf-8", errors="replace").rstrip("\n")
-                if not line:
-                    continue
-
-                if line.startswith("A2A_EVENT:"):
-                    # Structured event - update status
-                    try:
-                        raw_event = line[10:]
-                        evt = safe_json_loads(raw_event, context="A2A event stream")
-                        # Format a nice status message
-                        msg = f"{evt.get('event', 'update')}"
-                        if "package_id" in evt:
-                            msg += f": {evt['package_id']}"
-                        if "error" in evt and evt["error"]:
-                            msg += f" (error: {evt['error']})"
-                        elif "created_hits" in evt:
-                            msg += f" (hits: {evt['created_hits']}/{evt.get('targets')})"
-
+            # Monitor both stdout and cancellation event
+            try:
+                async for b in proc.stdout:
+                    # Check for cancellation
+                    if cancel_event.is_set():
                         await updater.update_status(
                             TaskState.working,
-                            new_agent_text_message(msg, updater.context_id, updater.task_id),
+                            new_agent_text_message(
+                                "Cancellation requested, terminating process...",
+                                updater.context_id,
+                                updater.task_id,
+                            ),
                         )
-                    except Exception as e:
-                        logger.debug("Failed to update task status: %s", e)
-                else:
-                    # Normal log line - buffer for tail report but don't spam status
-                    proc_lines.append(line)
-        except asyncio.CancelledError:
-            # Task was cancelled externally
-            cancel_event.set()
-            raise
+                        break
 
-        # If cancelled, handle graceful termination
-        if cancel_event.is_set():
-            await self._terminate_process(proc, updater)
-            rc = proc.returncode if proc.returncode is not None else -1
-        else:
-            rc = await proc.wait()
+                    line = b.decode("utf-8", errors="replace").rstrip("\n")
+                    if not line:
+                        continue
+
+                    if line.startswith("A2A_EVENT:"):
+                        # Structured event - update status
+                        try:
+                            raw_event = line[10:]
+                            evt = safe_json_loads(raw_event, context="A2A event stream")
+                            # Format a nice status message
+                            msg = f"{evt.get('event', 'update')}"
+                            if "package_id" in evt:
+                                msg += f": {evt['package_id']}"
+                            if "error" in evt and evt["error"]:
+                                msg += f" (error: {evt['error']})"
+                            elif "created_hits" in evt:
+                                msg += f" (hits: {evt['created_hits']}/{evt.get('targets')})"
+
+                            await updater.update_status(
+                                TaskState.working,
+                                new_agent_text_message(msg, updater.context_id, updater.task_id),
+                            )
+                        except Exception as e:
+                            logger.debug("Failed to update task status: %s", e)
+                    else:
+                        # Normal log line - buffer for tail report but don't spam status
+                        proc_lines.append(line)
+            except asyncio.CancelledError:
+                # Task was cancelled externally
+                cancel_event.set()
+                raise
+
+            # If cancelled, handle graceful termination
+            if cancel_event.is_set():
+                await self._terminate_process(proc, updater)
+                rc = proc.returncode if proc.returncode is not None else -1
+            else:
+                rc = await proc.wait()
 
         # Clean up process tracking
         self._task_processes.pop(task.id, None)
@@ -667,12 +1149,55 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 name="run_metadata.json",
             )
 
+        # Record task duration and result
+        duration = time.time() - started_at
+
+        # Update task results store
+        final_status = "completed" if rc == 0 else "failed"
+        _task_results[task.id].update(
+            {
+                "status": final_status,
+                "completed_at": int(time.time()),
+                "duration_seconds": duration,
+                "run_id": run_id,
+                "bundle": bundle,
+                "metrics": metrics,
+                "error_summary": errors_list[:10] if errors_list else [],
+            }
+        )
+
+        # Prepare webhook payload if callback_url is configured
+        if cfg.callback_url:
+            webhook_payload = {
+                "task_id": task.id,
+                "status": final_status,
+                "duration_seconds": duration,
+                "run_id": run_id,
+                "agent": cfg.agent,
+                "simulation_mode": cfg.simulation_mode,
+                "bundle": bundle,
+                "metrics": metrics,
+                "error_summary": errors_list[:10] if errors_list else [],  # Limit to first 10 errors
+                "timestamp": int(time.time()),
+            }
+
         if rc == 0:
+            TASK_DURATION.labels(agent_type=cfg.agent, simulation_mode=cfg.simulation_mode, status="success").observe(
+                duration
+            )
             final_msg = "run_finished"
             if metrics.get("failure_modes"):
                 final_msg += f" (failures: {metrics['failure_modes']})"
             await updater.complete(new_agent_text_message(final_msg, task.context_id, task.id))
+
+            # Send webhook callback asynchronously (fire and forget)
+            if cfg.callback_url:
+                asyncio.create_task(_send_webhook_callback(cfg.callback_url, webhook_payload))
         else:
+            TASK_DURATION.labels(agent_type=cfg.agent, simulation_mode=cfg.simulation_mode, status="failed").observe(
+                duration
+            )
+            TASK_ERRORS.labels(error_type="subprocess_failure").inc()
             await updater.failed(
                 new_agent_text_message(
                     f"phase2 failed (exit={rc})",
@@ -680,6 +1205,10 @@ class SmiBenchGreenExecutor(AgentExecutor):
                     updater.task_id,
                 )
             )
+
+            # Send webhook callback asynchronously (fire and forget)
+            if cfg.callback_url:
+                asyncio.create_task(_send_webhook_callback(cfg.callback_url, webhook_payload))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """
@@ -709,13 +1238,14 @@ class SmiBenchGreenExecutor(AgentExecutor):
         Gracefully terminate a subprocess using SIGTERM → SIGKILL pattern.
         """
         if proc.returncode is not None:
-            return  # Already terminated
+            return
 
         try:
-            # Send SIGTERM for graceful shutdown
-            maybe_awaitable = proc.terminate()
-            if inspect.isawaitable(maybe_awaitable):
-                await maybe_awaitable
+            if inspect.isawaitable(proc.terminate()):
+                await proc.terminate()
+            else:
+                proc.terminate()
+
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message(
@@ -725,14 +1255,16 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 ),
             )
 
-            # Wait up to 5 seconds for graceful termination
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                # Force kill if still running
-                maybe_awaitable = proc.kill()
-                if inspect.isawaitable(maybe_awaitable):
-                    await maybe_awaitable
+                try:
+                    if inspect.isawaitable(proc.kill()):
+                        await proc.kill()
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
                 await updater.update_status(
                     TaskState.working,
                     new_agent_text_message(
@@ -743,8 +1275,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 )
                 await proc.wait()
         except ProcessLookupError:
-            # Process already died
-            pass
+            logger.debug("Process already terminated")
+        except Exception as e:
+            logger.warning(f"Error terminating process: {e}")
 
 
 class A2AVersionMiddleware(BaseHTTPMiddleware):
@@ -759,10 +1292,45 @@ class A2AVersionMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to track HTTP request metrics.
+    Records request count, duration, and status codes per endpoint.
+    """
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        # Normalize endpoint path for metrics
+        path = request.url.path
+        if path.startswith("/.well-known/"):
+            endpoint = "/.well-known/agent-card"
+        elif path == "/":
+            endpoint = "/rpc"
+        else:
+            endpoint = path
+
+        method = request.method
+        start_time = time.time()
+
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            status_code = 500
+            HTTP_REQUESTS.labels(method=method, endpoint=endpoint, status_code=status_code).inc()
+            raise
+        else:
+            HTTP_REQUESTS.labels(method=method, endpoint=endpoint, status_code=status_code).inc()
+            return response
+        finally:
+            duration = time.time() - start_time
+            HTTP_REQUEST_DURATION.labels(method=method, endpoint=endpoint).observe(duration)
+
+
 def build_app(*, public_url: str) -> Any:
     card = _card(url=public_url)
+    executor = SmiBenchGreenExecutor()
     handler = DefaultRequestHandler(
-        agent_executor=SmiBenchGreenExecutor(),
+        agent_executor=executor,
         task_store=InMemoryTaskStore(),
     )
     app = A2AStarletteApplication(agent_card=card, http_handler=handler).build()  # type: ignore
@@ -839,7 +1407,122 @@ def build_app(*, public_url: str) -> Any:
 
         return JSONResponse(status)
 
-    # Add A2A version header middleware
+    @app.route("/validate", methods=["POST"])
+    async def validate_config(request: Request) -> JSONResponse:
+        """
+        Validate a config without executing a task.
+
+        POST /validate
+        Body: {"config": {...}}
+
+        Returns:
+            200: {"valid": true, "config": {...normalized...}, "warnings": [...]}
+            400: {"valid": false, "error": "...", "warnings": [...]}
+        """
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as e:
+            return JSONResponse(
+                {"valid": False, "error": f"Invalid JSON: {e}", "warnings": []},
+                status_code=400,
+            )
+
+        config = body.get("config") if isinstance(body, dict) else None
+        if config is None:
+            return JSONResponse(
+                {"valid": False, "error": "Missing 'config' field in request body", "warnings": []},
+                status_code=400,
+            )
+
+        result = _validate_config_dry_run(config)
+        status_code = 200 if result["valid"] else 400
+        CONFIG_VALIDATION_REQUESTS.labels(valid=str(result["valid"]).lower()).inc()
+        return JSONResponse(result, status_code=status_code)
+
+    @app.route("/schema")
+    async def get_schema(request: Request) -> JSONResponse:
+        """
+        Return JSON Schema for EvalConfig.
+
+        GET /schema
+
+        Returns:
+            200: JSON Schema document
+        """
+        return JSONResponse(_get_config_schema())
+
+    @app.route("/info")
+    async def get_info(request: Request) -> JSONResponse:
+        """
+        Return API info including version, capabilities, and config limits.
+
+        GET /info
+
+        Returns server configuration and limits for client integration.
+        """
+        max_concurrent = DEFAULT_MAX_CONCURRENT_TASKS
+        if _global_executor is not None:
+            max_concurrent = _global_executor._max_concurrent_tasks
+
+        return JSONResponse(
+            {
+                "version": "0.1.0",
+                "a2a_protocol_version": A2A_PROTOCOL_VERSION,
+                "capabilities": {
+                    "streaming": True,
+                    "cancellation": True,
+                    "config_validation": True,
+                    "schema_endpoint": True,
+                },
+                "limits": {
+                    "max_concurrent_tasks": max_concurrent,
+                },
+                "endpoints": {
+                    "health": "/health",
+                    "validate": "/validate (POST)",
+                    "schema": "/schema",
+                    "info": "/info",
+                    "task_results": "/tasks/{task_id}/results",
+                    "metrics": "/metrics",
+                    "agent_card": "/.well-known/agent-card.json",
+                },
+            }
+        )
+
+    @app.route("/tasks/{task_id}/results")
+    async def get_task_results(request: Request) -> JSONResponse:
+        """
+        Get partial or complete results for a task.
+
+        GET /tasks/{task_id}/results
+
+        Returns:
+            200: Task results (partial or complete)
+            404: Task not found
+        """
+        task_id = request.path_params.get("task_id")
+        if not task_id or task_id not in _task_results:
+            return JSONResponse(
+                {"error": f"Task {task_id} not found"},
+                status_code=404,
+            )
+
+        return JSONResponse(_task_results[task_id])
+
+    @app.route("/metrics")
+    async def get_metrics(request: Request) -> Response:
+        """
+        Return Prometheus metrics.
+
+        GET /metrics
+
+        Returns:
+            200: Prometheus text format metrics
+        """
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    # Add middlewares (order matters: metrics first, then version)
+    app.add_middleware(cast(Any, MetricsMiddleware))
     app.add_middleware(cast(Any, A2AVersionMiddleware))
 
     return app
@@ -873,6 +1556,9 @@ def _setup_signal_handlers() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     global _global_executor
+
+    # Configure logging to show INFO level
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     p = argparse.ArgumentParser(description="A2A green agent server for smi-bench Phase II")
     p.add_argument("--host", type=str, default="0.0.0.0")
