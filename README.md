@@ -36,6 +36,37 @@ git clone --depth 1 https://github.com/MystenLabs/sui-packages.git ../sui-packag
 
 Instead of running the full 1,000+ package corpus, use our curated **Top-25** dataset. It provides high-signal coverage of diverse Sui Move patterns and completes in under 5 minutes.
 
+**What's in the Top-25?**
+
+The Top-25 dataset was selected using a composite scoring algorithm that prioritizes:
+
+- **Key struct diversity** (40% weight) - Packages with `key` structs, which represent persistent objects that agents must create and store
+- **Entry function richness** (30% weight) - High count of publicly callable functions for transaction planning
+- **Entry/key ratio** (15% weight) - More entry functions per key struct increases complexity
+- **Diversity score** (15% weight) - Ensures coverage of different package patterns
+
+**Package characteristics:**
+
+| Metric | Range | Notes |
+|--------|-------|-------|
+| Key structs | 0-21 | Some packages have no key structs (pure view functions) |
+| Entry functions | 6-146 | High variety of callable functions |
+| Modules | 2-24 | Represents package complexity |
+| Total functions | 111-570 | Includes both public and internal functions |
+
+**Real examples from the dataset:**
+
+- **Rank #1:** `0xc681...` - 1 key struct, 146 entry functions (4 modules, 200 total functions)
+- **Rank #3:** `0x2e6f...` - 17 key structs, 129 entry functions (24 modules, 570 total functions) - Most complex
+- **Rank #21:** `0x0b6b...` - 21 key structs, 6 entry functions (18 modules, 375 total functions) - Key-struct heavy
+- **Rank #24:** `0x7c36...` - 0 key structs, 125 entry functions (15 modules, 188 total functions) - Pure view/read package
+
+This diversity ensures agents are tested on:
+- **DeFi patterns** (AMMs, staking, lending)
+- **NFT collections** (minting, transfers, metadata)
+- **Governance systems** (voting, proposals)
+- **Pure function packages** (view-only operations)
+
 **Recommended Model:** Gemini 3 Flash Preview (`google/gemini-3-flash-preview`)
 
 ```bash

@@ -7,13 +7,111 @@ This guide traces the execution of a single benchmark package from extraction to
 ---
 
 ## 1. Bytecode Extraction (The Ground Truth)
-The process begins by running the Rust extractor on the package bytecode. 
+The process begins by running the Rust extractor on the package's compiled bytecode files.
 
-**What happens:**
-The extractor identifies all structs with the `key` ability. In this package, it finds one primary target:
-- **Target:** `0xc681...::admin::AdminCap`
+**The Deserialization Process:**
 
-The extractor also maps out all public and private functions to find "Constructors" (functions that return this target type).
+1. **Load Binary Bytecode:**
+   ```bash
+   # The Rust CLI reads compiled .mv files
+   ./target/release/sui_move_interface_extractor \
+     --bytecode-package-dir ../sui-packages/packages/mainnet_most_used/0xc6/81...ade7 \
+     --emit-bytecode-json -
+   ```
+
+2. **Parse Move VM Format:**
+   - Uses `CompiledModule::deserialize_with_defaults()` to read binary Move VM bytecode
+   - Extracts struct definitions from the type table
+   - Extracts function signatures from the function table
+
+3. **Build Canonical JSON:**
+   - Normalizes addresses to `0x` + 64 hex chars
+   - Converts Move abilities to canonical order: `["copy", "drop", "store", "key"]`
+   - Maps Move types to JSON representation
+
+**Concrete Example:**
+
+**Input Directory Structure:**
+```
+0xc681.../bytecode_modules/
+├── admin.mv              # Binary bytecode (not human-readable)
+├── governance.mv
+└── config.mv
+```
+
+**Rust Deserialization:**
+```rust
+// From src/bytecode.rs
+let bytes = fs::read("bytecode_modules/admin.mv")?;
+let module = CompiledModule::deserialize_with_defaults(&bytes)?;
+
+// Extract struct with 'key' ability
+for def in module.struct_defs() {
+    let handle = module.datatype_handle_at(def.struct_handle);
+    let abilities = ability_set_to_strings(&handle.abilities);
+    
+    // Found: AdminCap with ["key", "drop", "store"]
+    if abilities.contains(&"key".to_string()) {
+        // Mark as Phase II target
+    }
+}
+```
+
+**Output: Bytecode-Derived Interface JSON**
+```json
+{
+  "schema_version": 1,
+  "package_id": "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+  "module_names": ["admin", "governance", "config"],
+  "modules": {
+    "admin": {
+      "structs": {
+        "AdminCap": {
+          "abilities": ["key", "drop", "store"],
+          "type_params": [],
+          "is_native": false,
+          "fields": [
+            {"name": "id", "type": {"kind": "u64"}}
+          ]
+        }
+      },
+      "functions": {
+        "create_admin_cap": {
+          "visibility": "public",
+          "is_entry": true,
+          "params": [],
+          "returns": [
+            {
+              "kind": "datatype",
+              "address": "0xc681...ade7",
+              "module": "admin",
+              "name": "AdminCap",
+              "type_args": []
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+**What Gets Identified:**
+
+From this interface, the benchmark identifies:
+
+- **Phase I Discovery Target:**
+  - Struct `AdminCap` has the `key` ability → This is a discoverable type
+  - Function `create_admin_cap()` returns `AdminCap` → This is a constructor
+
+- **Phase II Inhabitation Target:**
+  - The model must generate a PTB that calls `create_admin_cap()`
+  - The dry-run must produce an object of type `0xc681...ade7::admin::AdminCap`
+
+The extractor also maps all other functions to identify alternative constructors and helper functions.
+
+**Why Bytecode?**
+This approach guarantees the ground truth represents exactly what the Move VM executes on-chain, independent of source code formatting or compilation artifacts.
 
 ---
 

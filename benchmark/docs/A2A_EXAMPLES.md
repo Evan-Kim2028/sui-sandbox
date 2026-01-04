@@ -4,6 +4,132 @@ This document provides concrete, copy-paste ready examples of the A2A protocol u
 
 All examples are based on real executions and can be validated with `smi-a2a-validate-bundle`.
 
+## API Endpoints
+
+The A2A green agent exposes the following HTTP endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check with binary/RPC/executor status |
+| `/validate` | POST | Validate config without executing (dry-run) |
+| `/schema` | GET | JSON Schema for EvalConfig |
+| `/info` | GET | API version, capabilities, and limits |
+| `/.well-known/agent-card.json` | GET | A2A agent card |
+| `/` | POST | A2A JSON-RPC endpoint |
+
+### Config Validation (Pre-flight Check)
+
+Before submitting a task, validate your config:
+
+```bash
+curl -X POST http://localhost:9999/validate \
+  -H "Content-Type: application/json" \
+  -d '{"config": {"corpus_root": "/app/corpus", "package_ids_file": "/app/manifest.txt"}}'
+```
+
+**Response (valid):**
+```json
+{"valid": true, "config": {...normalized config...}, "warnings": []}
+```
+
+**Response (invalid):**
+```json
+{"valid": false, "error": "Invalid config: corpus_root - missing or empty", "warnings": []}
+```
+
+**Response (with unknown fields):**
+```json
+{"valid": true, "config": {...}, "warnings": ["Unknown config fields (will be ignored): ['typo_field']"]}
+```
+
+### Get Config Schema
+
+```bash
+curl http://localhost:9999/schema | jq .
+```
+
+Returns JSON Schema for client-side validation.
+
+### Get API Info
+
+```bash
+curl http://localhost:9999/info | jq .
+```
+
+Returns version, capabilities, and limits (e.g., max concurrent tasks).
+
+### Query Task Results (Partial or Complete)
+
+```bash
+# Get current status of a running task
+curl http://localhost:9999/tasks/{task_id}/results | jq .
+```
+
+**Response (running):**
+```json
+{
+  "task_id": "...",
+  "status": "running",
+  "started_at": 1234567890,
+  "agent": "real-openai-compatible",
+  "partial_metrics": {}
+}
+```
+
+**Response (completed):**
+```json
+{
+  "task_id": "...",
+  "status": "completed",
+  "duration_seconds": 123.45,
+  "bundle": {...},
+  "metrics": {
+    "avg_hit_rate": 0.75,
+    "total_prompt_tokens": 12543,
+    "total_completion_tokens": 3421
+  }
+}
+```
+
+### Webhook Callbacks (Async Workflows)
+
+Submit a task with `callback_url` to receive results via HTTP POST when complete:
+
+```bash
+curl -X POST http://localhost:9999 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "msg_123",
+        "role": "user",
+        "parts": [{
+          "text": "{\"config\": {\"corpus_root\": \"/app/corpus\", \"package_ids_file\": \"/app/manifest.txt\", \"callback_url\": \"https://my-service.com/webhook\"}}"
+        }]
+      }
+    }
+  }'
+```
+
+When the task completes, the API will POST results to `https://my-service.com/webhook`.
+
+### Prometheus Metrics
+
+```bash
+curl http://localhost:9999/metrics
+```
+
+Returns Prometheus-format metrics for monitoring:
+- Task throughput, duration, errors
+- HTTP request rates and latencies
+- Active task count
+- Config validation rates
+
+See [Integration Testing Guide](INTEGRATION_TESTING.md) for Grafana dashboard setup.
+
 ## Quick Start Examples
 
 **Minimal smoke test** (1 package, fast feedback):
@@ -87,17 +213,108 @@ The `smi-a2a-smoke` tool constructs a JSON-RPC request:
 }
 ```
 
-| Config Key | Description | Default |
-|------------|-------------|----------|
-| `corpus_root` | Path to bytecode corpus | Required |
-| `package_ids_file` | Manifest file (one ID per line) | Required |
-| `samples` | Number of packages to process | 1 |
-| `rpc_url` | Sui fullnode RPC for simulation | `"https://fullnode.mainnet.sui.io:443"` |
-| `simulation_mode` | `"dry-run"`, `"dev-inspect"`, or `"build-only"` | `"dry-run"` |
-| `per_package_timeout_seconds` | Wall-clock budget per package | 90 |
-| `max_plan_attempts` | Max PTB replanning attempts | 2 |
-| `continue_on_error` | Keep going if package fails | `false` |
-| `resume` | Resume from existing output file | `false` |
+#### Config Reference
+
+**Core Fields (Required/Common):**
+
+| Config Key | Description | Default | Validation |
+|------------|-------------|---------|------------|
+| `corpus_root` | Path to bytecode corpus | **Required** | Must be non-empty |
+| `package_ids_file` | Manifest file (one ID per line) | **Required** | Must be non-empty |
+| `samples` | Number of packages to process | `0` (all) | >= 0 |
+| `agent` | Agent type to use | `"real-openai-compatible"` | One of: `mock-empty`, `mock-planfile`, `real-openai-compatible`, `baseline-search`, `template-search` |
+| `rpc_url` | Sui fullnode RPC for simulation | `"https://fullnode.mainnet.sui.io:443"` | Valid URL |
+| `simulation_mode` | Transaction simulation mode | `"dry-run"` | One of: `dry-run`, `dev-inspect`, `build-only` |
+| `per_package_timeout_seconds` | Wall-clock budget per package | `300.0` | > 0 |
+| `max_plan_attempts` | Max PTB replanning attempts | `2` | > 0 |
+| `continue_on_error` | Keep going if package fails | `true` | boolean |
+| `resume` | Resume from existing output file | `true` | boolean |
+| `run_id` | Custom run identifier | Auto-generated | Optional string |
+| `model` | Per-request model override (takes precedence over `SMI_MODEL` env var) | `null` (use env var) | Non-empty if provided |
+
+**P0: Production-Critical Fields:**
+
+| Config Key | Description | Default | Validation |
+|------------|-------------|---------|------------|
+| `seed` | Random seed for reproducible sampling | `0` | >= 0 |
+| `sender` | Sui address for tx simulation | `null` | **Required** for `dev-inspect`/`execute` modes |
+| `gas_budget` | Gas budget for dry-run simulation | `10000000` (10M) | > 0 |
+| `gas_coin` | Specific gas coin object ID | `null` (auto-select) | Valid object ID if provided |
+| `gas_budget_ladder` | Comma-separated retry budgets on InsufficientGas | `"20000000,50000000"` | Comma-separated positive ints |
+| `max_errors` | Stop run after N package errors | `25` | > 0 |
+| `max_run_seconds` | Wall-clock budget for entire run | `null` (unlimited) | > 0 if provided |
+
+**P1: Flexibility/Tuning Fields:**
+
+| Config Key | Description | Default | Validation |
+|------------|-------------|---------|------------|
+| `max_planning_calls` | Max LLM calls per package (progressive exposure) | `50` | > 0 |
+| `checkpoint_every` | Save partial results every N packages | `10` | > 0 |
+| `max_heuristic_variants` | Max deterministic PTB variants per plan attempt | `4` | >= 1 |
+| `baseline_max_candidates` | Max candidates in baseline-search mode | `25` | >= 1 |
+| `include_created_types` | Include full created object type lists in output | `false` | boolean |
+| `require_dry_run` | Fail if dry-run unavailable (no dev-inspect fallback) | `false` | Only valid with `simulation_mode: "dry-run"` |
+
+#### Validation Rules
+
+- **Cross-field validation**: `require_dry_run: true` requires `simulation_mode: "dry-run"`
+- **Cross-field validation**: `simulation_mode: "dev-inspect"` or `"execute"` requires `sender` to be set
+- **Unknown fields**: Silently ignored (use `/validate` endpoint to check)
+- **Type coercion**: Strings `"true"`, `"1"`, `"yes"` coerced to boolean `true`
+
+### Model Override (Per-Request Model Switching)
+
+**Use case:** Run multiple models with different configurations using a single long-running container, avoiding container restart overhead.
+
+**Model precedence rules:**
+1. **API payload** `config.model` (highest priority)
+2. **Environment variable** `SMI_MODEL` (fallback)
+3. **Default** (from agent code or config file)
+
+**Example: Override model in API request**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "messageId": "run_with_gpt4",
+      "role": "user",
+      "parts": [{
+        "text": "{\"config\": {\"corpus_root\": \"<CORPUS_ROOT>\", \"package_ids_file\": \"manifests/standard_phase2_no_framework.txt\", \"samples\": 5, \"model\": \"openai/gpt-4-turbo\"}, \"out_dir\": \"/app/results\"}"
+      }]
+    }
+  }
+}
+```
+
+**Docker workflow:**
+```bash
+# Start container once (or use docker compose up -d)
+docker run -d --name smi-bench -p 9999:9999 smi-bench:latest
+
+# Run benchmark with model A
+curl -X POST http://localhost:9999/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": "1", "method": "message/send", ... "model": "gpt-4" ...}'
+
+# Run benchmark with model B (no container restart)
+curl -X POST http://localhost:9999/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": "2", "method": "message/send", ... "model": "gemini-3-flash" ...}'
+```
+
+**Benefits:**
+- **Zero startup time:** No container rebuild or restart between models
+- **Port isolation:** Single port, no port management complexity
+- **Efficient:** Reuses Python venv and Rust binaries across runs
+- **Production-ready:** Aligns with long-running service patterns
+
+**Limitations:**
+- **Sequential execution:** Tasks run one-at-a-time (no true parallelism)
+- **State sharing:** Same container memory/tmp across runs (appropriate for benchmarks)
+- **Container lifecycle:** Container must be stopped manually when done (use `--cleanup` flag in `run_docker_benchmark.sh`)
 
 ### Step 3: Receive Response
 

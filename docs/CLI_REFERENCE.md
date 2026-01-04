@@ -120,3 +120,117 @@ Optionally maintain a human-readable snapshot log here:
 
 For schema details and determinism rules, see **[JSON Schema](SCHEMA.md)**.
 For benchmark execution, see **[Benchmark Guide](BENCHMARK_GUIDE.md)**.
+
+## Bytecode Interface Extraction
+
+The `--emit-bytecode-json` flag deserializes Move bytecode (.mv files) into a deterministic JSON interface. This is the core transformation that powers all benchmark evaluation.
+
+### How it works: From Bytecode to JSON
+
+The Rust extractor reads compiled Move bytecode and extracts type information through the following process:
+
+1. **Read Binary Module:** 
+   - Loads `.mv` files from `bytecode_modules/` directory
+   - Uses `CompiledModule::deserialize_with_defaults()` to parse binary format
+
+2. **Extract Type Tables:**
+   - Reads struct definitions with field types and abilities
+   - Reads function signatures (params, returns, visibility)
+   - Maps Move type parameters to JSON representation
+
+3. **Canonicalize Output:**
+   - Normalizes addresses to 64-character hex (`0x` prefix)
+   - Sorts struct fields by declaration order
+   - Sorts abilities: `["copy", "drop", "store", "key"]` when present
+   - Canonicalizes JSON keys recursively for diff stability
+
+### Example: Concrete Transformation
+
+**Input:** Binary bytecode file at `bytecode_modules/admin.mv` (cannot be human-read)
+
+**Process:** Rust deserializes binary Move VM format into structured JSON
+
+**Output:**
+```json
+{
+  "schema_version": 1,
+  "package_id": "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+  "module_names": ["admin"],
+  "modules": {
+    "admin": {
+      "address": "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+      "structs": {
+        "AdminCap": {
+          "abilities": ["key", "drop", "store"],
+          "type_params": [],
+          "is_native": false,
+          "fields": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "u64"
+              }
+            }
+          ]
+        }
+      },
+      "functions": {
+        "create_admin_cap": {
+          "visibility": "public",
+          "is_entry": true,
+          "is_native": false,
+          "type_params": [],
+          "params": [],
+          "returns": [
+            {
+              "kind": "datatype",
+              "address": "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+              "module": "admin",
+              "name": "AdminCap",
+              "type_args": []
+            }
+          ],
+          "acquires": []
+        }
+      }
+    }
+  }
+}
+```
+
+### Key Extracted Information
+
+For each module, the interface JSON provides:
+
+- **Structs:** Complete type definitions with fields and abilities
+  - `abilities`: Which Move abilities are declared (`key`, `drop`, `store`, `copy`)
+  - `fields`: Ordered list of field names and types
+  - `is_native`: Whether struct is built-in to Move VM
+
+- **Functions:** Complete signatures for all functions
+  - `visibility`: `public`, `friend`, or `private`
+  - `is_entry`: Whether function can be called in transaction
+  - `params`: Input parameter types
+  - `returns`: Output types (struct constructors return target types)
+
+- **Type System:** Canonical representation of all Move types
+  - Primitives: `u8`, `u64`, `bool`, `address`, etc.
+  - Vectors: `{"kind": "vector", "type": T}`
+  - Structs: `{"kind": "datatype", "address": "0x...", "module": "...", "name": "...", "type_args": [...]}`
+
+### Why Bytecode-First?
+
+This approach ensures ground truth is independent of:
+- **Source code formatting** (whitespace, comments, style)
+- **Compilation artifacts** (temporary locals, optimizer transformations)
+- **RPC availability** (works offline, no network dependencies)
+
+The extracted JSON represents exactly what the Move VM will execute on-chain.
+
+### Reference Implementation
+
+See `src/bytecode.rs` for the deserialization logic:
+- `read_local_compiled_modules()`: Loads .mv files
+- `build_bytecode_module_json()`: Extracts struct/function tables
+- `build_bytecode_interface_value_from_compiled_modules()`: Builds complete package interface
+- `signature_token_to_json()`: Converts Move types to canonical JSON

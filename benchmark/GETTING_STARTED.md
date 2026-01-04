@@ -150,6 +150,95 @@ uv run smi-inhabit \
 
 ---
 
+## 2E) Docker Multi-Model Workflow
+
+Use this when running multiple models in production: single container, model switching via API, zero restart overhead.
+
+### Start container once
+
+```bash
+cd benchmark
+docker compose up -d --wait
+```
+
+Or with docker run:
+
+```bash
+docker build -t smi-bench:latest .
+docker run -d --name smi-bench -p 9999:9999 \
+  --env-file .env \
+  smi-bench:latest
+```
+
+### Run benchmarks with model override
+
+Using the enhanced `run_docker_benchmark.sh` script:
+
+```bash
+# Run with model A (default from env var)
+./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999
+
+# Run with model B (override via API, no restart)
+./scripts/run_docker_benchmark.sh openai/gpt-4-turbo 25 9999 --model-override anthropic/claude-3.5-sonnet
+
+# Check container status
+./scripts/run_docker_benchmark.sh "" 0 9999 --status
+
+# Cleanup when done
+./scripts/run_docker_benchmark.sh "" 0 9999 --cleanup
+```
+
+### Batch multi-model runs
+
+Using `run_multi_model.sh` for sequential model testing:
+
+```bash
+# Create models file
+cat > models.txt <<EOF
+google/gemini-3-flash-preview
+openai/gpt-4-turbo
+anthropic/claude-3.5-sonnet
+EOF
+
+# Run all models
+./scripts/run_multi_model.sh models.txt 25 9999
+
+# Cleanup after batch
+./scripts/run_multi_model.sh models.txt 25 9999 --cleanup-after
+```
+
+### Model override in direct API calls
+
+For manual API testing, include `model` in config:
+
+```bash
+curl -X POST http://localhost:9999/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "test-run",
+        "role": "user",
+        "parts": [{
+          "text": "{\"config\": {\"corpus_root\": \"/app/corpus\", \"package_ids_file\": \"/app/manifest.txt\", \"agent\": \"real-openai-compatible\", \"samples\": 25, \"model\": \"openai/gpt-4\"}, \"out_dir\": \"/app/results\"}"
+        }]
+      }
+    }
+  }'
+```
+
+**Model precedence:**
+1. API payload `config.model` (highest)
+2. Environment variable `SMI_MODEL`
+3. Default from agent configuration
+
+See [docs/A2A_EXAMPLES.md](docs/A2A_EXAMPLES.md#model-override-per-request-model-switching) for detailed examples.
+
+---
+
 ## 3) Results-first: what to look at
 
 The Phase II output JSON contains per-package rows and an aggregate summary.
