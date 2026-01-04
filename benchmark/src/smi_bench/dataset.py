@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from smi_bench.utils import safe_json_loads
+from smi_bench.utils import safe_read_json
 
 # Addresses to filter out from analysis
 BLACKLISTED_ADDRESSES = {
@@ -31,11 +30,8 @@ def _fnv1a64(seed: int, s: str) -> int:
 
 def read_package_id_from_metadata(package_dir: Path) -> str | None:
     metadata_path = package_dir / "metadata.json"
-    if not metadata_path.exists():
-        return None
-    try:
-        data = safe_json_loads(metadata_path.read_text(), context=f"metadata file {metadata_path}")
-    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+    data = safe_read_json(metadata_path, context=f"metadata file {metadata_path}")
+    if not data:
         return None
     package_id = data.get("id")
     return package_id if isinstance(package_id, str) and package_id else None
