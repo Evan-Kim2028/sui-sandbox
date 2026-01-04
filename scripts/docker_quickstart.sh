@@ -25,9 +25,16 @@ BENCHMARK_DIR="$REPO_ROOT/benchmark"
 ENV_FILE="$BENCHMARK_DIR/.env"
 
 # 1. API Key Validation
-if [ -z "$OPENROUTER_API_KEY" ] && [ ! -f "$ENV_FILE" ]; then
-    echo -e "${YELLOW}Missing OPENROUTER_API_KEY environment variable.${NC}"
-    echo -n "Please enter your OpenRouter API Key: "
+# Check current env, then .env file
+if [ -z "$OPENROUTER_API_KEY" ] && [ -f "$ENV_FILE" ]; then
+    # Try to extract from .env
+    OPENROUTER_API_KEY=$(grep "^OPENROUTER_API_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
+fi
+
+if [ -z "$OPENROUTER_API_KEY" ] && [ "$SMI_AGENT" != "mock-empty" ]; then
+    echo -e "${YELLOW}Missing OPENROUTER_API_KEY.${NC}"
+    echo -e "This key is required to run real LLM benchmarks via OpenRouter."
+    echo -n "Please enter your OpenRouter API Key (input hidden): "
     read -s API_KEY
     echo ""
     export OPENROUTER_API_KEY="$API_KEY"
@@ -44,6 +51,13 @@ SMI_MAX_TOKENS=4096
 SMI_SENDER=0x064d87c3da8b7201b18c05bfc3189eb817920b2d089b33e207d1d99dc5ce08e0
 EOF
     echo -e "${GREEN}✓ Environment configured.${NC}"
+else
+    # Verify the existing .env has the key if we aren't in mock mode
+    if [ "$SMI_AGENT" != "mock-empty" ] && ! grep -q "^OPENROUTER_API_KEY=" "$ENV_FILE"; then
+        echo -e "${YELLOW}Warning: $ENV_FILE exists but is missing OPENROUTER_API_KEY.${NC}"
+        echo "Appending provided key to $ENV_FILE..."
+        echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$ENV_FILE"
+    fi
 fi
 
 # 3. Docker Verification
@@ -85,16 +99,18 @@ fi
 RUN_ID="quickstart_$(date +%Y%m%d_%H%M%S)"
 echo -e "\n${BLUE}Starting sample benchmark run (ID: $RUN_ID)...${NC}"
 
-# We use docker run --rm for the quickstart to keep things clean
+# We use docker run --rm for the quickstart to keep things clean.
+# We override the entrypoint to run smi-inhabit directly instead of the A2A server.
 docker run --rm \
     --name "smi-quickstart" \
+    --entrypoint "/usr/bin/tini" \
     --env-file "$ENV_FILE" \
     -v "$CORPUS_HOST:/app/corpus" \
     -v "$BENCHMARK_DIR/results:/app/results" \
-    smi-bench:latest smi-inhabit \
+    smi-bench:latest -- smi-inhabit \
         --corpus-root "$CORPUS_ROOT_IN_CONTAINER" \
         --samples 1 \
-        --agent real-openai-compatible \
+        --agent "${SMI_AGENT:-real-openai-compatible}" \
         --simulation-mode build-only \
         --out "/app/results/$RUN_ID.json" \
         --no-log
@@ -108,8 +124,10 @@ if [ -f "$RESULT_FILE" ]; then
     echo -e "Results saved to: benchmark/results/$RUN_ID.json"
     
     # Extract hit rate using python for clean output
-    python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(f'Avg Hit Rate: {d[\"aggregate\"]}.get(\"avg_hit_rate\", 0.0):.2%')"
-    python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(f'Errors: {d[\"aggregate\"]}.get(\"errors\", 0))')"
+    echo -n "  • "
+    python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(f'Avg Hit Rate: {d[\"aggregate\"].get(\"avg_hit_rate\", 0.0):.2%}')"
+    echo -n "  • "
+    python3 -c "import json; d=json.load(open('$RESULT_FILE')); print(f'Errors: {d[\"aggregate\"].get(\"errors\", 0)}')"
 else
     echo -e "${RED}× Failure: Result file was not generated.${NC}"
     exit 1
