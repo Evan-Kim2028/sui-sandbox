@@ -297,7 +297,7 @@ def log_exception(msg: str, extra: dict[str, Any] | None = None) -> None:
     Log an exception with traceback and optional extra structured info.
     """
     err_info = {
-        "error_type": sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Unknown",
+        "error_type": getattr(sys.exc_info()[0], "__name__", "Unknown"),
         "error_message": str(sys.exc_info()[1]),
         "traceback": traceback.format_exc(),
     }

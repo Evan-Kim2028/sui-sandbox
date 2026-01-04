@@ -1095,7 +1095,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
         # fall back to deriving errors/metrics from the JSONL logs.
         if not metrics.get("errors") and run_metadata_path.exists():
             md = _read_json(run_metadata_path) or {}
-            metrics.setdefault("run_metadata", md)
+            metrics["run_metadata"] = md
 
         # Add high-level failure mode analysis if errors occurred
         if errors_list:
@@ -1241,10 +1241,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
             return
 
         try:
-            if inspect.isawaitable(proc.terminate()):
-                await proc.terminate()
-            else:
-                proc.terminate()
+            proc.terminate()
 
             await updater.update_status(
                 TaskState.working,
@@ -1259,10 +1256,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 try:
-                    if inspect.isawaitable(proc.kill()):
-                        await proc.kill()
-                    else:
-                        proc.kill()
+                    proc.kill()
                 except ProcessLookupError:
                     pass
                 await updater.update_status(
