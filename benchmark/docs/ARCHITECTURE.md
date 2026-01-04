@@ -235,16 +235,31 @@ Invariants:
 
 See `benchmark/GETTING_STARTED.md` for usage examples and `benchmark/docs/A2A_EXAMPLES.md` for protocol details. See `benchmark/docs/A2A_TUNING.md` for practical tuning guidance.
 
-## Output schemas / versioning invariants
+### Output schemas / versioning invariants
 
 - Phase I output JSON includes `schema_version=1` (see `runner.py`).
 - Phase II output JSON includes `schema_version=2` (see `inhabit_runner.py`).
 
-Maintainers should treat these as **stable**:
+## Hardening & Reliability
 
-- Changing output shapes should either:
-  - be additive + backward compatible, or
-  - bump the schema version and update readers/scripts accordingly.
+The benchmark harness implements several patterns to ensure reliability in long-running or distributed execution. For implementation details and usage patterns, see the [Hardening & Reliability Guide](HARDENING_GUIDE.md).
+
+### Reliability Invariants
+- **Atomic Writes**: All JSON and manifest outputs use the `atomic_write_text` / `atomic_write_json` patterns (write to `.tmp` file + rename) to prevent partial file corruption on disk full or crash.
+- **Robust Reading**: `safe_read_json` and `safe_read_text` provide centralized error handling, logging, and optional retry/raise behavior.
+- **JSON Recovery**: `safe_json_loads` includes heuristics to extract JSON blobs from noisy model outputs or mixed log/stdout streams.
+
+### Subprocess Management
+- **Managed Lifecycle**: The `managed_subprocess` async context manager ensures that child processes (like `smi-inhabit` or `smi_tx_sim`) are terminated (SIGTERM → SIGKILL) even if the parent task is cancelled or crashes.
+- **Signal Handling**: `setup_signal_handlers` ensures that cleanup logic (like stopping Docker containers) runs on `SIGINT` and `SIGTERM`.
+
+### Input Validation
+- **Strict Parsing**: `safe_parse_int` and `safe_parse_float` clamp values to reasonable ranges and provide fallbacks with warnings instead of crashing on malformed environment variables or user inputs.
+- **Pre-flight Checks**: `_run_preflight_checks` validates RPC reachability and sender funding before starting expensive LLM-based runs.
+
+### Checkpoint Integrity
+- **Checksums**: Checkpoints include an 8-character SHA-256 checksum (`_checksum` field) to detect manual edits or filesystem corruption.
+- **Compatibility Checks**: `validate_checkpoint_compatibility` ensures that a resumed run matches the original configuration (agent, seed, schema version) to prevent data pollution.
 
 ## Refactor safety checklist
 

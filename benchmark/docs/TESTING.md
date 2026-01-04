@@ -98,6 +98,24 @@ grep "smi-a2a-smoke" docs/*.md
 grep "smi-a2a-smoke" benchmark/pyproject.toml
 ```
 
+### Reliability Testing
+
+**All reliability-critical code must have verification tests covering:**
+
+- **Atomic File I/O**: Verify that partial writes do not occur and that `.tmp` files are cleaned up on failure.
+- **Subprocess Lifecycle**: Verify that child processes are terminated when the parent is cancelled or crashes.
+- **Exponential Backoff**: Verify that retry logic correctly calculates delays and stops after the maximum number of attempts.
+- **Input Validation**: Use property-based testing (Hypothesis) to ensure numeric inputs are correctly clamped.
+
+**Example reliability test:**
+```python
+@pytest.mark.anyio
+async def test_subprocess_cleanup():
+    async with managed_subprocess("sleep", "60") as proc:
+        raise RuntimeError("simulated crash")
+    # Verify proc is killed automatically after context exit
+```
+
 ## Automated Checks
 
 ### Pre-commit Validation

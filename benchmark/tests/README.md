@@ -73,6 +73,21 @@ This directory contains the test suite for the `sui-move-interface-extractor` be
 - `test_score_inhabitation_boundaries`
 - `test_compute_phase2_metrics_properties`
 
+### Hardening & Reliability Validation (New)
+
+**Purpose**: Ensure the system remains resilient to infrastructure failures.
+
+**Characteristics**:
+- Uses `pytest.mark.anyio` for async lifecycle testing
+- Mocks `time.sleep` to verify backoff timing without slowing tests
+- Simulates `CalledProcessError` and `TimeoutError` to verify recovery
+- Checks for side effects like `.tmp` file residues
+
+**Key Files**:
+- `tests/test_hardening.py` - Core I/O and parsing logic
+- `tests/test_a2a_hardened_lifecycle.py` - Subprocess and task cancellation
+- `tests/test_rust_hardening.py` - Binary extraction resilience
+
 ## Test Philosophy
 
 ### 1. Fast Feedback Loop
