@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
 
-from smi_bench.utils import BinaryNotExecutableError, BinaryNotFoundError, safe_json_loads, validate_binary
+from smi_bench.utils import (
+    BinaryNotExecutableError,
+    BinaryNotFoundError,
+    retry_with_backoff,
+    safe_json_loads,
+    validate_binary,
+)
+
+logger = logging.getLogger(__name__)
 
 # Re-export for convenience
 __all__ = [
@@ -81,41 +90,39 @@ def emit_bytecode_json(*, package_dir: Path, rust_bin: Path, timeout_s: float = 
         Parsed JSON dict representing the package interface (see `BytecodePackageInterfaceJson`).
 
     Raises:
-        subprocess.TimeoutExpired: If the subprocess times out.
-        subprocess.CalledProcessError: If the Rust binary fails.
+        TimeoutError: If the subprocess times out after retries.
+        RuntimeError: If the Rust binary fails after retries.
         ValueError: If the output is not valid JSON (with context).
     """
-    try:
-        out = subprocess.check_output(
-            [
-                str(rust_bin),
-                "--bytecode-package-dir",
-                str(package_dir),
-                "--emit-bytecode-json",
-                "-",
-            ],
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise TimeoutError(
-            f"Rust extractor timed out after {timeout_s}s\n"
-            f"  Package: {package_dir}\n"
-            f"  This may indicate:\n"
-            f"    - The binary is stuck or hung\n"
-            f"    - The package is very large (consider increasing timeout)\n"
-            f"    - System resources are constrained\n"
-            f"  Try: Increase timeout or check system resources."
-        ) from e
-    except subprocess.CalledProcessError as e:
-        stderr_snippet = (e.stderr[:300] if e.stderr else "N/A") if hasattr(e, "stderr") else "N/A"
-        raise RuntimeError(
-            f"Rust extractor failed\n"
-            f"  Package: {package_dir}\n"
-            f"  Exit code: {e.returncode}\n"
-            f"  Command: {' '.join(e.cmd)}\n"
-            f"  Stderr: {stderr_snippet}\n"
-            f"  Check that the package directory is valid and contains bytecode_modules/."
-        ) from e
+
+    def _run() -> str:
+        try:
+            return subprocess.check_output(
+                [
+                    str(rust_bin),
+                    "--bytecode-package-dir",
+                    str(package_dir),
+                    "--emit-bytecode-json",
+                    "-",
+                ],
+                text=True,
+                timeout=timeout_s,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(f"Rust extractor timed out after {timeout_s}s for {package_dir}") from e
+        except subprocess.CalledProcessError as e:
+            stderr_snippet = e.stderr[:500] if e.stderr else "N/A"
+            raise RuntimeError(
+                f"Rust extractor failed (exit {e.returncode}) for {package_dir}\nStderr: {stderr_snippet}"
+            ) from e
+
+    # Apply retry logic to handle transient filesystem or binary issues
+    out = retry_with_backoff(
+        _run,
+        max_attempts=3,
+        base_delay=2.0,
+        retryable_exceptions=(RuntimeError, TimeoutError),
+    )
 
     return safe_json_loads(out, context=f"Rust extractor output for {package_dir}")

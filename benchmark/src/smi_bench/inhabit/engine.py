@@ -18,7 +18,12 @@ from typing import Any
 import httpx
 
 from smi_bench.inhabit.score import normalize_type_string
-from smi_bench.utils import get_smi_temp_dir, run_json_helper
+from smi_bench.utils import (
+    atomic_write_json,
+    get_smi_temp_dir,
+    retry_with_backoff,
+    run_json_helper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ def fetch_inventory(rpc_url: str, sender: str) -> dict[str, list[str]]:
         logger.debug(f"Skipping inventory fetch for mock/invalid sender: {sender}")
         return {}
 
-    try:
+    def _fetch():
         objects = []
         cursor = None
         while True:
@@ -94,6 +99,15 @@ def fetch_inventory(rpc_url: str, sender: str) -> dict[str, list[str]]:
             if len(objects) > 200:
                 logger.warning(f"Truncating inventory fetch at 200 objects for sender={sender}")
                 break
+        return objects
+
+    try:
+        objects = retry_with_backoff(
+            _fetch,
+            max_attempts=3,
+            base_delay=2.0,
+            retryable_exceptions=(RuntimeError, httpx.RequestError, httpx.TimeoutException),
+        )
 
         inventory = {}
         for obj in objects:
@@ -230,7 +244,7 @@ def run_tx_sim_via_helper(
     tmp_dir = get_smi_temp_dir()
     tmp_path = tmp_dir / f"ptb_spec_{int(time.time() * 1000)}.json"
     try:
-        tmp_path.write_text(json.dumps(ptb_spec, indent=2, sort_keys=True) + "\n")
+        atomic_write_json(tmp_path, ptb_spec)
     except Exception as e:
         raise RuntimeError(f"Failed to write temp PTB spec: {e}") from e
 
@@ -253,7 +267,12 @@ def run_tx_sim_via_helper(
         if bytecode_package_dir is not None:
             cmd += ["--bytecode-package-dir", str(bytecode_package_dir)]
 
-        data = run_json_helper(cmd, timeout_s=timeout_s, context=f"tx sim ({mode})")
+        data = retry_with_backoff(
+            lambda: run_json_helper(cmd, timeout_s=timeout_s, context=f"tx sim ({mode})"),
+            max_attempts=3,
+            base_delay=2.0,
+            retryable_exceptions=(RuntimeError, TimeoutError),
+        )
 
         mode_used = data.get("modeUsed", "unknown")
         created_types = data.get("createdObjectTypes", [])
