@@ -16,6 +16,9 @@ def run_all(args):
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.samples < 0:
+        raise ValueError(f"samples must be >= 0, got {args.samples}")
+
     # 1. Phase I
     logger.info("--- Running Phase I (Key Struct Discovery) ---")
     p1_out = out_dir / "phase1.json"

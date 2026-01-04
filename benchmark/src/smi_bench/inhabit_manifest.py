@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from smi_bench.inhabit.executable_subset import (
     compute_package_viability,
 )
 from smi_bench.rust import default_rust_binary, emit_bytecode_json
-from smi_bench.utils import extract_key_types_from_interface_json
+from smi_bench.utils import atomic_write_json, atomic_write_text, extract_key_types_from_interface_json
 
 console = Console()
 
@@ -130,11 +129,8 @@ def main(argv: list[str] | None = None) -> None:
         if len(samples) < 20:
             samples.append({"package_id": pkg.package_id, "calls": candidates, "targets_key_types": len(key_targets)})
 
-    args.out_ids.parent.mkdir(parents=True, exist_ok=True)
-    args.out_ids.write_text("\n".join(ids) + ("\n" if ids else ""))
-
-    args.out_plan.parent.mkdir(parents=True, exist_ok=True)
-    args.out_plan.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(args.out_ids, "\n".join(ids) + ("\n" if ids else ""))
+    atomic_write_json(args.out_plan, plan)
 
     console.print(f"wrote: {args.out_ids} (n={len(ids)})")
     console.print(f"wrote: {args.out_plan} (n={len(plan)})")
@@ -169,8 +165,7 @@ def main(argv: list[str] | None = None) -> None:
             "samples": samples,
             "rejected_samples": rejected_samples,
         }
-        args.out_report.parent.mkdir(parents=True, exist_ok=True)
-        args.out_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        atomic_write_json(args.out_report, report)
         console.print(f"wrote: {args.out_report}")
 
 

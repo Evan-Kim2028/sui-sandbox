@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
+
+from smi_bench.utils import atomic_write_text, safe_read_json
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out-manifest", type=Path, required=True, help="Output manifest file (one package id per line)")
     args = p.parse_args(argv)
 
-    data = json.loads(args.out_json.read_text(encoding="utf-8"))
+    data = safe_read_json(args.out_json, context="Phase II results")
+    if data is None:
+        raise SystemExit(f"Could not read results from {args.out_json}")
     rows = data.get("packages")
     if not isinstance(rows, list):
         raise SystemExit("invalid out json: missing packages[]")
@@ -38,8 +41,8 @@ def main(argv: list[str] | None = None) -> None:
         if targets_i >= args.min_targets:
             out_ids.append(pkg)
 
-    args.out_manifest.parent.mkdir(parents=True, exist_ok=True)
-    args.out_manifest.write_text("\n".join(out_ids) + ("\n" if out_ids else ""), encoding="utf-8")
+    content = "\n".join(out_ids) + ("\n" if out_ids else "")
+    atomic_write_text(args.out_manifest, content)
     logger.info(f"packages_kept={len(out_ids)}")
 
 

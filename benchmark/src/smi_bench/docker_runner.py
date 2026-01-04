@@ -30,6 +30,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator
 
+from smi_bench.utils import setup_signal_handlers
+
 if TYPE_CHECKING:
     import docker  # type: ignore
     from docker.models.containers import Container  # type: ignore
@@ -68,10 +70,10 @@ def cleanup_existing_container(
         logger.info(f"Removing existing container: {name}")
         container.remove(force=True)
         return True
-    except docker.errors.NotFound:
-        return False
-    except docker.errors.APIError as e:
-        logger.warning(f"Failed to remove container {name}: {e}")
+    except (docker.errors.NotFound, docker.errors.APIError) as e:
+        # If it's APIError, it might be already gone or some other issue
+        if isinstance(e, docker.errors.APIError):
+            logger.debug(f"Attempting to remove container {name} failed: {e}")
         return False
 
 
@@ -95,7 +97,12 @@ def wait_for_healthy(
     last_status = None
 
     while time.time() < deadline:
-        container.reload()
+        try:
+            container.reload()
+        except docker.errors.NotFound:
+            logger.error("Container disappeared while waiting for health check")
+            return False
+
         state = container.attrs.get("State", {})
         health = state.get("Health", {})
         status = health.get("Status", "unknown")
@@ -191,11 +198,14 @@ def managed_container(
     # Load environment from file if specified
     env = dict(environment or {})
     if env_file and env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    env.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        except (OSError, PermissionError) as e:
+            logger.warning(f"Failed to read env_file {env_file}: {e}")
 
     # Default ports if not specified
     if ports is None:
@@ -224,9 +234,12 @@ def managed_container(
             logger.info(f"Removing container {name}")
             container.remove(force=True)
         except Exception as e:
-            logger.warning(f"Cleanup error (may be expected): {e}")
+            # NotFound is expected if cleanup already ran
+            if "not found" not in str(e).lower():
+                logger.debug(f"Cleanup info (may be already removed): {e}")
 
     atexit.register(cleanup)
+    setup_signal_handlers(cleanup)
 
     try:
         yield container
@@ -234,7 +247,7 @@ def managed_container(
         cleanup()
         try:
             atexit.unregister(cleanup)
-        except (TypeError, AttributeError) as e:
+        except (TypeError, AttributeError, ValueError) as e:
             logger.debug(f"Failed to unregister cleanup: {e}")
 
 
