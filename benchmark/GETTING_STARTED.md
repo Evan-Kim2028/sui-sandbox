@@ -10,7 +10,13 @@ The easiest way to get started. Handles dependencies, binaries, and environment 
 ./scripts/docker_quickstart.sh
 ```
 
-### Option B: Local Setup
+### Option B: Top 25 Dataset (Full Run)
+Runs a full benchmark on the curated Top 25 dataset using GPT-5.2.
+```bash
+./scripts/top25_quickstart.sh
+```
+
+### Option C: Local Setup
 For developers working directly on the Python/Rust source code.
 ```bash
 cd benchmark
