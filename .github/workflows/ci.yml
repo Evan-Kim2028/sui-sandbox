@@ -93,6 +93,8 @@ jobs:
       - name: Create test directories
         run: |
           mkdir -p benchmark/data/corpus results logs
+          # Ensure directories are writable by UID 1000 (container user)
+          sudo chown -R 1000:1000 results logs
           # Create minimal mock corpus for CI
           mkdir -p benchmark/data/corpus/0x00/fixture/bytecode_modules
           echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > benchmark/data/corpus/0x00/fixture/metadata.json

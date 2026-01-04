@@ -65,7 +65,7 @@ def docker_service() -> Generator[None, None, None]:
             ["docker", "compose", "-f", str(compose_file), "up", "-d", "--wait", "smi-bench"],
             check=True,
             capture_output=True,
-            timeout=120,
+            timeout=300,  # 5 minutes for build + healthcheck in CI
         )
     except subprocess.CalledProcessError as e:
         pytest.fail(f"Failed to start docker service:\n{e.stderr.decode()}")
