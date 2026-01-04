@@ -97,48 +97,8 @@ echo -e "\n${BLUE}=== Evaluation Summary ===${NC}"
 RESULT_FILE="results/$RUN_ID.json"
 
 if [ -f "$RESULT_FILE" ]; then
-    echo -e "${GREEN}✓ Benchmark completed successfully.${NC}"
-    echo -e "Full Results: benchmark/results/$RUN_ID.json"
-    echo -e "----------------------------------------------------------------"
-    
-    python3 -c "
-import json
-import sys
-
-try:
-    with open('$RESULT_FILE') as f:
-        data = json.load(f)
-    
-    agg = data.get('aggregate', {})
-    pkgs = data.get('packages', [])
-    total = len(pkgs)
-    
-    if total == 0:
-        print('No package results found.')
-        sys.exit(0)
-
-    # Reasoning/Parse successes
-    reasoning_ok = sum(1 for p in pkgs if p.get('ptb_parse_ok'))
-    # Dry run successes
-    dry_run_ok = sum(1 for p in pkgs if p.get('dry_run_ok'))
-    # Timing
-    total_time = sum(p.get('elapsed_seconds', 0) for p in pkgs)
-    
-    model_name = data.get('agent', 'unknown')
-    print(f'Model:             {model_name}')
-    print(f'Total Packages:    {total}')
-    print(f'Avg Hit Rate:      {agg.get(\"avg_hit_rate\", 0.0):.2%}')
-    print(f'Dry Run Success:   {dry_run_ok/total:.2%} ({dry_run_ok}/{total})')
-    print(f'Reasoning Success: {reasoning_ok/total:.2%} ({reasoning_ok}/{total})')
-    print(f'Total Tokens:      {agg.get(\"total_prompt_tokens\", 0) + agg.get(\"total_completion_tokens\", 0):,}')
-    print(f'  • Prompt:        {agg.get(\"total_prompt_tokens\", 0):,}')
-    print(f'  • Completion:    {agg.get(\"total_completion_tokens\", 0):,}')
-    print(f'Total Time:        {total_time:.1f}s (Avg: {total_time/total:.1f}s/pkg)')
-    print(f'Harness Errors:    {agg.get(\"errors\", 0)}')
-except Exception as e:
-    print(f'Error analyzing results: {e}')
-"
-    echo -e "----------------------------------------------------------------"
+    "$REPO_ROOT/scripts/analyze_run.py" "$RESULT_FILE"
+    echo -e "Full JSON results: benchmark/results/$RUN_ID.json"
 else
     echo -e "${RED}× Failure: Result file was not generated.${NC}"
     exit 1
