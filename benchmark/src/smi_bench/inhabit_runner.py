@@ -773,7 +773,7 @@ def run(
         real_agent = RealAgent(cfg)
         if logger is not None:
             logger.event("agent_effective_config", **real_agent.debug_effective_config())
-    elif agent_name in {"mock-empty", "mock-planfile", "baseline-search"}:
+    elif agent_name in {"mock-empty", "mock-perfect", "mock-planfile", "baseline-search"}:
         pass
     else:
         raise SystemExit(f"unknown agent: {agent_name}")
@@ -859,6 +859,8 @@ def run(
                     plans_to_try = [{"calls": c} for c in candidates]
             elif agent_name == "mock-empty":
                 plans_to_try = [{"calls": []}]
+            elif agent_name == "mock-perfect":
+                plans_to_try = [{"calls": []}] # Dummy plan, we skip simulation
             elif agent_name == "mock-planfile":
                 ptb = plan_by_id.get(pkg.package_id)
                 if ptb is None:
@@ -876,6 +878,16 @@ def run(
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining <= 0:
                     raise TimeoutError(f"per-package timeout exceeded ({per_package_timeout_seconds}s)")
+
+                if agent_name == "mock-perfect":
+                    created_types = {normalize_type_string(t) for t in truth_key_types}
+                    dry_run_ok = True
+                    dry_run_exec_ok = True
+                    tx_build_ok = True
+                    best_score = score_inhabitation(
+                        target_key_types=truth_key_types, created_object_types=created_types
+                    )
+                    break
 
                 # Build a PTB spec base
                 if agent_name == "template-search":
@@ -1314,6 +1326,7 @@ def main(argv: list[str] | None = None) -> None:
         default="mock-empty",
         choices=[
             "mock-empty",
+            "mock-perfect",
             "mock-planfile",
             "real-openai-compatible",
             "baseline-search",

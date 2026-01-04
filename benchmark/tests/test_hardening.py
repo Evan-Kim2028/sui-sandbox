@@ -87,13 +87,14 @@ def test_checksum_consistency():
     assert c1 == c2
     assert len(c1) == 8
 
+
 def test_run_id_uniqueness():
     from smi_bench.logging import default_run_id
-    
+
     # Generate 1000 IDs and ensure no duplicates
     ids = {default_run_id(prefix="test") for _ in range(1000)}
     assert len(ids) == 1000
-    
+
     # Check format
     one_id = next(iter(ids))
     assert one_id.startswith("test_")

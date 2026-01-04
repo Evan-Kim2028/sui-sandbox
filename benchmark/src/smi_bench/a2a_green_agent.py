@@ -569,10 +569,10 @@ def _summarize_phase2_results(out_json: Path) -> tuple[dict[str, Any], list[dict
         data = safe_json_loads(out_json.read_text(encoding="utf-8"), context="phase2 results")
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as e:
         logger.error("Failed to load phase2 results JSON: %s", e, exc_info=True)
-        return ({},)
+        return ({}, [])
     # Return as much as we can even if some fields are missing.
     if not isinstance(data, dict):
-        return ({},)
+        return ({}, [])
 
     aggregate = data.get("aggregate")
     packages = data.get("packages")
@@ -992,7 +992,6 @@ class SmiBenchGreenExecutor(AgentExecutor):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         ) as proc:
-
             # Store process for cancellation support
             self._task_processes[task.id] = proc
 
