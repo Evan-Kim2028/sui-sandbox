@@ -25,16 +25,18 @@ BENCHMARK_DIR="$REPO_ROOT/benchmark"
 ENV_FILE="$BENCHMARK_DIR/.env"
 
 # 1. API Key Validation
-if [ -z "$OPENROUTER_API_KEY" ] && [ -f "$ENV_FILE" ]; then
-    OPENROUTER_API_KEY=$(grep "^OPENROUTER_API_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
-fi
+if [ "$SMI_AGENT" != "mock-empty" ]; then
+    if [ -z "$OPENROUTER_API_KEY" ] && [ -f "$ENV_FILE" ]; then
+        OPENROUTER_API_KEY=$(grep "^OPENROUTER_API_KEY=" "$ENV_FILE" | cut -d'=' -f2-)
+    fi
 
-if [ -z "$OPENROUTER_API_KEY" ]; then
-    echo -e "${YELLOW}Missing OPENROUTER_API_KEY.${NC}"
-    echo -n "Please enter your OpenRouter API Key (input hidden): "
-    read -s API_KEY
-    echo ""
-    export OPENROUTER_API_KEY="$API_KEY"
+    if [ -z "$OPENROUTER_API_KEY" ]; then
+        echo -e "${YELLOW}Missing OPENROUTER_API_KEY.${NC}"
+        echo -n "Please enter your OpenRouter API Key (input hidden): "
+        read -s API_KEY
+        echo ""
+        export OPENROUTER_API_KEY="$API_KEY"
+    fi
 fi
 
 # 2. Environment Setup
@@ -73,7 +75,7 @@ uv run smi-inhabit \
     --corpus-root "$REAL_CORPUS_PARENT" \
     --dataset type_inhabitation_top25 \
     --samples 25 \
-    --agent real-openai-compatible \
+    --agent "${SMI_AGENT:-real-openai-compatible}" \
     --simulation-mode build-only \
     --out "results/$RUN_ID.json" \
     --per-package-timeout-seconds 120 \
