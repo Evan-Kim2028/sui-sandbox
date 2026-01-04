@@ -86,3 +86,17 @@ def test_checksum_consistency():
     c2 = compute_json_checksum({"a": 2, "z": 1})
     assert c1 == c2
     assert len(c1) == 8
+
+def test_run_id_uniqueness():
+    from smi_bench.logging import default_run_id
+    
+    # Generate 1000 IDs and ensure no duplicates
+    ids = {default_run_id(prefix="test") for _ in range(1000)}
+    assert len(ids) == 1000
+    
+    # Check format
+    one_id = next(iter(ids))
+    assert one_id.startswith("test_")
+    assert "_pid" in one_id
+    # Should have the 6-char random suffix at the end (total 3 bytes hex = 6 chars)
+    assert len(one_id.split("_")[-1]) == 6

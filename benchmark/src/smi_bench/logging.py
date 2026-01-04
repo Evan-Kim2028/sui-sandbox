@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -23,9 +25,14 @@ def _safe_filename(s: str) -> str:
 
 
 def default_run_id(*, prefix: str) -> str:
+    """
+    Generate a unique run ID using timestamp, PID, and a random suffix.
+    The random suffix prevents collisions in high-concurrency Docker environments.
+    """
     ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     pid = os.getpid()
-    return f"{prefix}_{ts}_pid{pid}"
+    rand = secrets.token_hex(3)  # 6 chars
+    return f"{prefix}_{ts}_pid{pid}_{rand}"
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,7 @@ class JsonlLogger:
     - run_metadata.json: one JSON object
     - events.jsonl: JSONL stream of status events
     - packages.jsonl: JSONL stream of per-package result rows (finished only)
+    - .hostname: identity file for the container/host that created the logs
     """
 
     def __init__(self, *, base_dir: Path, run_id: str, use_stdout: bool = False) -> None:
@@ -55,6 +63,12 @@ class JsonlLogger:
             packages=root / "packages.jsonl",
         )
         self.use_stdout = use_stdout
+
+        # Write identity file to help debug shared volume collisions
+        try:
+            (root / ".hostname").write_text(socket.gethostname(), encoding="utf-8")
+        except Exception:
+            pass
 
     def write_run_metadata(self, obj: dict) -> None:
         self.paths.run_metadata.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n")

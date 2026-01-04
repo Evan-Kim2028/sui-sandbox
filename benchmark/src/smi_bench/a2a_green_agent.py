@@ -33,6 +33,7 @@ from smi_bench.constants import (
     DEFAULT_RPC_URL,
     HEALTH_CHECK_TIMEOUT_SECONDS,
 )
+from smi_bench.logging import default_run_id
 from smi_bench.schema import Phase2ResultKeys
 from smi_bench.utils import (
     managed_subprocess,
@@ -893,7 +894,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
         out_dir = Path(payload.get("out_dir") or "results/a2a")
         out_dir = (repo_root / out_dir) if not out_dir.is_absolute() else out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        run_id = cfg.run_id or f"a2a_phase2_{int(time.time())}"
+        run_id = cfg.run_id or default_run_id(prefix="a2a_phase2")
 
         out_json = out_dir / f"{run_id}.json"
         log_dir = repo_root / "logs"
