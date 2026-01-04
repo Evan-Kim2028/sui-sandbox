@@ -860,7 +860,7 @@ def run(
             elif agent_name == "mock-empty":
                 plans_to_try = [{"calls": []}]
             elif agent_name == "mock-perfect":
-                plans_to_try = [{"calls": []}] # Dummy plan, we skip simulation
+                plans_to_try = [{"calls": []}]  # Dummy plan, we skip simulation
             elif agent_name == "mock-planfile":
                 ptb = plan_by_id.get(pkg.package_id)
                 if ptb is None:
