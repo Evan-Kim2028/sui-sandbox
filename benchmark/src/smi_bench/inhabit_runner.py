@@ -152,6 +152,7 @@ def _run_preflight_checks(
     rpc_url: str,
     sender: str,
     simulation_mode: str,
+    agent_name: str,
 ) -> None:
     """
     Fail fast if the environment is not ready for the requested simulation mode.
@@ -168,8 +169,14 @@ def _run_preflight_checks(
     except Exception as e:
         raise RuntimeError(f"RPC connection failed: {e}") from e
 
-    # 2. Sender Check (Critical for dry-run)
+    # 2. Sender Check (Critical for dry-run, but skip for mock agents)
     if simulation_mode == "dry-run":
+        # Skip sender check for mock agents that don't execute transactions
+        mock_agents = {"mock-empty", "mock-planfile", "baseline-search"}
+        if agent_name in mock_agents:
+            console.print(f"[yellow]SKIP:[/yellow] Sender check skipped for mock agent '{agent_name}'.")
+            return
+
         if sender == "0x0" or not sender:
             raise RuntimeError(
                 "FAIL FAST: simulation_mode='dry-run' requires a valid sender address.\n"
@@ -667,7 +674,7 @@ def run(
     sender, gas_coin = _resolve_sender_and_gas_coin(sender=sender, gas_coin=gas_coin, env_overrides=env_overrides)
 
     # Run preflight checks before starting any heavy work
-    _run_preflight_checks(rpc_url=rpc_url, sender=sender, simulation_mode=simulation_mode)
+    _run_preflight_checks(rpc_url=rpc_url, sender=sender, simulation_mode=simulation_mode, agent_name=agent_name)
 
     plan_by_id: dict[str, dict[str, Any]] = {}
     if plan_file is not None:
