@@ -152,6 +152,18 @@ fn parse_move_target(s: &str) -> Result<(ObjectID, Identifier, Identifier)> {
     Ok((package, module, function))
 }
 
+fn parse_move_struct_tag(s: &str) -> Result<(ObjectID, Identifier, Identifier)> {
+    // Expected: 0xADDR::module::Struct
+    let parts: Vec<&str> = s.split("::").collect();
+    if parts.len() != 3 {
+        bail!("invalid move struct tag (expected 0xADDR::module::Struct): {s}");
+    }
+    let package = parse_object_id(parts[0])?;
+    let module = parse_identifier(parts[1])?;
+    let struct_name = parse_identifier(parts[2])?;
+    Ok((package, module, struct_name))
+}
+
 fn addr_eq(addr: &AccountAddress, hex_literal: &str) -> bool {
     AccountAddress::from_hex_literal(hex_literal)
         .ok()
@@ -272,26 +284,34 @@ fn static_created_types_for_call(
 }
 
 fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<HashMap<String, CompiledModule>> {
+    fn load_dir(dir: &Path, out: &mut HashMap<String, CompiledModule>) -> Result<()> {
+        let rd = std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
+        for entry in rd {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                load_dir(&path, out)?;
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("mv") {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow!("invalid module filename: {}", path.display()))?
+                .to_string();
+            let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let m = CompiledModule::deserialize_with_defaults(&bytes)
+                .with_context(|| format!("deserialize {}", path.display()))?;
+            out.insert(name, m);
+        }
+        Ok(())
+    }
+
     let bytecode_dir = bytecode_package_dir.join("bytecode_modules");
     let mut out = HashMap::new();
-    let rd = std::fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read_dir {}", bytecode_dir.display()))?;
-    for entry in rd {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("invalid module filename: {}", path.display()))?
-            .to_string();
-        let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-        let m = CompiledModule::deserialize_with_defaults(&bytes)
-            .with_context(|| format!("deserialize {}", path.display()))?;
-        out.insert(name, m);
-    }
+    load_dir(&bytecode_dir, &mut out)?;
     Ok(out)
 }
 
@@ -498,6 +518,32 @@ async fn resolve_call_arg_as_input(
                 );
             }
             CallArg::Pure(bcs::to_bytes(&out).context("bcs vector<bool>")?)
+        }
+        "option_vector_u8_utf8" => {
+            if vv.is_null() {
+                let none: Option<Vec<u8>> = None;
+                CallArg::Pure(bcs::to_bytes(&none).context("bcs option<vector<u8>>")?)
+            } else {
+                let s = vv
+                    .as_str()
+                    .ok_or_else(|| anyhow!("option_vector_u8_utf8 must be a string or null"))?;
+                let some: Option<Vec<u8>> = Some(s.as_bytes().to_vec());
+                CallArg::Pure(bcs::to_bytes(&some).context("bcs option<vector<u8>>")?)
+            }
+        }
+        "one_time_witness" => {
+            let s = vv
+                .as_str()
+                .ok_or_else(|| anyhow!("one_time_witness must be a string like 0xPKG::module::STRUCT"))?;
+            let (pkg, mod_name, struct_name) = parse_move_struct_tag(s)?;
+
+            // We only need a BCS value whose layout matches the zero-sized witness struct.
+            // For `struct X has drop {}`, BCS value is empty bytes.
+            // We still validate the tag parses, so callers get a good error for malformed input.
+            let type_str = format!("{}::{}::{}", pkg, mod_name, struct_name);
+            let _tag = parse_type_tag(&type_str)
+                .with_context(|| format!("parse one_time_witness type tag: {type_str}"))?;
+            CallArg::Pure(bcs::to_bytes(&()).context("bcs unit for OTW")?)
         }
         "vector_u16" => {
             let arr = vv
