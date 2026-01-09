@@ -1,0 +1,45 @@
+{
+  "calls": [
+    {
+      "target": "0x2::coin_registry::new_currency_with_otw",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::freshx::FRESHX"
+      ],
+      "args": [
+        { "one_time_witness": "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::freshx::FRESHX" },
+        { "u8": 2 },
+        { "vector_u8_utf8": "FRSH" },
+        { "vector_u8_utf8": "FreshX" },
+        { "vector_u8_utf8": "" },
+        { "vector_u8_utf8": "" }
+      ]
+    },
+    {
+      "target": "0x2::coin_registry::finalize",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::freshx::FRESHX"
+      ],
+      "args": [
+        { "nested_result": [0, 0] }
+      ]
+    },
+    {
+      "target": "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::probe_transfer_cap_generic",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::freshx::FRESHX"
+      ],
+      "args": [
+        { "nested_result": [0, 1] }
+      ]
+    },
+    {
+      "target": "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::probe_transfer_metadata_cap_generic",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::freshx::FRESHX"
+      ],
+      "args": [
+        { "nested_result": [1, 0] }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "calls": [
+    {
+      "target": "0x2::coin_registry::new_currency_with_otw",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::WRAPPER_COIN"
+      ],
+      "args": [
+        { "one_time_witness": "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::WRAPPER_COIN" },
+        { "u8": 2 },
+        { "vector_u8_utf8": "WRAP" },
+        { "vector_u8_utf8": "WrapperCoin" },
+        { "vector_u8_utf8": "" },
+        { "vector_u8_utf8": "" }
+      ]
+    },
+    {
+      "target": "0x2::coin_registry::finalize",
+      "type_args": [
+        "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::WRAPPER_COIN"
+      ],
+      "args": [
+        { "nested_result": [0, 0] }
+      ]
+    },
+    {
+      "target": "0x2::transfer::public_transfer",
+      "type_args": [
+        "0x2::coin::TreasuryCap<0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::WRAPPER_COIN>"
+      ],
+      "args": [
+        { "nested_result": [0, 1] },
+        { "address": "0x9d4d9ad2332d39f58082311bad065bf4e4476c4e3510d21f1d8931c57df863c5" }
+      ]
+    }
+  ]
+}
