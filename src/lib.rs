@@ -1,4 +1,5 @@
 pub mod args;
+pub mod benchmark;
 pub mod bytecode;
 pub mod comparator;
 pub mod corpus;

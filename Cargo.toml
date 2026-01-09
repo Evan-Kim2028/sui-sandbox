@@ -15,6 +15,9 @@ bcs = "0.1"
 # Move bytecode parsing (keep aligned with the Sui git dependency).
 move-binary-format = { git = "https://github.com/MystenLabs/sui", package = "move-binary-format" }
 move-core-types = { git = "https://github.com/MystenLabs/sui", package = "move-core-types" }
+move-compiler = { git = "https://github.com/MystenLabs/sui", package = "move-compiler" }
+move-vm-runtime = { git = "https://github.com/MystenLabs/sui", package = "move-vm-runtime" }
+move-vm-types = { git = "https://github.com/MystenLabs/sui", package = "move-vm-types" }
 
 # Align with MystenLabs Sui crate requirements.
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
