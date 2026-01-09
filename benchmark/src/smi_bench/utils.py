@@ -526,18 +526,30 @@ def find_git_root(start: Path) -> Path | None:
 
 def extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> set[str]:
     """
-    Extract all struct types with 'key' ability from interface JSON.
+    Extract target key types from interface JSON.
+
+    Includes:
+      - All module-defined structs with 'key' ability
+      - Heuristic wrappers for common Sui key objects parameterized by any module struct:
+        * 0x2::coin::Coin<T>
+        * 0x2::coin::TreasuryCap<T>
+        * 0x2::coin_registry::Currency<T>
+        * 0x2::coin_registry::MetadataCap<T>
 
     Args:
         interface_json: Parsed bytecode interface JSON (from Rust extractor).
 
     Returns:
-        Set of canonical type strings (format: "0xADDR::module::Struct").
+        Set of canonical type strings.
     """
     out: set[str] = set()
     modules = interface_json.get("modules")
     if not isinstance(modules, dict):
         return out
+
+    package_id = interface_json.get("package_id")
+    if not isinstance(package_id, str) or not package_id:
+        package_id = "0x0"
 
     for module_name, module_def in modules.items():
         if not isinstance(module_name, str) or not isinstance(module_def, dict):
@@ -554,6 +566,16 @@ def extract_key_types_from_interface_json(interface_json: dict[str, Any]) -> set
             abilities = struct_def.get("abilities")
             if not isinstance(abilities, list):
                 continue
+
+            # Keep module-defined key structs
             if "key" in abilities:
                 out.add(f"{address}::{module_name}::{struct_name}")
+
+            # Add wrapper targets for this module-defined struct, using the concrete package id
+            base = f"{package_id}::{module_name}::{struct_name}"
+            out.add(f"0x2::coin::Coin<{base}>")
+            out.add(f"0x2::coin::TreasuryCap<{base}>")
+            out.add(f"0x2::coin_registry::Currency<{base}>")
+            out.add(f"0x2::coin_registry::MetadataCap<{base}>")
+
     return out
