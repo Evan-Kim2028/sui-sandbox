@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -21,6 +21,9 @@ pub enum InputKind {
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// On-chain id (0x...). Can be provided multiple times.
     #[arg(long, value_name = "ID")]
     pub package_id: Vec<String>,
@@ -188,6 +191,30 @@ pub struct Args {
     /// Compare normalized module list to on-chain MovePackage `bcs.moduleMap` keys.
     #[arg(long, default_value_t = false)]
     pub bytecode_check: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    BenchmarkLocal(BenchmarkLocalArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct BenchmarkLocalArgs {
+    /// Path to the directory containing target .mv files.
+    #[arg(long, value_name = "DIR")]
+    pub target_corpus: PathBuf,
+
+    /// Path to the JSONL output report.
+    #[arg(long, value_name = "FILE")]
+    pub output: PathBuf,
+
+    /// Skip Tier B execution (faster, but potentially more false positives).
+    #[arg(long, default_value_t = false)]
+    pub tier_a_only: bool,
+
+    /// Use a restricted set of mock objects for Tier B.
+    #[arg(long, default_value_t = false)]
+    pub restricted_state: bool,
 }
 
 #[derive(Debug, Copy, Clone)]

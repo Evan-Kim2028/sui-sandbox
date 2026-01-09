@@ -38,6 +38,10 @@ impl LocalModuleResolver {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
+            if path.is_dir() {
+                count += self.scan_dir(&path)?;
+                continue;
+            }
             if path.extension().and_then(|s| s.to_str()) != Some("mv") {
                 continue;
             }
@@ -65,6 +69,10 @@ impl LocalModuleResolver {
     ) -> Option<&CompiledModule> {
         let id = ModuleId::new(*addr, Identifier::new(name).ok()?);
         self.modules.get(&id)
+    }
+
+    pub fn iter_modules(&self) -> impl Iterator<Item = &CompiledModule> {
+        self.modules.values()
     }
 }
 
