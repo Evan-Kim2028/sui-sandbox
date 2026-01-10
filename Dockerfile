@@ -24,7 +24,7 @@ COPY src ./src
 RUN touch src/lib.rs src/main.rs src/bin/smi_tx_sim.rs && \
     cargo build --release --locked
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-trixie AS runtime
 
 WORKDIR /app
 
@@ -34,8 +34,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    unzip \
     tini \
+    libc6 \
   && rm -rf /var/lib/apt/lists/*
+
+# Install Sui CLI for deterministic Move builds in Docker.
+# NOTE: This pulls a prebuilt binary from MystenLabs releases.
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then PLATFORM="ubuntu-aarch64"; else PLATFORM="ubuntu-x86_64"; fi; \
+    URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-testnet-v1.63.1-${PLATFORM}.tgz"; \
+    curl -L "$URL" -o /tmp/sui.tgz; \
+    test "$(stat -c%s /tmp/sui.tgz 2>/dev/null || stat -f%z /tmp/sui.tgz)" -gt 1000000; \
+    tar -xzf /tmp/sui.tgz -C /usr/local/bin; \
+    # Find the extracted `sui` binary and place it on PATH.
+    SUI_PATH="$(find /usr/local/bin -maxdepth 3 -type f -name sui | head -n 1)"; \
+    test -n "$SUI_PATH"; \
+    chmod +x "$SUI_PATH"; \
+    if [ "$SUI_PATH" != "/usr/local/bin/sui" ]; then ln -sf "$SUI_PATH" /usr/local/bin/sui; fi; \
+    rm -f /tmp/sui.tgz; \
+    /usr/local/bin/sui --version
 
 RUN python -m pip install --no-cache-dir uv==0.8.15
 
