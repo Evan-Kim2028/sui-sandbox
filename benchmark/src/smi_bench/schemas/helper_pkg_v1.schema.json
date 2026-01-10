@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "helper_pkg_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["move_toml", "files"],
+  "properties": {
+    "move_toml": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "entrypoints": {
+      "type": "array",
+      "items": {}
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}
