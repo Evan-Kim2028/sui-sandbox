@@ -24,6 +24,19 @@ def is_docker_available() -> bool:
         return False
 
 
+def is_docker_port_allocated(port: int) -> bool:
+    try:
+        res = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"publish={port}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
+
+
 def run_benchmark_script(
     model: str = "google/gemini-3-flash-preview",
     samples: int = 5,
@@ -183,6 +196,9 @@ def test_container_different_ports():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
+    if is_docker_port_allocated(9999) or is_docker_port_allocated(9998):
+        pytest.skip("Required docker test ports already allocated")
+
     # Start container on port 9999
     try:
         run_benchmark_script(port=9999, timeout=10)
@@ -262,6 +278,9 @@ def test_restart_flag():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
+    if is_docker_port_allocated(9999):
+        pytest.skip("Required docker test port already allocated")
+
     port = 9999
     expected_name = f"smi-bench-{port}"
 
@@ -333,6 +352,9 @@ def test_stopped_container_reused():
     """
     if not is_docker_available():
         pytest.skip("Docker not available")
+
+    if is_docker_port_allocated(9999):
+        pytest.skip("Required docker test port already allocated")
 
     port = 9999
     expected_name = f"smi-bench-{port}"

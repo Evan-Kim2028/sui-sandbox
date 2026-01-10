@@ -47,17 +47,13 @@ def docker_service() -> Generator[None, None, None]:
         ["docker", "compose", "-f", str(compose_file), "down", "--remove-orphans"], check=False, capture_output=True
     )
 
-    # Force kill any container using port 9999 (e.g. from manual docker run)
-    try:
-        # Find container ID using port 9999
-        res = subprocess.run(["docker", "ps", "-q", "--filter", "publish=9999"], capture_output=True, text=True)
-        if res.stdout.strip():
-            cid = res.stdout.strip().split("\n")[0]  # Take first if multiple
-            subprocess.run(["docker", "stop", cid], check=False, capture_output=True)
-            subprocess.run(["docker", "rm", "-f", cid], check=False, capture_output=True)
-            time.sleep(2)  # Wait for port release
-    except Exception:
-        pass  # Best effort
+    # If port 9999 is already allocated, skip docker e2e tests in this environment.
+    # Note: binding can still fail if a non-docker process is using the port.
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(("127.0.0.1", 9999)) == 0:
+            pytest.skip("Port 9999 already in use; skip docker e2e")
 
     # Use --wait to let Docker wait for healthcheck defined in compose
     try:
