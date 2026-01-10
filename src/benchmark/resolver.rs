@@ -13,6 +13,12 @@ pub struct LocalModuleResolver {
     modules_bytes: BTreeMap<ModuleId, Vec<u8>>,
 }
 
+impl Default for LocalModuleResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalModuleResolver {
     pub fn new() -> Self {
         Self {
@@ -25,16 +31,15 @@ impl LocalModuleResolver {
         let bytecode_dir = package_dir.join("bytecode_modules");
         if !bytecode_dir.exists() {
             // If the package_dir itself contains .mv files (e.g. helper packages), try scanning it directly
-             return self.scan_dir(package_dir);
+            return self.scan_dir(package_dir);
         }
         self.scan_dir(&bytecode_dir)
     }
 
     fn scan_dir(&mut self, dir: &Path) -> Result<usize> {
         let mut count = 0;
-        let entries = fs::read_dir(dir)
-            .with_context(|| format!("read {}", dir.display()))?;
-            
+        let entries = fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))?;
+
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
@@ -45,11 +50,11 @@ impl LocalModuleResolver {
             if path.extension().and_then(|s| s.to_str()) != Some("mv") {
                 continue;
             }
-            
+
             let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
             let module = CompiledModule::deserialize_with_defaults(&bytes)
                 .map_err(|e| anyhow!("deserialize {}: {}", path.display(), e))?;
-            
+
             let id = module.self_id();
             self.modules.insert(id.clone(), module);
             self.modules_bytes.insert(id, bytes);

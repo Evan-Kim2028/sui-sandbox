@@ -3,7 +3,9 @@ use move_binary_format::file_format::{
     CompiledModule, DatatypeHandleIndex, SignatureToken, StructFieldInformation, Visibility,
 };
 use move_core_types::account_address::AccountAddress;
-use move_core_types::annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout, MoveValue};
+use move_core_types::annotated_value::{
+    MoveFieldLayout, MoveStructLayout, MoveTypeLayout, MoveValue,
+};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 
@@ -27,7 +29,11 @@ impl<'a> Validator<'a> {
         let module = self
             .resolver
             .get_module_by_addr_name(&package_addr, module_name)
-            .ok_or_else(|| anyhow!("module not found: {}::{}", package_addr, module_name))?;
+            .ok_or_else(|| anyhow!(
+                "module not found: {}::{}",
+                package_addr,
+                module_name
+            ))?;
 
         let func_name_ident = Identifier::new(function_name)?;
         let func_def = module
@@ -38,14 +44,24 @@ impl<'a> Validator<'a> {
                 let name = module.identifier_at(handle.name);
                 name == func_name_ident.as_ident_str()
             })
-            .ok_or_else(|| anyhow!("function not found: {}", function_name))?;
+            .ok_or_else(|| anyhow!(
+                "function not found: {} in module {}::{}",
+                function_name,
+                package_addr,
+                module_name
+            ))?;
 
         // Visibility check: we generally target public or entry functions for PTBs
         let is_public = matches!(func_def.visibility, Visibility::Public);
         let is_entry = func_def.is_entry;
 
         if !is_public && !is_entry {
-            return Err(anyhow!("function is not public or entry"));
+            return Err(anyhow!(
+                "function is not public or entry: {} in module {}::{}",
+                function_name,
+                package_addr,
+                module_name
+            ));
         }
 
         Ok(module)
@@ -95,9 +111,12 @@ impl<'a> Validator<'a> {
 
         let field_defs = match &struct_def.field_information {
             StructFieldInformation::Native => {
-                 // For now, return error for natives to be safe, unless it's a known one.
-                 // We could match on standard natives here if needed.
-                 return Err(anyhow!("native struct layout resolution not supported: {}", struct_tag));
+                // For now, return error for natives to be safe, unless it's a known one.
+                // We could match on standard natives here if needed.
+                return Err(anyhow!(
+                    "native struct layout resolution not supported: {}",
+                    struct_tag
+                ));
             }
             StructFieldInformation::Declared(fields) => fields,
         };
@@ -105,11 +124,15 @@ impl<'a> Validator<'a> {
         let mut field_layouts = Vec::new();
         for field in field_defs {
             let field_name = module.identifier_at(field.name).to_owned();
-            let layout = self.resolve_signature_token(&field.signature.0, &struct_tag.type_params, module)?;
+            let layout =
+                self.resolve_signature_token(&field.signature.0, &struct_tag.type_params, module)?;
             field_layouts.push(MoveFieldLayout::new(field_name, layout));
         }
 
-        Ok(MoveTypeLayout::Struct(Box::new(MoveStructLayout::new(struct_tag.clone(), field_layouts))))
+        Ok(MoveTypeLayout::Struct(Box::new(MoveStructLayout::new(
+            struct_tag.clone(),
+            field_layouts,
+        ))))
     }
 
     fn resolve_signature_token(
@@ -129,7 +152,8 @@ impl<'a> Validator<'a> {
             SignatureToken::Address => Ok(MoveTypeLayout::Address),
             SignatureToken::Signer => Ok(MoveTypeLayout::Signer),
             SignatureToken::Vector(inner) => {
-                let inner_layout = self.resolve_signature_token(inner, type_args, context_module)?;
+                let inner_layout =
+                    self.resolve_signature_token(inner, type_args, context_module)?;
                 Ok(MoveTypeLayout::Vector(Box::new(inner_layout)))
             }
             SignatureToken::Reference(_) | SignatureToken::MutableReference(_) => {
@@ -149,10 +173,11 @@ impl<'a> Validator<'a> {
                 let (idx, tokens) = &**inst;
                 let mut resolved_type_args = Vec::new();
                 for t in tokens {
-                     let tag = self.resolve_token_to_tag(t, type_args, context_module)?;
-                     resolved_type_args.push(tag);
+                    let tag = self.resolve_token_to_tag(t, type_args, context_module)?;
+                    resolved_type_args.push(tag);
                 }
-                let tag = self.resolve_struct_handle_to_tag(*idx, context_module, &resolved_type_args)?;
+                let tag =
+                    self.resolve_struct_handle_to_tag(*idx, context_module, &resolved_type_args)?;
                 self.resolve_struct_layout(&tag)
             }
         }
@@ -183,13 +208,13 @@ impl<'a> Validator<'a> {
                 Ok(TypeTag::Struct(Box::new(tag)))
             }
             SignatureToken::DatatypeInstantiation(inst) => {
-                 let (idx, tokens) = &**inst;
-                 let mut resolved = Vec::new();
-                 for t in tokens {
-                     resolved.push(self.resolve_token_to_tag(t, type_args, context_module)?);
-                 }
-                 let tag = self.resolve_struct_handle_to_tag(*idx, context_module, &resolved)?;
-                 Ok(TypeTag::Struct(Box::new(tag)))
+                let (idx, tokens) = &**inst;
+                let mut resolved = Vec::new();
+                for t in tokens {
+                    resolved.push(self.resolve_token_to_tag(t, type_args, context_module)?);
+                }
+                let tag = self.resolve_struct_handle_to_tag(*idx, context_module, &resolved)?;
+                Ok(TypeTag::Struct(Box::new(tag)))
             }
             SignatureToken::TypeParameter(idx) => {
                 let tag = type_args
@@ -197,7 +222,7 @@ impl<'a> Validator<'a> {
                     .ok_or_else(|| anyhow!("type argument index out of bounds: {}", idx))?;
                 Ok(tag.clone())
             }
-             SignatureToken::Reference(_) | SignatureToken::MutableReference(_) => {
+            SignatureToken::Reference(_) | SignatureToken::MutableReference(_) => {
                 Err(anyhow!("cannot convert reference token to type tag"))
             }
         }
@@ -226,12 +251,17 @@ impl<'a> Validator<'a> {
     pub fn validate_bcs_roundtrip(&self, layout: &MoveTypeLayout, bytes: &[u8]) -> Result<()> {
         let value = MoveValue::simple_deserialize(bytes, layout)
             .with_context(|| "BCS deserialize failed")?;
-        
-        let reserialized = value.simple_serialize()
+
+        let reserialized = value
+            .simple_serialize()
             .ok_or_else(|| anyhow!("BCS serialize failed (value too deep?)"))?;
-            
+
         if bytes != reserialized {
-            return Err(anyhow!("BCS roundtrip mismatch: input_len={} output_len={}", bytes.len(), reserialized.len()));
+            return Err(anyhow!(
+                "BCS roundtrip mismatch: input_len={} output_len={}",
+                bytes.len(),
+                reserialized.len()
+            ));
         }
         Ok(())
     }
