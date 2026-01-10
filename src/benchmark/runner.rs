@@ -90,7 +90,15 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
             }
 
             let addr = *module.self_id().address();
-            let report = attempt_function(args, &validator, &resolver, addr, module, &module_name, &func_name)?;
+            let report = attempt_function(
+                args,
+                &validator,
+                &resolver,
+                addr,
+                module,
+                &module_name,
+                &func_name,
+            )?;
             write_report(&mut writer, &report)?;
         }
     }
@@ -151,7 +159,10 @@ fn attempt_function(
 
     for token in &params_sig.0 {
         // A4: object parameters are recognized (typed object validation comes later)
-        if matches!(token, SignatureToken::Reference(_) | SignatureToken::MutableReference(_)) {
+        if matches!(
+            token,
+            SignatureToken::Reference(_) | SignatureToken::MutableReference(_)
+        ) {
             has_object_params = true;
             resolved_params.push("object".to_string());
             continue;
@@ -208,7 +219,7 @@ fn attempt_function(
         return Ok(report);
     }
 
-    let mut harness = VMHarness::new(resolver).map_err(|e| {
+    let mut harness = VMHarness::new(resolver, args.restricted_state).map_err(|e| {
         report.failure_stage = Some(FailureStage::B1);
         report.failure_reason = Some(format!("failed to create VM harness: {e}"));
         anyhow!("failed to create VM harness")
@@ -257,8 +268,12 @@ fn generate_default_value(layout: &MoveTypeLayout) -> Option<MoveValue> {
         MoveTypeLayout::U64 => Some(MoveValue::U64(0)),
         MoveTypeLayout::U128 => Some(MoveValue::U128(0)),
         MoveTypeLayout::U256 => Some(MoveValue::U256(move_core_types::u256::U256::zero())),
-        MoveTypeLayout::Address => Some(MoveValue::Address(move_core_types::account_address::AccountAddress::ZERO)),
-        MoveTypeLayout::Signer => Some(MoveValue::Signer(move_core_types::account_address::AccountAddress::ZERO)),
+        MoveTypeLayout::Address => Some(MoveValue::Address(
+            move_core_types::account_address::AccountAddress::ZERO,
+        )),
+        MoveTypeLayout::Signer => Some(MoveValue::Signer(
+            move_core_types::account_address::AccountAddress::ZERO,
+        )),
         MoveTypeLayout::Vector(_) => Some(MoveValue::Vector(vec![])), // Empty vector is always valid
         MoveTypeLayout::Struct(_) => None,
         MoveTypeLayout::Enum(_) => None,
