@@ -457,6 +457,27 @@ def _vendor_target_deps_into_helper(*, target_pkg_dir: Path, helper_dir: Path) -
     _atomic_write_text(toml_path, toml)
 
 
+def _extract_build_error_summary(stderr: str) -> list[str]:
+    """Extract key error lines from Move compiler stderr for LLM feedback."""
+    errors: list[str] = []
+    # Look for error lines - Move compiler uses "error[E...]:" format
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        # Skip ANSI escape codes for cleaner output
+        clean = stripped
+        for code in ["\x1b[0m", "\x1b[1m", "\x1b[34m", "\x1b[31m", "\x1b[33m", "\x1b[38;5;9m", "\x1b[38;5;11m"]:
+            clean = clean.replace(code, "")
+        # Capture error lines
+        if "error[E" in clean or "error:" in clean.lower():
+            errors.append(clean[:200])  # Truncate very long lines
+        # Also capture the actual error message lines (often follow the error code)
+        elif errors and clean and not clean.startswith("─") and not clean.startswith("│"):
+            # Likely a continuation or explanation
+            if len(errors) < 20:  # Limit total errors
+                errors.append(f"  {clean[:200]}")
+    return errors[:30]  # Limit to 30 lines for prompt
+
+
 def _sui_move_build(helper_dir: Path) -> tuple[bool, str, str]:
     # Prefer system `sui` if present.
     proc = _run(["sui", "move", "build"], cwd=helper_dir, timeout_s=300)
@@ -472,12 +493,30 @@ def _sui_move_build_with_bytecode(helper_dir: Path) -> tuple[bool, str, str]:
     return proc.returncode == 0, proc.stdout, proc.stderr
 
 
+def _find_built_bytecode_dir(helper_dir: Path) -> Path | None:
+    """Find the bytecode_modules directory from sui move build output.
+
+    The build output is at build/<package_name>/bytecode_modules, where package_name
+    comes from Move.toml. We search for it dynamically since the LLM chooses the name.
+    """
+    build_dir = helper_dir / "build"
+    if not build_dir.exists():
+        return None
+    # Look for any subdirectory with bytecode_modules
+    for pkg_dir in sorted(build_dir.iterdir()):
+        if pkg_dir.is_dir():
+            bytecode_dir = pkg_dir / "bytecode_modules"
+            if bytecode_dir.exists():
+                return bytecode_dir
+    return None
+
+
 def _run_local_vm_entry(*, helper_dir: Path, call_target: str, out_path: Path) -> tuple[bool, dict[str, Any]]:
     # Leverage the Rust `benchmark-local` command as the local VM execution harness.
     # It executes entry functions when params are empty and tier-b is enabled.
     # We run it over the helper package bytecode corpus and then filter for the requested target.
-    build_bytecode = helper_dir / "build" / "helper_pkg" / "bytecode_modules"
-    target_corpus = build_bytecode if build_bytecode.exists() else (helper_dir / "bytecode_modules")
+    build_bytecode = _find_built_bytecode_dir(helper_dir)
+    target_corpus = build_bytecode if build_bytecode else (helper_dir / "bytecode_modules")
     tmp_out = out_path.parent / "txsim_benchmark_local.jsonl"
 
     proc = _run(
@@ -565,8 +604,8 @@ def _build_combined_corpus_dir(*, run_dir: Path, target_pkg_dir: Path, helper_di
         shutil.copy2(mv, combined / mv.name)
 
     # Copy helper modules (built).
-    build_bytecode = helper_dir / "build" / "helper_pkg" / "bytecode_modules"
-    helper_mods = build_bytecode if build_bytecode.exists() else (helper_dir / "bytecode_modules")
+    build_bytecode = _find_built_bytecode_dir(helper_dir)
+    helper_mods = build_bytecode if build_bytecode else (helper_dir / "bytecode_modules")
     for mv in sorted(helper_mods.glob("*.mv")):
         # Avoid overwriting: helper should not conflict with target.
         if (combined / mv.name).exists():
@@ -581,8 +620,8 @@ def _mm2_map_helper(*, helper_dir: Path, out_path: Path) -> tuple[bool, dict[str
     # This is the current in-repo path to MM2-style local validation (no RPC, no gas).
     tmp_out = out_path.parent / "mm2_benchmark_local.jsonl"
     # `sui move build` emits bytecode under build/<pkg>/bytecode_modules.
-    build_bytecode = helper_dir / "build" / "helper_pkg" / "bytecode_modules"
-    target_corpus = build_bytecode if build_bytecode.exists() else (helper_dir / "bytecode_modules")
+    build_bytecode = _find_built_bytecode_dir(helper_dir)
+    target_corpus = build_bytecode if build_bytecode else (helper_dir / "bytecode_modules")
     if not target_corpus.exists():
         return False, {"error": f"missing bytecode_modules at {target_corpus}"}
 
@@ -938,6 +977,7 @@ def main(argv: list[str] | None = None) -> int:
             from smi_bench.rust import default_rust_binary, emit_bytecode_json, validate_rust_binary
 
             rust_bin = default_rust_binary()
+            print(f"[DEBUG] Using rust_bin: {rust_bin}", flush=True)
             validate_rust_binary(rust_bin)
             iface = emit_bytecode_json(package_dir=target_pkg_dir, rust_bin=rust_bin)
             # Most packages compile modules under non-package-id addresses; treat module address as ground truth.
@@ -947,6 +987,9 @@ def main(argv: list[str] | None = None) -> int:
             requested_targets = _extract_simple_entry_targets_from_interface(iface=iface, limit=5)
             allowed_target_modules = _extract_module_names_from_interface(iface)
         except Exception as e:
+            import traceback
+            print(f"[ERROR] Interface extraction failed: {e}", flush=True)
+            traceback.print_exc()
             iface_summary = f"<failed to summarize interface: {e}>"
 
         prompt = {
@@ -1026,6 +1069,31 @@ def main(argv: list[str] | None = None) -> int:
                     helper_payload = None
                     continue
 
+                # Attempt build inside retry loop so build errors can be fed back to LLM
+                helper_dir = run_dir / "helper_pkg"
+                _write_helper_package(helper_dir=helper_dir, payload=helper_payload)
+                _vendor_target_deps_into_helper(target_pkg_dir=target_pkg_dir, helper_dir=helper_dir)
+
+                ok_build, out_s, err_s = _sui_move_build_with_bytecode(helper_dir)
+                _atomic_write_text(run_dir / f"helper_build_stdout_attempt_{attempt}.log", out_s)
+                _atomic_write_text(run_dir / f"helper_build_stderr_attempt_{attempt}.log", err_s)
+
+                if not ok_build:
+                    # Extract key error lines from build output for LLM feedback
+                    error_lines = _extract_build_error_summary(err_s)
+                    last_errors = ["build failed", *error_lines]
+                    _atomic_write_json(run_dir / f"build_errors_attempt_{attempt}.json", {"errors": error_lines, "stderr": err_s})
+                    prompt = dict(prompt)
+                    prompt["repair"] = (
+                        "The Move code failed to compile. Fix these build errors, then return ONLY helper_pkg_v1 JSON.\n"
+                        + "\n".join(error_lines[:30])
+                    )
+                    helper_payload = None
+                    continue
+
+                # Build succeeded - write final logs and break
+                _atomic_write_text(run_dir / "helper_build_stdout.log", out_s)
+                _atomic_write_text(run_dir / "helper_build_stderr.log", err_s)
                 break
         else:
             raw = _stub_llm_helper_payload()
@@ -1036,31 +1104,20 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:
                 last_errors = [f"llm payload invalid: {e}"]
 
+            # For stub/offline mode, still need to write and build helper
+            if helper_payload is not None:
+                helper_dir = run_dir / "helper_pkg"
+                _write_helper_package(helper_dir=helper_dir, payload=helper_payload)
+                _vendor_target_deps_into_helper(target_pkg_dir=target_pkg_dir, helper_dir=helper_dir)
+                ok_build, out_s, err_s = _sui_move_build_with_bytecode(helper_dir)
+                _atomic_write_text(run_dir / "helper_build_stdout.log", out_s)
+                _atomic_write_text(run_dir / "helper_build_stderr.log", err_s)
+                if not ok_build:
+                    last_errors = ["build failed (stub mode)"]
+                    helper_payload = None
+
         if helper_payload is None:
             _atomic_write_json(run_dir / "validation_report.json", {"ok": False, "errors": last_errors or ["llm payload invalid"]})
-            _persist_tmp_tree(run_dir=run_dir, tmp_root=tmp_root)
-            overall_ok = False
-            continue
-
-        if timed_out():
-            _atomic_write_json(run_dir / "validation_report.json", {"ok": False, "errors": ["package timeout"]})
-            _persist_tmp_tree(run_dir=run_dir, tmp_root=tmp_root)
-            overall_ok = False
-            continue
-
-        helper_dir = run_dir / "helper_pkg"
-        _write_helper_package(helper_dir=helper_dir, payload=helper_payload)
-
-        # Lint was applied before build.
-
-        # Vendor target bytecode modules as a local dependency so the helper can reference target types.
-        _vendor_target_deps_into_helper(target_pkg_dir=target_pkg_dir, helper_dir=helper_dir)
-
-        ok_build, out_s, err_s = _sui_move_build_with_bytecode(helper_dir)
-        _atomic_write_text(run_dir / "helper_build_stdout.log", out_s)
-        _atomic_write_text(run_dir / "helper_build_stderr.log", err_s)
-        if not ok_build:
-            _atomic_write_json(run_dir / "validation_report.json", {"ok": False, "errors": ["helper package build failed"]})
             _persist_tmp_tree(run_dir=run_dir, tmp_root=tmp_root)
             overall_ok = False
             continue

@@ -102,16 +102,23 @@ fn benchmark_local_report_schema_has_stable_minimum_fields() {
         status: sui_move_interface_extractor::benchmark::runner::AttemptStatus::TierAHit,
         failure_stage: None,
         failure_reason: None,
-        tier_a_details: Some(sui_move_interface_extractor::benchmark::runner::TierADetails {
-            resolved_params: vec!["u64".to_string()],
-            bcs_roundtrip_verified: true,
-            has_object_params: false,
-        }),
+        tier_a_details: Some(
+            sui_move_interface_extractor::benchmark::runner::TierADetails {
+                resolved_params: vec!["u64".to_string()],
+                bcs_roundtrip_verified: true,
+                has_object_params: false,
+            },
+        ),
         tier_b_details: None,
     };
 
     let v: Value = serde_json::to_value(&report).expect("report should serialize");
-    for k in ["target_package", "target_module", "target_function", "status"] {
+    for k in [
+        "target_package",
+        "target_module",
+        "target_function",
+        "status",
+    ] {
         assert!(v.get(k).is_some(), "missing key {k}");
     }
     assert!(
@@ -125,8 +132,6 @@ fn benchmark_local_report_schema_has_stable_minimum_fields() {
 #[test]
 fn benchmark_local_failure_stage_a1_module_not_found() {
     use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::benchmark::runner::AttemptStatus;
-    use sui_move_interface_extractor::benchmark::runner::FailureStage;
 
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
@@ -138,7 +143,10 @@ fn benchmark_local_failure_stage_a1_module_not_found() {
 
     // Try to validate a non-existent module
     let result = validator.validate_target(
-        AccountAddress::from_hex_literal("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+        AccountAddress::from_hex_literal(
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .unwrap(),
         "nonexistent",
         "any_function",
     );
@@ -148,10 +156,6 @@ fn benchmark_local_failure_stage_a1_module_not_found() {
 
 #[test]
 fn benchmark_local_failure_stage_a1_function_not_found() {
-    use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::benchmark::runner::AttemptStatus;
-    use sui_move_interface_extractor::benchmark::runner::FailureStage;
-
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
     resolver
@@ -192,8 +196,6 @@ fn benchmark_local_failure_stage_a3_bcs_roundtrip_fail() {
 
 #[test]
 fn benchmark_local_failure_stage_a4_object_params_detected() {
-    use move_core_types::account_address::AccountAddress;
-
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
     resolver
@@ -223,22 +225,21 @@ fn benchmark_local_failure_stage_a4_object_params_detected() {
     // simple_func has parameter (u64), which is not an object reference
     // This test validates that we can distinguish pure args from object args
     let params_sig = module.signature_at(module.function_handle_at(func_def.function).parameters);
-    let has_refs = params_sig
-        .0
-        .iter()
-        .any(|t| matches!(t, move_binary_format::file_format::SignatureToken::Reference(_)));
+    let has_refs = params_sig.0.iter().any(|t| {
+        matches!(
+            t,
+            move_binary_format::file_format::SignatureToken::Reference(_)
+        )
+    });
 
-    assert!(!has_refs, "simple_func should not have reference parameters");
+    assert!(
+        !has_refs,
+        "simple_func should not have reference parameters"
+    );
 }
 
 #[test]
 fn benchmark_local_failure_stage_a5_generic_functions_skipped() {
-    use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::args::BenchmarkLocalArgs;
-    use sui_move_interface_extractor::benchmark::runner::AttemptStatus;
-    use sui_move_interface_extractor::benchmark::runner::FailureStage;
-    use tempfile::TempDir;
-
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
     resolver
@@ -265,7 +266,8 @@ fn benchmark_local_failure_stage_a5_generic_functions_skipped() {
     if generic_func_found {
         // If we find a generic function, verify it would be detected
         // For now, we just verify that generics exist in the corpus
-        assert!(true, "generic functions exist in corpus");
+        // We just verify that we can find generic functions in corpus
+        let _ = generic_func_found; // Prevent unused variable warning
     }
 }
 
@@ -281,7 +283,10 @@ fn benchmark_local_failure_stage_a2_unresolvable_type() {
 
     // Try to resolve type from non-existent module
     let nonexistent_tag = StructTag {
-        address: AccountAddress::from_hex_literal("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+        address: AccountAddress::from_hex_literal(
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .unwrap(),
         module: Identifier::new("nonexistent_module").unwrap(),
         name: Identifier::new("SomeType").unwrap(),
         type_params: vec![],
@@ -290,12 +295,19 @@ fn benchmark_local_failure_stage_a2_unresolvable_type() {
     let result = validator.resolve_type_layout(&TypeTag::Struct(Box::new(nonexistent_tag)));
 
     // Should fail because module doesn't exist
-    assert!(result.is_err(), "should fail to resolve type from non-existent module");
+    assert!(
+        result.is_err(),
+        "should fail to resolve type from non-existent module"
+    );
 
     let err = result.unwrap_err().to_string();
     // Verify error message is informative
-    assert!(err.contains("module not found") || err.contains("not found") || err.contains("nonexistent"),
-        "error should mention module not found: {err}");
+    assert!(
+        err.contains("module not found")
+            || err.contains("not found")
+            || err.contains("nonexistent"),
+        "error should mention module not found: {err}"
+    );
 }
 
 #[test]
@@ -314,24 +326,22 @@ fn benchmark_local_failure_stage_b1_vm_harness_creation_fail() {
     // This test documents expected behavior
     match harness_result {
         Ok(_harness) => {
-            // VM harness created successfully (expected for empty resolver)
-            assert!(true, "VM harness can be created with empty resolver");
+            // Test completed successfully (VM harness created with empty resolver)
         }
         Err(e) => {
             // If it fails, verify error is actionable
             let err_msg = e.to_string();
-            assert!(err_msg.contains("VM") || err_msg.contains("failed"),
-                "VM harness error should be actionable: {err_msg}");
+            assert!(
+                err_msg.contains("VM") || err_msg.contains("failed"),
+                "VM harness error should be actionable: {err_msg}"
+            );
         }
     }
 }
 
 #[test]
 fn benchmark_local_failure_stage_validation() {
-    use move_core_types::account_address::AccountAddress;
     use move_core_types::annotated_value::MoveTypeLayout;
-    use sui_move_interface_extractor::benchmark::runner::AttemptStatus;
-    use sui_move_interface_extractor::benchmark::runner::FailureStage;
 
     let resolver = LocalModuleResolver::new();
     let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
@@ -368,7 +378,10 @@ fn benchmark_local_error_context_module_not_found() {
 
     // Try to validate non-existent module
     let result = validator.validate_target(
-        AccountAddress::from_hex_literal("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+        AccountAddress::from_hex_literal(
+            "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .unwrap(),
         "nonexistent",
         "any_function",
     );
@@ -377,14 +390,14 @@ fn benchmark_local_error_context_module_not_found() {
     let err = result.unwrap_err().to_string();
 
     // Verify error message includes module information
-    assert!(err.contains("module not found") || err.contains("nonexistent"),
-        "error message should mention module: {err}");
+    assert!(
+        err.contains("module not found") || err.contains("nonexistent"),
+        "error message should mention module: {err}"
+    );
 }
 
 #[test]
 fn benchmark_local_error_context_function_not_found() {
-    use move_core_types::account_address::AccountAddress;
-
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
     resolver
@@ -409,8 +422,10 @@ fn benchmark_local_error_context_function_not_found() {
     let err = result.unwrap_err().to_string();
 
     // Verify error message includes function information
-    assert!(err.contains("function not found") || err.contains("nonexistent_function"),
-        "error message should mention function: {err}");
+    assert!(
+        err.contains("function not found") || err.contains("nonexistent_function"),
+        "error message should mention function: {err}"
+    );
 }
 
 #[test]
@@ -429,8 +444,10 @@ fn benchmark_local_error_context_bcs_roundtrip() {
     let err = result.unwrap_err().to_string();
 
     // Verify error message is actionable
-    assert!(err.contains("BCS") || err.contains("deserialize") || err.contains("mismatch"),
-        "error message should be actionable and mention BCS issue: {err}");
+    assert!(
+        err.contains("BCS") || err.contains("deserialize") || err.contains("mismatch"),
+        "error message should be actionable and mention BCS issue: {err}"
+    );
 }
 
 // --- Performance Tests ---
@@ -442,7 +459,7 @@ fn benchmark_local_performance_validation_speed() {
 
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
-    let module_count = resolver
+    let _module_count = resolver
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
@@ -504,7 +521,11 @@ fn benchmark_local_performance_bcs_roundtrip_speed() {
         ),
         (
             MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U64)),
-            MoveValue::Vector(vec![MoveValue::U64(1), MoveValue::U64(2), MoveValue::U64(3)]),
+            MoveValue::Vector(vec![
+                MoveValue::U64(1),
+                MoveValue::U64(2),
+                MoveValue::U64(3),
+            ]),
         ),
     ];
 
@@ -539,7 +560,7 @@ fn benchmark_local_performance_bcs_roundtrip_speed() {
 
 #[test]
 fn benchmark_local_layout_resolution_nested_vectors() {
-    use move_core_types::annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout, MoveValue};
+    use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 
     let resolver = LocalModuleResolver::new();
     let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
@@ -548,10 +569,7 @@ fn benchmark_local_layout_resolution_nested_vectors() {
     let layout = MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U64));
 
     // Create value with two u64s
-    let value = MoveValue::Vector(vec![
-        MoveValue::U64(42),
-        MoveValue::U64(100),
-    ]);
+    let value = MoveValue::Vector(vec![MoveValue::U64(42), MoveValue::U64(100)]);
 
     let bytes = value.simple_serialize().unwrap();
     let result = validator.validate_bcs_roundtrip(&layout, &bytes);
@@ -560,13 +578,13 @@ fn benchmark_local_layout_resolution_nested_vectors() {
 
 #[test]
 fn benchmark_local_layout_resolution_structs() {
-    use move_core_types::annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout};
     use move_core_types::account_address::AccountAddress;
+    use move_core_types::annotated_value::{MoveFieldLayout, MoveStructLayout, MoveTypeLayout};
     use move_core_types::identifier::Identifier;
     use move_core_types::language_storage::StructTag;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let _validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
 
     // Test struct layout with multiple fields
     let tag = StructTag {
@@ -581,10 +599,7 @@ fn benchmark_local_layout_resolution_structs() {
         MoveFieldLayout::new(Identifier::new("field2").unwrap(), MoveTypeLayout::Address),
     ];
 
-    let layout = MoveTypeLayout::Struct(Box::new(MoveStructLayout::new(
-        tag,
-        fields,
-    )));
+    let layout = MoveTypeLayout::Struct(Box::new(MoveStructLayout::new(tag, fields)));
 
     // Just verify the layout is valid - actual BCS roundtrip requires complex MoveStruct creation
     // which is outside scope of simple layout validation test

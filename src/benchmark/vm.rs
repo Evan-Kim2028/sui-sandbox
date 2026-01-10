@@ -12,7 +12,7 @@ use crate::benchmark::resolver::LocalModuleResolver;
 pub struct InMemoryStorage<'a> {
     module_resolver: &'a LocalModuleResolver,
     resources: BTreeMap<AccountAddress, BTreeMap<StructTag, Vec<u8>>>,
-    #[allow(dead_code)]  // Reserved for future conditional logic based on restricted state
+    #[allow(dead_code)] // Reserved for future conditional logic based on restricted state
     restricted: bool,
 }
 

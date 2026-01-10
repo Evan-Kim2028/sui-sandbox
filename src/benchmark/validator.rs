@@ -29,11 +29,7 @@ impl<'a> Validator<'a> {
         let module = self
             .resolver
             .get_module_by_addr_name(&package_addr, module_name)
-            .ok_or_else(|| anyhow!(
-                "module not found: {}::{}",
-                package_addr,
-                module_name
-            ))?;
+            .ok_or_else(|| anyhow!("module not found: {}::{}", package_addr, module_name))?;
 
         let func_name_ident = Identifier::new(function_name)?;
         let func_def = module
@@ -44,12 +40,14 @@ impl<'a> Validator<'a> {
                 let name = module.identifier_at(handle.name);
                 name == func_name_ident.as_ident_str()
             })
-            .ok_or_else(|| anyhow!(
-                "function not found: {} in module {}::{}",
-                function_name,
-                package_addr,
-                module_name
-            ))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "function not found: {} in module {}::{}",
+                    function_name,
+                    package_addr,
+                    module_name
+                )
+            })?;
 
         // Visibility check: we generally target public or entry functions for PTBs
         let is_public = matches!(func_def.visibility, Visibility::Public);
