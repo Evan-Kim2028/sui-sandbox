@@ -157,16 +157,22 @@ The `normalize.py` module automatically converts this to the strictly supported 
 ---
 
 ## 5. Simulation (The Evidence)
-The harness invokes `smi_tx_sim` (Rust) to dry-run the generated plan on the Sui mainnet.
+The harness invokes `smi_tx_sim` (Rust) to evaluate the generated plan. There are two primary ways to run this:
 
-**The Result:**
-The simulation returns "Transaction Success" and lists the objects created.
-- **Created Object:** `0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7::admin::AdminCap`
+### Option A: Static Analysis (`--simulation-mode build-only`)
+The simulator uses **Move Model 2** to walk the call graph of the transaction.
+- **Evidence:** The engine identifies that `create_admin_cap` is called and returns an `AdminCap`.
+- **Pros:** No network required, no gas coins needed, works for "fresh" types not yet on mainnet.
+- **Verification:** Correctly handles generics and prevents infinite loops with depth-limited traversal.
 
----
+### Option B: On-Chain Dry-Run (`--simulation-mode dry-run`)
+The simulator sends the transaction to a real Sui Fullnode for execution.
+- **Evidence:** The RPC return "effects" show an object of type `AdminCap` was actually created in the Move VM.
+- **Pros:** Maximum fidelity (verifies state, gas, and dynamic logic).
+- **Requirement:** Requires a funded `SMI_SENDER` address on mainnet.
 
 ## 6. Scoring (The Reward)
-The `score.py` module compares the **Created Objects** against the **Target Set**.
+The `score.py` module compares the **Created Objects** (from either static analysis or dry-run) against the **Target Set**.
 
 - **Match Found:** The base types match exactly.
 - **Score:** `1.0` (1 Hit / 1 Target).

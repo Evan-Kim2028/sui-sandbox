@@ -1,7 +1,7 @@
 {
   "calls": [
     {
-      "target": "0x358e10b333ce6563f40fdf46f95d020aa6f8e221d4299a2d9b2592968a7da467::wrapper_coin::probe_transfer_cap",
+      "target": "0x0::wrapper_coin::probe_transfer_cap",
       "type_args": [],
       "args": [
         { "imm_or_owned_object": "0x1a72d8236c7bb885b498235d22ad15a511ae322caad32cd6f97827f295902275" }
@@ -9,4 +9,3 @@
     }
   ]
 }
-

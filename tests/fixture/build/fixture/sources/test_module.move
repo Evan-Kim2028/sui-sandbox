@@ -1,5 +1,5 @@
 module fixture::test_module {
-    struct SimpleStruct has drop {
+    public struct SimpleStruct has drop {
         value: u64
     }
 

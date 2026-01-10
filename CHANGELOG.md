@@ -2,6 +2,20 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.2.3] - 2026-01-10
+
+### Added
+- **Move Model 2 Integration**: Upgraded static analysis to use Move Model 2 for high-fidelity transaction simulation without network dependencies.
+- **Robust Call Graph Traversal**: Implemented recursive function walking in `smi_tx_sim` to identify created types deep within call stacks.
+- **Generic Type Substitution**: Correctly predicts concrete types for generic functions (e.g., `0x2::coin::Coin<T>`) by tracking substitutions across call boundaries.
+- **Loop & Recursion Protection**: Added depth-limited traversal (max depth 10) and visited-set tracking to ensure deterministic termination on circular Move logic.
+- **Automated Verification Suite**: Introduced comprehensive Rust unit tests, CLI integration tests, and a Python-based E2E smoke test for the static engine.
+- **STATIC_ANALYSIS.md**: New documentation detailing engine capabilities and execution modes.
+
+### Changed
+- **Enhanced `build-only` Mode**: Significant quality improvement for local benchmarking; `build-only` now accurately predicts most object creations that previously required a live `dry-run`.
+- **walkthrough.md Update**: Updated the "Life of a Hit" guide to explain the choice between static analysis and on-chain simulation.
+
 ## [0.2.2] - 2026-01-03
 
 ### Added

@@ -30,8 +30,9 @@
 
 ### Architecture & Technical
 1. [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md) - System architecture
-2. [**docs/A2A_PROTOCOL.md**](docs/A2A_PROTOCOL.md) - HTTP API specification
-3. [**docs/SCHEMA.md**](docs/SCHEMA.md) - Result schemas
+2. [**docs/STATIC_ANALYSIS.md**](docs/STATIC_ANALYSIS.md) - High-fidelity static engine (NEW)
+3. [**docs/A2A_PROTOCOL.md**](docs/A2A_PROTOCOL.md) - HTTP API specification
+4. [**docs/SCHEMA.md**](docs/SCHEMA.md) - Result schemas
 
 ### Reference & CLI
 1. [**docs/CLI_REFERENCE.md**](docs/CLI_REFERENCE.md) - Complete CLI reference
@@ -144,27 +145,21 @@ uv run python3 benchmark/run_real_world_test.py \
 ---
 
 ### 5. Detailed Analytics 📈
-
-**New Metrics Collected:**
-- ✅ Execution duration (total and per-package)
-- ✅ Token usage (prompt + completion)
-- ✅ Hit rate (success rate)
-- ✅ Error tracking
-- ✅ Cost estimation
-
-**Viewing Results:**
-```bash
-# Summary
-cat real_world_test_results_*.json | jq '.summary'
-
-# Detailed metrics
-cat benchmark/results/a2a/<run_id>.json | jq '.metrics'
-
-# Event logs
-cat benchmark/logs/<run_id>/events.jsonl | jq .
-```
-
+...
 **Documentation:** [QUICK_START_GUIDE.md](QUICK_START_GUIDE.md#--analytics--results)
+
+---
+
+### 6. High-Fidelity Static Engine 🧠
+**File:** `src/bin/smi_tx_sim.rs`
+
+**New Capabilities:**
+- Full call-graph traversal (depth 10)
+- Generic type substitution (e.g., `Coin<T>` resolution)
+- Infinite loop prevention
+- Offline benchmarking without mainnet gas
+
+**Documentation:** [docs/STATIC_ANALYSIS.md](docs/STATIC_ANALYSIS.md)
 
 ---
 

@@ -124,94 +124,92 @@ class TestValidationRules:
     """Test all validation rules for config fields."""
 
     def test_seed_must_be_non_negative(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "seed": -1,
-                }
-            )
-        assert "seed" in str(exc.value)
-        assert ">= 0" in str(exc.value)
+        """Seed should be clamped to 0 if negative."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "seed": -1,
+            }
+        )
+        assert cfg.seed == 0
 
     def test_gas_budget_must_be_positive(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "gas_budget": 0,
-                }
-            )
-        assert "gas_budget" in str(exc.value)
-        assert "> 0" in str(exc.value)
+        """Gas budget should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "gas_budget": 0,
+            }
+        )
+        assert cfg.gas_budget == 1
 
     def test_max_errors_must_be_positive(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "max_errors": 0,
-                }
-            )
-        assert "max_errors" in str(exc.value)
+        """Max errors should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "max_errors": 0,
+            }
+        )
+        assert cfg.max_errors == 1
 
     def test_max_run_seconds_must_be_positive_if_provided(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "max_run_seconds": -100,
-                }
-            )
-        assert "max_run_seconds" in str(exc.value)
+        """Max run seconds should be clamped to 0.01 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "max_run_seconds": -100,
+            }
+        )
+        assert cfg.max_run_seconds == 0.01
 
     def test_max_planning_calls_must_be_positive(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "max_planning_calls": 0,
-                }
-            )
-        assert "max_planning_calls" in str(exc.value)
+        """Max planning calls should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "max_planning_calls": 0,
+            }
+        )
+        assert cfg.max_planning_calls == 1
 
     def test_checkpoint_every_must_be_positive(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "checkpoint_every": 0,
-                }
-            )
-        assert "checkpoint_every" in str(exc.value)
+        """Checkpoint every should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "checkpoint_every": 0,
+            }
+        )
+        assert cfg.checkpoint_every == 1
 
     def test_max_heuristic_variants_must_be_at_least_one(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "max_heuristic_variants": 0,
-                }
-            )
-        assert "max_heuristic_variants" in str(exc.value)
+        """Max heuristic variants should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "max_heuristic_variants": 0,
+            }
+        )
+        assert cfg.max_heuristic_variants == 1
 
     def test_baseline_max_candidates_must_be_at_least_one(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "baseline_max_candidates": 0,
-                }
-            )
-        assert "baseline_max_candidates" in str(exc.value)
+        """Baseline max candidates should be clamped to 1 if non-positive."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "baseline_max_candidates": 0,
+            }
+        )
+        assert cfg.baseline_max_candidates == 1
 
 
 class TestCrossFieldValidation:
@@ -444,7 +442,7 @@ class TestPropertyBasedConfigParsing:
         )
         assert cfg.gas_budget == gas_budget
 
-    @given(st.floats(min_value=0.001, max_value=86400.0, allow_nan=False, allow_infinity=False))
+    @given(st.floats(min_value=0.01, max_value=86400.0, allow_nan=False, allow_infinity=False))
     @settings(max_examples=50)
     def test_valid_max_run_seconds_always_parses(self, max_run_seconds: float):
         cfg = _load_cfg(
@@ -459,23 +457,23 @@ class TestPropertyBasedConfigParsing:
     @given(st.integers(max_value=-1))
     @settings(max_examples=20)
     def test_negative_seed_always_rejected(self, seed: int):
-        with pytest.raises(InvalidConfigError):
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "seed": seed,
-                }
-            )
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "seed": seed,
+            }
+        )
+        assert cfg.seed == 0
 
     @given(st.integers(max_value=0))
     @settings(max_examples=20)
     def test_non_positive_gas_budget_always_rejected(self, gas_budget: int):
-        with pytest.raises(InvalidConfigError):
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "gas_budget": gas_budget,
-                }
-            )
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": "/tmp/ids.txt",
+                "gas_budget": gas_budget,
+            }
+        )
+        assert cfg.gas_budget == 1

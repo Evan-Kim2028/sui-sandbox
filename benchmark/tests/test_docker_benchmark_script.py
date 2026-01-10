@@ -108,6 +108,7 @@ def cleanup_test_containers():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_container_naming_convention():
     """
@@ -138,6 +139,7 @@ def test_container_naming_convention():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_container_reuse_same_port():
     """
@@ -174,6 +176,7 @@ def test_container_reuse_same_port():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_container_different_ports():
     """
@@ -211,6 +214,7 @@ def test_container_different_ports():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_cleanup_flag():
     """
@@ -253,6 +257,7 @@ def test_cleanup_flag():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_restart_flag():
     """
@@ -296,6 +301,7 @@ def test_restart_flag():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_container_not_removed_without_cleanup():
     """
@@ -325,6 +331,7 @@ def test_container_not_removed_without_cleanup():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_stopped_container_reused():
     """
@@ -410,6 +417,7 @@ def test_script_error_on_invalid_args():
 
 
 @pytest.mark.docker
+@pytest.mark.integration
 @pytest.mark.regression
 def test_no_conflict_with_manual_containers():
     """

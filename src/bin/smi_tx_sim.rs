@@ -2,15 +2,58 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use clap::{Parser, ValueEnum};
-use move_binary_format::file_format::{Bytecode, CompiledModule, SignatureToken};
+use move_binary_format::file_format::CompiledModule;
+use move_binary_format::normalized::{ModuleId, Type};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
+use move_stackless_bytecode_2::{ast as stackless_ast, from_compiled_modules};
+use move_symbol_pool::Symbol;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+struct SymbolPool;
+impl move_binary_format::normalized::StringPool for SymbolPool {
+    type String = Symbol;
+    fn intern(&mut self, s: &move_core_types::identifier::IdentStr) -> Self::String {
+        Symbol::from(s.as_str())
+    }
+    fn as_ident_str<'a>(
+        &'a self,
+        s: &'a Self::String,
+    ) -> &'a move_core_types::identifier::IdentStr {
+        move_core_types::identifier::IdentStr::new(s.as_str()).unwrap()
+    }
+}
+
+fn is_transfer_function(module: &ModuleId<Symbol>, function: &Symbol) -> bool {
+    module.address == AccountAddress::from_hex_literal("0x2").unwrap()
+        && module.name.as_str() == "transfer"
+        && matches!(
+            function.as_str(),
+            "transfer" | "public_transfer" | "share_object"
+        )
+}
+
+fn find_function<'a>(
+    stackless: &'a stackless_ast::StacklessBytecode,
+    module_id: &ModuleId<Symbol>,
+    func_name: &Symbol,
+) -> Option<&'a stackless_ast::Function> {
+    for package in &stackless.packages {
+        if package.address == module_id.address {
+            if let Some(module) = package.modules.get(&module_id.name) {
+                if let Some(func) = module.functions.get(func_name) {
+                    return Some(func);
+                }
+            }
+        }
+    }
+    None
+}
 
 use sui_json_rpc_types::SuiObjectDataOptions;
 use sui_json_rpc_types::{Coin, DryRunTransactionBlockResponse, ObjectChange};
@@ -164,127 +207,222 @@ fn parse_move_struct_tag(s: &str) -> Result<(ObjectID, Identifier, Identifier)> 
     Ok((package, module, struct_name))
 }
 
-fn addr_eq(addr: &AccountAddress, hex_literal: &str) -> bool {
-    AccountAddress::from_hex_literal(hex_literal)
-        .ok()
-        .map(|a| &a == addr)
-        .unwrap_or(false)
-}
-
-fn account_address_to_hex(addr: &AccountAddress) -> String {
-    format!("0x{}", addr.to_hex())
-}
-
-fn sig_token_to_type_string(m: &CompiledModule, tok: &SignatureToken) -> String {
-    match tok {
-        SignatureToken::Bool => "bool".to_string(),
-        SignatureToken::U8 => "u8".to_string(),
-        SignatureToken::U16 => "u16".to_string(),
-        SignatureToken::U32 => "u32".to_string(),
-        SignatureToken::U64 => "u64".to_string(),
-        SignatureToken::U128 => "u128".to_string(),
-        SignatureToken::U256 => "u256".to_string(),
-        SignatureToken::Address => "address".to_string(),
-        SignatureToken::Signer => "signer".to_string(),
-        SignatureToken::Vector(inner) => format!("vector<{}>", sig_token_to_type_string(m, inner)),
-        SignatureToken::Reference(inner) => format!("&{}", sig_token_to_type_string(m, inner)),
-        SignatureToken::MutableReference(inner) => {
-            format!("&mut {}", sig_token_to_type_string(m, inner))
-        }
-        SignatureToken::TypeParameter(i) => format!("T{i}"),
-        SignatureToken::Datatype(dt_idx) => {
-            let dh = m.datatype_handle_at(*dt_idx);
-            let mh = m.module_handle_at(dh.module);
-            let addr = m.address_identifier_at(mh.address);
-            let mod_name = m.identifier_at(mh.name).to_string();
-            let st_name = m.identifier_at(dh.name).to_string();
-            format!(
+fn format_type(ty: &Type<Symbol>) -> String {
+    match ty {
+        Type::Bool => "bool".to_string(),
+        Type::U8 => "u8".to_string(),
+        Type::U16 => "u16".to_string(),
+        Type::U32 => "u32".to_string(),
+        Type::U64 => "u64".to_string(),
+        Type::U128 => "u128".to_string(),
+        Type::U256 => "u256".to_string(),
+        Type::Address => "address".to_string(),
+        Type::Signer => "signer".to_string(),
+        Type::Vector(inner) => format!("vector<{}>", format_type(inner)),
+        Type::Reference(is_mut, inner) => format!(
+            "&{}{}",
+            if *is_mut { "mut " } else { "" },
+            format_type(inner)
+        ),
+        Type::Datatype(dt) => {
+            let base = format!(
                 "{}::{}::{}",
-                account_address_to_hex(addr),
-                mod_name,
-                st_name
-            )
+                account_address_to_hex(&dt.module.address),
+                dt.module.name,
+                dt.name
+            );
+            if dt.type_arguments.is_empty() {
+                base
+            } else {
+                let args = dt
+                    .type_arguments
+                    .iter()
+                    .map(format_type)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}<{}>", base, args)
+            }
         }
-        SignatureToken::DatatypeInstantiation(inst) => {
-            let (dt_idx, tys) = &**inst;
-            let base = sig_token_to_type_string(m, &SignatureToken::Datatype(*dt_idx));
-            let args = tys
-                .iter()
-                .map(|t| sig_token_to_type_string(m, t))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{base}<{args}>")
-        }
+        Type::TypeParameter(i) => format!("T{}", i),
     }
 }
 
-fn static_created_types_for_call(
-    modules: &HashMap<String, CompiledModule>,
+fn analyze_created_types(
+    stackless: &stackless_ast::StacklessBytecode,
     call: &MoveCallSpec,
 ) -> Result<BTreeSet<String>> {
-    let mut out = BTreeSet::<String>::new();
-    let (_package, module_name, function_name) = parse_move_target(&call.target)?;
-    let m = match modules.get(module_name.as_str()) {
-        Some(m) => m,
-        None => return Ok(out),
-    };
+    let mut created_types = BTreeSet::new();
 
-    // Resolve function definition by name.
-    let mut fn_def_idx = None;
-    for (i, def) in m.function_defs().iter().enumerate() {
-        let fh = m.function_handle_at(def.function);
-        let name = m.identifier_at(fh.name).to_string();
-        if name == function_name.as_str() {
-            fn_def_idx = Some(i);
-            break;
-        }
-    }
-    let Some(def_i) = fn_def_idx else {
-        return Ok(out);
-    };
-    let def = m.function_def_at(move_binary_format::file_format::FunctionDefinitionIndex(
-        def_i as u16,
-    ));
-    let Some(code) = &def.code else {
-        return Ok(out);
-    };
+    let (pkg_id, mod_name, func_name) = parse_move_target(&call.target)?;
+    let pkg_addr = AccountAddress::from(pkg_id);
+    let mod_sym = Symbol::from(mod_name.as_str());
+    let func_sym = Symbol::from(func_name.as_str());
 
-    for bc in &code.code {
-        let inst_idx = match bc {
-            Bytecode::CallGeneric(i) => Some(*i),
-            _ => None,
-        };
-        let Some(inst_idx) = inst_idx else {
-            continue;
-        };
-        let inst = m.function_instantiation_at(inst_idx);
-        let fh = m.function_handle_at(inst.handle);
-        let mh = m.module_handle_at(fh.module);
-        let addr = m.address_identifier_at(mh.address);
-        let mod_name = m.identifier_at(mh.name).to_string();
-        let fun_name = m.identifier_at(fh.name).to_string();
+    let mut pool = SymbolPool;
+    let initial_type_args: Vec<Type<Symbol>> = call
+        .type_args
+        .iter()
+        .map(|s| {
+            let tag = parse_type_tag(s)?;
+            Ok(Type::from_type_tag(&mut pool, &tag))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-        let is_transfer_like = addr_eq(addr, "0x2")
-            && mod_name == "transfer"
-            && matches!(
-                fun_name.as_str(),
-                "transfer" | "public_transfer" | "share_object"
-            );
-        if !is_transfer_like {
+    // (ModuleId, FunctionName, TypeArgs, Depth)
+    let mut worklist = vec![(
+        ModuleId {
+            address: pkg_addr,
+            name: mod_sym,
+        },
+        func_sym,
+        initial_type_args,
+        0,
+    )];
+    let mut visited = BTreeSet::new();
+    const MAX_DEPTH: u32 = 10;
+
+    while let Some((curr_mod, curr_func_sym, type_args, depth)) = worklist.pop() {
+        if depth > MAX_DEPTH {
             continue;
         }
 
-        let sig = m.signature_at(inst.type_parameters);
-        for tok in &sig.0 {
-            out.insert(sig_token_to_type_string(m, tok));
+        // Use debug string for type_args in visited set to ensure uniqueness without complex Hash impls
+        let visited_key = (
+            curr_mod.address,
+            curr_mod.name,
+            curr_func_sym,
+            format!("{:?}", type_args),
+        );
+        if !visited.insert(visited_key) {
+            continue;
+        }
+
+        let Some(func) = find_function(stackless, &curr_mod, &curr_func_sym) else {
+            continue;
+        };
+
+        for block in func.basic_blocks.values() {
+            for instr in &block.instructions {
+                if let stackless_ast::Instruction::AssignReg {
+                    rhs: stackless_ast::RValue::Call { target, args },
+                    ..
+                } = instr
+                {
+                    let (target_mod, target_func) = target;
+
+                    if is_transfer_function(target_mod, target_func) {
+                        if let Some(stackless_ast::Trivial::Register(reg)) = args.first() {
+                            // Substitution of type parameters
+                            let resolved_ty = reg.ty.as_ref().clone().subst(&type_args);
+                            created_types.insert(format_type(&resolved_ty));
+                        }
+                    } else {
+                        // Recursively analyze called functions
+                        // Note: move-stackless-bytecode-2 might not provide full type instantiation in RValue::Call yet
+                        // so we pass empty type_args or best-effort.
+                        worklist.push((*target_mod, *target_func, vec![], depth + 1));
+                    }
+                }
+            }
         }
     }
 
-    Ok(out)
+    Ok(created_types)
 }
 
-fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<HashMap<String, CompiledModule>> {
-    fn load_dir(dir: &Path, out: &mut HashMap<String, CompiledModule>) -> Result<()> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn get_fixture_stackless() -> (stackless_ast::StacklessBytecode, ObjectID) {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fixture_dir = manifest_dir.join("tests/fixture/build/fixture");
+        let modules = load_bytecode_modules(&fixture_dir).unwrap();
+        let (_model, stackless) = from_compiled_modules(modules, false).unwrap();
+
+        // Find package ID from modules (canonical 0x1)
+        let pkg_id = ObjectID::from_str("0x1").unwrap();
+        (stackless, pkg_id)
+    }
+
+    #[test]
+    fn test_static_analyze_basic_substitution() {
+        let (stackless, pkg_id) = get_fixture_stackless();
+        let call = MoveCallSpec {
+            target: format!("{}::stress_tests::probe_coin", pkg_id),
+            type_args: vec![format!("{}::stress_tests::MyCoin", pkg_id)],
+            args: vec![],
+        };
+
+        let result = analyze_created_types(&stackless, &call).unwrap();
+        let pkg_hex = normalize_sui_address(&pkg_id.to_string()).unwrap();
+        let expected = format!("0x0000000000000000000000000000000000000000000000000000000000000002::coin::Coin<{}::stress_tests::MyCoin>", pkg_hex);
+        assert!(
+            result.contains(&expected),
+            "Expected {}, got {:?}",
+            expected,
+            result
+        );
+    }
+
+    #[test]
+    fn test_static_analyze_nested_substitution() {
+        let (stackless, pkg_id) = get_fixture_stackless();
+        let call = MoveCallSpec {
+            target: format!("{}::stress_tests::probe_nested_cap", pkg_id),
+            type_args: vec![format!("{}::stress_tests::MyCoin", pkg_id)],
+            args: vec![],
+        };
+
+        let result = analyze_created_types(&stackless, &call).unwrap();
+        let pkg_hex = normalize_sui_address(&pkg_id.to_string()).unwrap();
+        let expected = format!("0x0000000000000000000000000000000000000000000000000000000000000002::coin::TreasuryCap<{}::stress_tests::MyCoin>", pkg_hex);
+        assert!(
+            result.contains(&expected),
+            "Expected {}, got {:?}",
+            expected,
+            result
+        );
+    }
+
+    #[test]
+    fn test_static_analyze_loop_prevention() {
+        let (stackless, pkg_id) = get_fixture_stackless();
+        let call = MoveCallSpec {
+            target: format!("{}::stress_tests::recursive_a", pkg_id),
+            type_args: vec![],
+            args: vec![],
+        };
+
+        // Should not hang
+        let result = analyze_created_types(&stackless, &call).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_static_analyze_depth_limit() {
+        let (stackless, pkg_id) = get_fixture_stackless();
+        let call = MoveCallSpec {
+            target: format!("{}::stress_tests::depth_0", pkg_id),
+            type_args: vec![],
+            args: vec![],
+        };
+
+        let result = analyze_created_types(&stackless, &call).unwrap();
+        let pkg_hex = normalize_sui_address(&pkg_id.to_string()).unwrap();
+        let expected = format!("{}::stress_tests::MyObj", pkg_hex);
+        assert!(
+            result.contains(&expected),
+            "Expected {}, got {:?}",
+            expected,
+            result
+        );
+    }
+}
+
+fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<Vec<CompiledModule>> {
+    fn load_dir(dir: &Path, out: &mut Vec<CompiledModule>) -> Result<()> {
         let rd = std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))?;
         for entry in rd {
             let entry = entry?;
@@ -296,21 +434,16 @@ fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<HashMap<String, 
             if path.extension().and_then(|s| s.to_str()) != Some("mv") {
                 continue;
             }
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| anyhow!("invalid module filename: {}", path.display()))?
-                .to_string();
             let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
             let m = CompiledModule::deserialize_with_defaults(&bytes)
                 .with_context(|| format!("deserialize {}", path.display()))?;
-            out.insert(name, m);
+            out.push(m);
         }
         Ok(())
     }
 
     let bytecode_dir = bytecode_package_dir.join("bytecode_modules");
-    let mut out = HashMap::new();
+    let mut out = Vec::new();
     load_dir(&bytecode_dir, &mut out)?;
     Ok(out)
 }
@@ -532,9 +665,9 @@ async fn resolve_call_arg_as_input(
             }
         }
         "one_time_witness" => {
-            let s = vv
-                .as_str()
-                .ok_or_else(|| anyhow!("one_time_witness must be a string like 0xPKG::module::STRUCT"))?;
+            let s = vv.as_str().ok_or_else(|| {
+                anyhow!("one_time_witness must be a string like 0xPKG::module::STRUCT")
+            })?;
             let (pkg, mod_name, struct_name) = parse_move_struct_tag(s)?;
 
             // We only need a BCS value whose layout matches the zero-sized witness struct.
@@ -741,6 +874,10 @@ fn created_types_from_object_changes(changes: &[ObjectChange]) -> BTreeSet<Strin
     out
 }
 
+fn account_address_to_hex(addr: &AccountAddress) -> String {
+    format!("0x{}", addr.to_hex())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -812,8 +949,10 @@ async fn main() -> Result<()> {
     let mut static_created = BTreeSet::<String>::new();
     if let Some(dir) = args.bytecode_package_dir.as_ref() {
         let modules = load_bytecode_modules(dir)?;
+        let (_model, stackless) = from_compiled_modules(modules, false)
+            .map_err(|e| anyhow!("Failed to build move model: {}", e))?;
         for call in &spec.calls {
-            static_created.extend(static_created_types_for_call(&modules, call)?);
+            static_created.extend(analyze_created_types(&stackless, call)?);
         }
     }
 

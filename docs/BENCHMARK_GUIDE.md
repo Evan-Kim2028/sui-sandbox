@@ -62,18 +62,24 @@ SMI_SENDER=0xYOUR_FUNDED_MAINNET_ADDRESS
 
 ### Important: `sender` / inventory expectations
 
-- If you run with an unfunded sender or `sender=0x0`, many packages are effectively "inventory empty".
-- In that mode, it is normal to see:
-  - `dry_run_ok=true` for harmless/no-op PTBs, while
-  - `created_hits=0` because target types require existing objects/caps or init paths.
-
-If your near-term goal is **framework stability**, prioritize `dry_run_ok` and timeout/error rates.
+- **Online Mode (`--simulation-mode dry-run`)**: Requires a funded mainnet address. If run with `0x0`, `created_hits` will likely be 0 because transactions lack the necessary input objects to execute successfully.
+- **Offline Mode (`--simulation-mode build-only`)**: Uses the [Static Analysis Engine](STATIC_ANALYSIS.md). It predicts created types by walking the code's call graph. This allows for `created_hits > 0` even with no network connection or funded account.
 
 ---
 
 ## 2) Choose your entrypoint
 
 ### A) Fast local run (single model)
+...
+```bash
+# Standard dry-run (Requires Mainnet RPC + Funded SMI_SENDER)
+./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
+  --simulation-mode dry-run
+
+# High-Fidelity Static-Only (No Network/Gas Required)
+./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
+  --simulation-mode build-only
+```
 
 Use this when you want to quickly iterate on benchmarking and see a JSON output file.
 

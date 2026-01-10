@@ -40,6 +40,7 @@ Both Phase I and Phase II consume a local `sui-packages` checkout (bytecode corp
     - `real-openai-compatible` (LLM planning), or
     - `template-search` (baseline skeleton + LLM fills args).
   - Simulates transactions via Rust helper `smi_tx_sim` (dry-run/dev-inspect/build-only).
+    - **NEW (Move Model 2)**: The simulator now performs full call-graph traversal in `build-only` mode, handling generic type substitution and preventing infinite loops.
   - Scores created object types vs targets using base-type matching (`smi_bench/inhabit/score.py`).
 
 - `smi_bench/inhabit/executable_subset.py`
