@@ -246,28 +246,6 @@ def _scan_illegal_address_uses_for_framework_only(*, move_sources: dict[str, str
     return illegal
 
 
-def _scan_move_2024_only_syntax(*, move_sources: dict[str, str]) -> list[str]:
-    # Fail-fast on common 2024-only syntax that breaks legacy builds.
-    # Keep this intentionally shallow and pattern-based.
-    patterns = [
-        "public struct ",
-        "public(friend) ",
-        "public(package) ",
-        "public(script) ",
-    ]
-    illegal: list[str] = []
-    for path, content in move_sources.items():
-        if not isinstance(content, str):
-            continue
-        for i, line in enumerate(content.splitlines(), start=1):
-            s = line.strip()
-            for p in patterns:
-                if p in s:
-                    illegal.append(f"{path}:{i}: disallowed Move 2024 syntax: {p.strip()}")
-                    break
-    return illegal
-
-
 def _lint_model_move_sources(
     *,
     move_sources: dict[str, str],
@@ -277,8 +255,9 @@ def _lint_model_move_sources(
     errors: list[str] = []
     # Only constrain explicit `use 0x...::...` imports to framework/core addrs.
     # Leave target references unconstrained at this stage.
+    # NOTE: We do NOT lint Move edition syntax (let mut, public struct, etc.) —
+    # the LLM can use any valid Move syntax and specify its own edition in Move.toml.
     errors.extend(_scan_illegal_address_uses_for_framework_only(move_sources=move_sources))
-    errors.extend(_scan_move_2024_only_syntax(move_sources=move_sources))
     return errors
 
 
@@ -458,24 +437,8 @@ def _vendor_target_deps_into_helper(*, target_pkg_dir: Path, helper_dir: Path) -
     toml_path = helper_dir / "Move.toml"
     toml = toml_path.read_text(encoding="utf-8")
 
-    # Force legacy-friendly edition to reduce model-induced build failures.
-    if "edition" in toml:
-        lines = []
-        for line in toml.splitlines():
-            if line.strip().startswith("edition"):
-                continue
-            lines.append(line)
-        toml = "\n".join(lines).rstrip() + "\n"
-    if "[package]" in toml and "edition" not in toml:
-        # Insert edition after [package] line.
-        out_lines = []
-        inserted = False
-        for line in toml.splitlines():
-            out_lines.append(line)
-            if not inserted and line.strip() == "[package]":
-                out_lines.append("edition = \"legacy\"")
-                inserted = True
-        toml = "\n".join(out_lines).rstrip() + "\n"
+    # NOTE: We do NOT force any specific Move edition. The LLM can specify its own
+    # edition in the Move.toml (e.g. "2024" or "legacy") and use corresponding syntax.
 
     # Strip model-added dependency blocks; we own dependency injection.
     if "[dependencies]" in toml:
