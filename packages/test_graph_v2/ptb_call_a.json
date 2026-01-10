@@ -1,9 +1,0 @@
-{
-  "calls": [
-    {
-      "target": "0x0::test_graph_v2::a",
-      "type_args": [],
-      "args": []
-    }
-  ]
-}
