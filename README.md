@@ -154,6 +154,86 @@ mkdir -p out
   --sanity
 ```
 
+## Local Type Inhabitation Benchmark
+
+The `benchmark-local` subcommand runs a **no-chain benchmark** that validates function calls using only local bytecode, without requiring on-chain deployment, funded accounts, or RPC access.
+
+This enables portable, deterministic validation of type inhabitation for research and academic workflows.
+
+### Usage
+
+```bash
+# Basic run (Tier A + Tier B validation)
+sui-move-interface-extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output benchmark_results.jsonl
+
+# Tier A only (skip VM execution - faster, more false positives)
+sui-move-interface-extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output benchmark_results.jsonl \
+  --tier-a-only
+
+# Restricted state (minimal mock objects for Tier B)
+sui-move-interface-extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output benchmark_results.jsonl \
+  --restricted-state
+```
+
+### Validation Stages
+
+The benchmark validates functions through two tiers:
+
+**Tier A (Preflight)**: Bytecode and serialization checks
+- A1: Target exists and is invokable (module, function, visibility)
+- A2: Type layout resolution for all parameters
+- A3: BCS roundtrip validation for pure arguments
+- A4: Object parameter detection and typing
+- A5: Generic function handling (currently skipped)
+
+**Tier B (VM Execution)**: Local Move VM execution under synthetic state
+- B1: VM harness creation with restricted or full state
+- B2: Execution with abort detection
+
+### Output Format
+
+JSONL with one line per function attempt:
+
+```json
+{
+  "target_package": "0x2",
+  "target_module": "coin",
+  "target_function": "mint",
+  "status": "tier_a_hit",
+  "failure_stage": null,
+  "failure_reason": null,
+  "tier_a_details": {
+    "resolved_params": ["address", "u64"],
+    "bcs_roundtrip_verified": true,
+    "has_object_params": false
+  },
+  "tier_b_details": null
+}
+```
+
+See [`docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md`](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for complete schema, design rationale, and verification requirements.
+
+### Use Cases
+
+- **Research**: Validate type inhabitation algorithms without network dependencies
+- **Testing**: Unit test function signatures for bytecode correctness
+- **CI/CD**: Ensure deployed bytecode passes validation gates
+- **Education**: Learn Move bytecode structure and type resolution
+
+### Performance
+
+Typical benchmarks:
+- 10 modules: ~1 second (Tier A only), ~2 seconds (Tier A + B)
+- 100 modules: ~5 seconds (Tier A only), ~15 seconds (Tier A + B)
+
+---
+
 ## AgentBeats / Berkeley “Green Agent” (AgentX)
 
 This repo is the official substrate for the AgentBeats-style evaluations on Sui Move bytecode. It provides:
