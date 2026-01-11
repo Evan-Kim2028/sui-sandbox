@@ -139,46 +139,8 @@ impl<'a> Validator<'a> {
         type_args: &[TypeTag],
         context_module: &CompiledModule,
     ) -> Result<MoveTypeLayout> {
-        match token {
-            SignatureToken::Bool => Ok(MoveTypeLayout::Bool),
-            SignatureToken::U8 => Ok(MoveTypeLayout::U8),
-            SignatureToken::U16 => Ok(MoveTypeLayout::U16),
-            SignatureToken::U32 => Ok(MoveTypeLayout::U32),
-            SignatureToken::U64 => Ok(MoveTypeLayout::U64),
-            SignatureToken::U128 => Ok(MoveTypeLayout::U128),
-            SignatureToken::U256 => Ok(MoveTypeLayout::U256),
-            SignatureToken::Address => Ok(MoveTypeLayout::Address),
-            SignatureToken::Signer => Ok(MoveTypeLayout::Signer),
-            SignatureToken::Vector(inner) => {
-                let inner_layout =
-                    self.resolve_signature_token(inner, type_args, context_module)?;
-                Ok(MoveTypeLayout::Vector(Box::new(inner_layout)))
-            }
-            SignatureToken::Reference(_) | SignatureToken::MutableReference(_) => {
-                Err(anyhow!("cannot have reference in struct field layout"))
-            }
-            SignatureToken::TypeParameter(idx) => {
-                let tag = type_args
-                    .get(*idx as usize)
-                    .ok_or_else(|| anyhow!("type argument index out of bounds: {}", idx))?;
-                self.resolve_type_layout(tag)
-            }
-            SignatureToken::Datatype(idx) => {
-                let tag = self.resolve_struct_handle_to_tag(*idx, context_module, &[])?;
-                self.resolve_struct_layout(&tag)
-            }
-            SignatureToken::DatatypeInstantiation(inst) => {
-                let (idx, tokens) = &**inst;
-                let mut resolved_type_args = Vec::new();
-                for t in tokens {
-                    let tag = self.resolve_token_to_tag(t, type_args, context_module)?;
-                    resolved_type_args.push(tag);
-                }
-                let tag =
-                    self.resolve_struct_handle_to_tag(*idx, context_module, &resolved_type_args)?;
-                self.resolve_struct_layout(&tag)
-            }
-        }
+        let tag = self.resolve_token_to_tag(token, type_args, context_module)?;
+        self.resolve_type_layout(&tag)
     }
 
     pub fn resolve_token_to_tag(
@@ -207,10 +169,10 @@ impl<'a> Validator<'a> {
             }
             SignatureToken::DatatypeInstantiation(inst) => {
                 let (idx, tokens) = &**inst;
-                let mut resolved = Vec::new();
-                for t in tokens {
-                    resolved.push(self.resolve_token_to_tag(t, type_args, context_module)?);
-                }
+                let resolved = tokens
+                    .iter()
+                    .map(|t| self.resolve_token_to_tag(t, type_args, context_module))
+                    .collect::<Result<Vec<_>>>()?;
                 let tag = self.resolve_struct_handle_to_tag(*idx, context_module, &resolved)?;
                 Ok(TypeTag::Struct(Box::new(tag)))
             }
