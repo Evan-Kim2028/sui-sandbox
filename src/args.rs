@@ -215,6 +215,42 @@ pub struct BenchmarkLocalArgs {
     /// Use a restricted set of mock objects for Tier B.
     #[arg(long, default_value_t = false)]
     pub restricted_state: bool,
+
+    // === v0.4.0 MM2 enhancements ===
+
+    /// Enable MM2-based static type checking (Phase 2).
+    /// This provides better error messages and catches type errors earlier.
+    #[arg(long, default_value_t = false)]
+    pub use_mm2: bool,
+
+    /// Stop after static type checking (no synthesis or execution).
+    /// Useful for quickly validating type signatures without VM overhead.
+    /// Requires --use-mm2.
+    #[arg(long, default_value_t = false)]
+    pub static_only: bool,
+
+    /// Maximum depth for constructor chain resolution.
+    /// Higher values allow more complex type construction but take longer.
+    #[arg(long, default_value_t = 5)]
+    pub max_chain_depth: usize,
+
+    /// Use the new phase-based error taxonomy (E101-E502 codes).
+    /// This replaces the legacy A1-A5/B1-B2 failure stages.
+    #[arg(long, default_value_t = false)]
+    pub phase_errors: bool,
+
+    /// Output error distribution by phase instead of pass rates.
+    /// Groups failures by Resolution/TypeCheck/Synthesis/Execution/Validation.
+    #[arg(long, default_value_t = false)]
+    pub error_distribution: bool,
+
+    /// Filter to only test functions matching this pattern (regex).
+    #[arg(long, value_name = "PATTERN")]
+    pub function_filter: Option<String>,
+
+    /// Filter to only test modules matching this pattern (regex).
+    #[arg(long, value_name = "PATTERN")]
+    pub module_filter: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -28,8 +28,10 @@
 //! This module implements Phase 2 of the v0.4.0 pipeline, catching type errors
 //! statically before attempting VM execution.
 
+pub mod constructor_graph;
 pub mod model;
 pub mod type_validator;
 
+pub use constructor_graph::ConstructorGraph;
 pub use model::TypeModel;
 pub use type_validator::TypeValidator;
