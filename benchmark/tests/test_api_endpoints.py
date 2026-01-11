@@ -4,6 +4,8 @@ Tests for new API endpoints: /validate, /schema, /info.
 These tests verify the robustness improvements to the Docker API.
 """
 
+from pathlib import Path
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -17,17 +19,25 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture
+def manifest_file(tmp_path: Path) -> str:
+    """Create a temporary manifest file for testing."""
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("0x1\n")
+    return str(manifest)
+
+
 class TestValidateEndpoint:
     """Tests for POST /validate endpoint."""
 
-    def test_validate_valid_config(self, client):
+    def test_validate_valid_config(self, client, manifest_file: str):
         """Valid config returns 200 with valid=true."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                 }
             },
         )
@@ -71,14 +81,14 @@ class TestValidateEndpoint:
         assert data["valid"] is False
         assert "corpus_root" in data["error"]
 
-    def test_validate_unknown_fields_produce_warnings(self, client):
+    def test_validate_unknown_fields_produce_warnings(self, client, manifest_file: str):
         """Unknown fields are reported as warnings but config is still valid."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                     "typo_field": 123,
                     "another_unknown": "value",
                 }
@@ -90,14 +100,14 @@ class TestValidateEndpoint:
         assert len(data["warnings"]) > 0
         assert "typo_field" in data["warnings"][0]
 
-    def test_validate_cross_field_validation(self, client):
+    def test_validate_cross_field_validation(self, client, manifest_file: str):
         """Cross-field validation errors are caught."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                     "require_dry_run": True,
                     "simulation_mode": "dev-inspect",
                     "sender": "0x123",
@@ -121,14 +131,14 @@ class TestValidateEndpoint:
         response = client.post("/validate", content="not json", headers={"Content-Type": "application/json"})
         assert response.status_code == 400
 
-    def test_validate_returns_normalized_config(self, client):
+    def test_validate_returns_normalized_config(self, client, manifest_file: str):
         """Validation returns normalized config with defaults filled in."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                 }
             },
         )
@@ -143,14 +153,14 @@ class TestValidateEndpoint:
         assert config["max_planning_calls"] == 50
         assert config["checkpoint_every"] == 10
 
-    def test_validate_all_p0_fields(self, client):
+    def test_validate_all_p0_fields(self, client, manifest_file: str):
         """Validate accepts all P0 fields."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                     "seed": 42,
                     "sender": "0xabc",
                     "gas_budget": 50_000_000,
@@ -167,14 +177,14 @@ class TestValidateEndpoint:
         assert data["config"]["seed"] == 42
         assert data["config"]["gas_budget"] == 50_000_000
 
-    def test_validate_all_p1_fields(self, client):
+    def test_validate_all_p1_fields(self, client, manifest_file: str):
         """Validate accepts all P1 fields."""
         response = client.post(
             "/validate",
             json={
                 "config": {
                     "corpus_root": "/app/corpus",
-                    "package_ids_file": "/app/manifest.txt",
+                    "package_ids_file": manifest_file,
                     "max_planning_calls": 10,
                     "checkpoint_every": 5,
                     "max_heuristic_variants": 8,

@@ -3,11 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
-
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
@@ -42,13 +40,15 @@ def test_docker_can_run_e2e_one_package_offline_and_persist_artifacts(tmp_path: 
         "/bin/bash",
         "-e",
         "SMI_E2E_REAL_LLM=0",
+        "-e",
+        "UV_PROJECT_ENVIRONMENT=/tmp/venv",
         "-v",
         f"{ROOT_DIR}:/app",
         "-w",
         "/app/benchmark",
         "sui-move-interface-extractor-smi-bench:latest",
         "-lc",
-        "uv run python3 scripts/e2e_one_package.py "
+        "uv run --no-cache python3 scripts/e2e_one_package.py "
         "--corpus-root tests/fake_corpus "
         "--package-id 0x1 --samples 1 "
         "--out-dir /app/results/docker_e2e "
@@ -58,7 +58,7 @@ def test_docker_can_run_e2e_one_package_offline_and_persist_artifacts(tmp_path: 
 
     # Ensure image exists (compose build must have been run by docker tests).
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
-    assert proc.returncode == 6, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
 
     # Verify artifacts persisted back to host under results/docker_e2e.
     host_out = ROOT_DIR / "results" / "docker_e2e"

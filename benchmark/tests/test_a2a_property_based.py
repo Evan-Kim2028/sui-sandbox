@@ -6,64 +6,64 @@ the robustness of configuration parsing and safe conversion utilities.
 
 from __future__ import annotations
 
+import sys
+from typing import Any
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from smi_bench.a2a_errors import InvalidConfigError
-from smi_bench.a2a_green_agent import EvalConfig, _load_cfg, _safe_float, _safe_int
+from smi_bench.a2a_green_agent import EvalConfig, _load_cfg
+from smi_bench.utils import safe_parse_float as _safe_float
+from smi_bench.utils import safe_parse_int as _safe_int
 
 
 class TestConfigPropertyBased:
     """Property-based tests for configuration loading."""
 
-    @given(
-        corpus_root=st.text(min_size=1).filter(lambda x: x.strip() != ""),
-        package_ids_file=st.text(min_size=1).filter(lambda x: x.strip() != ""),
-        samples=st.integers(min_value=0, max_value=10000),
-        rpc_url=st.text(),
-        simulation_mode=st.text(),
-        per_package_timeout_seconds=st.floats(min_value=0, max_value=3600, allow_nan=False, allow_infinity=False),
-        max_plan_attempts=st.integers(min_value=0, max_value=100),
-        continue_on_error=st.booleans(),
-        resume=st.booleans(),
-        run_id=st.one_of(st.none(), st.text()),
-    )
-    def test_valid_configs_always_parse(
-        self,
-        corpus_root,
-        package_ids_file,
-        samples,
-        rpc_url,
-        simulation_mode,
-        per_package_timeout_seconds,
-        max_plan_attempts,
-        continue_on_error,
-        resume,
-        run_id,
-    ) -> None:
-        """Valid configurations should always parse successfully."""
-        config = {
-            "corpus_root": corpus_root,
-            "package_ids_file": package_ids_file,
-            "samples": samples,
-            "rpc_url": rpc_url,
-            "simulation_mode": simulation_mode,
-            "per_package_timeout_seconds": per_package_timeout_seconds,
-            "max_plan_attempts": max_plan_attempts,
-            "continue_on_error": continue_on_error,
-            "resume": resume,
-            "run_id": run_id,
-        }
+    def setup_method(self):
+        """Create a real manifest file for Hypothesis tests."""
+        from pathlib import Path
 
-        result = _load_cfg(config)
+        self.manifest_dir = Path("/tmp/smi_test_manifests_a2a")
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest = self.manifest_dir / "ids.txt"
+        self.manifest.write_text("0x1\n")
+
+    # Strategy for a valid Sui address (0x + 64 hex chars)
+    sui_address_strategy = st.from_regex(r"^0x[0-9a-fA-F]{64}$")
+
+    @given(
+        st.fixed_dictionaries(
+            {
+                "corpus_root": st.text(min_size=1).filter(lambda x: x.strip() != "" and "\0" not in x),
+                "samples": st.integers(min_value=0, max_value=10000),
+                "rpc_url": st.text(),
+                "simulation_mode": st.sampled_from(["dry-run", "build-only", "dev-inspect", "execute"]),
+                "per_package_timeout_seconds": st.floats(
+                    min_value=1.0, max_value=3600, allow_nan=False, allow_infinity=False
+                ),
+                "max_plan_attempts": st.integers(min_value=1, max_value=100),
+                "continue_on_error": st.booleans(),
+                "resume": st.booleans(),
+                "run_id": st.one_of(st.none(), st.text()),
+                "sender": st.one_of(st.none(), sui_address_strategy),
+            }
+        ).filter(lambda cfg: not (cfg["simulation_mode"] in ("dev-inspect", "execute") and not cfg.get("sender")))
+    )
+    def test_valid_configs_always_parse(self, config_dict: dict[str, Any]) -> None:
+        """Valid configurations should always parse successfully."""
+        # Inject the real manifest path
+        config_dict["package_ids_file"] = str(self.manifest)
+        result = _load_cfg(config_dict)
 
         assert isinstance(result, EvalConfig)
-        assert result.corpus_root == corpus_root
-        assert result.package_ids_file == package_ids_file
-        assert result.samples == samples
-        assert result.continue_on_error == continue_on_error
-        assert result.resume == resume
+        assert result.corpus_root == config_dict["corpus_root"]
+        assert result.package_ids_file == config_dict["package_ids_file"]
+        assert result.samples == config_dict["samples"]
+        assert result.continue_on_error == config_dict["continue_on_error"]
+        assert result.resume == config_dict["resume"]
 
     @given(
         invalid_field=st.sampled_from(["corpus_root", "package_ids_file"]),
@@ -101,15 +101,20 @@ class TestSafeConversionsPropertyBased:
     """Property-based tests for safe conversion utilities."""
 
     @given(
-        value=st.integers(),
+        value=st.integers(min_value=-sys.maxsize, max_value=sys.maxsize),
         default=st.integers(),
     )
     def test_safe_int_with_integers(self, value, default) -> None:
-        """_safe_int should return the integer itself if provided."""
+        """_safe_int should return the integer itself if within range."""
         assert _safe_int(value, default) == value
 
+    def test_safe_int_clamping(self):
+        """Verify that safe_int clamps to max_val."""
+        large_val = sys.maxsize + 100
+        assert _safe_int(large_val, 0) == sys.maxsize
+
     @given(
-        value=st.integers().map(str),
+        value=st.integers(min_value=-sys.maxsize, max_value=sys.maxsize).map(str),
         default=st.integers(),
     )
     def test_safe_int_with_numeric_strings(self, value, default) -> None:

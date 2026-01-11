@@ -3,44 +3,31 @@ Regression tests for run_docker_benchmark.sh script.
 
 Tests container reuse logic, naming conventions, and cleanup functions
 to ensure smart container management works correctly without breaking existing behavior.
+
+NOTE: These tests use dynamic port allocation via conftest.py fixtures
+to avoid port conflicts in CI environments.
 """
 
-import json
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
+from conftest import (
+    cleanup_container,
+    find_free_port,
+    get_container_by_name,
+    is_docker_available,
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = ROOT_DIR / "scripts" / "run_docker_benchmark.sh"
 
 
-def is_docker_available() -> bool:
-    try:
-        subprocess.run(["docker", "--version"], capture_output=True, check=True)
-        return True
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return False
-
-
-def is_docker_port_allocated(port: int) -> bool:
-    try:
-        res = subprocess.run(
-            ["docker", "ps", "-q", "--filter", f"publish={port}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return bool(res.stdout.strip())
-    except Exception:
-        return False
-
-
 def run_benchmark_script(
     model: str = "google/gemini-3-flash-preview",
     samples: int = 5,
-    port: int = 9999,
+    port: int | None = None,
     extra_args: list[str] | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 120,
@@ -48,7 +35,12 @@ def run_benchmark_script(
     """
     Helper to run the benchmark script with arguments.
     Returns the completed process object.
+
+    If port is None, a free port will be dynamically allocated.
     """
+    if port is None:
+        port = find_free_port()
+
     cmd = [
         str(SCRIPT_PATH),
         model,
@@ -73,56 +65,33 @@ def run_benchmark_script(
     )
 
 
-def get_container_by_name(container_name: str) -> dict | None:
-    """Get container info by name, returns None if not found."""
-    try:
-        result = subprocess.run(
-            ["docker", "inspect", container_name],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            containers = json.loads(result.stdout)
-            return containers[0] if containers else None
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        pass
-    return None
-
-
-def cleanup_container(container_name: str) -> None:
-    """Stop and remove a container if it exists."""
-    try:
-        subprocess.run(
-            ["docker", "stop", container_name],
-            capture_output=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        subprocess.run(["docker", "kill", container_name], capture_output=True)
-
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        capture_output=True,
-    )
+@pytest.fixture(scope="function")
+def test_port() -> int:
+    """Provide a dynamically allocated port for each test."""
+    return find_free_port()
 
 
 @pytest.fixture(scope="function", autouse=True)
-def cleanup_test_containers():
+def cleanup_test_containers(test_port: int):
     """
     Automatically cleanup any containers created during tests.
-    This prevents test interference.
+    Uses the dynamically allocated port.
     """
-    test_container_names = ["smi-bench-9999", "smi-bench-9998"]
+    container_names: list[str] = []
 
-    yield
+    yield container_names
 
-    for name in test_container_names:
+    # Cleanup containers tracked during test
+    for name in container_names:
         cleanup_container(name)
+
+    # Also cleanup the port-based container
+    cleanup_container(f"smi-bench-{test_port}")
 
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_container_naming_convention():
+def test_container_naming_convention(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify container names follow the 'smi-bench-{PORT}' convention.
     This ensures predictable container naming for reuse logic.
@@ -130,12 +99,15 @@ def test_container_naming_convention():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    # Start a container with a specific port
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
+
+    # Start a container with the dynamic port
     try:
         run_benchmark_script(
             model="google/gemini-3-flash-preview",
             samples=2,
-            port=9999,
+            port=test_port,
             timeout=10,
         )
     except subprocess.TimeoutExpired:
@@ -144,15 +116,15 @@ def test_container_naming_convention():
 
     # Check if container exists with expected name
     time.sleep(2)  # Give Docker time to create container
-    container = get_container_by_name("smi-bench-9999")
+    container = get_container_by_name(expected_name)
 
-    assert container is not None, "Container should be created with name 'smi-bench-9999'"
-    assert container["Name"] == "/smi-bench-9999"
+    assert container is not None, f"Container should be created with name '{expected_name}'"
+    assert container["Name"] == f"/{expected_name}"
 
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_container_reuse_same_port():
+def test_container_reuse_same_port(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify that running the script twice on the same port
     reuses the existing container instead of creating a new one.
@@ -160,12 +132,12 @@ def test_container_reuse_same_port():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    port = 9999
-    expected_name = f"smi-bench-{port}"
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
 
     # First run - create container
     try:
-        run_benchmark_script(port=port, timeout=10)
+        run_benchmark_script(port=test_port, timeout=10)
     except subprocess.TimeoutExpired:
         pass
 
@@ -188,7 +160,7 @@ def test_container_reuse_same_port():
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_container_different_ports():
+def test_container_different_ports(cleanup_test_containers: list[str]):
     """
     Regression: Verify that running on different ports creates separate containers.
     This ensures port-based isolation works correctly.
@@ -196,39 +168,43 @@ def test_container_different_ports():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    if is_docker_port_allocated(9999) or is_docker_port_allocated(9998):
-        pytest.skip("Required docker test ports already allocated")
+    # Allocate two dynamic ports
+    port1 = find_free_port(start=11000, end=12000)
+    port2 = find_free_port(start=12001, end=13000)
 
-    # Start container on port 9999
+    cleanup_test_containers.append(f"smi-bench-{port1}")
+    cleanup_test_containers.append(f"smi-bench-{port2}")
+
+    # Start container on first port
     try:
-        run_benchmark_script(port=9999, timeout=10)
+        run_benchmark_script(port=port1, timeout=10)
     except subprocess.TimeoutExpired:
         pass
 
     time.sleep(2)
 
-    # Start container on port 9998 (this would normally be a separate terminal)
+    # Start container on second port
     try:
-        run_benchmark_script(port=9998, timeout=10)
+        run_benchmark_script(port=port2, timeout=10)
     except subprocess.TimeoutExpired:
         pass
 
     time.sleep(2)
 
     # Verify both containers exist
-    container_9999 = get_container_by_name("smi-bench-9999")
-    container_9998 = get_container_by_name("smi-bench-9998")
+    container_1 = get_container_by_name(f"smi-bench-{port1}")
+    container_2 = get_container_by_name(f"smi-bench-{port2}")
 
-    assert container_9999 is not None, "Container for port 9999 should exist"
-    assert container_9998 is not None, "Container for port 9998 should exist"
+    assert container_1 is not None, f"Container for port {port1} should exist"
+    assert container_2 is not None, f"Container for port {port2} should exist"
 
     # Verify they have different container IDs
-    assert container_9999["Id"] != container_9998["Id"]
+    assert container_1["Id"] != container_2["Id"]
 
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_cleanup_flag():
+def test_cleanup_flag(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify --cleanup flag stops and removes the container.
     This ensures cleanup mode works correctly.
@@ -236,12 +212,12 @@ def test_cleanup_flag():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    port = 9999
-    expected_name = f"smi-bench-{port}"
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
 
     # Start a container
     try:
-        run_benchmark_script(port=port, timeout=10)
+        run_benchmark_script(port=test_port, timeout=10)
     except subprocess.TimeoutExpired:
         pass
 
@@ -253,7 +229,7 @@ def test_cleanup_flag():
 
     # Run cleanup
     result = subprocess.run(
-        [str(SCRIPT_PATH), "test", "2", str(port), "--cleanup"],
+        [str(SCRIPT_PATH), "test", "2", str(test_port), "--cleanup"],
         cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
@@ -270,7 +246,7 @@ def test_cleanup_flag():
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_restart_flag():
+def test_restart_flag(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify --restart flag restarts an existing running container.
     This ensures restart capability works correctly.
@@ -278,15 +254,12 @@ def test_restart_flag():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    if is_docker_port_allocated(9999):
-        pytest.skip("Required docker test port already allocated")
-
-    port = 9999
-    expected_name = f"smi-bench-{port}"
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
 
     # Start a container
     try:
-        run_benchmark_script(port=port, timeout=10)
+        run_benchmark_script(port=test_port, timeout=10)
     except subprocess.TimeoutExpired:
         pass
 
@@ -316,7 +289,7 @@ def test_restart_flag():
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_container_not_removed_without_cleanup():
+def test_container_not_removed_without_cleanup(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify containers are NOT auto-removed without --cleanup flag.
     This ensures the --rm behavior is removed for container reuse.
@@ -324,12 +297,12 @@ def test_container_not_removed_without_cleanup():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    port = 9999
-    expected_name = f"smi-bench-{port}"
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
 
     # Start container (script will create it and run until Ctrl+C or timeout)
     try:
-        run_benchmark_script(port=port, timeout=5)
+        run_benchmark_script(port=test_port, timeout=5)
     except subprocess.TimeoutExpired:
         pass
     except subprocess.CalledProcessError:
@@ -345,7 +318,7 @@ def test_container_not_removed_without_cleanup():
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_stopped_container_reused():
+def test_stopped_container_reused(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify a stopped container is started instead of creating new one.
     This ensures we reuse containers that were previously stopped.
@@ -353,15 +326,12 @@ def test_stopped_container_reused():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
-    if is_docker_port_allocated(9999):
-        pytest.skip("Required docker test port already allocated")
-
-    port = 9999
-    expected_name = f"smi-bench-{port}"
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
 
     # Start and then stop container
     try:
-        run_benchmark_script(port=port, timeout=5)
+        run_benchmark_script(port=test_port, timeout=5)
     except subprocess.TimeoutExpired:
         pass
 
@@ -433,7 +403,7 @@ def test_script_error_on_invalid_args():
 
 @pytest.mark.docker
 @pytest.mark.regression
-def test_no_conflict_with_manual_containers():
+def test_no_conflict_with_manual_containers(test_port: int, cleanup_test_containers: list[str]):
     """
     Regression: Verify script doesn't interfere with manually created containers
     on different ports.
@@ -441,36 +411,36 @@ def test_no_conflict_with_manual_containers():
     if not is_docker_available():
         pytest.skip("Docker not available")
 
+    expected_name = f"smi-bench-{test_port}"
+    cleanup_test_containers.append(expected_name)
+
     # Create a manual container on a different port (not managed by our script)
     manual_container_name = "manual-test-container"
+    cleanup_test_containers.append(manual_container_name)
+
     subprocess.run(
         ["docker", "run", "-d", "--name", manual_container_name, "nginx:alpine"],
         capture_output=True,
         timeout=60,
     )
 
+    time.sleep(2)
+
+    # Verify manual container still exists
+    manual_container = get_container_by_name(manual_container_name)
+    assert manual_container is not None, "Manual container should not be affected"
+
+    # Run our benchmark script on a different port
     try:
-        time.sleep(2)
+        run_benchmark_script(port=test_port, timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
 
-        # Verify manual container still exists
-        manual_container = get_container_by_name(manual_container_name)
-        assert manual_container is not None, "Manual container should not be affected"
+    time.sleep(2)
 
-        # Run our benchmark script on a different port
-        try:
-            run_benchmark_script(port=9999, timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+    # Verify both containers exist
+    manual_container_after = get_container_by_name(manual_container_name)
+    assert manual_container_after is not None, "Manual container should still exist"
 
-        time.sleep(2)
-
-        # Verify both containers exist
-        manual_container_after = get_container_by_name(manual_container_name)
-        assert manual_container_after is not None, "Manual container should still exist"
-
-        script_container = get_container_by_name("smi-bench-9999")
-        assert script_container is not None, "Script container should exist"
-
-    finally:
-        # Cleanup manual container
-        cleanup_container(manual_container_name)
+    script_container = get_container_by_name(expected_name)
+    assert script_container is not None, "Script container should exist"

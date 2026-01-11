@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from smi_bench.utils import safe_bool, safe_parse_int
+
 
 class CorrectionType(str, Enum):
     """Categories of formatting corrections applied to PTB specs."""
@@ -75,37 +77,6 @@ def _normalize_address(value: str) -> tuple[str, bool]:
     return s, False
 
 
-def _normalize_integer(value: Any, key: str) -> tuple[Any, str | None]:
-    """
-    Normalize an integer value, converting string to int if needed.
-    Returns (normalized_value, correction_type or None).
-    """
-    if isinstance(value, int):
-        return value, None
-    if isinstance(value, str):
-        try:
-            return int(value), CorrectionType.INTEGER_STRING_TO_INT.value
-        except ValueError:
-            return value, None
-    return value, None
-
-
-def _normalize_boolean(value: Any) -> tuple[Any, str | None]:
-    """
-    Normalize a boolean value, converting string to bool if needed.
-    Returns (normalized_value, correction_type or None).
-    """
-    if isinstance(value, bool):
-        return value, None
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("true", "1", "yes"):
-            return True, CorrectionType.BOOLEAN_STRING_TO_BOOL.value
-        if s in ("false", "0", "no"):
-            return False, CorrectionType.BOOLEAN_STRING_TO_BOOL.value
-    return value, None
-
-
 def _normalize_arg(arg: dict[str, Any], call_idx: int, arg_idx: int) -> tuple[dict[str, Any], list[str]]:
     """
     Normalize a single argument in a PTB call.
@@ -164,9 +135,9 @@ def _normalize_arg(arg: dict[str, Any], call_idx: int, arg_idx: int) -> tuple[di
 
         # Normalize integer arguments: {"u64": "100"} → {"u64": 100}
         elif key in _INT_ARG_KEYS:
-            new_value, correction = _normalize_integer(value, key)
-            if correction:
-                corrections.append(f"call[{call_idx}].args[{arg_idx}]: {correction}")
+            new_value = safe_parse_int(value, default=value)
+            if isinstance(value, str) and isinstance(new_value, int):
+                corrections.append(f"call[{call_idx}].args[{arg_idx}]: {CorrectionType.INTEGER_STRING_TO_INT.value}")
 
         # Normalize vector integer arguments: {"vector_u64": ["1", "2"]} → {"vector_u64": [1, 2]}
         elif key.startswith("vector_") and key[7:] in _INT_ARG_KEYS:
@@ -174,9 +145,9 @@ def _normalize_arg(arg: dict[str, Any], call_idx: int, arg_idx: int) -> tuple[di
                 new_list = []
                 had_correction = False
                 for item in value:
-                    norm_item, corr = _normalize_integer(item, key)
+                    norm_item = safe_parse_int(item, default=item)
                     new_list.append(norm_item)
-                    if corr:
+                    if isinstance(item, str) and isinstance(norm_item, int):
                         had_correction = True
                 if had_correction:
                     new_value = new_list
@@ -209,9 +180,10 @@ def _normalize_arg(arg: dict[str, Any], call_idx: int, arg_idx: int) -> tuple[di
                     if was_corrected:
                         shared_corrections.append(CorrectionType.ADDRESS_MISSING_0X_PREFIX.value)
                 elif sk == "mutable":
-                    sv, corr = _normalize_boolean(sv)
-                    if corr:
-                        shared_corrections.append(corr)
+                    new_sv = safe_bool(sv, default=sv)
+                    if sv != new_sv:
+                        shared_corrections.append(CorrectionType.BOOLEAN_STRING_TO_BOOL.value)
+                    sv = new_sv
                 new_shared[sk] = sv
             new_value = new_shared
             for corr in shared_corrections:

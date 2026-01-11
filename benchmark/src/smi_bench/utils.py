@@ -275,6 +275,36 @@ def safe_parse_int(
     return i
 
 
+def validate_range(
+    val: Any, min_val: float = -float("inf"), max_val: float = float("inf"), name: str = "value"
+) -> float:
+    """
+    Strictly validate that a numeric value is within a range.
+    Raises ValueError if invalid or out of range.
+    """
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid {name}: must be a number, got {val!r}")
+
+    if f < min_val or f > max_val:
+        raise ValueError(f"{name} {f} out of range [{min_val}, {max_val}]")
+    return f
+
+
+def safe_bool(val: Any, default: bool) -> bool:
+    """
+    Parse a boolean value with common string aliases (true, 1, yes).
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("true", "1", "yes")
+    return bool(val)
+
+
 def setup_signal_handlers(cleanup_fn: Any) -> None:
     """
     Setup signal handlers for SIGTERM and SIGINT to ensure cleanup.

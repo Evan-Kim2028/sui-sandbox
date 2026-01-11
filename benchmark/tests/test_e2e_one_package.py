@@ -63,7 +63,11 @@ def test_e2e_one_package_offline(tmp_path: Path) -> None:
         for k in ["target_package", "target_module", "target_function", "status"]:
             assert k in row
     assert (run_dir / "txsim_source.json").exists()
-    assert (run_dir / "txsim_effects.json").exists() or (run_dir / "txsim_combined_effects.json").exists() or (run_dir / "txsim_target_effects.json").exists()
+    assert (
+        (run_dir / "txsim_effects.json").exists()
+        or (run_dir / "txsim_combined_effects.json").exists()
+        or (run_dir / "txsim_target_effects.json").exists()
+    )
 
     # Robustness: txsim artifact must be valid JSON and contain basic keys.
     txsim_path = None

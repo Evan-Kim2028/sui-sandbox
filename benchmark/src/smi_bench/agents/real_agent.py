@@ -17,6 +17,34 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class LLMUsage:
+    """Token usage from a single LLM API call."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+    @classmethod
+    def from_api_response(cls, usage: dict | None) -> "LLMUsage":
+        """Extract usage from OpenAI-compatible API response."""
+        if usage is None:
+            return cls(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+        return cls(
+            prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+            total_tokens=int(usage.get("total_tokens", 0) or 0),
+        )
+
+
+@dataclass(frozen=True)
+class LLMJsonResponse:
+    """Result from complete_json() with parsed content and usage info."""
+
+    content: dict[str, Any]
+    usage: LLMUsage
+
+
+@dataclass(frozen=True)
 class RealAgentConfig:
     provider: str
     api_key: str
@@ -441,11 +469,11 @@ class RealAgent:
         timeout_s: float | None = None,
         logger: JsonlLogger | None = None,
         log_context: dict[str, object] | None = None,
-    ) -> dict[str, Any]:
+    ) -> LLMJsonResponse:
         """
         Request an OpenAI-compatible chat completion and parse the assistant content as a JSON object.
 
-        Returns (parsed_dict, usage_dict).
+        Returns LLMJsonResponse with parsed content and token usage.
         """
         jsonl_logger = logger
         url = f"{self.cfg.base_url}/chat/completions"
@@ -625,6 +653,9 @@ class RealAgent:
                     )
                 raise ValueError(f"unexpected response shape: {data}") from e2
 
+        # Extract usage from API response
+        usage = LLMUsage.from_api_response(data.get("usage"))
+
         if (log := logger) is not None:
             ctx = dict(log_context or {})
             ctx.update(
@@ -634,6 +665,9 @@ class RealAgent:
                     "base_url": self.cfg.base_url,
                     "timeout_s": timeout_s,
                     "content": content,
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
                 }
             )
             log.event("llm_response", **ctx)
@@ -697,10 +731,13 @@ class RealAgent:
                     "base_url": self.cfg.base_url,
                     "timeout_s": timeout_s,
                     "parsed": parsed,
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
                 }
             )
             log.event("llm_json_parsed", **ctx)
 
         if not isinstance(parsed, dict):
             raise ValueError("expected a JSON object")
-        return cast(dict[str, Any], parsed)
+        return LLMJsonResponse(content=cast(dict[str, Any], parsed), usage=usage)

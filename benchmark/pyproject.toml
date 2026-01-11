@@ -78,7 +78,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-n auto"
 markers = [
-    "integration: marks tests as integration tests (slow, requires docker)"
+    "integration: marks tests as integration tests (slow, requires docker)",
+    "docker: marks tests requiring Docker (deselect with -m 'not docker')",
+    "regression: marks regression tests for critical behavior",
+    "unit: marks fast unit tests",
 ]
 filterwarnings = [
     "ignore:The `on_event` decorator is deprecated:DeprecationWarning:starlette.*",

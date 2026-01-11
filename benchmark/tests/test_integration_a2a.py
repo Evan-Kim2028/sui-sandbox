@@ -138,10 +138,14 @@ def test_a2a_green_agent_config_parsing(tmp_path: Path) -> None:
     """Config parsing handles all required fields."""
     from smi_bench import a2a_green_agent
 
+    # Create a temp manifest file
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("0x1\n")
+
     # Valid config
     config = {
         "corpus_root": "/corpus",
-        "package_ids_file": "/manifest.txt",
+        "package_ids_file": str(manifest),
         "samples": 10,
         "rpc_url": "https://test.rpc",
         "simulation_mode": "dry-run",
@@ -165,50 +169,50 @@ def test_a2a_green_agent_config_missing_field(tmp_path: Path) -> None:
     """Config parsing raises error for missing required fields."""
     from smi_bench import a2a_green_agent
 
-    # Missing required field (samples)
+    # Create a temp manifest file
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("0x1\n")
+
+    # Missing required field (samples) - should use default
     config = {
         "corpus_root": "/corpus",
-        "package_ids_file": "/manifest.txt",
+        "package_ids_file": str(manifest),
         "rpc_url": "https://test.rpc",
         # samples is missing
     }
 
-    # Should raise error or use default
-    try:
-        result = a2a_green_agent._load_cfg(config)
-        # If it doesn't raise, it should use a default
-        assert result.samples >= 0
-    except (KeyError, ValueError):
-        # Expected error behavior
-        pass
+    # Should parse with default samples value
+    result = a2a_green_agent._load_cfg(config)
+    # If it doesn't raise, it should use a default
+    assert result.samples >= 0
 
 
 def test_a2a_green_agent_safe_int_conversion(tmp_path: Path) -> None:
     """Safe int conversion handles invalid values."""
-    from smi_bench import a2a_green_agent
+    from smi_bench.utils import safe_parse_int
 
     # Valid conversions
-    assert a2a_green_agent._safe_int("42", 0) == 42
-    assert a2a_green_agent._safe_int(" 100  ", 0) == 100
+    assert safe_parse_int("42", 0) == 42
+    assert safe_parse_int(" 100  ", 0) == 100
 
     # Invalid conversions (use default)
-    assert a2a_green_agent._safe_int(None, 5) == 5
-    assert a2a_green_agent._safe_int("not_a_number", 10) == 10
-    assert a2a_green_agent._safe_int("", 0) == 0
+    assert safe_parse_int(None, 5) == 5
+    assert safe_parse_int("not_a_number", 10) == 10
+    assert safe_parse_int("", 0) == 0
 
 
 def test_a2a_green_agent_safe_float_conversion(tmp_path: Path) -> None:
     """Safe float conversion handles invalid values."""
-    from smi_bench import a2a_green_agent
+    from smi_bench.utils import safe_parse_float
 
     # Valid conversions
-    assert a2a_green_agent._safe_float("42.5", 0.0) == 42.5
-    assert a2a_green_agent._safe_float(" 100.0  ", 0.0) == 100.0
+    assert safe_parse_float("42.5", 0.0) == 42.5
+    assert safe_parse_float(" 100.0  ", 0.0) == 100.0
 
     # Invalid conversions (use default)
-    assert a2a_green_agent._safe_float(None, 0.0) == 0.0
-    assert a2a_green_agent._safe_float("not_a_number", 10.0) == 10.0
-    assert a2a_green_agent._safe_float("", 0.0) == 0.0
+    assert safe_parse_float(None, 0.0) == 0.0
+    assert safe_parse_float("not_a_number", 10.0) == 10.0
+    assert safe_parse_float("", 0.0) == 0.0
 
 
 def test_a2a_green_agent_bundle_extraction(tmp_path: Path, monkeypatch) -> None:

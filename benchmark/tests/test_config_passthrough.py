@@ -5,19 +5,31 @@ Verifies that all EvalConfig fields are correctly passed through
 to the smi-inhabit CLI subprocess when executing tasks.
 """
 
+from pathlib import Path
+
+import pytest
+
 from smi_bench.a2a_green_agent import (
     _load_cfg,
 )
 
 
+@pytest.fixture
+def manifest_file(tmp_path: Path) -> str:
+    """Create a temporary manifest file for testing."""
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("0x1\n")
+    return str(manifest)
+
+
 class TestConfigToCliArgs:
     """Test that EvalConfig fields map correctly to CLI arguments."""
 
-    def _make_full_config(self) -> dict:
+    def _make_full_config(self, manifest_file: str) -> dict:
         """Create a config dict with all fields specified."""
         return {
             "corpus_root": "/app/corpus",
-            "package_ids_file": "/app/manifest.txt",
+            "package_ids_file": manifest_file,
             "samples": 100,
             "agent": "real-openai-compatible",
             "rpc_url": "https://custom.rpc.sui.io",
@@ -45,9 +57,9 @@ class TestConfigToCliArgs:
             "require_dry_run": True,
         }
 
-    def test_all_fields_parsed_to_evalconfig(self):
+    def test_all_fields_parsed_to_evalconfig(self, manifest_file: str):
         """Verify all config fields are stored in EvalConfig."""
-        config = self._make_full_config()
+        config = self._make_full_config(manifest_file)
         cfg = _load_cfg(config)
 
         # Core fields
@@ -81,14 +93,14 @@ class TestConfigToCliArgs:
         assert cfg.include_created_types == config["include_created_types"]
         assert cfg.require_dry_run == config["require_dry_run"]
 
-    def test_cli_args_construction_includes_all_fields(self):
+    def test_cli_args_construction_includes_all_fields(self, manifest_file: str):
         """
         Verify the subprocess args list includes all config fields.
 
         This is a structural test that checks the args construction pattern
         in _run_task_logic. We verify by checking the expected arg patterns.
         """
-        config = self._make_full_config()
+        config = self._make_full_config(manifest_file)
         cfg = _load_cfg(config)
 
         # Simulate the args construction from _run_task_logic
@@ -179,12 +191,12 @@ class TestConfigToCliArgs:
 class TestConfigDefaultsToCliArgs:
     """Test that default values are correctly passed to CLI."""
 
-    def test_default_config_cli_args(self):
+    def test_default_config_cli_args(self, manifest_file: str):
         """Default config should produce valid CLI args."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": manifest_file,
             }
         )
 
@@ -201,12 +213,12 @@ class TestConfigDefaultsToCliArgs:
         assert cfg.include_created_types is False
         assert cfg.require_dry_run is False
 
-    def test_optional_fields_not_in_args_when_none(self):
+    def test_optional_fields_not_in_args_when_none(self, manifest_file: str):
         """Optional fields with None value should not appear in CLI args."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": manifest_file,
             }
         )
 
@@ -236,21 +248,23 @@ class TestConfigDefaultsToCliArgs:
 class TestManifestAlias:
     """Test that 'manifest' is an alias for 'package_ids_file'."""
 
-    def test_manifest_alias_works(self):
+    def test_manifest_alias_works(self, manifest_file: str):
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp/corpus",
-                "manifest": "/tmp/my_manifest.txt",  # Using alias
+                "manifest": manifest_file,  # Using alias
             }
         )
-        assert cfg.package_ids_file == "/tmp/my_manifest.txt"
+        assert cfg.package_ids_file == manifest_file
 
-    def test_package_ids_file_takes_precedence(self):
+    def test_package_ids_file_takes_precedence(self, manifest_file: str, tmp_path: Path):
+        secondary = tmp_path / "secondary.txt"
+        secondary.write_text("0x2\n")
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/primary.txt",
-                "manifest": "/tmp/secondary.txt",  # Should be ignored
+                "package_ids_file": manifest_file,
+                "manifest": str(secondary),  # Should be ignored
             }
         )
-        assert cfg.package_ids_file == "/tmp/primary.txt"
+        assert cfg.package_ids_file == manifest_file

@@ -1,115 +1,465 @@
+"""
+SMI Benchmark Doctor - Environment validation and troubleshooting.
+
+Run this to verify your environment is correctly configured before running benchmarks.
+
+Usage:
+    uv run smi-bench-doctor              # Quick check (no corpus validation)
+    uv run smi-bench-doctor --full       # Full check including corpus
+    uv run smi-bench-doctor --fix        # Attempt to fix common issues
+"""
+
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import socket
+import subprocess
 import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
-
-from smi_bench.dataset import iter_package_dirs
-from smi_bench.utils import safe_read_lines
 
 console = Console()
 
+# Repository and benchmark roots
+BENCH_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = BENCH_ROOT.parents[1]
 
-def check_corpus(corpus_root: Path) -> bool:
-    console.print(f"[bold]Checking corpus root:[/bold] {corpus_root}")
+
+# ---------------------------------------------------------------------------
+# Check Functions
+# ---------------------------------------------------------------------------
+
+
+def check_rust_binary() -> tuple[bool, str, str | None]:
+    """
+    Check if the Rust extractor binary is available.
+
+    Returns:
+        (ok, message, fix_command)
+    """
+    # Check SMI_RUST_BIN first
+    env_bin = os.environ.get("SMI_RUST_BIN")
+    if env_bin:
+        path = Path(env_bin)
+        if path.is_file():
+            return True, f"Rust binary found (SMI_RUST_BIN): {path}", None
+        return False, f"SMI_RUST_BIN set but file not found: {path}", None
+
+    # Check target/release
+    exe = "sui_move_interface_extractor.exe" if os.name == "nt" else "sui_move_interface_extractor"
+    local = REPO_ROOT / "target" / "release" / exe
+    if local.is_file():
+        return True, f"Rust binary found: {local}", None
+
+    # Check system path
+    system_bin = shutil.which("sui_move_interface_extractor")
+    if system_bin:
+        return True, f"Rust binary found in PATH: {system_bin}", None
+
+    return (
+        False,
+        "Rust binary not found. The benchmark requires the compiled extractor.",
+        "cargo build --release --locked",
+    )
+
+
+def check_sui_cli() -> tuple[bool, str, str | None]:
+    """Check if Sui CLI is available (needed for Move compilation)."""
+    sui_bin = shutil.which("sui")
+    if sui_bin:
+        try:
+            result = subprocess.run(
+                ["sui", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip().split("\n")[0]
+                return True, f"Sui CLI found: {version}", None
+        except Exception:
+            pass
+    return (
+        False,
+        "Sui CLI not found. Required for Move package compilation.",
+        "cargo install --locked --git https://github.com/MystenLabs/sui.git sui",
+    )
+
+
+def check_api_keys() -> tuple[bool, str, str | None]:
+    """Check if API keys are configured."""
+    keys_to_check = ["OPENROUTER_API_KEY", "SMI_API_KEY", "OPENAI_API_KEY"]
+    found_keys = []
+
+    for key in keys_to_check:
+        val = os.environ.get(key)
+        if val and val.strip():
+            # Mask the key value
+            masked = val[:8] + "..." if len(val) > 12 else "***"
+            found_keys.append(f"{key}={masked}")
+
+    if found_keys:
+        return True, f"API key(s) configured: {', '.join(found_keys)}", None
+
+    return (
+        False,
+        "No API key found. Set one of: OPENROUTER_API_KEY, SMI_API_KEY, or OPENAI_API_KEY",
+        "export OPENROUTER_API_KEY=sk-or-v1-your-key-here",
+    )
+
+
+def check_env_file() -> tuple[bool, str, str | None]:
+    """Check if .env file exists."""
+    env_file = BENCH_ROOT / ".env"
+    env_example = BENCH_ROOT / ".env.example"
+
+    if env_file.exists():
+        return True, f".env file found: {env_file}", None
+
+    if env_example.exists():
+        return (
+            False,
+            ".env file not found. Copy from .env.example and configure.",
+            f"cp {env_example} {env_file}",
+        )
+
+    return False, ".env file not found and no .env.example available.", None
+
+
+def check_docker() -> tuple[bool, str, str | None]:
+    """Check if Docker is available and running."""
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
+        return False, "Docker not found. Required for containerized benchmarks.", "Install Docker Desktop"
+
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return True, "Docker is running", None
+        return False, "Docker installed but not running. Start Docker daemon.", "docker info"
+    except subprocess.TimeoutExpired:
+        return False, "Docker command timed out. Docker may be unresponsive.", None
+    except Exception as e:
+        return False, f"Docker check failed: {e}", None
+
+
+def check_port(port: int) -> tuple[bool, str, str | None]:
+    """Check if a port is available."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        result = s.connect_ex(("127.0.0.1", port))
+        if result != 0:
+            return True, f"Port {port} is available", None
+
+    # Port in use - try to identify what's using it
+    try:
+        result = subprocess.run(
+            ["lsof", "-i", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                # Parse process name from lsof output
+                parts = lines[1].split()
+                proc_name = parts[0] if parts else "unknown"
+                return (
+                    False,
+                    f"Port {port} in use by {proc_name}. Stop the process or use a different port.",
+                    f"lsof -i :{port}  # to see what's using it",
+                )
+    except Exception:
+        pass
+
+    return (
+        False,
+        f"Port {port} is already in use. This may cause Docker or A2A agent conflicts.",
+        f"docker ps  # check for containers using port {port}",
+    )
+
+
+def check_corpus(corpus_root: Path | None) -> tuple[bool, str, str | None]:
+    """Check if corpus exists and has valid packages."""
+    if corpus_root is None:
+        # Try common locations
+        common_paths = [
+            REPO_ROOT.parent / "sui-packages" / "packages" / "mainnet_most_used",
+            REPO_ROOT / "sui-packages" / "packages" / "mainnet_most_used",
+            Path.home() / "sui-packages" / "packages" / "mainnet_most_used",
+        ]
+        for p in common_paths:
+            if p.exists() and p.is_dir():
+                corpus_root = p
+                break
+
+    if corpus_root is None:
+        return (
+            False,
+            "Corpus not found. Clone sui-packages repository.",
+            "git clone --depth 1 https://github.com/MystenLabs/sui-packages.git ../sui-packages",
+        )
+
     if not corpus_root.exists():
-        console.print(f"[red]Error: corpus_root does not exist: {corpus_root}[/red]")
-        return False
-    if not corpus_root.is_dir():
-        console.print(f"[red]Error: corpus_root is not a directory: {corpus_root}[/red]")
-        return False
+        return False, f"Corpus path does not exist: {corpus_root}", None
 
-    total_dirs = 0
-    missing_metadata = 0
-    missing_bytecode = 0
-    valid_packages = 0
+    # Count valid packages
+    from smi_bench.dataset import iter_package_dirs
 
-    table = Table(title="Corpus Statistics")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-
+    valid_count = 0
     for pkg_dir in iter_package_dirs(corpus_root):
-        total_dirs += 1
         resolved = pkg_dir.resolve()
+        if (resolved / "metadata.json").exists() and (resolved / "bytecode_modules").is_dir():
+            valid_count += 1
+            if valid_count >= 10:  # Don't scan entire corpus for quick check
+                break
 
-        has_metadata = (resolved / "metadata.json").exists()
-        has_bytecode = (resolved / "bytecode_modules").is_dir()
+    if valid_count == 0:
+        return False, f"No valid packages found in corpus: {corpus_root}", None
 
-        if not has_metadata:
-            missing_metadata += 1
-        if not has_bytecode:
-            missing_bytecode += 1
+    return True, f"Corpus found with {valid_count}+ valid packages: {corpus_root}", None
 
-        if has_metadata and has_bytecode:
-            valid_packages += 1
 
-    table.add_row("Total directories scanned", str(total_dirs))
-    table.add_row("Valid packages (metadata + bytecode)", str(valid_packages))
-    table.add_row("Missing metadata.json", str(missing_metadata))
-    table.add_row("Missing bytecode_modules/", str(missing_bytecode))
+def check_python_deps() -> tuple[bool, str, str | None]:
+    """Check if Python dependencies are installed."""
+    try:
+        import httpx  # noqa: F401
+        import rich  # noqa: F401
+
+        return True, "Python dependencies installed", None
+    except ImportError as e:
+        return (
+            False,
+            f"Missing Python dependency: {e.name}",
+            "uv sync --group dev",
+        )
+
+
+def check_manifest(corpus_root: Path, manifest_path: Path) -> tuple[bool, str, str | None]:
+    """Check if manifest file is valid and packages exist in corpus."""
+    from smi_bench.utils import safe_read_lines
+
+    if not manifest_path.exists():
+        return False, f"Manifest file does not exist: {manifest_path}", None
+
+    lines = safe_read_lines(manifest_path, context="doctor-manifest")
+    package_ids = [line.split("#")[0].strip() for line in lines if line.split("#")[0].strip()]
+
+    if not package_ids:
+        return False, f"Manifest file is empty: {manifest_path}", None
+
+    # Check a sample of packages
+    missing = []
+    checked = 0
+    for pkg_id in package_ids[:20]:  # Check first 20
+        if not pkg_id.startswith("0x"):
+            continue
+        checked += 1
+        # Try common corpus layouts
+        found = False
+        for layout in [
+            corpus_root / pkg_id,
+            corpus_root / pkg_id[:4].lower() / pkg_id,
+            corpus_root / f"0x{pkg_id[2:4]}" / pkg_id[4:],
+        ]:
+            if layout.exists():
+                found = True
+                break
+        if not found:
+            missing.append(pkg_id)
+
+    if missing:
+        return (
+            False,
+            f"Manifest references {len(missing)}/{checked} packages not found in corpus",
+            None,
+        )
+
+    return True, f"Manifest valid: {len(package_ids)} packages, all checked found in corpus", None
+
+
+# ---------------------------------------------------------------------------
+# Main Doctor Logic
+# ---------------------------------------------------------------------------
+
+
+def run_checks(
+    full: bool = False,
+    corpus_root: Path | None = None,
+    manifest: Path | None = None,
+) -> list[tuple[str, bool, str, str | None]]:
+    """
+    Run all environment checks.
+
+    Returns:
+        List of (check_name, passed, message, fix_command)
+    """
+    results: list[tuple[str, bool, str, str | None]] = []
+
+    # Core checks (always run)
+    results.append(("Rust Binary", *check_rust_binary()))
+    results.append(("API Keys", *check_api_keys()))
+    results.append((".env File", *check_env_file()))
+    results.append(("Python Deps", *check_python_deps()))
+
+    # Port checks
+    results.append(("Port 9999 (A2A)", *check_port(9999)))
+
+    # Optional checks
+    if full:
+        results.append(("Sui CLI", *check_sui_cli()))
+        results.append(("Docker", *check_docker()))
+        results.append(("Corpus", *check_corpus(corpus_root)))
+        if manifest and corpus_root:
+            results.append(("Manifest", *check_manifest(corpus_root, manifest)))
+
+    return results
+
+
+def print_results(results: list[tuple[str, bool, str, str | None]]) -> bool:
+    """Print check results and return overall status."""
+    table = Table(title="SMI Benchmark Environment Check", show_header=True)
+    table.add_column("Check", style="cyan", width=15)
+    table.add_column("Status", width=6)
+    table.add_column("Details", style="dim")
+
+    all_passed = True
+    fixes: list[tuple[str, str]] = []
+
+    for name, passed, message, fix in results:
+        status = "[green]✓[/green]" if passed else "[red]✗[/red]"
+        table.add_row(name, status, message)
+        if not passed:
+            all_passed = False
+            if fix:
+                fixes.append((name, fix))
 
     console.print(table)
 
-    if valid_packages == 0:
-        console.print("[red]Error: No valid packages found in corpus![/red]")
-        return False
+    if fixes:
+        console.print()
+        console.print(
+            Panel.fit(
+                "\n".join([f"[bold]{name}:[/bold] {cmd}" for name, cmd in fixes]),
+                title="[yellow]Suggested Fixes[/yellow]",
+                border_style="yellow",
+            )
+        )
 
-    return True
+    return all_passed
 
 
-def check_manifest(corpus_root: Path, manifest_path: Path) -> bool:
-    console.print(f"[bold]Checking manifest:[/bold] {manifest_path}")
-    lines = safe_read_lines(manifest_path, context="doctor-manifest")
-    if not lines and not manifest_path.exists():
-        console.print(f"[red]Error: manifest file does not exist: {manifest_path}[/red]")
-        return False
-
-    package_ids = [line.split("#")[0].strip() for line in lines if line.split("#")[0].strip()]
-
-    missing_in_corpus = []
-    for pkg_id in package_ids:
-        # Check if 0x...
-        if not pkg_id.startswith("0x"):
-            console.print(f"[yellow]Warning: package_id '{pkg_id}' in manifest does not start with 0x[/yellow]")
+def run_fixes(results: list[tuple[str, bool, str, str | None]]) -> None:
+    """Attempt to run fix commands for failed checks."""
+    for name, passed, message, fix in results:
+        if passed or not fix:
             continue
 
-        # Try to find it in the corpus
-        prefix = pkg_id[:4].lower()  # 0x00
-        pkg_dir = corpus_root / prefix / pkg_id
-        if not pkg_dir.exists():
-            missing_in_corpus.append(pkg_id)
+        console.print(f"\n[bold]Attempting to fix: {name}[/bold]")
+        console.print(f"  Running: {fix}")
 
-    if missing_in_corpus:
-        console.print(f"[red]Error: {len(missing_in_corpus)} packages from manifest are missing in corpus[/red]")
-        if len(missing_in_corpus) <= 10:
-            for m in missing_in_corpus:
-                console.print(f"  - {m}")
-        else:
-            for m in missing_in_corpus[:10]:
-                console.print(f"  - {m}")
-            console.print(f"  ... and {len(missing_in_corpus) - 10} more")
-        return False
+        # Only auto-run safe commands
+        safe_commands = [
+            "cargo build",
+            "uv sync",
+            "cp ",
+        ]
 
-    console.print(f"[green]Success: All {len(package_ids)} packages in manifest found in corpus.[/green]")
-    return True
+        is_safe = any(fix.startswith(cmd) for cmd in safe_commands)
+        if not is_safe:
+            console.print(f"  [yellow]Skipped (manual action required): {fix}[/yellow]")
+            continue
+
+        try:
+            result = subprocess.run(
+                fix,
+                shell=True,
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                console.print("  [green]Success![/green]")
+            else:
+                console.print(f"  [red]Failed:[/red] {result.stderr[:200]}")
+        except Exception as e:
+            console.print(f"  [red]Error:[/red] {e}")
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Corpus and Manifest integrity doctor")
-    parser.add_argument("--corpus-root", type=Path, required=True, help="Path to bytecode corpus")
-    parser.add_argument("--manifest", type=Path, help="Optional manifest file to validate against corpus")
+    """
+    SMI Benchmark Doctor - Validate your environment.
+
+    Run without arguments for a quick check, or with --full for comprehensive validation.
+    """
+    parser = argparse.ArgumentParser(
+        description="SMI Benchmark Doctor - Environment validation and troubleshooting",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  smi-bench-doctor              # Quick environment check
+  smi-bench-doctor --full       # Full check including corpus and Docker
+  smi-bench-doctor --fix        # Attempt to fix common issues
+  smi-bench-doctor --corpus-root ../sui-packages/packages/mainnet_most_used
+        """,
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full checks including corpus, Docker, and Sui CLI",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Attempt to automatically fix common issues",
+    )
+    parser.add_argument(
+        "--corpus-root",
+        type=Path,
+        help="Path to bytecode corpus (for full check)",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Optional manifest file to validate against corpus",
+    )
     args = parser.parse_args(argv)
 
-    ok = check_corpus(args.corpus_root)
-    if args.manifest:
-        ok = check_manifest(args.corpus_root, args.manifest) and ok
+    console.print("[bold blue]SMI Benchmark Doctor[/bold blue]")
+    console.print()
 
-    if not ok:
+    results = run_checks(
+        full=args.full,
+        corpus_root=args.corpus_root,
+        manifest=args.manifest,
+    )
+
+    all_passed = print_results(results)
+
+    if args.fix and not all_passed:
+        console.print()
+        run_fixes(results)
+        # Re-run checks after fixes
+        console.print("\n[bold]Re-checking after fixes...[/bold]\n")
+        results = run_checks(full=args.full, corpus_root=args.corpus_root, manifest=args.manifest)
+        all_passed = print_results(results)
+
+    console.print()
+    if all_passed:
+        console.print("[bold green]✓ All checks passed! Environment is ready.[/bold green]")
+    else:
+        console.print("[bold red]✗ Some checks failed. See suggested fixes above.[/bold red]")
         sys.exit(1)
-    console.print("[bold green]Doctor found no critical issues.[/bold green]")
 
 
 if __name__ == "__main__":
