@@ -36,6 +36,11 @@ sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet
 # move-stdlib-natives provides vector, bcs, hash, string, type_name natives
 move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-stdlib-natives" }
 
+# VM extension support for dynamic field simulation
+# better_any allows non-'static lifetime in extension types
+# IMPORTANT: Must match the version used by move-vm-runtime (0.1)
+better_any = "0.1"
+
 # NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
 # This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION
 

@@ -7339,6 +7339,7 @@ dependencies = [
  "assert_cmd",
  "base64 0.22.1",
  "bcs",
+ "better_any",
  "clap",
  "move-binary-format",
  "move-compiler",

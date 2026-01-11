@@ -14,17 +14,28 @@
 //! - Key: (parent_address, child_address)
 //! - Value: BCS-serialized object bytes + type tag
 //!
-//! ## Limitations
+//! ## Current Limitations
 //!
+//! - `borrow_child_object` / `borrow_child_object_mut` abort (requires VM extensions)
+//! - `remove_child_object` aborts (requires VM extensions for move_from semantics)
 //! - No garbage collection / ownership tracking
 //! - No shared object support
 //! - Objects are not persisted between benchmark runs
-//! - Type checking is best-effort (we store TypeTag but can't fully verify)
+//! - Type checking is best-effort
+//!
+//! ## What This Enables
+//!
+//! Functions that only ADD to dynamic fields (Bag, Table) work:
+//! - `bag::add`, `table::add`
+//! - `dynamic_field::add`
+//! - `dynamic_field::exists_`
+//!
+//! Functions that READ from dynamic fields still abort.
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 /// A stored object in our in-memory store.
 #[derive(Debug, Clone)]
@@ -54,8 +65,8 @@ impl ObjectStore {
     }
     
     /// Create a new Arc-wrapped store for sharing across native calls.
-    pub fn new_shared() -> Arc<Self> {
-        Arc::new(Self::new())
+    pub fn new_shared() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self::new())
     }
     
     /// Add a child object under a parent.

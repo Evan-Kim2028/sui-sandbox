@@ -3,11 +3,13 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use move_core_types::resolver::{LinkageResolver, ModuleResolver};
 use move_vm_runtime::move_vm::MoveVM;
+use move_vm_runtime::native_extensions::NativeContextExtensions;
 use move_vm_types::gas::UnmeteredGasMeter;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use crate::benchmark::natives::{build_native_function_table, MockNativeState};
+use crate::benchmark::object_runtime::ObjectRuntime;
 use crate::benchmark::resolver::LocalModuleResolver;
 
 /// Tracks which modules are accessed during VM execution.
@@ -158,6 +160,13 @@ impl<'a> VMHarness<'a> {
         }
     }
 
+    /// Create VM extensions with a fresh ObjectRuntime.
+    fn create_extensions(&self) -> NativeContextExtensions<'static> {
+        let mut extensions = NativeContextExtensions::default();
+        extensions.add(ObjectRuntime::new());
+        extensions
+    }
+
     pub fn execute_entry_function(
         &mut self,
         module: &ModuleId,
@@ -165,7 +174,8 @@ impl<'a> VMHarness<'a> {
         ty_args: Vec<TypeTag>,
         args: Vec<Vec<u8>>,
     ) -> Result<()> {
-        let mut session = self.vm.new_session(&self.storage);
+        let extensions = self.create_extensions();
+        let mut session = self.vm.new_session_with_extensions(&self.storage, extensions);
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {
@@ -198,7 +208,8 @@ impl<'a> VMHarness<'a> {
         args: Vec<Vec<u8>>,
     ) -> Result<Vec<Vec<u8>>> {
         let function_name = move_core_types::identifier::Identifier::new(function_name)?;
-        let mut session = self.vm.new_session(&self.storage);
+        let extensions = self.create_extensions();
+        let mut session = self.vm.new_session_with_extensions(&self.storage, extensions);
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {

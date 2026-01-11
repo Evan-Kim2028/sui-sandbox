@@ -46,8 +46,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::benchmark::object_store::ObjectStore;
-
 const MOVE_STDLIB_ADDRESS: AccountAddress = AccountAddress::ONE;
 const SUI_FRAMEWORK_ADDRESS: AccountAddress = AccountAddress::TWO;
 const SUI_SYSTEM_ADDRESS: AccountAddress = AccountAddress::new([
@@ -83,13 +81,15 @@ fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
 }
 
 /// Mock state for native function execution.
+/// 
+/// Note: Dynamic field storage is now handled by ObjectRuntime (a VM extension)
+/// rather than being stored here. This struct only holds simple state like
+/// sender address and ID counter.
 pub struct MockNativeState {
     pub sender: AccountAddress,
     pub epoch: u64,
     pub epoch_timestamp_ms: u64,
     ids_created: AtomicU64,
-    /// In-memory object store for dynamic field simulation
-    pub object_store: ObjectStore,
 }
 
 impl Default for MockNativeState {
@@ -105,7 +105,6 @@ impl MockNativeState {
             epoch: 0,
             epoch_timestamp_ms: 0,
             ids_created: AtomicU64::new(0),
-            object_store: ObjectStore::new(),
         }
     }
 
@@ -119,11 +118,6 @@ impl MockNativeState {
 
     pub fn ids_created(&self) -> u64 {
         self.ids_created.load(Ordering::SeqCst)
-    }
-    
-    /// Clear the object store (for test isolation between runs)
-    pub fn clear_objects(&self) {
-        self.object_store.clear();
     }
 }
 
@@ -593,11 +587,26 @@ fn build_sui_system_natives() -> Vec<(&'static str, &'static str, NativeFunction
 /// We do NOT support (see add_abort_stubs):
 /// - borrow_child_object / borrow_child_object_mut: requires VM extension for references
 /// - remove_child_object: requires VM extension for move_from semantics
+
+/// Extract address from UID { id: ID { bytes: address } }
+fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Option<AccountAddress> {
+    // UID.id (field 0) -> ID struct
+    let id_value = uid_ref.borrow_field(0).ok()?;
+    // ID.bytes (field 0) -> address  
+    // Note: the ID struct's field is the address directly
+    id_value.value_as::<AccountAddress>().ok()
+}
+
+/// Add dynamic field natives that use the ObjectRuntime VM extension.
+/// 
+/// These natives access the ObjectRuntime via context.extensions_mut().get_mut()
+/// which provides proper reference semantics for borrow operations.
 fn add_dynamic_field_natives(
     natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
-    state: Arc<MockNativeState>,
+    _state: Arc<MockNativeState>, // Keep signature for compatibility, but we use extensions now
 ) {
     use sha2::{Sha256, Digest};
+    use crate::benchmark::object_runtime::ObjectRuntime;
     
     // hash_type_and_key<K>(parent: address, k: K) -> address
     // Deterministically derives child ID from parent + key type + key value
@@ -605,10 +614,6 @@ fn add_dynamic_field_natives(
         "dynamic_field",
         "hash_type_and_key",
         make_native(|ctx, mut ty_args, mut args| {
-            // ty_args[0] = K (key type)
-            // args[0] = parent: address
-            // args[1] = k: K (key value)
-            
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH
@@ -621,29 +626,21 @@ fn add_dynamic_field_natives(
             })?;
             let parent = pop_arg!(args, AccountAddress);
             
-            // Get type tag for hashing
             let key_tag = ctx.type_to_type_tag(&key_ty)?;
             
-            // Get key layout and serialize
             let key_layout = match ctx.type_to_type_layout(&key_ty) {
                 Ok(Some(layout)) => layout,
-                _ => {
-                    return Ok(NativeResult::err(InternalGas::new(0), 3)); // E_BCS_SERIALIZATION_FAILURE
-                }
+                _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
             
             let key_bytes = match key_value.typed_serialize(&key_layout) {
                 Some(bytes) => bytes,
-                None => {
-                    return Ok(NativeResult::err(InternalGas::new(0), 3)); // E_BCS_SERIALIZATION_FAILURE
-                }
+                None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
             
-            // Derive child ID: SHA256(parent || type_tag_bcs || key_bcs)[0..32]
+            // Derive child ID: SHA256(parent || type_tag_bcs || key_bcs)
             let mut hasher = Sha256::new();
             hasher.update(parent.as_ref());
-            
-            // Serialize type tag
             let type_tag_bytes = bcs::to_bytes(&key_tag).unwrap_or_default();
             hasher.update(&type_tag_bytes);
             hasher.update(&key_bytes);
@@ -651,24 +648,15 @@ fn add_dynamic_field_natives(
             let hash = hasher.finalize();
             let child_id = AccountAddress::new(hash.into());
             
-            Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::address(child_id)],
-            ))
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::address(child_id)]))
         }),
     ));
     
     // add_child_object<Child: key>(parent: address, child: Child)
-    // Stores the child object in our in-memory object store
-    let state_for_add = state.clone();
     natives.push((
         "dynamic_field",
         "add_child_object",
-        make_native(move |ctx, mut ty_args, mut args| {
-            // ty_args[0] = Child type
-            // args[0] = parent: address  
-            // args[1] = child: Child
-            
+        make_native(|ctx, mut ty_args, mut args| {
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH
@@ -681,29 +669,20 @@ fn add_dynamic_field_natives(
             })?;
             let parent = pop_arg!(args, AccountAddress);
             
-            // Get type tag for the child
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
             
-            // Get layout and serialize child value
+            // Get layout to extract child ID
             let child_layout = match ctx.type_to_type_layout(&child_ty) {
                 Ok(Some(layout)) => layout,
-                _ => {
-                    return Ok(NativeResult::err(InternalGas::new(0), 3)); // E_BCS_SERIALIZATION_FAILURE
-                }
+                _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
             
-            let child_bytes = match child_value.typed_serialize(&child_layout) {
+            // Serialize to get the child ID (first 32 bytes = UID.id.bytes)
+            let child_bytes = match child_value.copy_value()?.typed_serialize(&child_layout) {
                 Some(bytes) => bytes,
-                None => {
-                    return Ok(NativeResult::err(InternalGas::new(0), 3)); // E_BCS_SERIALIZATION_FAILURE
-                }
+                None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
             
-            // Extract child's object ID from the first field (UID.id.bytes)
-            // Field<K,V> has structure: id: UID, name: K, value: V
-            // UID has structure: id: ID
-            // ID has structure: bytes: address
-            // So the object ID is at offset 0 in the BCS bytes (first 32 bytes)
             let child_id = if child_bytes.len() >= 32 {
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes.copy_from_slice(&child_bytes[..32]);
@@ -712,37 +691,77 @@ fn add_dynamic_field_natives(
                 return Ok(NativeResult::err(InternalGas::new(0), 3));
             };
             
-            // Store in object store
-            match state_for_add.object_store.add_child(parent, child_id, child_bytes, child_tag) {
+            // Store in ObjectRuntime extension
+            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+            match runtime.add_child_object(parent, child_id, child_value, child_tag) {
                 Ok(()) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![])),
-                Err(_) => Ok(NativeResult::err(InternalGas::new(0), 0)), // EFieldAlreadyExists
+                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
             }
         }),
     ));
     
-    // has_child_object(parent: address, id: address) -> bool
-    let state_for_has = state.clone();
+    // borrow_child_object<Child: key>(object: &UID, id: address) -> &Child
     natives.push((
         "dynamic_field",
-        "has_child_object",
-        make_native(move |_ctx, _ty_args, mut args| {
-            let child_id = pop_arg!(args, AccountAddress);
-            let parent = pop_arg!(args, AccountAddress);
+        "borrow_child_object",
+        make_native(|ctx, mut ty_args, mut args| {
+            use move_vm_types::values::StructRef;
             
-            let exists = state_for_has.object_store.has_child(parent, child_id);
-            Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::bool(exists)],
-            ))
+            let child_ty = ty_args.pop().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                )
+            })?;
+            let child_id = pop_arg!(args, AccountAddress);
+            let parent_uid = pop_arg!(args, StructRef);
+            
+            let child_tag = ctx.type_to_type_tag(&child_ty)?;
+            
+            // Extract parent address from UID { id: ID { bytes: address } }
+            // Navigate: UID.id (field 0) -> ID.bytes (field 0) -> address
+            let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
+            
+            let runtime: &ObjectRuntime = ctx.extensions().get()?;
+            match runtime.borrow_child_object(parent, child_id, &child_tag) {
+                Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
+                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+            }
         }),
     ));
     
-    // has_child_object_with_ty<Child: key>(parent: address, id: address) -> bool
-    let state_for_has_ty = state;
+    // borrow_child_object_mut<Child: key>(object: &mut UID, id: address) -> &mut Child
     natives.push((
         "dynamic_field",
-        "has_child_object_with_ty",
-        make_native(move |ctx, mut ty_args, mut args| {
+        "borrow_child_object_mut",
+        make_native(|ctx, mut ty_args, mut args| {
+            use move_vm_types::values::StructRef;
+            
+            let child_ty = ty_args.pop().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                )
+            })?;
+            let child_id = pop_arg!(args, AccountAddress);
+            let parent_uid = pop_arg!(args, StructRef);
+            
+            let child_tag = ctx.type_to_type_tag(&child_ty)?;
+            
+            // Extract parent address (same as borrow_child_object)
+            let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
+            
+            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+            match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
+                Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
+                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+            }
+        }),
+    ));
+    
+    // remove_child_object<Child: key>(parent: address, id: address) -> Child
+    natives.push((
+        "dynamic_field",
+        "remove_child_object",
+        make_native(|ctx, mut ty_args, mut args| {
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH
@@ -752,12 +771,47 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
             
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            let exists = state_for_has_ty.object_store.has_child_with_type(parent, child_id, &child_tag);
             
-            Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::bool(exists)],
-            ))
+            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+            match runtime.remove_child_object(parent, child_id, &child_tag) {
+                Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
+                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+            }
+        }),
+    ));
+    
+    // has_child_object(parent: address, id: address) -> bool
+    natives.push((
+        "dynamic_field",
+        "has_child_object",
+        make_native(|ctx, _ty_args, mut args| {
+            let child_id = pop_arg!(args, AccountAddress);
+            let parent = pop_arg!(args, AccountAddress);
+            
+            let runtime: &ObjectRuntime = ctx.extensions().get()?;
+            let exists = runtime.child_object_exists(parent, child_id);
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::bool(exists)]))
+        }),
+    ));
+    
+    // has_child_object_with_ty<Child: key>(parent: address, id: address) -> bool
+    natives.push((
+        "dynamic_field",
+        "has_child_object_with_ty",
+        make_native(|ctx, mut ty_args, mut args| {
+            let child_ty = ty_args.pop().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                )
+            })?;
+            let child_id = pop_arg!(args, AccountAddress);
+            let parent = pop_arg!(args, AccountAddress);
+            
+            let child_tag = ctx.type_to_type_tag(&child_ty)?;
+            let runtime: &ObjectRuntime = ctx.extensions().get()?;
+            let exists = runtime.child_object_exists_with_type(parent, child_id, &child_tag);
+            
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::bool(exists)]))
         }),
     ));
 }
@@ -765,22 +819,8 @@ fn add_dynamic_field_natives(
 /// Add stubs that abort with E_NOT_SUPPORTED for operations that cannot
 /// be safely mocked without producing false positives.
 fn add_abort_stubs(natives: &mut Vec<(&'static str, &'static str, NativeFunction)>) {
-    // dynamic_field operations that REQUIRE returning references abort.
-    // We can't safely implement borrow/remove without VM extension support.
-    // See add_dynamic_field_natives() for operations we DO support.
-    for func in [
-        "borrow_child_object",
-        "borrow_child_object_mut",
-        "remove_child_object",
-    ] {
-        natives.push((
-            "dynamic_field",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+    // NOTE: dynamic_field operations are now fully implemented via ObjectRuntime extension
+    // See add_dynamic_field_natives() for the implementation.
 
     // Crypto verification - would silently pass/fail verification
     for func in ["bls12381_min_sig_verify", "bls12381_min_pk_verify"] {
