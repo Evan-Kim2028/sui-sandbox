@@ -82,7 +82,7 @@ jobs:
         run: uv run ty check src
       - name: test
         working-directory: benchmark
-        run: uv run --group dev pytest -q --numprocesses auto -m "not integration"
+        run: uv run --group dev pytest -q --numprocesses auto -m "not integration and not docker"
 
   docker-a2a-smoke:
     runs-on: ubuntu-latest
@@ -92,14 +92,16 @@ jobs:
       
       - name: Create test directories
         run: |
-          mkdir -p benchmark/data/corpus results logs
+          # Create corpus in the path that docker-compose.yml expects (../sui-packages/packages relative to repo root)
+          # For CI, we create it at the expected relative path
+          mkdir -p ../sui-packages/packages results logs
           # Ensure directories are writable by UID 1000 (container user)
-          sudo chown -R 1000:1000 results logs
+          sudo chown -R 1000:1000 results logs ../sui-packages
           # Create minimal mock corpus for CI
-          mkdir -p benchmark/data/corpus/0x00/fixture/bytecode_modules
-          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > benchmark/data/corpus/0x00/fixture/metadata.json
-          touch benchmark/data/corpus/0x00/fixture/bytecode_modules/dummy.mv
-          echo "0x0000000000000000000000000000000000000000000000000000000000000001" > benchmark/data/corpus/manifest.txt
+          mkdir -p ../sui-packages/packages/0x00/fixture/bytecode_modules
+          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > ../sui-packages/packages/0x00/fixture/metadata.json
+          touch ../sui-packages/packages/0x00/fixture/bytecode_modules/dummy.mv
+          echo "0x0000000000000000000000000000000000000000000000000000000000000001" > ../sui-packages/packages/manifest.txt
       
       - name: Build and start container
         run: |
@@ -116,8 +118,8 @@ jobs:
       - name: Run smoke test
         run: |
           docker compose exec -T smi-bench smi-inhabit \
-            --corpus-root /app/corpus \
-            --package-ids-file /app/corpus/manifest.txt \
+            --corpus-root /corpus \
+            --package-ids-file /corpus/manifest.txt \
             --samples 1 \
             --agent mock-empty \
             --simulation-mode dry-run \
