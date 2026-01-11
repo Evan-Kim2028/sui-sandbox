@@ -11,22 +11,33 @@ clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 sha2 = "0.10"
 bcs = "0.1"
+smallvec = "1.11"
 
-# Move bytecode parsing (keep aligned with the Sui git dependency).
-move-binary-format = { git = "https://github.com/MystenLabs/sui", package = "move-binary-format" }
-move-core-types = { git = "https://github.com/MystenLabs/sui", package = "move-core-types" }
-move-compiler = { git = "https://github.com/MystenLabs/sui", package = "move-compiler" }
-move-vm-runtime = { git = "https://github.com/MystenLabs/sui", package = "move-vm-runtime" }
-move-vm-types = { git = "https://github.com/MystenLabs/sui", package = "move-vm-types" }
+# Move bytecode parsing - PINNED to mainnet-v1.62.1 to match Docker's sui binary.
+# This ensures framework modules loaded at runtime match what `sui move build` produces.
+# To update: change the tag below AND update Dockerfile's SUI_VERSION ARG.
+# Current: mainnet-v1.62.1 (must match Dockerfile's SUI_VERSION)
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-binary-format" }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-core-types" }
+move-compiler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-compiler" }
+move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-runtime", features = ["tracing"] }
+move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-types" }
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-trace-format" }
 
 # Align with MystenLabs Sui crate requirements.
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
 
-# Use real MystenLabs Sui SDK crates from the sui repo.
-# Pin to a rev later once we decide which protocol version to target.
-sui-sdk = { git = "https://github.com/MystenLabs/sui", package = "sui-sdk" }
-sui-types = { git = "https://github.com/MystenLabs/sui", package = "sui-types" }
-sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", package = "sui-json-rpc-types" }
+# Sui SDK crates - PINNED to same version as above for consistency.
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-sdk" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-types" }
+sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-json-rpc-types" }
+
+# Native function support for Tier B execution
+# move-stdlib-natives provides vector, bcs, hash, string, type_name natives
+move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-stdlib-natives" }
+
+# NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
+# This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION
 
 [dev-dependencies]
 assert_cmd = "2.0"
