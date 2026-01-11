@@ -43,12 +43,14 @@
 
 use move_binary_format::errors::PartialVMResult;
 use move_core_types::{
-    account_address::AccountAddress, 
+    account_address::AccountAddress,
     gas_algebra::InternalGas,
     language_storage::TypeTag,
     runtime_value::{MoveStructLayout, MoveTypeLayout},
 };
-use move_vm_runtime::native_functions::{make_table_from_iter, NativeFunction, NativeFunctionTable};
+use move_vm_runtime::native_functions::{
+    make_table_from_iter, NativeFunction, NativeFunctionTable,
+};
 use move_vm_types::{
     loaded_data::runtime_types::Type, natives::function::NativeResult, pop_arg, values::Value,
 };
@@ -66,32 +68,32 @@ const SUI_SYSTEM_ADDRESS: AccountAddress = AccountAddress::new([
 ]);
 
 /// Check if a type is a valid One-Time Witness (OTW).
-/// 
+///
 /// This implements the same runtime check that Sui performs:
 /// 1. The struct must have exactly one field of type bool
 /// 2. The struct name must equal the module name in UPPERCASE
-/// 
+///
 /// Note: The Sui verifier also checks that OTW is only instantiated in init(),
 /// but we don't run the verifier, so LLMs can instantiate OTW manually in helper code.
 /// Check if a struct layout represents an OTW (one bool field, name == UPPERCASE(module))
 fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
     // MoveStructLayout.0 is a Vec<MoveTypeLayout> representing fields
     let has_one_bool_field = matches!(struct_layout.0.as_slice(), [MoveTypeLayout::Bool]);
-    
+
     if !has_one_bool_field {
         return false;
     }
-    
+
     // Check if struct name == UPPERCASE(module name)
     matches!(
         type_tag,
-        TypeTag::Struct(struct_tag) 
+        TypeTag::Struct(struct_tag)
             if struct_tag.name.to_string() == struct_tag.module.to_string().to_ascii_uppercase()
     )
 }
 
 /// Mock state for native function execution.
-/// 
+///
 /// Note: Dynamic field storage is now handled by ObjectRuntime (a VM extension)
 /// rather than being stored here. This struct only holds simple state like
 /// sender address and ID counter.
@@ -319,25 +321,19 @@ fn build_sui_natives(
     natives.push((
         "transfer",
         "transfer_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
         "transfer",
         "freeze_object_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
         "transfer",
         "share_object_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
@@ -352,26 +348,20 @@ fn build_sui_natives(
     natives.push((
         "transfer",
         "party_transfer_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     // event natives
     natives.push((
         "event",
         "emit",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
         "event",
         "emit_authenticated_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
@@ -457,9 +447,9 @@ fn build_sui_natives(
                     smallvec![Value::bool(false)],
                 ));
             }
-            
+
             let ty = &ty_args[0];
-            
+
             // Get TypeTag to check the name
             let type_tag = match ctx.type_to_type_tag(ty) {
                 Ok(tag) => tag,
@@ -470,7 +460,7 @@ fn build_sui_natives(
                     ));
                 }
             };
-            
+
             // Get type layout to check for one bool field
             let type_layout = match ctx.type_to_type_layout(ty) {
                 Ok(Some(layout)) => layout,
@@ -481,7 +471,7 @@ fn build_sui_natives(
                     ));
                 }
             };
-            
+
             // Must be a struct type
             let MoveTypeLayout::Struct(struct_layout) = type_layout else {
                 return Ok(NativeResult::ok(
@@ -489,9 +479,9 @@ fn build_sui_natives(
                     smallvec![Value::bool(false)],
                 ));
             };
-            
+
             let is_otw = is_otw_struct(&struct_layout, &type_tag);
-            
+
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::bool(is_otw)],
@@ -541,25 +531,19 @@ fn build_sui_natives(
     natives.push((
         "accumulator",
         "emit_deposit_event",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
         "accumulator",
         "emit_withdraw_event",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     natives.push((
         "accumulator_settlement",
         "record_settlement_sui_conservation",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
     // ============================================================
@@ -580,9 +564,7 @@ fn build_sui_system_natives() -> Vec<(&'static str, &'static str, NativeFunction
     vec![(
         "validator",
         "validate_metadata_bcs",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     )]
 }
 
@@ -590,22 +572,22 @@ fn build_sui_system_natives() -> Vec<(&'static str, &'static str, NativeFunction
 fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Option<AccountAddress> {
     // UID.id (field 0) -> ID struct
     let id_value = uid_ref.borrow_field(0).ok()?;
-    // ID.bytes (field 0) -> address  
+    // ID.bytes (field 0) -> address
     // Note: the ID struct's field is the address directly
     id_value.value_as::<AccountAddress>().ok()
 }
 
 /// Add dynamic field natives that use the ObjectRuntime VM extension.
-/// 
+///
 /// These natives access the ObjectRuntime via context.extensions_mut().get_mut()
 /// which provides proper reference semantics for borrow operations.
 fn add_dynamic_field_natives(
     natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
     _state: Arc<MockNativeState>, // Keep signature for compatibility, but we use extensions now
 ) {
-    use sha2::{Sha256, Digest};
     use crate::benchmark::object_runtime::ObjectRuntime;
-    
+    use sha2::{Digest, Sha256};
+
     // hash_type_and_key<K>(parent: address, k: K) -> address
     // Deterministically derives child ID from parent + key type + key value
     natives.push((
@@ -614,42 +596,45 @@ fn add_dynamic_field_natives(
         make_native(|ctx, mut ty_args, mut args| {
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let key_value = args.pop_back().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let parent = pop_arg!(args, AccountAddress);
-            
+
             let key_tag = ctx.type_to_type_tag(&key_ty)?;
-            
+
             let key_layout = match ctx.type_to_type_layout(&key_ty) {
                 Ok(Some(layout)) => layout,
                 _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
-            
+
             let key_bytes = match key_value.typed_serialize(&key_layout) {
                 Some(bytes) => bytes,
                 None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
-            
+
             // Derive child ID: SHA256(parent || type_tag_bcs || key_bcs)
             let mut hasher = Sha256::new();
             hasher.update(parent.as_ref());
             let type_tag_bytes = bcs::to_bytes(&key_tag).unwrap_or_default();
             hasher.update(&type_tag_bytes);
             hasher.update(&key_bytes);
-            
+
             let hash = hasher.finalize();
             let child_id = AccountAddress::new(hash.into());
-            
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::address(child_id)]))
+
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::address(child_id)],
+            ))
         }),
     ));
-    
+
     // add_child_object<Child: key>(parent: address, child: Child)
     natives.push((
         "dynamic_field",
@@ -657,30 +642,30 @@ fn add_dynamic_field_natives(
         make_native(|ctx, mut ty_args, mut args| {
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let child_value = args.pop_back().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let parent = pop_arg!(args, AccountAddress);
-            
+
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            
+
             // Get layout to extract child ID
             let child_layout = match ctx.type_to_type_layout(&child_ty) {
                 Ok(Some(layout)) => layout,
                 _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
-            
+
             // Serialize to get the child ID (first 32 bytes = UID.id.bytes)
             let child_bytes = match child_value.copy_value()?.typed_serialize(&child_layout) {
                 Some(bytes) => bytes,
                 None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
             };
-            
+
             let child_id = if child_bytes.len() >= 32 {
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes.copy_from_slice(&child_bytes[..32]);
@@ -688,7 +673,7 @@ fn add_dynamic_field_natives(
             } else {
                 return Ok(NativeResult::err(InternalGas::new(0), 3));
             };
-            
+
             // Store in ObjectRuntime extension
             let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
             match runtime.add_child_object(parent, child_id, child_value, child_tag) {
@@ -697,28 +682,28 @@ fn add_dynamic_field_natives(
             }
         }),
     ));
-    
+
     // borrow_child_object<Child: key>(object: &UID, id: address) -> &Child
     natives.push((
         "dynamic_field",
         "borrow_child_object",
         make_native(|ctx, mut ty_args, mut args| {
             use move_vm_types::values::StructRef;
-            
+
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let child_id = pop_arg!(args, AccountAddress);
             let parent_uid = pop_arg!(args, StructRef);
-            
+
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            
+
             // Extract parent address from UID { id: ID { bytes: address } }
             // Navigate: UID.id (field 0) -> ID.bytes (field 0) -> address
             let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
-            
+
             let runtime: &ObjectRuntime = ctx.extensions().get()?;
             match runtime.borrow_child_object(parent, child_id, &child_tag) {
                 Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
@@ -726,27 +711,27 @@ fn add_dynamic_field_natives(
             }
         }),
     ));
-    
+
     // borrow_child_object_mut<Child: key>(object: &mut UID, id: address) -> &mut Child
     natives.push((
         "dynamic_field",
         "borrow_child_object_mut",
         make_native(|ctx, mut ty_args, mut args| {
             use move_vm_types::values::StructRef;
-            
+
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let child_id = pop_arg!(args, AccountAddress);
             let parent_uid = pop_arg!(args, StructRef);
-            
+
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            
+
             // Extract parent address (same as borrow_child_object)
             let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
-            
+
             let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
             match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                 Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
@@ -754,7 +739,7 @@ fn add_dynamic_field_natives(
             }
         }),
     ));
-    
+
     // remove_child_object<Child: key>(parent: address, id: address) -> Child
     natives.push((
         "dynamic_field",
@@ -762,14 +747,14 @@ fn add_dynamic_field_natives(
         make_native(|ctx, mut ty_args, mut args| {
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
-            
+
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            
+
             let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
             match runtime.remove_child_object(parent, child_id, &child_tag) {
                 Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
@@ -777,7 +762,7 @@ fn add_dynamic_field_natives(
             }
         }),
     ));
-    
+
     // has_child_object(parent: address, id: address) -> bool
     natives.push((
         "dynamic_field",
@@ -785,13 +770,16 @@ fn add_dynamic_field_natives(
         make_native(|ctx, _ty_args, mut args| {
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
-            
+
             let runtime: &ObjectRuntime = ctx.extensions().get()?;
             let exists = runtime.child_object_exists(parent, child_id);
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::bool(exists)]))
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(exists)],
+            ))
         }),
     ));
-    
+
     // has_child_object_with_ty<Child: key>(parent: address, id: address) -> bool
     natives.push((
         "dynamic_field",
@@ -799,17 +787,20 @@ fn add_dynamic_field_natives(
         make_native(|ctx, mut ty_args, mut args| {
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
-                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
             })?;
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
-            
+
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
             let runtime: &ObjectRuntime = ctx.extensions().get()?;
             let exists = runtime.child_object_exists_with_type(parent, child_id, &child_tag);
-            
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![Value::bool(exists)]))
+
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(exists)],
+            ))
         }),
     ));
 }
@@ -831,7 +822,11 @@ fn add_abort_stubs(natives: &mut Vec<(&'static str, &'static str, NativeFunction
         ));
     }
 
-    for func in ["secp256k1_ecrecover", "decompress_pubkey", "secp256k1_verify"] {
+    for func in [
+        "secp256k1_ecrecover",
+        "decompress_pubkey",
+        "secp256k1_verify",
+    ] {
         natives.push((
             "ecdsa_k1",
             func,

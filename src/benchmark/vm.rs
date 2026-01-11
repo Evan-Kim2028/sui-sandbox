@@ -24,17 +24,20 @@ impl ExecutionTrace {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Check if a specific package was accessed during execution
     #[allow(dead_code)]
     pub fn accessed_package(&self, addr: &AccountAddress) -> bool {
         self.modules_accessed.iter().any(|id| id.address() == addr)
     }
-    
+
     /// Get all modules accessed from a specific package
     #[allow(dead_code)]
     pub fn modules_from_package(&self, addr: &AccountAddress) -> Vec<&ModuleId> {
-        self.modules_accessed.iter().filter(|id| id.address() == addr).collect()
+        self.modules_accessed
+            .iter()
+            .filter(|id| id.address() == addr)
+            .collect()
     }
 }
 
@@ -73,10 +76,18 @@ pub struct InMemoryStorage<'a> {
 
 impl<'a> InMemoryStorage<'a> {
     pub fn new(module_resolver: &'a LocalModuleResolver, restricted: bool) -> Self {
-        Self::with_trace(module_resolver, restricted, Arc::new(Mutex::new(ExecutionTrace::new())))
+        Self::with_trace(
+            module_resolver,
+            restricted,
+            Arc::new(Mutex::new(ExecutionTrace::new())),
+        )
     }
-    
-    pub fn with_trace(module_resolver: &'a LocalModuleResolver, restricted: bool, trace: Arc<Mutex<ExecutionTrace>>) -> Self {
+
+    pub fn with_trace(
+        module_resolver: &'a LocalModuleResolver,
+        restricted: bool,
+        trace: Arc<Mutex<ExecutionTrace>>,
+    ) -> Self {
         let mut storage = Self {
             module_resolver,
             trace,
@@ -134,10 +145,10 @@ impl<'a> VMHarness<'a> {
     pub fn new(resolver: &'a LocalModuleResolver, restricted: bool) -> Result<Self> {
         // Create mock native state for Sui natives
         let native_state = Arc::new(MockNativeState::new());
-        
+
         // Build native function table with move-stdlib + mock Sui natives
         let natives = build_native_function_table(native_state.clone());
-        
+
         let vm = MoveVM::new(natives).map_err(|e| anyhow!("failed to create VM: {:?}", e))?;
         let trace = Arc::new(Mutex::new(ExecutionTrace::new()));
         Ok(Self {
@@ -147,12 +158,12 @@ impl<'a> VMHarness<'a> {
             trace,
         })
     }
-    
+
     /// Get the execution trace showing which modules were accessed
     pub fn get_trace(&self) -> ExecutionTrace {
         self.trace.lock().map(|t| t.clone()).unwrap_or_default()
     }
-    
+
     /// Clear the execution trace (call before each new execution)
     pub fn clear_trace(&self) {
         if let Ok(mut trace) = self.trace.lock() {
@@ -175,7 +186,9 @@ impl<'a> VMHarness<'a> {
         args: Vec<Vec<u8>>,
     ) -> Result<()> {
         let extensions = self.create_extensions();
-        let mut session = self.vm.new_session_with_extensions(&self.storage, extensions);
+        let mut session = self
+            .vm
+            .new_session_with_extensions(&self.storage, extensions);
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {
@@ -209,7 +222,9 @@ impl<'a> VMHarness<'a> {
     ) -> Result<Vec<Vec<u8>>> {
         let function_name = move_core_types::identifier::Identifier::new(function_name)?;
         let extensions = self.create_extensions();
-        let mut session = self.vm.new_session_with_extensions(&self.storage, extensions);
+        let mut session = self
+            .vm
+            .new_session_with_extensions(&self.storage, extensions);
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {
@@ -220,7 +235,7 @@ impl<'a> VMHarness<'a> {
         }
 
         let mut gas_meter = UnmeteredGasMeter;
-        
+
         let return_values = session
             .execute_function_bypass_visibility(
                 module,
@@ -234,16 +249,17 @@ impl<'a> VMHarness<'a> {
 
         let (result, _store) = session.finish();
         let _changes = result.map_err(|e| anyhow!("session finish failed: {:?}", e))?;
-        
+
         // Extract just the bytes from return values
-        let returns: Vec<Vec<u8>> = return_values.return_values
+        let returns: Vec<Vec<u8>> = return_values
+            .return_values
             .into_iter()
             .map(|(bytes, _layout)| bytes)
             .collect();
-        
+
         Ok(returns)
     }
-    
+
     pub fn execute_function(
         &mut self,
         module: &ModuleId,
@@ -256,7 +272,7 @@ impl<'a> VMHarness<'a> {
     }
 
     /// Execute an entry function with support for synthesizable Sui system params.
-    /// 
+    ///
     /// This handles TxContext, Clock, and other system types that can be synthesized
     /// without real on-chain state.
     pub fn execute_entry_function_with_synth(
@@ -270,7 +286,7 @@ impl<'a> VMHarness<'a> {
         // The Sui runtime normally handles TxContext injection automatically for entry functions.
         // We serialize synthetic values and append them to args.
         // Entry functions expect TxContext as the last param (by Sui convention).
-        
+
         for synth_type in synthesizable_params {
             match *synth_type {
                 "TxContext" => {
@@ -280,7 +296,9 @@ impl<'a> VMHarness<'a> {
                 "Clock" => {
                     // Clock is typically passed by immutable reference (&Clock).
                     // For now, skip Clock synthesis - it requires object storage support.
-                    return Err(anyhow!("Clock synthesis not yet implemented - requires object storage"));
+                    return Err(anyhow!(
+                        "Clock synthesis not yet implemented - requires object storage"
+                    ));
                 }
                 other => {
                     return Err(anyhow!("unknown synthesizable param type: {}", other));
@@ -291,12 +309,12 @@ impl<'a> VMHarness<'a> {
         // Now execute with the augmented args
         self.execute_entry_function(module, function_name, ty_args, args)
     }
-    
+
     /// Synthesize TxContext bytes for constructor arg building
     pub fn synthesize_tx_context(&self) -> Result<Vec<u8>> {
         Ok(create_synthetic_tx_context_bytes())
     }
-    
+
     /// Synthesize Clock bytes (placeholder - returns minimal valid structure)
     pub fn synthesize_clock(&self) -> Result<Vec<u8>> {
         // Clock struct: { id: UID, timestamp_ms: u64 }

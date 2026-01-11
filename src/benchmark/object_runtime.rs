@@ -124,13 +124,15 @@ impl ObjectRuntime {
         }
 
         // Wrap in GlobalValue for reference semantics
-        let global_value = GlobalValue::cached(value)
-            .map_err(|_| E_FIELD_TYPE_MISMATCH)?;
+        let global_value = GlobalValue::cached(value).map_err(|_| E_FIELD_TYPE_MISMATCH)?;
 
-        self.children.insert(key, ChildObject {
-            value: global_value,
-            type_tag,
-        });
+        self.children.insert(
+            key,
+            ChildObject {
+                value: global_value,
+                type_tag,
+            },
+        );
 
         Ok(())
     }
@@ -162,7 +164,8 @@ impl ObjectRuntime {
         child_id: AccountAddress,
         expected_type: &TypeTag,
     ) -> Result<Value, u64> {
-        let child = self.children
+        let child = self
+            .children
             .get(&(parent, child_id))
             .ok_or(E_FIELD_DOES_NOT_EXIST)?;
 
@@ -172,7 +175,8 @@ impl ObjectRuntime {
         }
 
         // borrow_global returns a Value that is internally a reference
-        child.value
+        child
+            .value
             .borrow_global()
             .map_err(|_| E_FIELD_DOES_NOT_EXIST)
     }
@@ -189,7 +193,8 @@ impl ObjectRuntime {
     ) -> Result<Value, u64> {
         // For mut borrow, we still use borrow_global which returns a mutable-compatible ref
         // The GlobalValue tracks mutation status internally
-        let child = self.children
+        let child = self
+            .children
             .get(&(parent, child_id))
             .ok_or(E_FIELD_DOES_NOT_EXIST)?;
 
@@ -197,7 +202,8 @@ impl ObjectRuntime {
             return Err(E_FIELD_TYPE_MISMATCH);
         }
 
-        child.value
+        child
+            .value
             .borrow_global()
             .map_err(|_| E_FIELD_DOES_NOT_EXIST)
     }
@@ -223,9 +229,7 @@ impl ObjectRuntime {
         let child = self.children.remove(&key).ok_or(E_FIELD_DOES_NOT_EXIST)?;
 
         // move_from extracts the owned value from the GlobalValue
-        child.value
-            .into_value()
-            .ok_or(E_FIELD_DOES_NOT_EXIST)
+        child.value.into_value().ok_or(E_FIELD_DOES_NOT_EXIST)
     }
 
     /// Clear all stored objects (for test isolation).
@@ -253,7 +257,7 @@ mod tests {
         // Create a simple struct with one u64 field
         Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(42)]))
     }
-    
+
     fn make_test_type_tag() -> TypeTag {
         // Use a struct type tag that matches our test struct
         TypeTag::Struct(Box::new(move_core_types::language_storage::StructTag {
@@ -274,7 +278,9 @@ mod tests {
 
         assert!(!runtime.child_object_exists(parent, child_id));
 
-        runtime.add_child_object(parent, child_id, value, type_tag.clone()).unwrap();
+        runtime
+            .add_child_object(parent, child_id, value, type_tag.clone())
+            .unwrap();
 
         assert!(runtime.child_object_exists(parent, child_id));
         assert!(runtime.child_object_exists_with_type(parent, child_id, &type_tag));
@@ -288,7 +294,9 @@ mod tests {
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
         let type_tag = make_test_type_tag();
 
-        runtime.add_child_object(parent, child_id, make_test_struct(), type_tag.clone()).unwrap();
+        runtime
+            .add_child_object(parent, child_id, make_test_struct(), type_tag.clone())
+            .unwrap();
 
         let result = runtime.add_child_object(parent, child_id, make_test_struct(), type_tag);
         assert!(matches!(result, Err(e) if e == E_FIELD_ALREADY_EXISTS));
@@ -311,10 +319,14 @@ mod tests {
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
         let type_tag = make_test_type_tag();
 
-        runtime.add_child_object(parent, child_id, make_test_struct(), type_tag.clone()).unwrap();
+        runtime
+            .add_child_object(parent, child_id, make_test_struct(), type_tag.clone())
+            .unwrap();
         assert!(runtime.child_object_exists(parent, child_id));
 
-        let _removed = runtime.remove_child_object(parent, child_id, &type_tag).unwrap();
+        let _removed = runtime
+            .remove_child_object(parent, child_id, &type_tag)
+            .unwrap();
         assert!(!runtime.child_object_exists(parent, child_id));
 
         // Second remove should fail

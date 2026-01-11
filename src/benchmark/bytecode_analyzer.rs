@@ -3,7 +3,9 @@
 //! This provides function-level tracing without relying on VM runtime tracing,
 //! which has internal assertion issues with the current Sui/Move version.
 
-use move_binary_format::file_format::{Bytecode, CompiledModule, FunctionDefinition, FunctionHandleIndex};
+use move_binary_format::file_format::{
+    Bytecode, CompiledModule, FunctionDefinition, FunctionHandleIndex,
+};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -22,7 +24,7 @@ pub struct StaticFunctionCall {
 /// Returns a list of unique (module, function) pairs that are called.
 pub fn extract_function_calls(module: &CompiledModule) -> Vec<StaticFunctionCall> {
     let mut calls: BTreeSet<StaticFunctionCall> = BTreeSet::new();
-    
+
     // Iterate through all function definitions
     for func_def in &module.function_defs {
         if let Some(code) = &func_def.code {
@@ -34,7 +36,7 @@ pub fn extract_function_calls(module: &CompiledModule) -> Vec<StaticFunctionCall
             }
         }
     }
-    
+
     calls.into_iter().collect()
 }
 
@@ -44,7 +46,7 @@ pub fn extract_function_calls_from_function(
     func_def: &FunctionDefinition,
 ) -> Vec<StaticFunctionCall> {
     let mut calls: BTreeSet<StaticFunctionCall> = BTreeSet::new();
-    
+
     if let Some(code) = &func_def.code {
         for instruction in &code.code {
             if let Some(call) = extract_call_from_instruction(instruction, module) {
@@ -52,7 +54,7 @@ pub fn extract_function_calls_from_function(
             }
         }
     }
-    
+
     calls.into_iter().collect()
 }
 
@@ -62,9 +64,7 @@ fn extract_call_from_instruction(
     module: &CompiledModule,
 ) -> Option<StaticFunctionCall> {
     match instruction {
-        Bytecode::Call(handle_idx) => {
-            Some(resolve_function_handle(*handle_idx, module, false))
-        }
+        Bytecode::Call(handle_idx) => Some(resolve_function_handle(*handle_idx, module, false)),
         Bytecode::CallGeneric(inst_idx) => {
             let inst = &module.function_instantiations[inst_idx.0 as usize];
             Some(resolve_function_handle(inst.handle, module, true))
@@ -81,11 +81,11 @@ fn resolve_function_handle(
 ) -> StaticFunctionCall {
     let handle = &module.function_handles[handle_idx.0 as usize];
     let module_handle = &module.module_handles[handle.module.0 as usize];
-    
+
     let address = module.address_identifier_at(module_handle.address);
     let module_name = module.identifier_at(module_handle.name);
     let function_name = module.identifier_at(handle.name);
-    
+
     StaticFunctionCall {
         target_module: format!("{}::{}", address.to_hex_literal(), module_name),
         function_name: function_name.to_string(),
@@ -110,9 +110,9 @@ pub fn filter_non_framework_calls(calls: &[StaticFunctionCall]) -> Vec<StaticFun
     calls
         .iter()
         .filter(|c| {
-            !c.target_module.starts_with("0x1::") &&
-            !c.target_module.starts_with("0x2::") &&
-            !c.target_module.starts_with("0x3::")
+            !c.target_module.starts_with("0x1::")
+                && !c.target_module.starts_with("0x2::")
+                && !c.target_module.starts_with("0x3::")
         })
         .cloned()
         .collect()
@@ -121,7 +121,7 @@ pub fn filter_non_framework_calls(calls: &[StaticFunctionCall]) -> Vec<StaticFun
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_filter_non_framework() {
         let calls = vec![
@@ -141,7 +141,7 @@ mod tests {
                 is_generic: false,
             },
         ];
-        
+
         let filtered = filter_non_framework_calls(&calls);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].target_module, "0xabc::my_module");

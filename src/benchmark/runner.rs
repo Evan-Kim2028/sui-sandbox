@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 
 use crate::args::BenchmarkLocalArgs;
 use crate::benchmark::bytecode_analyzer::{self, StaticFunctionCall};
-use crate::benchmark::constructor_map::{ConstructorMap, ConstructorInfo, ParamKind};
+use crate::benchmark::constructor_map::{ConstructorInfo, ConstructorMap, ParamKind};
 use crate::benchmark::errors::{is_unsupported_native_error, unsupported_native_error_message};
 use crate::benchmark::resolver::LocalModuleResolver;
 use crate::benchmark::validator::Validator;
@@ -22,26 +22,29 @@ const SUI_FRAMEWORK_ADDR: AccountAddress = AccountAddress::TWO; // 0x2
 
 /// Check if a reference parameter is a synthesizable Sui system type.
 /// These are types that the VM harness can provide without real on-chain state.
-fn is_synthesizable_sui_param(token: &SignatureToken, module: &CompiledModule) -> Option<&'static str> {
+fn is_synthesizable_sui_param(
+    token: &SignatureToken,
+    module: &CompiledModule,
+) -> Option<&'static str> {
     let inner = match token {
         SignatureToken::MutableReference(inner) => inner,
         SignatureToken::Reference(inner) => inner,
         _ => return None,
     };
-    
+
     // Check if it's a struct type
     let idx = match inner.as_ref() {
         SignatureToken::Datatype(idx) => *idx,
         SignatureToken::DatatypeInstantiation(inst) => inst.0,
         _ => return None,
     };
-    
+
     let handle = module.datatype_handle_at(idx);
     let module_handle = module.module_handle_at(handle.module);
     let address = *module.address_identifier_at(module_handle.address);
     let module_name = module.identifier_at(module_handle.name).as_str();
     let type_name = module.identifier_at(handle.name).as_str();
-    
+
     // Check for well-known synthesizable types
     if address == SUI_FRAMEWORK_ADDR {
         match (module_name, type_name) {
@@ -52,7 +55,7 @@ fn is_synthesizable_sui_param(token: &SignatureToken, module: &CompiledModule) -
             _ => {}
         }
     }
-    
+
     None
 }
 
@@ -146,12 +149,15 @@ impl FailureStage {
             FailureStage::B2 => "function execution aborted",
         }
     }
-    
+
     /// Get the tier (A or B) for this stage.
     pub fn tier(&self) -> &'static str {
         match self {
-            FailureStage::A1 | FailureStage::A2 | FailureStage::A3 | 
-            FailureStage::A4 | FailureStage::A5 => "A (argument synthesis)",
+            FailureStage::A1
+            | FailureStage::A2
+            | FailureStage::A3
+            | FailureStage::A4
+            | FailureStage::A5 => "A (argument synthesis)",
             FailureStage::B1 | FailureStage::B2 => "B (execution)",
         }
     }
@@ -198,22 +204,24 @@ pub struct TierBDetails {
 pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
     // Start with Sui framework modules (0x1 move-stdlib, 0x2 sui-framework)
     // This enables Tier B execution of code that imports from std:: or sui::
-    let mut resolver = LocalModuleResolver::with_sui_framework()
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to load Sui framework: {}. Continuing without it.", e);
-            LocalModuleResolver::new()
-        });
+    let mut resolver = LocalModuleResolver::with_sui_framework().unwrap_or_else(|e| {
+        eprintln!(
+            "Warning: Failed to load Sui framework: {}. Continuing without it.",
+            e
+        );
+        LocalModuleResolver::new()
+    });
     let framework_count = resolver.iter_modules().count();
     if framework_count > 0 {
         eprintln!("Loaded {} Sui framework modules.", framework_count);
     }
-    
+
     eprintln!("Loading corpus from {}...", args.target_corpus.display());
     let count = resolver.load_from_dir(&args.target_corpus)?;
     eprintln!("Loaded {} corpus modules.", count);
 
     let validator = Validator::new(&resolver);
-    
+
     // Build constructor map for struct param synthesis
     let all_modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
     let constructor_map = ConstructorMap::from_modules(&all_modules);
@@ -224,19 +232,19 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
 
     // Framework addresses to skip - we only benchmark target package functions
     let framework_addrs = [
-        AccountAddress::ONE,  // 0x1 move-stdlib
-        AccountAddress::TWO,  // 0x2 sui-framework
+        AccountAddress::ONE, // 0x1 move-stdlib
+        AccountAddress::TWO, // 0x2 sui-framework
         AccountAddress::from_hex_literal("0x3").unwrap_or(AccountAddress::ZERO), // sui-system
     ];
-    
+
     for module in resolver.iter_modules() {
         let addr = *module.self_id().address();
-        
+
         // Skip framework modules - only benchmark target package functions
         if framework_addrs.contains(&addr) {
             continue;
         }
-        
+
         let _package_addr = module_self_address_hex(module);
         let module_name = compiled_module_name(module);
 
@@ -268,6 +276,7 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn attempt_function(
     args: &BenchmarkLocalArgs,
     validator: &Validator,
@@ -309,26 +318,28 @@ fn attempt_function(
     let handle = module.function_handle_at(func_def.function);
 
     // Handle generic functions: try to instantiate with primitive types
-    let type_args: Vec<move_core_types::language_storage::TypeTag> = if !handle.type_parameters.is_empty() {
-        // For each type parameter, pick a primitive type that satisfies its constraints
-        // All primitives (u64, bool, address) have copy, drop, store, so they satisfy any constraint
-        handle.type_parameters
-            .iter()
-            .map(|_abilities| {
-                // Use u64 as default - it has all abilities and is simple to serialize
-                move_core_types::language_storage::TypeTag::U64
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    let type_args: Vec<move_core_types::language_storage::TypeTag> =
+        if !handle.type_parameters.is_empty() {
+            // For each type parameter, pick a primitive type that satisfies its constraints
+            // All primitives (u64, bool, address) have copy, drop, store, so they satisfy any constraint
+            handle
+                .type_parameters
+                .iter()
+                .map(|_abilities| {
+                    // Use u64 as default - it has all abilities and is simple to serialize
+                    move_core_types::language_storage::TypeTag::U64
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
     let params_sig = module.signature_at(handle.parameters);
     let mut resolved_params = Vec::new();
     let mut default_values = Vec::new();
-    let mut has_real_object_params = false;  // True only for non-synthesizable object refs
-    let mut synthesizable_params: Vec<&'static str> = Vec::new();  // Track synthesizable params
-    
+    let mut has_real_object_params = false; // True only for non-synthesizable object refs
+    let mut synthesizable_params: Vec<&'static str> = Vec::new(); // Track synthesizable params
+
     // Track params that need constructor chaining
     // Each entry is (param_index, constructor_info) for params that need to be constructed
     let mut constructor_chain: Vec<(usize, ConstructorInfo)> = Vec::new();
@@ -361,11 +372,12 @@ fn attempt_function(
                     Ok(l) => l,
                     Err(e) => {
                         report.failure_stage = Some(FailureStage::A2);
-                        report.failure_reason = Some(format!("type param layout resolution failed: {e}"));
+                        report.failure_reason =
+                            Some(format!("type param layout resolution failed: {e}"));
                         return Ok(report);
                     }
                 };
-                
+
                 let default_value = match generate_default_value(&layout) {
                     Some(v) => v,
                     None => {
@@ -374,8 +386,9 @@ fn attempt_function(
                         return Ok(report);
                     }
                 };
-                
-                let bytes = default_value.simple_serialize()
+
+                let bytes = default_value
+                    .simple_serialize()
                     .ok_or_else(|| anyhow!("BCS serialize failed"))?;
                 resolved_params.push(format!("type_param[{}]={:?}", idx, layout));
                 default_values.push(bytes);
@@ -386,7 +399,7 @@ fn attempt_function(
                 return Ok(report);
             }
         }
-        
+
         // A2: resolve layout (pass type_args for proper substitution)
         let layout = validator
             .resolve_token_to_tag(token, &type_args, module)
@@ -412,11 +425,12 @@ fn attempt_function(
                     Ok(t) => t,
                     Err(_) => {
                         report.failure_stage = Some(FailureStage::A3);
-                        report.failure_reason = Some("no default value generator for layout".to_string());
+                        report.failure_reason =
+                            Some("no default value generator for layout".to_string());
                         return Ok(report);
                     }
                 };
-                
+
                 // Check if this is a struct we can construct
                 if let move_core_types::language_storage::TypeTag::Struct(struct_tag) = &tag {
                     // Special case: TreasuryCap needs OTW + coin::create_currency
@@ -425,32 +439,36 @@ fn attempt_function(
                         if let Some(otw) = constructor_map.get_first_otw() {
                             // We can create TreasuryCap via coin::create_currency!
                             // Mark this for special handling during execution
-                            resolved_params.push(format!("treasury_cap_via_otw:{}", otw.struct_name));
+                            resolved_params
+                                .push(format!("treasury_cap_via_otw:{}", otw.struct_name));
                             default_values.push(vec![]); // Placeholder
-                            // Store OTW info for execution phase
-                            // We'll handle this specially in the execution loop
-                            constructor_chain.push((param_idx, ConstructorInfo {
-                                module_id: ModuleId::new(
-                                    AccountAddress::TWO,
-                                    Identifier::new("coin").unwrap(),
-                                ),
-                                function_name: "create_currency".to_string(),
-                                type_params: 1, // T for TreasuryCap<T>
-                                params: vec![
-                                    ParamKind::TypeParam(0), // witness: T
-                                    ParamKind::Primitive(TypeTag::U8), // decimals
-                                    ParamKind::PrimitiveVector(TypeTag::U8), // symbol
-                                    ParamKind::PrimitiveVector(TypeTag::U8), // name  
-                                    ParamKind::PrimitiveVector(TypeTag::U8), // description
-                                    // option::none for icon_url - we'll handle specially
-                                    ParamKind::TxContext,
-                                ],
-                                returns: struct_tag.as_ref().clone(),
-                            }));
+                                                         // Store OTW info for execution phase
+                                                         // We'll handle this specially in the execution loop
+                            constructor_chain.push((
+                                param_idx,
+                                ConstructorInfo {
+                                    module_id: ModuleId::new(
+                                        AccountAddress::TWO,
+                                        Identifier::new("coin").unwrap(),
+                                    ),
+                                    function_name: "create_currency".to_string(),
+                                    type_params: 1, // T for TreasuryCap<T>
+                                    params: vec![
+                                        ParamKind::TypeParam(0),                 // witness: T
+                                        ParamKind::Primitive(TypeTag::U8),       // decimals
+                                        ParamKind::PrimitiveVector(TypeTag::U8), // symbol
+                                        ParamKind::PrimitiveVector(TypeTag::U8), // name
+                                        ParamKind::PrimitiveVector(TypeTag::U8), // description
+                                        // option::none for icon_url - we'll handle specially
+                                        ParamKind::TxContext,
+                                    ],
+                                    returns: struct_tag.as_ref().clone(),
+                                },
+                            ));
                             continue;
                         }
                     }
-                    
+
                     if let Some(ctor) = constructor_map.find_synthesizable_constructor(struct_tag) {
                         // We can construct this! Track it for later
                         constructor_chain.push((param_idx, ctor.clone()));
@@ -460,7 +478,7 @@ fn attempt_function(
                         continue;
                     }
                 }
-                
+
                 // No constructor found
                 report.failure_stage = Some(FailureStage::A3);
                 report.failure_reason = Some("no default value generator for layout".to_string());
@@ -501,47 +519,35 @@ fn attempt_function(
 
     // Clear trace before execution to get a clean trace for this function
     harness.clear_trace();
-    
+
     // Execute constructor chain if needed
     let mut final_args = default_values.clone();
     for (param_idx, ctor) in &constructor_chain {
         // Special case: coin::create_currency needs OTW handling
-        let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency" 
-            && ctor.module_id.address() == &AccountAddress::TWO 
+        let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency"
+            && ctor.module_id.address() == &AccountAddress::TWO
         {
             // Get OTW type for create_currency
-            let otw = constructor_map.get_first_otw()
+            let otw = constructor_map
+                .get_first_otw()
                 .ok_or_else(|| anyhow!("no OTW type available for create_currency"))?;
-            
+
             // Type arg is the OTW type
             let type_args = vec![otw.type_tag.clone()];
-            
+
             // Build args for create_currency:
-            // witness: T, decimals: u8, symbol: vector<u8>, name: vector<u8>, 
+            // witness: T, decimals: u8, symbol: vector<u8>, name: vector<u8>,
             // description: vector<u8>, icon_url: Option<Url>, ctx: &mut TxContext
-            let mut args = Vec::new();
-            
-            // witness: OTW { dummy: true } - BCS encoded struct with one bool field
-            args.push(vec![1u8]); // BCS for struct with bool field = true
-            
-            // decimals: u8
-            args.push(vec![9u8]); // 9 decimals like SUI
-            
-            // symbol: vector<u8>
-            args.push(bcs_encode_vector(b"TEST"));
-            
-            // name: vector<u8>  
-            args.push(bcs_encode_vector(b"Test Token"));
-            
-            // description: vector<u8>
-            args.push(bcs_encode_vector(b"Test token for type inhabitation"));
-            
-            // icon_url: Option<Url> - None
-            args.push(vec![0u8]); // BCS for Option::None
-            
-            // ctx: &mut TxContext - synthesized
-            args.push(harness.synthesize_tx_context()?);
-            
+            let args = vec![
+                vec![1u8],                                              // witness: OTW { dummy: true }
+                vec![9u8],                                              // decimals: 9 like SUI
+                bcs_encode_vector(b"TEST"),                             // symbol
+                bcs_encode_vector(b"Test Token"),                       // name
+                bcs_encode_vector(b"Test token for type inhabitation"), // description
+                vec![0u8],                                              // icon_url: None
+                harness.synthesize_tx_context()?,                       // ctx: &mut TxContext
+            ];
+
             (type_args, args)
         } else {
             // Normal constructor
@@ -553,14 +559,12 @@ fn attempt_function(
                     return Ok(report);
                 }
             };
-            
-            let type_args: Vec<_> = (0..ctor.type_params)
-                .map(|_| TypeTag::U64)
-                .collect();
-            
+
+            let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
             (type_args, args)
         };
-        
+
         // Execute constructor and get return value
         let returns = match harness.execute_function_with_return(
             &ctor.module_id,
@@ -575,7 +579,7 @@ fn attempt_function(
                 return Ok(report);
             }
         };
-        
+
         // Use the first return value as the constructed struct
         if let Some(constructed_bytes) = returns.into_iter().next() {
             final_args[*param_idx] = constructed_bytes;
@@ -585,7 +589,7 @@ fn attempt_function(
             return Ok(report);
         }
     }
-    
+
     // Execute function - use entry function path for entry functions, regular for public
     let exec = if func_def.is_entry {
         harness.execute_entry_function_with_synth(
@@ -619,20 +623,22 @@ fn attempt_function(
 
     // Get the execution trace to see which modules were accessed
     let trace = harness.get_trace();
-    
+
     // Filter out framework modules (0x1, 0x2, 0x3) to get target package modules
-    let target_modules: Vec<String> = trace.modules_accessed
+    let target_modules: Vec<String> = trace
+        .modules_accessed
         .iter()
         .filter(|id| {
             let addr = id.address();
             // Exclude framework addresses
             *addr != AccountAddress::ONE &&  // 0x1 move-stdlib
             *addr != AccountAddress::TWO &&  // 0x2 sui-framework
-            *addr != AccountAddress::from_hex_literal("0x3").unwrap_or(AccountAddress::ZERO) // sui-system
+            *addr != AccountAddress::from_hex_literal("0x3").unwrap_or(AccountAddress::ZERO)
+            // sui-system
         })
         .map(|id| format!("{}::{}", id.address().to_hex_literal(), id.name()))
         .collect();
-    
+
     // Static bytecode analysis: extract function calls from the entry function
     let static_calls = bytecode_analyzer::extract_function_calls_from_function(module, func_def);
     let non_framework_calls = bytecode_analyzer::filter_non_framework_calls(&static_calls);
@@ -643,13 +649,21 @@ fn attempt_function(
             report.tier_b_details = Some(TierBDetails {
                 execution_success: true,
                 error: None,
-                target_modules_accessed: if target_modules.is_empty() { None } else { Some(target_modules) },
-                static_calls: if non_framework_calls.is_empty() { None } else { Some(non_framework_calls) },
+                target_modules_accessed: if target_modules.is_empty() {
+                    None
+                } else {
+                    Some(target_modules)
+                },
+                static_calls: if non_framework_calls.is_empty() {
+                    None
+                } else {
+                    Some(non_framework_calls)
+                },
             });
         }
         Err(e) => {
             report.failure_stage = Some(FailureStage::B2);
-            
+
             // Check for unsupported native error (E_NOT_SUPPORTED = 1000)
             let error_str = e.to_string();
             let failure_reason = if is_unsupported_native_error(&error_str) {
@@ -657,13 +671,21 @@ fn attempt_function(
             } else {
                 format!("execution failed: {e}")
             };
-            
+
             report.failure_reason = Some(failure_reason);
             report.tier_b_details = Some(TierBDetails {
                 execution_success: false,
                 error: Some(error_str),
-                target_modules_accessed: if target_modules.is_empty() { None } else { Some(target_modules) },
-                static_calls: if non_framework_calls.is_empty() { None } else { Some(non_framework_calls) },
+                target_modules_accessed: if target_modules.is_empty() {
+                    None
+                } else {
+                    Some(target_modules)
+                },
+                static_calls: if non_framework_calls.is_empty() {
+                    None
+                } else {
+                    Some(non_framework_calls)
+                },
             });
         }
     }
@@ -726,7 +748,7 @@ fn build_constructor_args(
     validator: &Validator,
 ) -> Result<Vec<Vec<u8>>> {
     let mut args = Vec::new();
-    
+
     for param in &ctor.params {
         match param {
             ParamKind::Primitive(tag) => {
@@ -734,7 +756,8 @@ fn build_constructor_args(
                 let layout = validator.resolve_type_layout(tag)?;
                 let value = generate_default_value(&layout)
                     .ok_or_else(|| anyhow!("no default for primitive"))?;
-                let bytes = value.simple_serialize()
+                let bytes = value
+                    .simple_serialize()
                     .ok_or_else(|| anyhow!("serialize failed"))?;
                 args.push(bytes);
             }
@@ -768,6 +791,6 @@ fn build_constructor_args(
             }
         }
     }
-    
+
     Ok(args)
 }

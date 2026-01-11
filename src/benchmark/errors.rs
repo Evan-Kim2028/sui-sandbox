@@ -73,7 +73,6 @@ pub fn native_support_info() -> Vec<NativeModuleInfo> {
             category: NativeCategory::RealImpl,
             description: "Signer address extraction",
         },
-        
         // Category B: Safe mocks
         NativeModuleInfo {
             module: "0x2::tx_context",
@@ -100,14 +99,12 @@ pub fn native_support_info() -> Vec<NativeModuleInfo> {
             category: NativeCategory::SafeMock,
             description: "OTW type checking (real implementation)",
         },
-        
         // Category: VM Extension (full support)
         NativeModuleInfo {
             module: "0x2::dynamic_field",
             category: NativeCategory::VmExtension,
             description: "Dynamic field operations (full support via ObjectRuntime)",
         },
-        
         // Category C: Unsupported (abort with E_NOT_SUPPORTED)
         NativeModuleInfo {
             module: "0x2::bls12381",
@@ -171,7 +168,7 @@ pub fn unsupported_native_error_message() -> String {
         .filter(|n| n.category == NativeCategory::Unsupported)
         .map(|n| n.module)
         .collect();
-    
+
     format!(
         "execution failed: unsupported native function (error {}). \
          This function uses a native that cannot be simulated. \
@@ -189,20 +186,26 @@ pub fn is_unsupported_native_error(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_native_support_info_has_all_categories() {
         let info = native_support_info();
         assert!(info.iter().any(|n| n.category == NativeCategory::RealImpl));
         assert!(info.iter().any(|n| n.category == NativeCategory::SafeMock));
-        assert!(info.iter().any(|n| n.category == NativeCategory::VmExtension));
-        assert!(info.iter().any(|n| n.category == NativeCategory::Unsupported));
+        assert!(info
+            .iter()
+            .any(|n| n.category == NativeCategory::VmExtension));
+        assert!(info
+            .iter()
+            .any(|n| n.category == NativeCategory::Unsupported));
     }
-    
+
     #[test]
     fn test_is_unsupported_native_error() {
         assert!(is_unsupported_native_error("VMError: MoveAbort(1000)"));
-        assert!(is_unsupported_native_error("execution failed: MoveAbort with code 1000"));
+        assert!(is_unsupported_native_error(
+            "execution failed: MoveAbort with code 1000"
+        ));
         assert!(!is_unsupported_native_error("VMError: MoveAbort(42)"));
         assert!(!is_unsupported_native_error("some other error"));
     }

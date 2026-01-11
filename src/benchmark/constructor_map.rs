@@ -6,11 +6,9 @@
 //!
 //! Also tracks One-Time Witness (OTW) types that can be used with coin::create_currency.
 
-use move_binary_format::file_format::{
-    Ability, CompiledModule, SignatureToken, Visibility,
-};
-use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
+use move_binary_format::file_format::{Ability, CompiledModule, SignatureToken, Visibility};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use std::collections::HashMap;
 
 /// Information about a constructor function
@@ -62,38 +60,40 @@ impl ConstructorMap {
     /// Build a constructor map from a set of modules
     pub fn from_modules(modules: &[CompiledModule]) -> Self {
         let mut constructors: HashMap<String, Vec<ConstructorInfo>> = HashMap::new();
-        
+
         for module in modules {
             let module_id = module.self_id();
-            
+
             for func_def in &module.function_defs {
                 // Skip private functions - we can only call public ones
                 if func_def.visibility == Visibility::Private {
                     continue;
                 }
-                
+
                 let handle = module.function_handle_at(func_def.function);
                 let func_name = module.identifier_at(handle.name).to_string();
-                
+
                 // Get return signature
                 let return_sig = module.signature_at(handle.return_);
                 if return_sig.0.is_empty() {
                     continue; // No return value
                 }
-                
+
                 // Check if first return is a struct from this package
                 let first_return = &return_sig.0[0];
                 let struct_tag = match token_to_struct_tag(first_return, module) {
                     Some(tag) => tag,
                     None => continue, // Not a struct return
                 };
-                
+
                 // Analyze parameters
                 let params_sig = module.signature_at(handle.parameters);
-                let params: Vec<ParamKind> = params_sig.0.iter()
+                let params: Vec<ParamKind> = params_sig
+                    .0
+                    .iter()
                     .map(|token| classify_param(token, module))
                     .collect();
-                
+
                 // Create constructor info
                 let info = ConstructorInfo {
                     module_id: module_id.clone(),
@@ -102,55 +102,59 @@ impl ConstructorMap {
                     params,
                     returns: struct_tag.clone(),
                 };
-                
+
                 // Key by struct name (module::name) without type args
                 let key = format!("{}::{}", struct_tag.module_id(), struct_tag.name);
                 constructors.entry(key).or_default().push(info);
             }
         }
-        
+
         // Scan for OTW types
         let otw_types = Self::find_otw_types(modules);
-        
-        ConstructorMap { constructors, otw_types }
+
+        ConstructorMap {
+            constructors,
+            otw_types,
+        }
     }
-    
+
     /// Find all One-Time Witness types in the modules.
     /// OTW requirements: name == UPPERCASE(module_name), one bool field, only drop ability
     fn find_otw_types(modules: &[CompiledModule]) -> Vec<OtwInfo> {
         let mut otw_types = Vec::new();
-        
+
         for module in modules {
             let module_id = module.self_id();
             let module_name = module_id.name().as_str();
             let expected_otw_name = module_name.to_ascii_uppercase();
-            
+
             for struct_def in &module.struct_defs {
                 let struct_handle = module.datatype_handle_at(struct_def.struct_handle);
                 let struct_name = module.identifier_at(struct_handle.name).to_string();
-                
+
                 // Check if name matches OTW pattern
                 if struct_name != expected_otw_name {
                     continue;
                 }
-                
+
                 // Check abilities: must have only drop
                 let abilities = struct_handle.abilities;
-                let drop_only = move_binary_format::file_format::AbilitySet::singleton(Ability::Drop);
+                let drop_only =
+                    move_binary_format::file_format::AbilitySet::singleton(Ability::Drop);
                 if abilities != drop_only {
                     continue;
                 }
-                
+
                 // Check fields: must have exactly one bool field
                 let field_count = match struct_def.declared_field_count() {
                     Ok(count) => count,
                     Err(_) => continue, // Native struct
                 };
-                
+
                 if field_count != 1 {
                     continue;
                 }
-                
+
                 // Check if the single field is bool
                 if let Some(field) = struct_def.field(0) {
                     if field.signature.0 != SignatureToken::Bool {
@@ -159,15 +163,16 @@ impl ConstructorMap {
                 } else {
                     continue;
                 }
-                
+
                 // This is a valid OTW type!
                 let type_tag = TypeTag::Struct(Box::new(StructTag {
                     address: *module_id.address(),
                     module: module_id.name().to_owned(),
-                    name: move_core_types::identifier::Identifier::new(struct_name.clone()).unwrap(),
+                    name: move_core_types::identifier::Identifier::new(struct_name.clone())
+                        .unwrap(),
                     type_params: vec![],
                 }));
-                
+
                 otw_types.push(OtwInfo {
                     module_id: module_id.clone(),
                     struct_name,
@@ -175,46 +180,55 @@ impl ConstructorMap {
                 });
             }
         }
-        
+
         otw_types
     }
-    
+
     /// Find constructors for a struct type
     pub fn find_constructors(&self, struct_tag: &StructTag) -> Option<&Vec<ConstructorInfo>> {
         let key = format!("{}::{}", struct_tag.module_id(), struct_tag.name);
         self.constructors.get(&key)
     }
-    
+
     /// Find a constructor that can be synthesized with only primitives and TxContext
-    pub fn find_synthesizable_constructor(&self, struct_tag: &StructTag) -> Option<&ConstructorInfo> {
+    pub fn find_synthesizable_constructor(
+        &self,
+        struct_tag: &StructTag,
+    ) -> Option<&ConstructorInfo> {
         let ctors = self.find_constructors(struct_tag)?;
-        
+
         ctors.iter().find(|ctor| {
-            ctor.params.iter().all(|p| matches!(p, 
-                ParamKind::Primitive(_) | 
-                ParamKind::PrimitiveVector(_) |
-                ParamKind::TxContext | 
-                ParamKind::Clock |
-                ParamKind::TypeParam(_)
-            ))
+            ctor.params.iter().all(|p| {
+                matches!(
+                    p,
+                    ParamKind::Primitive(_)
+                        | ParamKind::PrimitiveVector(_)
+                        | ParamKind::TxContext
+                        | ParamKind::Clock
+                        | ParamKind::TypeParam(_)
+                )
+            })
         })
     }
-    
+
     /// Find a constructor that needs only one level of struct construction
-    pub fn find_single_hop_constructor(&self, struct_tag: &StructTag) -> Option<(&ConstructorInfo, Vec<&ConstructorInfo>)> {
+    pub fn find_single_hop_constructor(
+        &self,
+        struct_tag: &StructTag,
+    ) -> Option<(&ConstructorInfo, Vec<&ConstructorInfo>)> {
         let ctors = self.find_constructors(struct_tag)?;
-        
+
         for ctor in ctors {
             let mut dependencies = Vec::new();
             let mut all_resolvable = true;
-            
+
             for param in &ctor.params {
                 match param {
-                    ParamKind::Primitive(_) | 
-                    ParamKind::PrimitiveVector(_) |
-                    ParamKind::TxContext | 
-                    ParamKind::Clock |
-                    ParamKind::TypeParam(_) => {
+                    ParamKind::Primitive(_)
+                    | ParamKind::PrimitiveVector(_)
+                    | ParamKind::TxContext
+                    | ParamKind::Clock
+                    | ParamKind::TypeParam(_) => {
                         // These are directly synthesizable
                     }
                     ParamKind::Struct(dep_tag) => {
@@ -232,33 +246,33 @@ impl ConstructorMap {
                     }
                 }
             }
-            
+
             if all_resolvable {
                 return Some((ctor, dependencies));
             }
         }
-        
+
         None
     }
-    
+
     /// Get all constructors (for debugging)
     pub fn all_constructors(&self) -> impl Iterator<Item = (&String, &Vec<ConstructorInfo>)> {
         self.constructors.iter()
     }
-    
+
     /// Get all OTW types found in modules
     pub fn get_otw_types(&self) -> &[OtwInfo] {
         &self.otw_types
     }
-    
+
     /// Get the first available OTW type (if any)
     pub fn get_first_otw(&self) -> Option<&OtwInfo> {
         self.otw_types.first()
     }
-    
+
     /// Check if a struct is TreasuryCap from sui::coin
     pub fn is_treasury_cap(struct_tag: &StructTag) -> bool {
-        struct_tag.address == AccountAddress::TWO 
+        struct_tag.address == AccountAddress::TWO
             && struct_tag.module.as_str() == "coin"
             && struct_tag.name.as_str() == "TreasuryCap"
     }
@@ -273,7 +287,7 @@ fn token_to_struct_tag(token: &SignatureToken, module: &CompiledModule) -> Optio
             let address = *module.address_identifier_at(module_handle.address);
             let module_name = module.identifier_at(module_handle.name).to_owned();
             let name = module.identifier_at(handle.name).to_owned();
-            
+
             Some(StructTag {
                 address,
                 module: module_name,
@@ -288,12 +302,13 @@ fn token_to_struct_tag(token: &SignatureToken, module: &CompiledModule) -> Optio
             let address = *module.address_identifier_at(module_handle.address);
             let module_name = module.identifier_at(module_handle.name).to_owned();
             let name = module.identifier_at(handle.name).to_owned();
-            
+
             // Convert type args (simplified - just mark as having type args)
-            let converted_type_args: Vec<TypeTag> = type_args.iter()
+            let converted_type_args: Vec<TypeTag> = type_args
+                .iter()
                 .filter_map(|t| token_to_type_tag(t, module))
                 .collect();
-            
+
             Some(StructTag {
                 address,
                 module: module_name,
@@ -343,25 +358,35 @@ fn classify_param(token: &SignatureToken, module: &CompiledModule) -> ParamKind 
         SignatureToken::U128 => ParamKind::Primitive(TypeTag::U128),
         SignatureToken::U256 => ParamKind::Primitive(TypeTag::U256),
         SignatureToken::Address => ParamKind::Primitive(TypeTag::Address),
-        
+
         // Vectors of primitives
         SignatureToken::Vector(inner) => {
             if let Some(tag) = token_to_type_tag(inner, module) {
-                if matches!(tag, TypeTag::Bool | TypeTag::U8 | TypeTag::U16 | TypeTag::U32 | 
-                           TypeTag::U64 | TypeTag::U128 | TypeTag::U256 | TypeTag::Address) {
+                if matches!(
+                    tag,
+                    TypeTag::Bool
+                        | TypeTag::U8
+                        | TypeTag::U16
+                        | TypeTag::U32
+                        | TypeTag::U64
+                        | TypeTag::U128
+                        | TypeTag::U256
+                        | TypeTag::Address
+                ) {
                     return ParamKind::PrimitiveVector(tag);
                 }
             }
             ParamKind::Unsupported("complex vector".to_string())
         }
-        
+
         // Type parameters
         SignatureToken::TypeParameter(idx) => ParamKind::TypeParam(*idx),
-        
+
         // References - check for TxContext and Clock
         SignatureToken::Reference(inner) | SignatureToken::MutableReference(inner) => {
             if let Some(struct_tag) = token_to_struct_tag(inner, module) {
-                let full_name = format!("{}::{}::{}", 
+                let full_name = format!(
+                    "{}::{}::{}",
                     struct_tag.address.to_hex_literal(),
                     struct_tag.module,
                     struct_tag.name
@@ -377,7 +402,7 @@ fn classify_param(token: &SignatureToken, module: &CompiledModule) -> ParamKind 
             }
             ParamKind::Unsupported("unknown reference".to_string())
         }
-        
+
         // Struct types (by value)
         SignatureToken::Datatype(_) | SignatureToken::DatatypeInstantiation(_) => {
             if let Some(struct_tag) = token_to_struct_tag(token, module) {
@@ -386,7 +411,7 @@ fn classify_param(token: &SignatureToken, module: &CompiledModule) -> ParamKind 
                 ParamKind::Unsupported("unknown struct".to_string())
             }
         }
-        
+
         _ => ParamKind::Unsupported(format!("{:?}", token)),
     }
 }
@@ -394,7 +419,7 @@ fn classify_param(token: &SignatureToken, module: &CompiledModule) -> ParamKind 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_constructor_map_empty() {
         let map = ConstructorMap::from_modules(&[]);
