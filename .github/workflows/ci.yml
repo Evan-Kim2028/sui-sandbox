@@ -7,12 +7,21 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      # Reduce memory pressure during linking by limiting parallelism
+      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
+      - name: Free disk space
+        run: |
+          # Free up space to help with memory-mapped files during linking
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
@@ -24,13 +33,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      
+
       - name: fmt
         run: cargo fmt --check
       - name: clippy
         run: cargo clippy -- -D warnings
       - name: test
-        run: cargo test --locked
+        run: cargo test --locked -j 2
 
   python-benchmark:
     runs-on: ubuntu-latest
