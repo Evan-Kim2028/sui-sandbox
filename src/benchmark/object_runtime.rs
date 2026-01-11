@@ -1,32 +1,71 @@
 //! ObjectRuntime - VM extension for dynamic field simulation.
+//! ObjectRuntime - VM extension for dynamic field simulation.
 //!
 //! This module provides an in-memory object runtime that integrates with the Move VM
 //! via its extension mechanism. It enables full dynamic field support including
 //! borrow and remove operations that require proper reference semantics.
 //!
-//! ## Architecture
+//! ## What is a VM Extension?
 //!
-//! The Move VM allows native functions to access external state via "extensions".
-//! Extensions are registered when creating a session and accessed via:
-//! ```ignore
-//! let runtime: &mut ObjectRuntime = context.extensions_mut().get_mut()?;
-//! ```
+//! The Move VM has a mechanism for native functions to access external state that:
+//! - Persists across multiple native function calls within a session
+//! - Can be accessed via `context.extensions().get::<T>()` or `get_mut::<T>()`
+//! - Is registered when creating a session via `new_session_with_extensions()`
 //!
-//! This module provides:
-//! - `ObjectRuntime`: The extension struct that stores GlobalValues
-//! - Integration with `NativeContextExtensions` via `better_any` derive macros
+//! This is how Sui's actual runtime provides object storage to natives - without it,
+//! native functions can only work with their arguments and return values.
 //!
-//! ## Why We Need This
+//! ## Why We Need This for Dynamic Fields
 //!
 //! Dynamic field operations like `borrow_child_object` must return a **reference**
-//! to a value that lives in the VM's memory management. The VM needs to:
-//! 1. Track that reference for borrow checking
-//! 2. Allow mutations to propagate (for borrow_mut)
-//! 3. Handle the value's lifecycle
+//! to a value managed by the VM. The challenge:
 //!
-//! `GlobalValue` from move-vm-types provides this, but the value must live
-//! somewhere that outlives the native function call. The extension mechanism
-//! provides exactly this - state that persists for the session duration.
+//! 1. Native functions are stateless - they receive args and return results
+//! 2. Returning a reference requires the value to live somewhere stable
+//! 3. The VM needs to track references for borrow checking
+//!
+//! The solution: `GlobalValue` from move-vm-types wraps a value and provides
+//! reference semantics via `borrow_global()`. We store GlobalValues in this
+//! extension, so they persist for the session duration.
+//!
+//! ## Implementation
+//!
+//! ```text
+//! ┌──────────────────────────────────────────────────────────────────┐
+//! │ VMHarness::execute_function()                                    │
+//! │   │                                                              │
+//! │   ├─► Create ObjectRuntime extension                             │
+//! │   ├─► vm.new_session_with_extensions(storage, extensions)        │
+//! │   │                                                              │
+//! │   │   ┌──────────────────────────────────────────────────────┐   │
+//! │   │   │ Native: add_child_object                             │   │
+//! │   │   │   ctx.extensions_mut().get_mut::<ObjectRuntime>()?   │   │
+//! │   │   │   runtime.add_child_object(parent, id, value, type)  │   │
+//! │   │   │   └─► Wraps value in GlobalValue and stores it       │   │
+//! │   │   └──────────────────────────────────────────────────────┘   │
+//! │   │                                                              │
+//! │   │   ┌──────────────────────────────────────────────────────┐   │
+//! │   │   │ Native: borrow_child_object                          │   │
+//! │   │   │   ctx.extensions().get::<ObjectRuntime>()?           │   │
+//! │   │   │   runtime.borrow_child_object(parent, id, type)      │   │
+//! │   │   │   └─► Returns GlobalValue.borrow_global() as ref     │   │
+//! │   │   └──────────────────────────────────────────────────────┘   │
+//! │   │                                                              │
+//! │   └─► session.finish() - ObjectRuntime is dropped                │
+//! └──────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Current Limitations
+//!
+//! - Objects don't persist between sessions (each function call is isolated)
+//! - No shared object support
+//! - No ownership tracking / transfer verification
+//! - Objects are identified by (parent_id, child_id) pairs only
+//!
+//! ## Dependencies
+//!
+//! - `better_any = "0.1"` - Required for VM extension mechanism
+//!   IMPORTANT: Version must match move-vm-runtime's dependency
 
 use better_any::{Tid, TidAble};
 use move_core_types::account_address::AccountAddress;

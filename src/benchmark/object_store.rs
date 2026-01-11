@@ -1,36 +1,10 @@
-//! In-memory object store for dynamic field simulation.
+//! Legacy object store module.
 //!
-//! This provides a minimal object storage layer that enables testing Move code
-//! that uses dynamic fields (Bag, Table, etc.) without a full Sui runtime.
+//! **NOTE**: This module is deprecated. Dynamic field support is now provided by
+//! `object_runtime.rs` which uses the Move VM extension mechanism for proper
+//! reference semantics.
 //!
-//! ## Design
-//!
-//! Dynamic fields in Sui work by:
-//! 1. Hashing (parent_id, key_type, key_value) to get a child object ID
-//! 2. Storing a `Field<K,V>` struct at that ID as a child of the parent
-//! 3. Looking up by the hash to retrieve the value
-//!
-//! We simulate this with a simple HashMap:
-//! - Key: (parent_address, child_address)
-//! - Value: BCS-serialized object bytes + type tag
-//!
-//! ## Current Limitations
-//!
-//! - `borrow_child_object` / `borrow_child_object_mut` abort (requires VM extensions)
-//! - `remove_child_object` aborts (requires VM extensions for move_from semantics)
-//! - No garbage collection / ownership tracking
-//! - No shared object support
-//! - Objects are not persisted between benchmark runs
-//! - Type checking is best-effort
-//!
-//! ## What This Enables
-//!
-//! Functions that only ADD to dynamic fields (Bag, Table) work:
-//! - `bag::add`, `table::add`
-//! - `dynamic_field::add`
-//! - `dynamic_field::exists_`
-//!
-//! Functions that READ from dynamic fields still abort.
+//! This module is kept for reference but is no longer used by the natives.
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
