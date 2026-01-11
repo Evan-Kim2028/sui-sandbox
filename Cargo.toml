@@ -23,6 +23,11 @@ move-compiler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.6
 move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-runtime", features = ["tracing"] }
 move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-types" }
 move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-trace-format" }
+move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-symbol-pool" }
+
+# MM2 (Move Model 2) for static type validation - builds semantic model from bytecode
+# Used for Phase 2 (TypeCheck) to validate types without VM execution
+move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-model-2" }
 
 # Align with MystenLabs Sui crate requirements.
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
