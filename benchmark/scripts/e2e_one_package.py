@@ -466,7 +466,12 @@ def _write_helper_package(*, helper_dir: Path, payload: dict[str, Any]) -> None:
 
 
 def _type_to_move(t: dict[str, Any], pkg_alias: str = "target_pkg") -> str:
-    """Convert interface JSON type representation to Move source syntax."""
+    """Convert interface JSON type representation to Move source syntax.
+
+    .. deprecated:: 0.4.0
+        This is part of the deprecated Python stub generator. Use the Rust
+        extractor's ``--emit-move-stubs`` instead.
+    """
     kind = t.get("kind", "")
 
     if kind == "bool":
@@ -531,6 +536,13 @@ def _type_to_move(t: dict[str, Any], pkg_alias: str = "target_pkg") -> str:
 def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "target_pkg") -> dict[str, str]:
     """Generate Move source stub files from interface JSON.
 
+    .. deprecated:: 0.4.0
+        Use the Rust extractor's ``--emit-move-stubs`` flag instead via
+        :func:`smi_bench.rust.emit_move_stubs`. The Rust version generates
+        correct Move 2024 syntax with proper ``use`` imports. This Python
+        fallback has known issues with qualified type paths in struct fields
+        (causes E03006 errors).
+
     Creates minimal .move source files that declare all types and function signatures
     from the bytecode interface. Function bodies are stubs that abort.
     This allows the Move compiler to type-check code that imports these types.
@@ -542,6 +554,13 @@ def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "tar
     Returns:
         Dict mapping module name to Move source code string
     """
+    import warnings
+    warnings.warn(
+        "_generate_move_source_stubs is deprecated since v0.4.0. "
+        "Use smi_bench.rust.emit_move_stubs() instead for correct Move 2024 syntax.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     modules = interface.get("modules", {})
     sources: dict[str, str] = {}
 
