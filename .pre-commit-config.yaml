@@ -1,0 +1,83 @@
+repos:
+  # Rust checks
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --locked
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # Python checks
+  - repo: local
+    hooks:
+      - id: ruff-fix
+        name: ruff fix
+        entry: bash -c 'cd benchmark && uv run ruff check --fix .'
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format
+        entry: bash -c 'cd benchmark && uv run ruff format .'
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest-unit
+        name: pytest (unit tests)
+        entry: bash -c 'cd benchmark && uv run pytest -x -q -m "not integration and not docker" --tb=short'
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # Documentation checks
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.43.0
+    hooks:
+      - id: markdownlint
+        args: ["--fix"]
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        args: ["--skip", "*.lock,target/*,*.json", "--ignore-words-list", "crate,sui"]
+
+  - repo: local
+    hooks:
+      - id: validate-crossrefs
+        name: validate markdown links
+        entry: bash -c 'cd benchmark && uv run python scripts/validate_crossrefs.py --skip-external --fail-on-warning'
+        language: system
+        types: [markdown]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # Docker validation (pre-commit only, not in CI)
+  - repo: local
+    hooks:
+      - id: docker-compose-validate
+        name: docker-compose validate
+        entry: docker compose config --quiet
+        language: system
+        files: docker-compose.*\.ya?ml$
+        pass_filenames: false
