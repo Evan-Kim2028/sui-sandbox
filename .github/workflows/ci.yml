@@ -93,14 +93,13 @@ jobs:
       - name: Create test directories
         run: |
           # Create mock corpus for CI (uses docker-compose.ci.yml override)
-          mkdir -p ci-corpus results logs
-          # Ensure directories are writable by UID 1000 (container user)
-          sudo chown -R 1000:1000 ci-corpus results logs
-          # Create minimal mock corpus for CI
-          mkdir -p ci-corpus/0x00/fixture/bytecode_modules
+          mkdir -p ci-corpus/0x00/fixture/bytecode_modules results logs
+          # Create minimal mock corpus files
           echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > ci-corpus/0x00/fixture/metadata.json
           touch ci-corpus/0x00/fixture/bytecode_modules/dummy.mv
           echo "0x0000000000000000000000000000000000000000000000000000000000000001" > ci-corpus/manifest.txt
+          # Ensure directories are writable by UID 1000 (container user) AFTER creating files
+          sudo chown -R 1000:1000 ci-corpus results logs
       
       - name: Build and start container
         run: |
