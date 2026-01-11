@@ -306,21 +306,30 @@ def run_checks(
     results: list[tuple[str, bool, str, str | None]] = []
 
     # Core checks (always run)
-    results.append(("Rust Binary", *check_rust_binary()))
-    results.append(("API Keys", *check_api_keys()))
-    results.append((".env File", *check_env_file()))
-    results.append(("Python Deps", *check_python_deps()))
+    ok, msg, fix = check_rust_binary()
+    results.append(("Rust Binary", ok, msg, fix))
+    ok, msg, fix = check_api_keys()
+    results.append(("API Keys", ok, msg, fix))
+    ok, msg, fix = check_env_file()
+    results.append((".env File", ok, msg, fix))
+    ok, msg, fix = check_python_deps()
+    results.append(("Python Deps", ok, msg, fix))
 
     # Port checks
-    results.append(("Port 9999 (A2A)", *check_port(9999)))
+    ok, msg, fix = check_port(9999)
+    results.append(("Port 9999 (A2A)", ok, msg, fix))
 
     # Optional checks
     if full:
-        results.append(("Sui CLI", *check_sui_cli()))
-        results.append(("Docker", *check_docker()))
-        results.append(("Corpus", *check_corpus(corpus_root)))
+        ok, msg, fix = check_sui_cli()
+        results.append(("Sui CLI", ok, msg, fix))
+        ok, msg, fix = check_docker()
+        results.append(("Docker", ok, msg, fix))
+        ok, msg, fix = check_corpus(corpus_root)
+        results.append(("Corpus", ok, msg, fix))
         if manifest and corpus_root:
-            results.append(("Manifest", *check_manifest(corpus_root, manifest)))
+            ok, msg, fix = check_manifest(corpus_root, manifest)
+            results.append(("Manifest", ok, msg, fix))
 
     return results
 
