@@ -21,6 +21,7 @@ use crate::rpc::{
     resolve_package_address_from_package_info,
 };
 use crate::types::{BatchSummaryRow, InterfaceCompareReport};
+use crate::move_stubs::emit_move_stubs;
 use crate::utils::{check_stability, write_canonical_json};
 
 pub async fn run_single(
@@ -227,6 +228,18 @@ pub async fn run_single_local_bytecode_dir(args: &Args) -> Result<()> {
         write_canonical_json(path, &bytecode_value)?;
     }
 
+    // Generate Move source stubs if requested
+    if let Some(stubs_dir) = args.emit_move_stubs.as_ref() {
+        // Use a reasonable package alias (could be configurable in the future)
+        let pkg_alias = "target_pkg";
+        let stubs = emit_move_stubs(&compiled, pkg_alias, stubs_dir)?;
+        eprintln!(
+            "emit_move_stubs: wrote {} stub files to {}",
+            stubs.len(),
+            stubs_dir.display()
+        );
+    }
+
     if args.sanity {
         let counts = extract_sanity_counts(bytecode_value.get("modules").unwrap_or(&Value::Null));
         eprintln!(
@@ -236,7 +249,7 @@ pub async fn run_single_local_bytecode_dir(args: &Args) -> Result<()> {
     }
 
     let mut list_modules = args.list_modules;
-    if !list_modules && args.emit_bytecode_json.is_none() && !args.sanity {
+    if !list_modules && args.emit_bytecode_json.is_none() && args.emit_move_stubs.is_none() && !args.sanity {
         list_modules = true;
     }
     if list_modules {

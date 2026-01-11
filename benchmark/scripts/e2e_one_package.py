@@ -649,17 +649,18 @@ def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "tar
 
 
 def _vendor_target_deps_into_helper(
-    *, target_pkg_dir: Path, helper_dir: Path, interface: dict[str, Any] | None = None
+    *, target_pkg_dir: Path, helper_dir: Path, interface: dict[str, Any] | None = None, rust_bin: Path | None = None
 ) -> None:
     """Vendor target package as a local dependency for the helper package.
 
-    Creates source stub files from the interface JSON so the Move compiler can
+    Creates source stub files using the Rust extractor so the Move compiler can
     type-check imports. At runtime, the real bytecode is used for execution.
 
     Args:
         target_pkg_dir: Path to the target package directory (with bytecode_modules/)
         helper_dir: Path to the helper package directory
-        interface: Optional interface JSON; if not provided, will be loaded from target_pkg_dir
+        interface: Optional interface JSON; if not provided, will be loaded from target_pkg_dir (DEPRECATED, unused now)
+        rust_bin: Path to the Rust extractor binary; if not provided, will use default
     """
     dep_name = "target_pkg"
     dep_dir = helper_dir / "deps" / dep_name
@@ -667,7 +668,8 @@ def _vendor_target_deps_into_helper(
         shutil.rmtree(dep_dir)
 
     # Create sources directory for stub files (Move compiler needs source, not just bytecode)
-    (dep_dir / "sources").mkdir(parents=True, exist_ok=True)
+    sources_dir = dep_dir / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
 
     # Also keep bytecode for runtime execution
     (dep_dir / "bytecode_modules").mkdir(parents=True, exist_ok=True)
@@ -684,21 +686,41 @@ def _vendor_target_deps_into_helper(
     except Exception:
         pass
 
-    # Generate source stubs from interface if provided
-    if interface is not None:
-        source_stubs = _generate_move_source_stubs(interface, dep_name)
-        for mod_name, source in source_stubs.items():
-            _atomic_write_text(dep_dir / "sources" / f"{mod_name}.move", source)
+    # Generate source stubs using Rust extractor (preferred method)
+    # The Rust extractor generates correct Move 2024 syntax with proper imports
+    try:
+        from smi_bench.rust import default_rust_binary, emit_move_stubs, validate_rust_binary
+
+        if rust_bin is None:
+            rust_bin = default_rust_binary()
+        validate_rust_binary(rust_bin)
+        emit_move_stubs(package_dir=target_pkg_dir, stubs_dir=sources_dir, rust_bin=rust_bin)
+    except Exception as e:
+        # Fallback to Python-generated stubs if Rust extractor fails
+        # This is a legacy path that may have syntax issues with Move 2024
+        logger.warning(f"Rust stub generation failed, falling back to Python stubs: {e}")
+        if interface is not None:
+            source_stubs = _generate_move_source_stubs(interface, dep_name)
+            for mod_name, source in source_stubs.items():
+                _atomic_write_text(sources_dir / f"{mod_name}.move", source)
 
     # Create Move.toml for the dependency
-    # SuiSystem is auto-included in Sui 1.45+ so we don't need to add it explicitly
+    # The stubs may use `use std::`, `use sui::`, and `use sui_system::` imports,
+    # so we need to include framework dependencies. We use the standard Sui framework
+    # git dependencies which are automatically resolved by the Move compiler.
     dep_move_toml = (
         "[package]\n"
         f'name = "{dep_name}"\n'
         'version = "0.0.1"\n'
         'edition = "2024.beta"\n\n'
+        "[dependencies]\n"
+        'Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }\n'
+        'SuiSystem = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-system", rev = "framework/mainnet" }\n\n'
         "[addresses]\n"
         f'{dep_name} = "{module_addr}"\n'
+        'std = "0x1"\n'
+        'sui = "0x2"\n'
+        'sui_system = "0x3"\n'
     )
     _atomic_write_text(dep_dir / "Move.toml", dep_move_toml)
 

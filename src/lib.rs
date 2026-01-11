@@ -3,6 +3,7 @@ pub mod benchmark;
 pub mod bytecode;
 pub mod comparator;
 pub mod corpus;
+pub mod move_stubs;
 pub mod normalization;
 pub mod rpc;
 pub mod runner;
