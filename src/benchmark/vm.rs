@@ -1,3 +1,24 @@
+//! # VMHarness: Local Bytecode Sandbox Execution Engine
+//!
+//! This module provides the core execution infrastructure for the Local Bytecode Sandbox.
+//! It wraps the Move VM to enable offline type inhabitation testing.
+//!
+//! ## Key Types
+//!
+//! - [`VMHarness`]: Main entry point for executing Move functions
+//! - [`InMemoryStorage`]: Module resolver with execution tracing
+//! - [`ExecutionTrace`]: Records which modules were accessed during execution
+//!
+//! ## How It Works
+//!
+//! 1. Load bytecode from [`LocalModuleResolver`] (framework + target + helper packages)
+//! 2. Register native functions via [`build_native_function_table`]
+//! 3. Create VM session with [`ObjectRuntime`] extension for dynamic fields
+//! 4. Execute functions and capture execution trace
+//!
+//! The execution trace proves that target package modules were actually loaded,
+//! validating that the LLM-generated code exercised the intended code paths.
+
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};

@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document describes the evaluation framework for testing LLM capability to achieve **type inhabitation** in Sui Move packages. The framework enables LLMs to generate helper Move code that compiles against and executes with real on-chain package bytecode, all without requiring mainnet deployment or gas.
+This document describes the evaluation framework for testing LLM capability to achieve **type inhabitation** in Sui Move packages. The framework uses the **Local Bytecode Sandbox** to enable LLMs to generate helper Move code that compiles against and executes with real package bytecode, all without requiring mainnet deployment or gas.
+
+See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for the sandbox architecture.
 
 ## Target Package
 

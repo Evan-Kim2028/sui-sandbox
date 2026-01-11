@@ -1,8 +1,10 @@
-# No-Chain Type Inhabitation Benchmark Spec (Local-Only)
+# No-Chain Type Inhabitation Benchmark Spec (Local Bytecode Sandbox)
 
 ## Goal
 
 Provide a robust, repeatable benchmark for **type inhabitation / call construction** on Sui Move packages **without publishing** to any network (mainnet/testnet/devnet) and without requiring funded accounts.
+
+This specification describes the **Local Bytecode Sandbox**—a deterministic, offline Move VM environment. See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for architecture overview.
 
 The benchmark should:
 

@@ -1,7 +1,7 @@
-//! Native function implementations for Tier B execution.
+//! # Native Function Implementations for the Local Bytecode Sandbox
 //!
 //! This module provides native function implementations that enable Tier B execution
-//! of Sui Move code without requiring the full Sui runtime.
+//! of Sui Move code without requiring the full Sui runtime or network access.
 //!
 //! ## Semantic Model
 //!

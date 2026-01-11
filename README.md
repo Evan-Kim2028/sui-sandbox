@@ -1,18 +1,34 @@
 # `sui-move-interface-extractor`
 
-**Quantifying AI's understanding of Sui Move smart contracts through bytecode extraction and autonomous transaction planning.**
+**Quantifying AI's understanding of Sui Move smart contracts through bytecode extraction and type inhabitation testing.**
 
-This project provides a standalone Rust CLI for parsing Sui Move `.mv` modules into deterministic JSON and a Python-based benchmark harness to evaluate LLM performance on complex "Type Inhabitation" (autonomous transaction planning) challenges.
+This project provides:
+1. A **Rust CLI** for parsing Sui Move `.mv` bytecode into deterministic JSON interfaces
+2. A **Local Bytecode Sandbox** for testing type inhabitation without deploying to any network
+3. A **Python benchmark harness** to evaluate LLM capability on Move type understanding
 
 ```mermaid
 graph LR
     A[Sui Bytecode] --> B[Rust Extractor]
     B --> C[JSON Interface]
     C --> D[LLM Agent]
-    D --> E[PTB Generation]
-    E --> F[Transaction Simulation]
-    F --> G[Score / Metrics]
+    D --> E[Helper Package]
+    E --> F[Local Bytecode Sandbox]
+    F --> G[Type Inhabitation Score]
 ```
+
+## Core Concept: Local Bytecode Sandbox
+
+The **Local Bytecode Sandbox** is a deterministic, offline Move VM environment that enables:
+
+- **Loading external package bytecode** directly from `.mv` files (no mainnet deployment)
+- **Compiling LLM-generated helper packages** against real bytecode interfaces
+- **Executing and validating type inhabitation** through actual VM execution
+- **Zero gas, tokens, or network access** required
+
+This measures whether an LLM truly understands Move types well enough to construct valid values and execute functions—without the complexity of on-chain testing.
+
+See [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for detailed architecture.
 
 ## Quick Links
 
@@ -112,9 +128,9 @@ See [specs/LIQUID_STAKING_CASE_STUDY.md](specs/LIQUID_STAKING_CASE_STUDY.md) for
 
 ---
 
-## ⚡ Local Type Inhabitation Benchmark (No-Chain)
+## ⚡ Local Bytecode Sandbox: Type Inhabitation Testing
 
-The `benchmark-local` subcommand validates type inhabitation **without any network access**. It uses a local Move VM with synthetic state.
+The `benchmark-local` subcommand uses the **Local Bytecode Sandbox** to validate type inhabitation **without any network access**. It loads external package bytecode and executes it in an embedded Move VM.
 
 ### Usage
 
@@ -132,21 +148,34 @@ The `benchmark-local` subcommand validates type inhabitation **without any netwo
   --restricted-state
 ```
 
-### Validation Tiers
+### Two-Tier Evaluation
 
-| Tier | Name | What It Validates |
-|------|------|-------------------|
-| **A** | Preflight | Bytecode resolution, BCS serialization, type layouts |
-| **B** | VM Execution | Local Move VM execution with synthetic state |
+| Tier | Name | What It Proves |
+|------|------|----------------|
+| **A** | Preflight | Types resolve, BCS serializes correctly, layouts are valid |
+| **B** | Execution | Code runs in the Move VM without aborting |
 
-### Why Use `benchmark-local`?
+### Failure Taxonomy
+
+The key metric is **failure distribution by stage**, not a single pass rate:
+
+| Stage | Indicates |
+|-------|-----------|
+| A1-A3 | Type resolution/synthesis issues |
+| B1 | Constructor execution failures |
+| B2 | Target function aborted (includes expected unsupported natives) |
+
+This taxonomy helps researchers understand *where* LLM type understanding breaks down. See [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for detailed interpretation.
+
+### Why Local Bytecode Sandbox?
 
 - **Deterministic**: Same bytecode + same input = same result, every time
 - **Fast**: Validates 100+ modules in seconds
 - **Portable**: Works in offline/air-gapped CI/CD pipelines
-- **Zero Cost**: No Sui tokens or gas budget required
+- **Zero Cost**: No Sui tokens, gas, or network access required
+- **Real VM**: Uses actual Move VM, not simulation—type checking is genuine
 
-See [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for the full technical specification.
+See [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for architecture details and [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for the technical specification.
 
 ---
 
@@ -222,6 +251,7 @@ See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for production setup in
 
 | Document | Description |
 |----------|-------------|
+| [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) | Local Bytecode Sandbox architecture |
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | All CLI commands and flags |
 | [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | Scoring rules and research methodology |
 | [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) | Tier A/B validation specification |
