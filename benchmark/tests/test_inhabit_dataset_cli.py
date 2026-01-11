@@ -34,8 +34,12 @@ def test_dataset_flag_validates_file_exists() -> None:
         inhabit_runner.main(argv)
 
 
+@pytest.mark.integration
 def test_dataset_flag_with_existing_dataset(tmp_path: Path) -> None:
-    """Test that --dataset flag works with existing dataset logic."""
+    """Test that --dataset flag works with existing dataset logic.
+
+    Requires Rust binary to be built (integration test).
+    """
     # Create an empty but existing directory to avoid FileNotFoundError during iterdir
     corpus_root = tmp_path / "empty_corpus"
     corpus_root.mkdir()

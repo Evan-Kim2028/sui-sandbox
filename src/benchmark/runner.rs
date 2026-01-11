@@ -26,7 +26,10 @@ enum ConstructorChainEntry {
     /// Intermediate constructor - result stored by return type key
     Intermediate(ConstructorInfo),
     /// Final param constructor - result stored at param_idx in final_args
-    FinalParam { param_idx: usize, ctor: ConstructorInfo },
+    FinalParam {
+        param_idx: usize,
+        ctor: ConstructorInfo,
+    },
 }
 
 /// Check if a reference parameter is a synthesizable Sui system type.

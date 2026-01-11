@@ -428,7 +428,9 @@ fn build_sui_natives(
             };
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::u256(move_core_types::u256::U256::from_le_bytes(&arr))],
+                smallvec![Value::u256(move_core_types::u256::U256::from_le_bytes(
+                    &arr
+                ))],
             ))
         }),
     ));
