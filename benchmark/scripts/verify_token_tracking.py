@@ -12,7 +12,6 @@ This script runs a simple test showing that:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from smi_bench.agents.real_agent import LLMJsonResponse, LLMUsage
 
@@ -100,7 +99,7 @@ def test_token_accumulation_simulation():
         total_completion += usage.completion_tokens
         print(f"Call {i}: +{usage.prompt_tokens} prompt, +{usage.completion_tokens} completion")
 
-    print(f"\n✓ Total accumulated:")
+    print("\n✓ Total accumulated:")
     print(f"  - Prompt tokens: {total_prompt}")
     print(f"  - Completion tokens: {total_completion}")
     print(f"  - Total tokens: {total_prompt + total_completion}")
