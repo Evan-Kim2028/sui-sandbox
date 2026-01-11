@@ -125,10 +125,15 @@ def test_main_scenario_launches_server_when_not_listening(tmp_path: Path, monkey
     """Server startup logic launches scenario server when port not listening."""
     corpus_root = tmp_path / "corpus"
     corpus_root.mkdir()
+    # Create mock rust binary
+    rust_binary = tmp_path / "rust_binary"
+    rust_binary.touch()
 
     args = [
         "--corpus-root",
         str(corpus_root),
+        "--rust-binary",
+        str(rust_binary),
         "--scenario",
         str(tmp_path / "scenario"),
         "--rpc-url",
@@ -156,10 +161,15 @@ def test_main_scenario_skips_server_when_already_listening(tmp_path: Path, monke
     """Server skip logic skips launch when port already listening."""
     corpus_root = tmp_path / "corpus"
     corpus_root.mkdir()
+    # Create mock rust binary
+    rust_binary = tmp_path / "rust_binary"
+    rust_binary.touch()
 
     args = [
         "--corpus-root",
         str(corpus_root),
+        "--rust-binary",
+        str(rust_binary),
         "--scenario",
         str(tmp_path / "scenario"),
         "--rpc-url",
@@ -186,10 +196,15 @@ def test_main_calls_smoke_tool_after_checks(tmp_path: Path, monkeypatch) -> None
     corpus_root.mkdir()
     manifest = tmp_path / "manifest.txt"
     manifest.touch()
+    # Create mock rust binary
+    rust_binary = tmp_path / "rust_binary"
+    rust_binary.touch()
 
     args = [
         "--corpus-root",
         str(corpus_root),
+        "--rust-binary",
+        str(rust_binary),
         "--package-ids-file",
         str(manifest),
         "--rpc-url",
@@ -220,10 +235,15 @@ def test_main_success_prints_ready_for_full_run(tmp_path: Path, monkeypatch, cap
     corpus_root.mkdir()
     manifest = tmp_path / "manifest.txt"
     manifest.touch()
+    # Create mock rust binary
+    rust_binary = tmp_path / "rust_binary"
+    rust_binary.touch()
 
     args = [
         "--corpus-root",
         str(corpus_root),
+        "--rust-binary",
+        str(rust_binary),
         "--package-ids-file",
         str(manifest),
         "--rpc-url",
