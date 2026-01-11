@@ -20,6 +20,15 @@ use crate::bytecode::{compiled_module_name, module_self_address_hex};
 /// Well-known Sui framework addresses
 const SUI_FRAMEWORK_ADDR: AccountAddress = AccountAddress::TWO; // 0x2
 
+/// Entry in the constructor chain - either an intermediate dependency or a final param
+#[derive(Debug, Clone)]
+enum ConstructorChainEntry {
+    /// Intermediate constructor - result stored by return type key
+    Intermediate(ConstructorInfo),
+    /// Final param constructor - result stored at param_idx in final_args
+    FinalParam { param_idx: usize, ctor: ConstructorInfo },
+}
+
 /// Check if a reference parameter is a synthesizable Sui system type.
 /// These are types that the VM harness can provide without real on-chain state.
 fn is_synthesizable_sui_param(
@@ -341,8 +350,8 @@ fn attempt_function(
     let mut synthesizable_params: Vec<&'static str> = Vec::new(); // Track synthesizable params
 
     // Track params that need constructor chaining
-    // Each entry is (param_index, constructor_info) for params that need to be constructed
-    let mut constructor_chain: Vec<(usize, ConstructorInfo)> = Vec::new();
+    // Uses ConstructorChainEntry enum to cleanly distinguish intermediate vs final params
+    let mut constructor_chain: Vec<ConstructorChainEntry> = Vec::new();
 
     for (param_idx, token) in params_sig.0.iter().enumerate() {
         // A4: Check for reference parameters
@@ -444,9 +453,9 @@ fn attempt_function(
                             default_values.push(vec![]); // Placeholder
                                                          // Store OTW info for execution phase
                                                          // We'll handle this specially in the execution loop
-                            constructor_chain.push((
+                            constructor_chain.push(ConstructorChainEntry::FinalParam {
                                 param_idx,
-                                ConstructorInfo {
+                                ctor: ConstructorInfo {
                                     module_id: ModuleId::new(
                                         AccountAddress::TWO,
                                         Identifier::new("coin").unwrap(),
@@ -464,15 +473,39 @@ fn attempt_function(
                                     ],
                                     returns: struct_tag.as_ref().clone(),
                                 },
-                            ));
+                            });
                             continue;
                         }
                     }
 
                     if let Some(ctor) = constructor_map.find_synthesizable_constructor(struct_tag) {
                         // We can construct this! Track it for later
-                        constructor_chain.push((param_idx, ctor.clone()));
+                        constructor_chain.push(ConstructorChainEntry::FinalParam {
+                            param_idx,
+                            ctor: ctor.clone(),
+                        });
                         resolved_params.push(format!("construct:{}", struct_tag.name));
+                        // Push placeholder - will be replaced during execution
+                        default_values.push(vec![]);
+                        continue;
+                    }
+
+                    // Try single-hop constructor (one level of struct dependencies)
+                    if let Some((ctor, dep_ctors)) =
+                        constructor_map.find_single_hop_constructor(struct_tag)
+                    {
+                        // Add dependency constructors first (they need to run before the main ctor)
+                        // These are intermediate results stored by return type key
+                        for dep_ctor in dep_ctors.iter() {
+                            constructor_chain
+                                .push(ConstructorChainEntry::Intermediate((*dep_ctor).clone()));
+                        }
+                        // Then add the main constructor that uses these dependencies
+                        constructor_chain.push(ConstructorChainEntry::FinalParam {
+                            param_idx,
+                            ctor: ctor.clone(),
+                        });
+                        resolved_params.push(format!("construct_hop:{}", struct_tag.name));
                         // Push placeholder - will be replaced during execution
                         default_values.push(vec![]);
                         continue;
@@ -521,8 +554,18 @@ fn attempt_function(
     harness.clear_trace();
 
     // Execute constructor chain if needed
+    // constructed_intermediates stores results from intermediate constructors (keyed by return type)
     let mut final_args = default_values.clone();
-    for (param_idx, ctor) in &constructor_chain {
+    let mut constructed_intermediates: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+
+    for entry in &constructor_chain {
+        // Extract the constructor info from the entry
+        let ctor = match entry {
+            ConstructorChainEntry::Intermediate(c) => c,
+            ConstructorChainEntry::FinalParam { ctor, .. } => ctor,
+        };
+
         // Special case: coin::create_currency needs OTW handling
         let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency"
             && ctor.module_id.address() == &AccountAddress::TWO
@@ -550,8 +593,13 @@ fn attempt_function(
 
             (type_args, args)
         } else {
-            // Normal constructor
-            let args = match build_constructor_args(&mut harness, ctor, validator) {
+            // Normal constructor - pass constructed_intermediates to resolve struct params
+            let args = match build_constructor_args_with_intermediates(
+                &mut harness,
+                ctor,
+                validator,
+                &constructed_intermediates,
+            ) {
                 Ok(args) => args,
                 Err(e) => {
                     report.failure_stage = Some(FailureStage::B1);
@@ -582,7 +630,32 @@ fn attempt_function(
 
         // Use the first return value as the constructed struct
         if let Some(constructed_bytes) = returns.into_iter().next() {
-            final_args[*param_idx] = constructed_bytes;
+            match entry {
+                ConstructorChainEntry::Intermediate(ctor) => {
+                    // Intermediate value - store by return type for later use
+                    let key = format!(
+                        "{}::{}::{}",
+                        ctor.returns.address.to_hex_literal(),
+                        ctor.returns.module,
+                        ctor.returns.name
+                    );
+                    constructed_intermediates.insert(key, constructed_bytes);
+                }
+                ConstructorChainEntry::FinalParam { param_idx, ctor: _ } => {
+                    // Final param - store in final_args (with bounds check)
+                    if *param_idx < final_args.len() {
+                        final_args[*param_idx] = constructed_bytes;
+                    } else {
+                        report.failure_stage = Some(FailureStage::B1);
+                        report.failure_reason = Some(format!(
+                            "constructor chain param_idx {} out of bounds (final_args len: {})",
+                            param_idx,
+                            final_args.len()
+                        ));
+                        return Ok(report);
+                    }
+                }
+            }
         } else {
             report.failure_stage = Some(FailureStage::B1);
             report.failure_reason = Some("constructor returned no value".to_string());
@@ -740,12 +813,13 @@ fn generate_default_value(layout: &MoveTypeLayout) -> Option<MoveValue> {
     }
 }
 
-/// Build arguments for a constructor function.
-/// This handles synthesizable params (TxContext, primitives, type params).
-fn build_constructor_args(
+/// Build arguments for a constructor function, with support for struct params
+/// that have already been constructed (stored in intermediates).
+fn build_constructor_args_with_intermediates(
     harness: &mut VMHarness,
     ctor: &ConstructorInfo,
     validator: &Validator,
+    intermediates: &std::collections::HashMap<String, Vec<u8>>,
 ) -> Result<Vec<Vec<u8>>> {
     let mut args = Vec::new();
 
@@ -780,11 +854,18 @@ fn build_constructor_args(
                 let bytes = 0u64.to_le_bytes().to_vec();
                 args.push(bytes);
             }
-            ParamKind::Struct(_) => {
-                // Nested struct - would need recursive construction
-                // For now, this shouldn't happen since find_synthesizable_constructor
-                // only returns constructors with synthesizable params
-                return Err(anyhow!("nested struct construction not supported"));
+            ParamKind::Struct(struct_tag) => {
+                // Look up the previously constructed value in intermediates
+                let key = format!(
+                    "{}::{}::{}",
+                    struct_tag.address.to_hex_literal(),
+                    struct_tag.module,
+                    struct_tag.name
+                );
+                let bytes = intermediates
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("intermediate struct {} not found", key))?;
+                args.push(bytes.clone());
             }
             ParamKind::Unsupported(desc) => {
                 return Err(anyhow!("unsupported param type: {}", desc));

@@ -293,7 +293,15 @@ fn build_sui_natives(
         "borrow_uid",
         make_native(|_ctx, _ty_args, args| {
             // Pass through the argument - this is a reference operation
-            let obj = args.into_iter().next().unwrap();
+            let obj = match args.into_iter().next() {
+                Some(v) => v,
+                None => {
+                    return Ok(NativeResult::err(
+                        InternalGas::new(0),
+                        E_NOT_SUPPORTED, // Reuse existing error code for invalid native call
+                    ));
+                }
+            };
             Ok(NativeResult::ok(InternalGas::new(0), smallvec![obj]))
         }),
     ));
@@ -411,11 +419,16 @@ fn build_sui_natives(
         make_native(|_ctx, _ty_args, mut args| {
             let addr = pop_arg!(args, AccountAddress);
             let bytes = addr.to_vec();
+            // AccountAddress is always 32 bytes, so this conversion is safe
+            let arr: [u8; 32] = match bytes.try_into() {
+                Ok(a) => a,
+                Err(_) => {
+                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                }
+            };
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::u256(move_core_types::u256::U256::from_le_bytes(
-                    &bytes.try_into().unwrap()
-                ))],
+                smallvec![Value::u256(move_core_types::u256::U256::from_le_bytes(&arr))],
             ))
         }),
     ));
@@ -702,7 +715,13 @@ fn add_dynamic_field_natives(
 
             // Extract parent address from UID { id: ID { bytes: address } }
             // Navigate: UID.id (field 0) -> ID.bytes (field 0) -> address
-            let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
+            let parent = match extract_address_from_uid(&parent_uid) {
+                Some(addr) => addr,
+                None => {
+                    // Failed to extract UID - return error instead of silently using 0x0
+                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                }
+            };
 
             let runtime: &ObjectRuntime = ctx.extensions().get()?;
             match runtime.borrow_child_object(parent, child_id, &child_tag) {
@@ -730,7 +749,13 @@ fn add_dynamic_field_natives(
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
 
             // Extract parent address (same as borrow_child_object)
-            let parent = extract_address_from_uid(&parent_uid).unwrap_or(AccountAddress::ZERO);
+            let parent = match extract_address_from_uid(&parent_uid) {
+                Some(addr) => addr,
+                None => {
+                    // Failed to extract UID - return error instead of silently using 0x0
+                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                }
+            };
 
             let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
             match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {

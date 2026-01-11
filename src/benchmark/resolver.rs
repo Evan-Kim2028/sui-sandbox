@@ -101,6 +101,14 @@ impl LocalModuleResolver {
                 .map_err(|e| anyhow!("deserialize {}: {}", path.display(), e))?;
 
             let id = module.self_id();
+            // Check for duplicate modules - warn but don't fail (later module wins)
+            if self.modules.contains_key(&id) {
+                eprintln!(
+                    "Warning: duplicate module {} found at {}, overwriting previous",
+                    id,
+                    path.display()
+                );
+            }
             self.modules.insert(id.clone(), module);
             self.modules_bytes.insert(id, bytes);
             count += 1;
