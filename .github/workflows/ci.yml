@@ -92,23 +92,22 @@ jobs:
       
       - name: Create test directories
         run: |
-          # Create corpus in the path that docker-compose.yml expects (../sui-packages/packages relative to repo root)
-          # For CI, we create it at the expected relative path
-          mkdir -p ../sui-packages/packages results logs
+          # Create mock corpus for CI (uses docker-compose.ci.yml override)
+          mkdir -p ci-corpus results logs
           # Ensure directories are writable by UID 1000 (container user)
-          sudo chown -R 1000:1000 results logs ../sui-packages
+          sudo chown -R 1000:1000 ci-corpus results logs
           # Create minimal mock corpus for CI
-          mkdir -p ../sui-packages/packages/0x00/fixture/bytecode_modules
-          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > ../sui-packages/packages/0x00/fixture/metadata.json
-          touch ../sui-packages/packages/0x00/fixture/bytecode_modules/dummy.mv
-          echo "0x0000000000000000000000000000000000000000000000000000000000000001" > ../sui-packages/packages/manifest.txt
+          mkdir -p ci-corpus/0x00/fixture/bytecode_modules
+          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > ci-corpus/0x00/fixture/metadata.json
+          touch ci-corpus/0x00/fixture/bytecode_modules/dummy.mv
+          echo "0x0000000000000000000000000000000000000000000000000000000000000001" > ci-corpus/manifest.txt
       
       - name: Build and start container
         run: |
           export SMI_AGENT="mock-empty"
           export DOCKER_BUILDKIT=1
-          docker compose build
-          docker compose up -d --wait --wait-timeout 60
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml build
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --wait --wait-timeout 60
       
       - name: Verify agent health
         run: |
@@ -117,7 +116,7 @@ jobs:
       
       - name: Run smoke test
         run: |
-          docker compose exec -T smi-bench smi-inhabit \
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml exec -T smi-bench smi-inhabit \
             --corpus-root /corpus \
             --package-ids-file /corpus/manifest.txt \
             --samples 1 \
@@ -133,10 +132,10 @@ jobs:
             head -50 results/ci_smoke.json
           else
             echo "FAILURE: Result file not found"
-            docker compose logs
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml logs
             exit 1
           fi
       
       - name: Cleanup
         if: always()
-        run: docker compose down --timeout 10
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down --timeout 10
