@@ -1,5 +1,4 @@
 //! ObjectRuntime - VM extension for dynamic field simulation.
-//! ObjectRuntime - VM extension for dynamic field simulation.
 //!
 //! This module provides an in-memory object runtime that integrates with the Move VM
 //! via its extension mechanism. It enables full dynamic field support including

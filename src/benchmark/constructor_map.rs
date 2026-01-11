@@ -1,5 +1,4 @@
 //! Constructor Map: Finds functions that can construct struct types.
-//! Constructor Map: Finds functions that can construct struct types.
 //!
 //! For constructor chaining, we need to know which functions return which struct types
 //! and whether their parameters are synthesizable (primitives, TxContext, or other

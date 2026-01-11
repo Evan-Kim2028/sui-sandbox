@@ -1,4 +1,3 @@
-//! Mock native function implementations for Sui Move VM execution.
 //! Native function implementations for Tier B execution.
 //!
 //! This module provides native function implementations that enable Tier B execution
@@ -587,18 +586,6 @@ fn build_sui_system_natives() -> Vec<(&'static str, &'static str, NativeFunction
         }),
     )]
 }
-
-/// Add dynamic field natives that we CAN support.
-/// 
-/// We support:
-/// - hash_type_and_key: deterministic hashing of parent + key type + key value
-/// - add_child_object: store object in our in-memory store
-/// - has_child_object: check if object exists
-/// - has_child_object_with_ty: check if object exists with specific type
-///
-/// We do NOT support (see add_abort_stubs):
-/// - borrow_child_object / borrow_child_object_mut: requires VM extension for references
-/// - remove_child_object: requires VM extension for move_from semantics
 
 /// Extract address from UID { id: ID { bytes: address } }
 fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Option<AccountAddress> {
