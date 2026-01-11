@@ -284,6 +284,45 @@ python benchmark/scripts/validate_crossrefs.py --fail-on-warning
 - [ ] **Accessibility review**: Ensure newcomers can navigate docs successfully
 - [ ] **Cross-link review**: Verify bidirectional linking is maintained
 
+## Test Fixtures
+
+The project includes Move test fixtures for testing failure detection at each validation stage.
+
+### Fixture Location
+
+```
+tests/fixture/build/
+├── fixture/                    # Standard test modules
+│   └── sources/
+│       ├── simple.move        # Basic passing tests
+│       └── complex_layouts.move # Nested structs, generics, vectors
+└── failure_cases/             # Failure stage triggers
+    └── sources/
+        ├── a1_function_not_found.move   # A1: Missing function
+        ├── a1_private_function.move     # A1: Non-public function
+        ├── a4_object_param.move         # A4: Object parameter detection
+        ├── a5_generic_function.move     # A5: Generic function (unsupported)
+        └── b2_abort_function.move       # B2: Runtime abort
+```
+
+### Using Fixtures in Tests
+
+```rust
+// Rust tests
+let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+let fixture_dir = manifest_dir.join("tests/fixture/build/fixture");
+```
+
+```python
+# Python tests
+from pathlib import Path
+FIXTURE_DIR = Path(__file__).parents[2] / "tests" / "fixture" / "build" / "fixture"
+```
+
+See [TEST_FIXTURES.md](../../docs/TEST_FIXTURES.md) for complete documentation.
+
+---
+
 ## Common Issues and Solutions
 
 ### Issue: Placeholder Not Documented
@@ -331,3 +370,5 @@ Either:
 - **Schema definition**: `benchmark/docs/evaluation_bundle.schema.json`
 - **Example docs**: `benchmark/GETTING_STARTED.md`, `benchmark/docs/A2A_EXAMPLES.md`
 - **Architecture docs**: `benchmark/docs/ARCHITECTURE.md`
+- **Test fixtures**: See [TEST_FIXTURES.md](../../docs/TEST_FIXTURES.md) for fixture organization and failure case modules
+- **Local benchmark spec**: See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for Tier A/B validation stages

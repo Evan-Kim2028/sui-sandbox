@@ -1,8 +1,10 @@
 # Benchmark Code Architecture (`benchmark/src/smi_bench`)
 
-This document is a maintainers’ map of the Python benchmark harness: **what lives where**, **how data flows**, and **which invariants matter** for refactors.
+> **Note:** This document covers the Python benchmark harness. For the Rust `benchmark-local` command (no-chain validation), see [../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md). For implementation details, see [../../IMPLEMENTATION_SUMMARY.md](../../IMPLEMENTATION_SUMMARY.md).
 
-It is intentionally short and “source-first.” When in doubt, trust the code.
+This document is a maintainers' map of the Python benchmark harness: **what lives where**, **how data flows**, and **which invariants matter** for refactors.
+
+It is intentionally short and "source-first." When in doubt, trust the code.
 
 ## High-level flow
 

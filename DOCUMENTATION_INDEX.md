@@ -7,7 +7,7 @@
 ## 🚀 Quick Navigation
 
 ### New Users (Start Here)
-1. [**QUICK_START_GUIDE.md**](QUICK_START_GUIDE.md) - ⚡ 30-second quick start (NEW)
+1. [**QUICK_START_GUIDE.md**](QUICK_START_GUIDE.md) - ⚡ 30-second quick start
    - Fastest way to test with Docker + HTTP API
    - Real-world test script
    - Model comparison testing
@@ -19,19 +19,29 @@
 
 ### Production Users
 1. [**PRODUCTION_DEPLOYMENT.md**](PRODUCTION_DEPLOYMENT.md) - Complete production deployment
-2. [**REAL_WORLD_TEST_GUIDE.md**](REAL_WORLD_TEST_GUIDE.md) - Real-world testing with mainnet packages
-3. [**QUICK_START_GUIDE.md**](QUICK_START_GUIDE.md) - New features (models, Docker, fast runs)
+2. [**QUICK_START_GUIDE.md**](QUICK_START_GUIDE.md) - Models, Docker, fast runs
+
+### Local Benchmark (No-Chain) - NEW
+1. [**docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md**](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) - Technical specification for offline validation
+2. [**docs/CLI_REFERENCE.md**](docs/CLI_REFERENCE.md) - `benchmark-local` command documentation
+3. [**benchmark/scripts/e2e_one_package.py**](benchmark/scripts/e2e_one_package.py) - E2E one-package evaluation script
+
+### Datasets & Case Studies
+1. [**benchmark/DATASETS.md**](benchmark/DATASETS.md) - Dataset creation and usage guide
+2. [**specs/LIQUID_STAKING_CASE_STUDY.md**](specs/LIQUID_STAKING_CASE_STUDY.md) - E2E pipeline case study with complex DeFi package
 
 ### Testing & Development
 1. [**benchmark/TESTING_QUICKSTART.md**](benchmark/TESTING_QUICKSTART.md) - Testing tools reference
 2. [**docs/BENCHMARK_GUIDE.md**](docs/BENCHMARK_GUIDE.md) - Comprehensive benchmark guide
-3. [**docs/TESTING.md**](docs/TESTING.md) - Testing methodology
-4. [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) - Common issues and fixes
+3. [**benchmark/docs/TESTING.md**](benchmark/docs/TESTING.md) - Testing methodology (canonical)
+4. [**docs/TEST_FIXTURES.md**](docs/TEST_FIXTURES.md) - Test fixture organization and failure cases
+5. [**docs/TROUBLESHOOTING.md**](docs/TROUBLESHOOTING.md) - Common issues and fixes
 
 ### Architecture & Technical
-1. [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md) - System architecture
-2. [**docs/A2A_PROTOCOL.md**](docs/A2A_PROTOCOL.md) - HTTP API specification
-3. [**docs/SCHEMA.md**](docs/SCHEMA.md) - Result schemas
+1. [**benchmark/docs/ARCHITECTURE.md**](benchmark/docs/ARCHITECTURE.md) - System architecture (canonical)
+2. [**IMPLEMENTATION_SUMMARY.md**](IMPLEMENTATION_SUMMARY.md) - Implementation decisions and code structure
+3. [**docs/A2A_PROTOCOL.md**](docs/A2A_PROTOCOL.md) - HTTP API specification
+4. [**docs/SCHEMA.md**](docs/SCHEMA.md) - Result schemas
 
 ### Reference & CLI
 1. [**docs/CLI_REFERENCE.md**](docs/CLI_REFERENCE.md) - Complete CLI reference
@@ -41,7 +51,60 @@
 
 ## 🆕 What's New? (Latest Updates)
 
-### 1. Real-World Test Script ⚡
+### 1. Local Benchmark (`benchmark-local`) - No-Chain Validation ⚡
+**Command:** `sui_move_interface_extractor benchmark-local`
+
+**New Capabilities:**
+- Validate type inhabitation **without network access**
+- Tier A (preflight) and Tier B (VM execution) validation stages
+- Deterministic, reproducible results
+- Works in air-gapped CI/CD environments
+
+**Quick Start:**
+```bash
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output results.jsonl \
+  --restricted-state
+```
+
+**Documentation:** [NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md)
+
+---
+
+### 2. E2E One-Package Script ⚡
+**File:** `benchmark/scripts/e2e_one_package.py`
+
+**New Capabilities:**
+- Complete LLM-driven evaluation pipeline
+- Target Package → LLM Helper Generation → Move Build → TX Simulation
+- Offline mode (no API key needed for testing)
+- Automatic repair loop for build failures
+
+**Quick Start:**
+```bash
+# Offline test
+cd benchmark
+uv run python scripts/e2e_one_package.py \
+    --corpus-root tests/fake_corpus \
+    --package-id 0x1 \
+    --out-dir results/my_test
+
+# Real LLM test
+export SMI_E2E_REAL_LLM=1
+uv run python scripts/e2e_one_package.py \
+    --corpus-root ../sui-packages/packages/mainnet_most_used \
+    --dataset type_inhabitation_top25 \
+    --samples 5 \
+    --model google/gemini-3-flash-preview \
+    --out-dir results/e2e_run
+```
+
+**Documentation:** See inline docstrings in `benchmark/scripts/e2e_one_package.py`
+
+---
+
+### 3. Real-World Test Script ⚡
 **File:** `benchmark/run_real_world_test.py`
 
 **New Features:**
@@ -63,7 +126,7 @@ uv run python3 benchmark/run_real_world_test.py \
 
 ---
 
-### 2. Docker Fluid Usage 🐳
+### 4. Docker Fluid Usage 🐳
 
 **New Capabilities:**
 - Easy start/stop/restart with `docker compose`
@@ -90,7 +153,7 @@ docker stats smi-bench-dev
 
 ---
 
-### 3. Multi-Model Testing 📊
+### 5. Multi-Model Testing 📊
 
 **New Capabilities:**
 - Test any combination of models
@@ -118,7 +181,7 @@ uv run python3 benchmark/run_real_world_test.py \
 
 ---
 
-### 4. Fast Iteration Loop 🔄
+### 6. Fast Iteration Loop 🔄
 
 **New Mode: Dry-Run**
 - **Characteristics:** Mock agent, no LLM API calls, ~2 seconds per package
@@ -143,7 +206,7 @@ uv run python3 benchmark/run_real_world_test.py \
 
 ---
 
-### 5. Detailed Analytics 📈
+### 7. Detailed Analytics 📈
 
 **New Metrics Collected:**
 - ✅ Execution duration (total and per-package)
@@ -171,45 +234,37 @@ cat benchmark/logs/<run_id>/events.jsonl | jq .
 ## 📚 Documentation Hierarchy
 
 ```
-DOCUMENTATION_INDEX.md (this file)
-│
-├── QUICK_START_GUIDE.md (NEW - Start here)
-│   ├── Docker fluid usage
-│   ├── Real-world test script
-│   ├── Model comparison
-│   ├── Fast iteration (dry-run)
-│   └── Analytics & results
-│
-├── README.md
-│   ├── Project overview
-│   ├── Getting started
-│   └── Top-25 dataset
-│
-├── PRODUCTION_DEPLOYMENT.md
-│   ├── Corpus setup
-│   ├── Docker mounting
-│   ├── Service startup
-│   └── Running tests
-│
-├── REAL_WORLD_TEST_GUIDE.md
-│   ├── Traditional API testing
-│   ├── Direct API calls
-│   └── Example requests
-│
-├── benchmark/
-│   ├── GETTING_STARTED.md
-│   ├── TESTING_QUICKSTART.md
-│   └── README.md
-│
+Root (5 essential files)
+├── README.md                    # Project overview, Top 25 dataset, LST case study
+├── QUICK_START_GUIDE.md         # All user workflows (start here)
+├── PRODUCTION_DEPLOYMENT.md     # Production + offline deployment
+├── IMPLEMENTATION_SUMMARY.md    # Architecture decisions
+└── AGENTS.md                    # Development guidelines
+
+benchmark/
+├── GETTING_STARTED.md           # Benchmark setup (canonical entrypoint)
+├── DATASETS.md                  # Dataset creation and usage
+├── TESTING_QUICKSTART.md        # Quick testing reference
+├── scripts/e2e_one_package.py   # E2E LLM evaluation pipeline
 └── docs/
-    ├── ARCHITECTURE.md
-    ├── A2A_PROTOCOL.md
-    ├── BENCHMARK_GUIDE.md
-    ├── CLI_REFERENCE.md
-    ├── SCHEMA.md
-    ├── TESTING.md
-    └── TROUBLESHOOTING.md
+    ├── ARCHITECTURE.md          # Python harness architecture (canonical)
+    ├── TESTING.md               # Testing methodology (canonical)
+    └── A2A_*.md                 # A2A protocol details
+
+docs/
+├── CLI_REFERENCE.md             # All CLI commands and flags
+├── METHODOLOGY.md               # Research methodology and scoring
+├── NO_CHAIN_TYPE_INHABITATION_SPEC.md  # Tier A/B validation spec
+├── TEST_FIXTURES.md             # Test fixture documentation
+├── A2A_PROTOCOL.md              # A2A protocol summary
+├── SCHEMA.md                    # Output schemas
+└── TROUBLESHOOTING.md           # Common issues
+
+specs/
+└── LIQUID_STAKING_CASE_STUDY.md # Complex DeFi package case study
 ```
+
+**Note:** `docs/TESTING.md`, `docs/DATASETS.md`, and `docs/ARCHITECTURE.md` redirect to canonical versions in `benchmark/`.
 
 ---
 
@@ -220,20 +275,35 @@ DOCUMENTATION_INDEX.md (this file)
 **...get started in 30 seconds:**
 → Read [QUICK_START_GUIDE.md](QUICK_START_GUIDE.md)
 
+**...validate without network (air-gapped/CI):**
+→ Read [QUICK_START_GUIDE.md - Local Benchmark](QUICK_START_GUIDE.md#-local-benchmark-no-chain-validation)
+
+**...run the E2E LLM pipeline:**
+→ Read [benchmark/GETTING_STARTED.md - E2E One-Package](benchmark/GETTING_STARTED.md#4-e2e-one-package-pipeline)
+
 **...test multiple models:**
-→ Read [QUICK_START_GUIDE.md - Model Comparison](QUICK_START_GUIDE.md#--model-comparison-testing)
+→ Read [QUICK_START_GUIDE.md - Model Comparison](QUICK_START_GUIDE.md#-model-comparison-testing)
 
 **...use Docker easily:**
-→ Read [QUICK_START_GUIDE.md - Docker Fluid Usage](QUICK_START_GUIDE.md#--docker-fluid-usage)
+→ Read [QUICK_START_GUIDE.md - Docker Fluid Usage](QUICK_START_GUIDE.md#-docker-fluid-usage)
 
-**...do fast iterations:**
-→ Read [QUICK_START_GUIDE.md - Dry-Run vs Live Mode](QUICK_START_GUIDE.md#--dry-run-vs-live-mode)
+**...deploy to production (offline):**
+→ Read [PRODUCTION_DEPLOYMENT.md - Offline Mode](PRODUCTION_DEPLOYMENT.md#-offline-mode--air-gapped-deployment)
 
-**...deploy to production:**
-→ Read [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md)
+**...understand Tier A/B validation:**
+→ Read [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md)
 
-**...run real-world tests:**
-→ Read [REAL_WORLD_TEST_GUIDE.md](REAL_WORLD_TEST_GUIDE.md)
+**...use test fixtures:**
+→ Read [docs/TEST_FIXTURES.md](docs/TEST_FIXTURES.md)
+
+**...run the Top 25 dataset:**
+→ Read [README.md - Quick Start: Top 25 Dataset](README.md#-quick-start-top-25-dataset)
+
+**...test a complex DeFi package (LST):**
+→ Read [README.md - Case Study: Liquid Staking](README.md#-case-study-liquid-staking-package) or [specs/LIQUID_STAKING_CASE_STUDY.md](specs/LIQUID_STAKING_CASE_STUDY.md)
+
+**...create custom datasets:**
+→ Read [benchmark/DATASETS.md](benchmark/DATASETS.md)
 
 **...understand the API:**
 → Read [docs/A2A_PROTOCOL.md](docs/A2A_PROTOCOL.md)

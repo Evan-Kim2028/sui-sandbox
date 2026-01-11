@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 1. Layer Optimization: Pre-build Rust dependencies
 # This caches the slow compilation of heavy Sui dependencies.
 COPY Cargo.toml Cargo.lock ./
+# Copy bundled framework bytecode (required for include_bytes! at compile time)
+# Version must match SUI_VERSION in runtime stage below
+COPY framework_bytecode ./framework_bytecode
 RUN mkdir -p src/bin && \
     touch src/lib.rs && \
     echo "fn main() {}" > src/main.rs && \
@@ -40,11 +43,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Sui CLI for deterministic Move builds in Docker.
-# NOTE: This pulls a prebuilt binary from MystenLabs releases.
+# IMPORTANT: This version MUST match the tag in Cargo.toml's sui-* dependencies!
+# When updating: change BOTH this ARG AND Cargo.toml's `tag = "mainnet-vX.XX.X"` values.
+# Use mainnet releases for production evaluation (not testnet/devnet).
+ARG SUI_VERSION=mainnet-v1.62.1
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then PLATFORM="ubuntu-aarch64"; else PLATFORM="ubuntu-x86_64"; fi; \
-    URL="https://github.com/MystenLabs/sui/releases/latest/download/sui-testnet-v1.63.1-${PLATFORM}.tgz"; \
+    URL="https://github.com/MystenLabs/sui/releases/download/${SUI_VERSION}/sui-${SUI_VERSION}-${PLATFORM}.tgz"; \
     curl -L "$URL" -o /tmp/sui.tgz; \
     test "$(stat -c%s /tmp/sui.tgz 2>/dev/null || stat -f%z /tmp/sui.tgz)" -gt 1000000; \
     tar -xzf /tmp/sui.tgz -C /usr/local/bin; \
@@ -71,6 +77,7 @@ COPY scripts ./scripts
 COPY docs ./docs
 COPY README.md ./README.md
 COPY benchmark/README.md ./benchmark/README.md
+COPY benchmark/scripts ./benchmark/scripts
 
 # 6. Copy Python source (Frequent Changes)
 # Changing a file here will only trigger the steps below.

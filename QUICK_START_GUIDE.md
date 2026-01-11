@@ -6,6 +6,23 @@
 
 ## 🎯 What's New? (Latest Updates)
 
+### ✅ Local Benchmark (No-Chain)
+**Command:** `benchmark-local`
+
+Validate type inhabitation **without network access**. Uses a local Move VM with synthetic state.
+- Tier A (preflight): Bytecode + BCS validation
+- Tier B (VM execution): Local Move VM harness
+- Deterministic, reproducible results
+- Works in air-gapped CI/CD environments
+
+### ✅ E2E One-Package Script
+**File:** `benchmark/scripts/e2e_one_package.py`
+
+Complete LLM-driven evaluation pipeline: Target → Helper Generation → Build → Simulation.
+- Offline mode (no API key needed for testing)
+- Automatic build repair loop
+- Full artifact capture
+
 ### ✅ Real-World Testing Script
 **File:** `benchmark/run_real_world_test.py`
 
@@ -13,6 +30,8 @@ Submit benchmark tasks via HTTP API, test multiple models, get detailed analytic
 
 ### ✅ Docker Fluid Usage
 Start, stop, restart, monitor - all from standard Docker commands. Logs and results persist across restarts.
+- Sui CLI now included in container
+- `framework_bytecode/` caching for offline operation
 
 ### ✅ Model Mixing
 Test any combination of models in a single run:
@@ -76,6 +95,88 @@ cat benchmark/logs/*/events.jsonl | jq .
 ```
 
 **Done!** You've successfully tested the system in under a minute.
+
+---
+
+## 🔧 Local Benchmark (No-Chain Validation)
+
+The `benchmark-local` command validates type inhabitation **without any network access**. It uses a local Move VM with synthetic state.
+
+### Quick Start
+```bash
+# Build the Rust binary first
+cargo build --release
+
+# Run local benchmark
+./target/release/sui_move_interface_extractor benchmark-local \
+    --target-corpus /path/to/bytecode_modules \
+    --output results.jsonl \
+    --restricted-state
+```
+
+### Validation Tiers
+
+| Tier | Name | What It Checks |
+|------|------|----------------|
+| **A** | Preflight | Bytecode resolution, BCS serialization, type layouts |
+| **B** | VM Execution | Local Move VM execution with synthetic state |
+
+### Key Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--target-corpus` | Directory containing `.mv` files | Required |
+| `--output` | JSONL output file path | Required |
+| `--tier-a-only` | Skip VM execution (faster) | false |
+| `--restricted-state` | Use mock objects (Coin, UID) | false |
+
+### Output Format (JSONL)
+```json
+{
+  "target_package": "0x...",
+  "target_module": "module_name",
+  "target_function": "function_name",
+  "status": "tier_a_hit",
+  "failure_stage": "A3",
+  "failure_reason": "BCS roundtrip failed"
+}
+```
+
+### When to Use
+- **Air-gapped CI/CD**: No network access required
+- **Deterministic testing**: Same inputs = same outputs
+- **Fast iteration**: Validate 100+ modules in seconds
+- **Zero cost**: No Sui tokens or gas budget needed
+
+See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for technical details.
+
+---
+
+## 🧪 E2E One-Package Pipeline
+
+For complete LLM-driven evaluation without HTTP API setup:
+
+```bash
+cd benchmark
+
+# Offline test (no API key)
+uv run python scripts/e2e_one_package.py \
+    --corpus-root tests/fake_corpus \
+    --package-id 0x1 \
+    --out-dir results/test
+
+# Real LLM test
+export SMI_E2E_REAL_LLM=1
+export OPENROUTER_API_KEY=sk-or-v1-...
+uv run python scripts/e2e_one_package.py \
+    --corpus-root ../sui-packages/packages/mainnet_most_used \
+    --dataset type_inhabitation_top25 \
+    --samples 5 \
+    --model google/gemini-3-flash-preview \
+    --out-dir results/e2e_run
+```
+
+See [benchmark/GETTING_STARTED.md](benchmark/GETTING_STARTED.md#4-e2e-one-package-pipeline) for details.
 
 ---
 
