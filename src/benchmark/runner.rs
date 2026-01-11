@@ -11,6 +11,7 @@ use std::io::{BufWriter, Write};
 use crate::args::BenchmarkLocalArgs;
 use crate::benchmark::bytecode_analyzer::{self, StaticFunctionCall};
 use crate::benchmark::constructor_map::{ConstructorMap, ConstructorInfo, ParamKind};
+use crate::benchmark::errors::{is_unsupported_native_error, unsupported_native_error_message};
 use crate::benchmark::resolver::LocalModuleResolver;
 use crate::benchmark::validator::Validator;
 use crate::benchmark::vm::VMHarness;
@@ -55,23 +56,105 @@ fn is_synthesizable_sui_param(token: &SignatureToken, module: &CompiledModule) -
     None
 }
 
+/// Result status of a type inhabitation attempt.
+///
+/// ## Status Meanings
+///
+/// | Status | Description |
+/// |--------|-------------|
+/// | `tier_a_hit` | Arguments synthesized successfully, but execution not attempted or failed |
+/// | `tier_b_hit` | Function executed successfully without abort |
+/// | `miss` | Failed at some stage (check `failure_stage` and `failure_reason`) |
+///
+/// ## Tier Definitions
+///
+/// - **Tier A**: Proves the LLM understands type signatures (code compiles/args build)
+/// - **Tier B**: Proves the LLM understands runtime semantics (code executes)
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptStatus {
+    /// Arguments synthesized successfully (Tier A passed)
     TierAHit,
+    /// Function executed without abort (Tier A + B passed)
     TierBHit,
+    /// Failed at some stage (see failure_stage for details)
     Miss,
 }
 
+/// Failure stages in the type inhabitation evaluation pipeline.
+///
+/// The pipeline has two tiers:
+/// - **Tier A (Argument Synthesis)**: Can we build valid arguments for the function?
+/// - **Tier B (Execution)**: Does the function execute without aborting?
+///
+/// ## Tier A Stages (Argument Synthesis)
+///
+/// | Stage | Name | Description |
+/// |-------|------|-------------|
+/// | A1 | Target Validation | Function doesn't exist or isn't callable (private, missing module) |
+/// | A2 | Layout Resolution | Can't determine the memory layout for a parameter type |
+/// | A3 | Value Synthesis | Can't generate a valid value for a parameter (no constructor, no default) |
+/// | A4 | (Reserved) | Currently unused |
+/// | A5 | Type Parameter Bounds | Generic type parameter index out of bounds |
+///
+/// ## Tier B Stages (Execution)
+///
+/// | Stage | Name | Description |
+/// |-------|------|-------------|
+/// | B1 | VM Setup / Constructor | VM harness creation failed, or constructor chaining failed |
+/// | B2 | Execution | Function aborted during execution (assertion, unsupported native, etc.) |
+///
+/// ## Interpreting B2 Failures
+///
+/// When `failure_stage == B2`, check the `failure_reason`:
+/// - Contains "error 1000": Unsupported native function (crypto, randomness, zklogin)
+/// - Contains "MoveAbort": Function assertion failed or explicit abort
+/// - Contains "MISSING_DEPENDENCY": Required module not loaded
+///
+/// ## Success Cases
+///
+/// - `tier_a_hit`: Arguments synthesized successfully (A stages passed)
+/// - `tier_b_hit`: Function executed without abort (all stages passed)
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum FailureStage {
+    /// A1: Target function doesn't exist, isn't public, or module not found
     A1,
+    /// A2: Cannot resolve type layout for parameter (unknown struct, recursive type)
     A2,
+    /// A3: Cannot synthesize value for parameter (no constructor, no default generator)
     A3,
+    /// A4: Reserved for future use
     A4,
+    /// A5: Generic type parameter index out of bounds
     A5,
+    /// B1: VM harness creation failed or constructor chaining failed
     B1,
+    /// B2: Function execution aborted (assertion, unsupported native, runtime error)
     B2,
+}
+
+impl FailureStage {
+    /// Get a human-readable description of this failure stage.
+    pub fn description(&self) -> &'static str {
+        match self {
+            FailureStage::A1 => "target validation failed (function not found or not callable)",
+            FailureStage::A2 => "type layout resolution failed (unknown or recursive type)",
+            FailureStage::A3 => "value synthesis failed (no constructor or default available)",
+            FailureStage::A4 => "reserved stage (unused)",
+            FailureStage::A5 => "type parameter out of bounds",
+            FailureStage::B1 => "VM setup or constructor execution failed",
+            FailureStage::B2 => "function execution aborted",
+        }
+    }
+    
+    /// Get the tier (A or B) for this stage.
+    pub fn tier(&self) -> &'static str {
+        match self {
+            FailureStage::A1 | FailureStage::A2 | FailureStage::A3 | 
+            FailureStage::A4 | FailureStage::A5 => "A (argument synthesis)",
+            FailureStage::B1 | FailureStage::B2 => "B (execution)",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -569,12 +652,8 @@ fn attempt_function(
             
             // Check for unsupported native error (E_NOT_SUPPORTED = 1000)
             let error_str = e.to_string();
-            let failure_reason = if error_str.contains("1000") && error_str.contains("MoveAbort") {
-                format!(
-                    "execution failed: unsupported native function (error 1000). \
-                     This function uses a native that cannot be simulated (crypto verification, \
-                     randomness, zklogin, etc.). See natives.rs for the full list."
-                )
+            let failure_reason = if is_unsupported_native_error(&error_str) {
+                unsupported_native_error_message()
             } else {
                 format!("execution failed: {e}")
             };

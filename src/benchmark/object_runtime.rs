@@ -248,13 +248,29 @@ mod tests {
     use super::*;
     use move_vm_types::values::Value;
 
+    /// Create a struct Value for testing (GlobalValue::cached requires struct values)
+    fn make_test_struct() -> Value {
+        // Create a simple struct with one u64 field
+        Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(42)]))
+    }
+    
+    fn make_test_type_tag() -> TypeTag {
+        // Use a struct type tag that matches our test struct
+        TypeTag::Struct(Box::new(move_core_types::language_storage::StructTag {
+            address: AccountAddress::ONE,
+            module: move_core_types::identifier::Identifier::new("test").unwrap(),
+            name: move_core_types::identifier::Identifier::new("TestStruct").unwrap(),
+            type_params: vec![],
+        }))
+    }
+
     #[test]
     fn test_add_and_exists() {
         let mut runtime = ObjectRuntime::new();
         let parent = AccountAddress::from_hex_literal("0x1").unwrap();
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
-        let value = Value::u64(42);
-        let type_tag = TypeTag::U64;
+        let value = make_test_struct();
+        let type_tag = make_test_type_tag();
 
         assert!(!runtime.child_object_exists(parent, child_id));
 
@@ -270,11 +286,12 @@ mod tests {
         let mut runtime = ObjectRuntime::new();
         let parent = AccountAddress::from_hex_literal("0x1").unwrap();
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
+        let type_tag = make_test_type_tag();
 
-        runtime.add_child_object(parent, child_id, Value::u64(1), TypeTag::U64).unwrap();
+        runtime.add_child_object(parent, child_id, make_test_struct(), type_tag.clone()).unwrap();
 
-        let result = runtime.add_child_object(parent, child_id, Value::u64(2), TypeTag::U64);
-        assert_eq!(result, Err(E_FIELD_ALREADY_EXISTS));
+        let result = runtime.add_child_object(parent, child_id, make_test_struct(), type_tag);
+        assert!(matches!(result, Err(e) if e == E_FIELD_ALREADY_EXISTS));
     }
 
     #[test]
@@ -283,8 +300,8 @@ mod tests {
         let parent = AccountAddress::from_hex_literal("0x1").unwrap();
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
 
-        let result = runtime.borrow_child_object(parent, child_id, &TypeTag::U64);
-        assert_eq!(result, Err(E_FIELD_DOES_NOT_EXIST));
+        let result = runtime.borrow_child_object(parent, child_id, &make_test_type_tag());
+        assert!(matches!(result, Err(e) if e == E_FIELD_DOES_NOT_EXIST));
     }
 
     #[test]
@@ -292,9 +309,9 @@ mod tests {
         let mut runtime = ObjectRuntime::new();
         let parent = AccountAddress::from_hex_literal("0x1").unwrap();
         let child_id = AccountAddress::from_hex_literal("0x2").unwrap();
-        let type_tag = TypeTag::U64;
+        let type_tag = make_test_type_tag();
 
-        runtime.add_child_object(parent, child_id, Value::u64(42), type_tag.clone()).unwrap();
+        runtime.add_child_object(parent, child_id, make_test_struct(), type_tag.clone()).unwrap();
         assert!(runtime.child_object_exists(parent, child_id));
 
         let _removed = runtime.remove_child_object(parent, child_id, &type_tag).unwrap();
@@ -302,6 +319,6 @@ mod tests {
 
         // Second remove should fail
         let result = runtime.remove_child_object(parent, child_id, &type_tag);
-        assert_eq!(result, Err(E_FIELD_DOES_NOT_EXIST));
+        assert!(matches!(result, Err(e) if e == E_FIELD_DOES_NOT_EXIST));
     }
 }

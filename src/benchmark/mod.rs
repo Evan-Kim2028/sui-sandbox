@@ -1,5 +1,6 @@
 pub mod bytecode_analyzer;
 pub mod constructor_map;
+pub mod errors;
 pub mod natives;
 pub mod object_runtime;
 pub mod object_store;

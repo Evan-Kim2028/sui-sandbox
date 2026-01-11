@@ -57,14 +57,13 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use super::errors::E_NOT_SUPPORTED;
+
 const MOVE_STDLIB_ADDRESS: AccountAddress = AccountAddress::ONE;
 const SUI_FRAMEWORK_ADDRESS: AccountAddress = AccountAddress::TWO;
 const SUI_SYSTEM_ADDRESS: AccountAddress = AccountAddress::new([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
 ]);
-
-/// Error code for operations that cannot be mocked without false positives
-const E_NOT_SUPPORTED: u64 = 1000;
 
 /// Check if a type is a valid One-Time Witness (OTW).
 /// 

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 /// A stored object in our in-memory store.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredObject {
     /// BCS-serialized bytes of the object
     pub bytes: Vec<u8>,
