@@ -566,10 +566,23 @@ fn attempt_function(
         }
         Err(e) => {
             report.failure_stage = Some(FailureStage::B2);
-            report.failure_reason = Some(format!("execution failed: {e}"));
+            
+            // Check for unsupported native error (E_NOT_SUPPORTED = 1000)
+            let error_str = e.to_string();
+            let failure_reason = if error_str.contains("1000") && error_str.contains("MoveAbort") {
+                format!(
+                    "execution failed: unsupported native function (error 1000). \
+                     This function uses a native that cannot be simulated (crypto verification, \
+                     randomness, zklogin, etc.). See natives.rs for the full list."
+                )
+            } else {
+                format!("execution failed: {e}")
+            };
+            
+            report.failure_reason = Some(failure_reason);
             report.tier_b_details = Some(TierBDetails {
                 execution_success: false,
-                error: Some(e.to_string()),
+                error: Some(error_str),
                 target_modules_accessed: if target_modules.is_empty() { None } else { Some(target_modules) },
                 static_calls: if non_framework_calls.is_empty() { None } else { Some(non_framework_calls) },
             });

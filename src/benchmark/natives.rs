@@ -1,4 +1,5 @@
 //! Mock native function implementations for Sui Move VM execution.
+//! Native function implementations for Tier B execution.
 //!
 //! This module provides native function implementations that enable Tier B execution
 //! of Sui Move code without requiring the full Sui runtime.
@@ -23,12 +24,23 @@
 //! - event::emit - No-op (we don't track events)
 //! - hash::{blake2b256, keccak256} - Return zeros (valid 32-byte output)
 //! - types::is_one_time_witness - Real check (one bool field + UPPERCASE module name)
+//! - dynamic_field::* - Full support via ObjectRuntime VM extension (see object_runtime.rs)
 //!
 //! **Category C: Abort stubs (E_NOT_SUPPORTED = 1000)**
-//! These would produce false positives if mocked, so they abort explicitly:
-//! - dynamic_field::* - Requires object storage we don't have
-//! - Crypto verification (bls12381, ecdsa_*, ed25519, groth16, etc.)
-//! - zklogin, config, random - Requires runtime state we don't have
+//! These abort with error code 1000. If a function uses these natives, it will
+//! fail at stage B2 with "execution failed: ...MoveAbort...1000...".
+//!
+//! Unsupported natives (would produce false positives if mocked):
+//! - Crypto verification: bls12381::*, ecdsa_k1::*, ecdsa_r1::*, ed25519::*, groth16::*
+//! - Randomness: random::*
+//! - ZK: zklogin::*, poseidon::*
+//! - Config: config::*
+//! - Attestation: nitro_attestation::*
+//!
+//! ## Interpreting Failures
+//!
+//! When you see a B2 failure with error code 1000, it means the function called
+//! an unsupported native. The function cannot be tested without those natives.
 
 use move_binary_format::errors::PartialVMResult;
 use move_core_types::{
