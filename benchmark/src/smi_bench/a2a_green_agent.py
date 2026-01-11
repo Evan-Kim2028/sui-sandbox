@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import collections
-import inspect
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -37,9 +37,10 @@ from smi_bench.logging import default_run_id
 from smi_bench.schema import Phase2ResultKeys
 from smi_bench.utils import (
     managed_subprocess,
+    safe_bool,
     safe_json_loads,
-    safe_parse_float,
     safe_parse_int,
+    validate_range,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,30 +171,6 @@ class EvalConfig:
     callback_url: str | None = None
 
 
-def _safe_int(v: Any, default: int) -> int:
-    try:
-        return int(v)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_float(v: Any, default: float) -> float:
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_bool(v: Any, default: bool) -> bool:
-    if v is None:
-        return default
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        return v.lower() in ("true", "1", "yes")
-    return bool(v)
-
-
 def _load_cfg(raw: Any) -> EvalConfig:
     if not isinstance(raw, dict):
         raise InvalidConfigError("config", "must be a JSON object")
@@ -203,8 +180,22 @@ def _load_cfg(raw: Any) -> EvalConfig:
 
     if not corpus_root:
         raise InvalidConfigError("corpus_root", "missing or empty")
+    if "\0" in corpus_root:
+        raise InvalidConfigError("corpus_root", "path contains null bytes")
+
     if not package_ids_file:
         raise InvalidConfigError("package_ids_file", "missing or empty")
+    if "\0" in package_ids_file:
+        raise InvalidConfigError("package_ids_file", "path contains null bytes")
+
+    # Early check: if we are running locally (not a purely dry-run metadata check),
+    # the manifest should exist.
+    manifest_path = Path(package_ids_file)
+    if not manifest_path.is_file():
+        # Fallback for relative paths if repo_root is available
+        repo_root = Path(__file__).resolve().parents[2]
+        if not (repo_root / manifest_path).is_file():
+            raise InvalidConfigError("package_ids_file", f"manifest file not found: {package_ids_file}")
 
     # Fail-fast validation: simulation modes that require sender
     simulation_mode = str(raw.get("simulation_mode") or "dry-run")
@@ -215,6 +206,12 @@ def _load_cfg(raw: Any) -> EvalConfig:
             "sender",
             f"required for simulation_mode={simulation_mode} (provide a valid Sui address)",
         )
+
+    # Basic Sui address format validation if sender is provided
+    if sender:
+        # Must be 0x followed by 1-64 hex chars
+        if not re.match(r"^0x[0-9a-fA-F]{1,64}$", sender):
+            raise InvalidConfigError("sender", f"invalid Sui address format: {sender}")
 
     # Validate model if provided
     model_raw = raw.get("model")
@@ -227,32 +224,47 @@ def _load_cfg(raw: Any) -> EvalConfig:
 
     # P0: Parse critical production fields
     seed = safe_parse_int(raw.get("seed"), 0, min_val=0, name="seed")
-    gas_budget = safe_parse_int(raw.get("gas_budget"), 10_000_000, min_val=1, name="gas_budget")
+
+    try:
+        gas_budget = int(validate_range(raw.get("gas_budget", 10_000_000), min_val=1_000_000, name="gas_budget"))
+    except ValueError as e:
+        raise InvalidConfigError("gas_budget", str(e))
 
     gas_coin_raw = raw.get("gas_coin")
     gas_coin = str(gas_coin_raw) if gas_coin_raw else None
 
     gas_budget_ladder = str(raw.get("gas_budget_ladder") or "20000000,50000000")
 
-    max_errors = safe_parse_int(raw.get("max_errors"), 25, min_val=1, name="max_errors")
+    try:
+        max_errors = int(validate_range(raw.get("max_errors", 25), min_val=1, name="max_errors"))
+    except ValueError as e:
+        raise InvalidConfigError("max_errors", str(e))
 
     max_run_seconds_raw = raw.get("max_run_seconds")
     max_run_seconds: float | None = None
     if max_run_seconds_raw is not None:
-        max_run_seconds = safe_parse_float(max_run_seconds_raw, 0.0, min_val=0.01, name="max_run_seconds")
+        try:
+            max_run_seconds = validate_range(max_run_seconds_raw, min_val=1.0, name="max_run_seconds")
+        except ValueError as e:
+            raise InvalidConfigError("max_run_seconds", str(e))
 
     # P1: Parse flexibility fields
-    max_planning_calls = safe_parse_int(raw.get("max_planning_calls"), 50, min_val=1, name="max_planning_calls")
-    checkpoint_every = safe_parse_int(raw.get("checkpoint_every"), 10, min_val=1, name="checkpoint_every")
-    max_heuristic_variants = safe_parse_int(
-        raw.get("max_heuristic_variants"), 4, min_val=1, name="max_heuristic_variants"
-    )
-    baseline_max_candidates = safe_parse_int(
-        raw.get("baseline_max_candidates"), 25, min_val=1, name="baseline_max_candidates"
-    )
+    try:
+        max_planning_calls = int(
+            validate_range(raw.get("max_planning_calls", 50), min_val=1, name="max_planning_calls")
+        )
+        checkpoint_every = int(validate_range(raw.get("checkpoint_every", 10), min_val=1, name="checkpoint_every"))
+        max_heuristic_variants = int(
+            validate_range(raw.get("max_heuristic_variants", 4), min_val=1, name="max_heuristic_variants")
+        )
+        baseline_max_candidates = int(
+            validate_range(raw.get("baseline_max_candidates", 25), min_val=1, name="baseline_max_candidates")
+        )
+    except ValueError as e:
+        raise InvalidConfigError("range_validation", str(e))
 
-    include_created_types = _safe_bool(raw.get("include_created_types"), False)
-    require_dry_run = _safe_bool(raw.get("require_dry_run"), False)
+    include_created_types = safe_bool(raw.get("include_created_types"), False)
+    require_dry_run = safe_bool(raw.get("require_dry_run"), False)
 
     # Webhook/async support
     callback_url_raw = raw.get("callback_url")
@@ -265,6 +277,14 @@ def _load_cfg(raw: Any) -> EvalConfig:
             "can only be true when simulation_mode is 'dry-run'",
         )
 
+    try:
+        per_package_timeout_seconds = validate_range(
+            raw.get("per_package_timeout_seconds", 300.0), min_val=1.0, name="per_package_timeout_seconds"
+        )
+        max_plan_attempts = int(validate_range(raw.get("max_plan_attempts", 2), min_val=1, name="max_plan_attempts"))
+    except ValueError as e:
+        raise InvalidConfigError("timeout_or_attempts", str(e))
+
     return EvalConfig(
         corpus_root=corpus_root,
         package_ids_file=package_ids_file,
@@ -272,12 +292,10 @@ def _load_cfg(raw: Any) -> EvalConfig:
         agent=str(raw.get("agent") or "real-openai-compatible"),
         rpc_url=str(raw.get("rpc_url") or DEFAULT_RPC_URL),
         simulation_mode=simulation_mode,
-        per_package_timeout_seconds=safe_parse_float(
-            raw.get("per_package_timeout_seconds"), 300.0, min_val=0.1, name="per_package_timeout_seconds"
-        ),
-        max_plan_attempts=safe_parse_int(raw.get("max_plan_attempts"), 2, min_val=1, name="max_plan_attempts"),
-        continue_on_error=_safe_bool(raw.get("continue_on_error"), True),
-        resume=_safe_bool(raw.get("resume"), True),
+        per_package_timeout_seconds=per_package_timeout_seconds,
+        max_plan_attempts=max_plan_attempts,
+        continue_on_error=safe_bool(raw.get("continue_on_error"), True),
+        resume=safe_bool(raw.get("resume"), True),
         run_id=str(raw.get("run_id")) if raw.get("run_id") else None,
         model=model,
         # P0 fields
@@ -434,7 +452,7 @@ def _get_config_schema() -> dict[str, Any]:
                 "type": "number",
                 "description": "Wall-clock budget per package in seconds",
                 "default": 300.0,
-                "exclusiveMinimum": 0,
+                "minimum": 1.0,
             },
             "max_plan_attempts": {
                 "type": "integer",
@@ -472,12 +490,13 @@ def _get_config_schema() -> dict[str, Any]:
                 "type": ["string", "null"],
                 "description": "Sui address for tx simulation (required for dev-inspect/execute modes)",
                 "default": None,
+                "pattern": "^0x[0-9a-fA-F]{1,64}$",
             },
             "gas_budget": {
                 "type": "integer",
                 "description": "Gas budget for dry-run simulation",
                 "default": 10000000,
-                "minimum": 1,
+                "minimum": 1000000,
             },
             "gas_coin": {
                 "type": ["string", "null"],
@@ -499,7 +518,7 @@ def _get_config_schema() -> dict[str, Any]:
                 "type": ["number", "null"],
                 "description": "Wall-clock budget for entire run in seconds",
                 "default": None,
-                "exclusiveMinimum": 0,
+                "minimum": 1.0,
             },
             "max_planning_calls": {
                 "type": "integer",
@@ -722,9 +741,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
         self._task_processes: dict[str, asyncio.subprocess.Process] = {}
         self._task_cancel_events: dict[str, asyncio.Event] = {}
         # Limit concurrency to prevent OOM and RPC stampedes (configurable via env var)
-        self._max_concurrent_tasks = _safe_int(os.environ.get(MAX_CONCURRENT_TASKS_ENV), DEFAULT_MAX_CONCURRENT_TASKS)
-        if self._max_concurrent_tasks < 1:
-            self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = safe_parse_int(
+            os.environ.get(MAX_CONCURRENT_TASKS_ENV), DEFAULT_MAX_CONCURRENT_TASKS, min_val=1
+        )
         self._concurrency_semaphore: asyncio.Semaphore | None = None
         logger.info(f"Max concurrent tasks: {self._max_concurrent_tasks} (set {MAX_CONCURRENT_TASKS_ENV} to change)")
 
@@ -996,7 +1015,9 @@ class SmiBenchGreenExecutor(AgentExecutor):
             self._task_processes[task.id] = proc
 
             assert proc.stdout is not None
-            proc_lines: collections.deque[str] = collections.deque(maxlen=2000)
+            # P2: Reduced buffer from 2000 to 500 lines to limit memory under high concurrency
+            # 500 lines * ~200 chars = ~100KB per task (vs 400KB previously)
+            proc_lines: collections.deque[str] = collections.deque(maxlen=500)
 
             # Monitor both stdout and cancellation event
             try:
@@ -1522,8 +1543,8 @@ def build_app(*, public_url: str) -> Any:
     return app
 
 
-# Global executor reference for signal handling
-_global_executor: SmiBenchGreenExecutor | None = None
+# NOTE: _global_executor is declared at module level (line ~733) and should not be
+# redeclared here. The global statement in main() is sufficient.
 
 
 def _setup_signal_handlers() -> None:

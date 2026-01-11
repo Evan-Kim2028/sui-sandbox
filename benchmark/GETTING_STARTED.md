@@ -16,7 +16,39 @@ Runs a full benchmark on the curated Top 25 dataset using GPT-5.2.
 ./scripts/top25_quickstart.sh
 ```
 
-### Option C: Local Setup
+### Option C: E2E One-Package (LLM Pipeline)
+Complete LLM-driven evaluation: Target → Helper Generation → Build → Simulation.
+```bash
+cd benchmark
+
+# Offline test (no API key needed)
+uv run python scripts/e2e_one_package.py \
+    --corpus-root tests/fake_corpus \
+    --package-id 0x1 \
+    --out-dir results/my_test
+
+# Real LLM test
+export SMI_E2E_REAL_LLM=1
+export OPENROUTER_API_KEY=sk-or-v1-...
+uv run python scripts/e2e_one_package.py \
+    --corpus-root ../sui-packages/packages/mainnet_most_used \
+    --dataset type_inhabitation_top25 \
+    --samples 5 \
+    --model google/gemini-3-flash-preview \
+    --out-dir results/e2e_run
+```
+
+### Option D: Local Benchmark (No-Chain)
+Validate type inhabitation offline using the Rust `benchmark-local` command.
+```bash
+./target/release/sui_move_interface_extractor benchmark-local \
+    --target-corpus /path/to/bytecode_modules \
+    --output results.jsonl \
+    --restricted-state
+```
+See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for details.
+
+### Option E: Local Setup
 For developers working directly on the Python/Rust source code.
 ```bash
 cd benchmark
@@ -291,11 +323,69 @@ python scripts/phase2_leaderboard.py results/run_a.json results/run_b.json
 
 ---
 
-## 4) Troubleshooting
+## 4) E2E One-Package Pipeline
+
+The `e2e_one_package.py` script provides a complete LLM-driven evaluation pipeline that does not require HTTP API setup.
+
+### Pipeline Stages
+
+1. **Target Package Analysis**: Extracts bytecode interface JSON from target package
+2. **LLM Helper Package Generation**: Prompts LLM to generate a Move helper package
+3. **Move Build**: Compiles helper package with `sui move build`
+4. **TX Simulation**: Runs local transaction simulator on helper bytecode
+
+### Usage Examples
+
+```bash
+cd benchmark
+
+# Single package test (offline)
+uv run python scripts/e2e_one_package.py \
+    --corpus-root tests/fake_corpus \
+    --package-id 0x1 \
+    --out-dir results/test
+
+# Dataset-based test with real LLM
+export SMI_E2E_REAL_LLM=1
+uv run python scripts/e2e_one_package.py \
+    --corpus-root ../sui-packages/packages/mainnet_most_used \
+    --dataset type_inhabitation_top25 \
+    --samples 10 \
+    --model google/gemini-3-flash-preview \
+    --out-dir results/e2e_top25
+```
+
+### Output Artifacts
+
+Each run creates a directory with:
+- `validation_report.json` - Overall success/failure with error details
+- `mm2_mapping.json` - Function mapping results (accepted/rejected)
+- `txsim_source.json` - Transaction simulation input
+- `txsim_effects.json` - Transaction execution effects
+- `helper_pkg/` - Generated Move helper package
+- `interface.json` - Target package bytecode interface
+- `prompt.json` - LLM prompt sent
+- `llm_response.json` - Raw LLM response
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SMI_E2E_REAL_LLM` | Set to "1" to use real LLM | Offline stub |
+| `OPENROUTER_API_KEY` | OpenRouter API key | - |
+| `SMI_MODEL` | Default model | - |
+| `SMI_TEMPERATURE` | LLM temperature | 0 |
+| `SMI_MAX_TOKENS` | Max response tokens | 4096 |
+
+---
+
+## 5) Troubleshooting
 
 - Rate limits (RPC/OpenRouter): reduce `--parallel` (multi-model) and/or lower `--run-samples`.
 - "No requests": confirm you used the exact model id shown in `./scripts/run_model.sh --help`.
 - Port conflicts (A2A): check ports 9999 (Green) / 9998 (Purple).
+- "dataset not found": Check `manifests/datasets/<name>.txt` exists.
+- "benchmark-local failed": Run `cargo build --release` to build Rust binary.
 
 ---
 

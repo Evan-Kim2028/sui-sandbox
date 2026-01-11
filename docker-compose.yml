@@ -22,8 +22,8 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      # Corpus is read-only to prevent accidental modification
-      - ./benchmark/data/corpus:/app/corpus:ro
+      # Mount the full sui-packages directory to resolve symlinks
+      - ../sui-packages/packages:/corpus:ro
       # Results and logs are writable
       - ./results:/app/results
       - ./logs:/app/logs

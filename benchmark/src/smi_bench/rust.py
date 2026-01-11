@@ -43,16 +43,24 @@ def default_rust_binary() -> Path:
     Locate the Rust extractor binary.
 
     Checks (in order):
-    1. `target/release/sui_move_interface_extractor` (or `.exe` on Windows) in repo root
-    2. `/usr/local/bin/sui_move_interface_extractor`
+    1. `SMI_RUST_BIN` environment variable (Strict: if set, must exist)
+    2. `target/release/sui_move_interface_extractor` (or `.exe` on Windows) in repo root
+    3. `/usr/local/bin/sui_move_interface_extractor`
 
     Returns:
-        Path to the binary (may not exist; caller should check with validate_rust_binary()).
+        Path to the binary.
     """
+    env_bin_s = os.environ.get("SMI_RUST_BIN")
+    if env_bin_s:
+        env_bin = Path(env_bin_s)
+        if not env_bin.is_file():
+            raise RuntimeError(f"SMI_RUST_BIN set but file not found: {env_bin}")
+        return env_bin
+
     repo_root = Path(__file__).resolve().parents[3]
     exe = "sui_move_interface_extractor.exe" if os.name == "nt" else "sui_move_interface_extractor"
     local = repo_root / "target" / "release" / exe
-    if local.exists():
+    if local.is_file():
         return local
     return Path("/usr/local/bin") / exe
 

@@ -15,8 +15,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from smi_bench.agents.real_agent import LLMJsonResponse, LLMUsage
 from smi_bench.inhabit_runner import run
 from smi_bench.schema import Phase2ResultKeys as Keys
+
+
+def _mock_llm_response(content: dict) -> LLMJsonResponse:
+    """Helper to create mock LLM responses with zero usage."""
+    return LLMJsonResponse(content=content, usage=LLMUsage(0, 0, 0))
 
 
 @dataclass
@@ -38,7 +44,7 @@ class ReplayAgent:
         timeout_s: float | None = None,
         logger: Any | None = None,
         log_context: dict[str, object] | None = None,
-    ) -> dict[str, Any]:
+    ) -> LLMJsonResponse:
         """
         Return the first response where the key is a substring of the prompt.
         """
@@ -46,10 +52,10 @@ class ReplayAgent:
 
         for key, resp in self.responses.items():
             if key in prompt:
-                return resp
+                return _mock_llm_response(resp)
 
         if self.default_response is not None:
-            return self.default_response
+            return _mock_llm_response(self.default_response)
 
         raise ValueError(f"No replay response found for prompt: {prompt[:100]}...")
 
@@ -210,16 +216,16 @@ def test_inhabit_logic_progressive_exposure(mock_corpus: Path, mock_extractor_bi
     # 2. Second call: Return plan using helper_fn
     agent = ReplayAgent()
 
-    def agent_logic(prompt: str, **kwargs) -> dict[str, Any]:
+    def agent_logic(prompt: str, **kwargs) -> LLMJsonResponse:
         agent.history.append(("json", prompt))
 
         # Heuristic to detect first vs second call
         if "helper_fn" not in prompt:
             # First call: we only see entry_fn in summary (default mode)
-            return {"need_more": [f"{pkg_id}::m"]}
+            return _mock_llm_response({"need_more": [f"{pkg_id}::m"]})
         else:
             # Second call: we see helper_fn
-            return {"calls": [{"target": f"{pkg_id}::m::helper_fn", "args": [], "type_args": []}]}
+            return _mock_llm_response({"calls": [{"target": f"{pkg_id}::m::helper_fn", "args": [], "type_args": []}]})
 
     # Mock complete_json to use our dynamic logic
     agent.complete_json = MagicMock(side_effect=agent_logic)  # type: ignore

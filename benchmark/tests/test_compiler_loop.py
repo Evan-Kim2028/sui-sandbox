@@ -4,7 +4,13 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from smi_bench.agents.real_agent import LLMJsonResponse, LLMUsage
 from smi_bench.inhabit_runner import _build_real_agent_retry_prompt, run
+
+
+def _mock_llm_response(content: dict) -> LLMJsonResponse:
+    """Helper to create mock LLM responses with zero usage."""
+    return LLMJsonResponse(content=content, usage=LLMUsage(0, 0, 0))
 
 
 def test_build_real_agent_retry_prompt_includes_harness_error() -> None:
@@ -68,7 +74,7 @@ def test_run_loop_retries_on_harness_error(
     mock_agent = mock_agent_class.return_value
     # First call fails with a "harness error" (e.g. invalid JSON from the agent's perspective)
     # Second call succeeds
-    mock_agent.complete_json.side_effect = [ValueError("missing field calls"), {"calls": []}]
+    mock_agent.complete_json.side_effect = [ValueError("missing field calls"), _mock_llm_response({"calls": []})]
 
     # Mock simulation success for the second attempt
     mock_sim.return_value = (
@@ -164,8 +170,8 @@ def test_run_loop_progressive_need_more_uses_multiple_planning_calls(
 
     mock_agent = mock_agent_class.return_value
     mock_agent.complete_json.side_effect = [
-        {"need_more": ["0x1::m::f"], "reason": "need details"},
-        {"calls": []},
+        _mock_llm_response({"need_more": ["0x1::m::f"], "reason": "need details"}),
+        _mock_llm_response({"calls": []}),
     ]
 
     mock_sim.return_value = (

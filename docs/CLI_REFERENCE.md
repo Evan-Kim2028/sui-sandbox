@@ -121,6 +121,112 @@ Optionally maintain a human-readable snapshot log here:
 For schema details and determinism rules, see **[JSON Schema](SCHEMA.md)**.
 For benchmark execution, see **[Benchmark Guide](BENCHMARK_GUIDE.md)**.
 
+## Local Type Inhabitation Benchmark (`benchmark-local`)
+
+The `benchmark-local` command runs a no-chain evaluation loop. It validates if functions can be resolved and executed using only local bytecode and synthetic state. This enables deterministic, reproducible benchmarks without network access.
+
+See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](NO_CHAIN_TYPE_INHABITATION_SPEC.md) for the full technical specification.
+
+### Usage
+
+```bash
+# Basic validation run (Tier A only - fast)
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output results.jsonl \
+  --tier-a-only
+
+# Full validation with VM execution (Tier A + B)
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output results.jsonl
+
+# High-fidelity validation with mock state
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus /path/to/bytecode_modules \
+  --output results.jsonl \
+  --restricted-state
+```
+
+### Key Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--target-corpus <PATH>` | Directory containing `.mv` modules to validate | Required |
+| `--output <PATH>` | Destination JSONL file for results | Required |
+| `--tier-a-only` | Skip VM execution (Tier B); only run bytecode/BCS validation | `false` |
+| `--restricted-state` | Pre-populate VM with mock objects (`Coin`, `UID`) for Tier B | `false` |
+
+### Validation Pipeline
+
+The benchmark runs a multi-stage validation pipeline:
+
+**Tier A (Preflight Validation)** - Deterministic checks without execution:
+- **A1**: Bytecode-resolved call target (module/function exists, visibility)
+- **A2**: Full type/layout resolution (struct definitions, abilities)
+- **A3**: BCS validity for pure args (encode/decode roundtrip)
+- **A4**: Object-arg typing (mutable/shared/owned matching)
+- **A5**: Transaction consistency (type args, argument kinds)
+
+**Tier B (VM Execution)** - Local Move VM harness:
+- **B1**: Synthetic state harness (mock objects for common types)
+- **B2**: Execution harness (success vs abort, abort code/location)
+
+### Output Schema (JSONL)
+
+Each line in the output file is a JSON object:
+
+```json
+{
+  "target_package": "0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7",
+  "target_module": "admin",
+  "target_function": "create_admin_cap",
+  "status": "tier_b_hit",
+  "failure_stage": null,
+  "failure_reason": null,
+  "tier_a_details": {
+    "validation_time_ms": 12,
+    "bcs_roundtrip_verified": true
+  },
+  "tier_b_details": {
+    "execution_success": true,
+    "abort_code": null,
+    "gas_used": 1000
+  }
+}
+```
+
+**Status Values:**
+- `tier_a_hit`: Passed Tier A validation (preflight only)
+- `tier_b_hit`: Passed both Tier A and Tier B (full validation)
+- `miss`: Failed at some stage
+
+**Failure Stages:** `A1`, `A2`, `A3`, `A4`, `A5`, `B1`, `B2`
+
+### When to Use
+
+| Use Case | Recommended Flags |
+|----------|-------------------|
+| Fast iteration | `--tier-a-only` |
+| Full validation | (no extra flags) |
+| Common Sui functions | `--restricted-state` |
+| Air-gapped CI/CD | Any (no network required) |
+
+### Performance
+
+- **Tier A only**: ~6000 validations in <500ms
+- **Tier A + B**: Varies by function complexity
+- **Deterministic**: Same inputs = same outputs every time
+
+## Environment Configuration
+
+The following environment variables can be used to override default binary paths, which is particularly useful in Docker environments:
+
+- `SMI_RUST_BIN`: Explicit path to the `sui_move_interface_extractor` binary.
+- `SMI_TX_SIM_BIN`: Explicit path to the `smi_tx_sim` binary.
+
+If these variables are set, the system will strictly honor them and fail if the file is not found.
+
 ## Bytecode Interface Extraction
 
 The `--emit-bytecode-json` flag deserializes Move bytecode (.mv files) into a deterministic JSON interface. This is the core transformation that powers all benchmark evaluation.

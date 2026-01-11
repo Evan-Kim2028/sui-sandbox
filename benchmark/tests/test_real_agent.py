@@ -272,9 +272,11 @@ def test_real_agent_complete_json_parses_object() -> None:
         max_request_retries=None,
     )
     agent = RealAgent(cfg, client=client)
-    out = agent.complete_json("return {}")
-    assert isinstance(out, dict)
-    assert "calls" in out
+    resp = agent.complete_json("return {}")
+    assert isinstance(resp.content, dict)
+    assert "calls" in resp.content
+    # Verify usage is captured (even if zeros when not in response)
+    assert resp.usage.prompt_tokens >= 0
 
 
 def test_real_agent_complete_json_retries_on_429() -> None:
@@ -305,8 +307,8 @@ def test_real_agent_complete_json_retries_on_429() -> None:
         max_request_retries=None,
     )
     agent = RealAgent(cfg, client=client)
-    out = agent.complete_json("return {}")
-    assert out == {"calls": []}
+    resp = agent.complete_json("return {}")
+    assert resp.content == {"calls": []}
     assert calls["n"] >= 2
 
 

@@ -3,13 +3,18 @@ use clap::Parser;
 use std::sync::Arc;
 use sui_sdk::SuiClientBuilder;
 
-use sui_move_interface_extractor::args::Args;
+use sui_move_interface_extractor::args::{Args, Command};
+use sui_move_interface_extractor::benchmark::runner::run_benchmark;
 use sui_move_interface_extractor::corpus::{collect_package_ids, run_corpus};
 use sui_move_interface_extractor::runner::{run_batch, run_single, run_single_local_bytecode_dir};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    if let Some(Command::BenchmarkLocal(bench_args)) = &args.command {
+        return run_benchmark(bench_args);
+    }
 
     if args.corpus_local_bytes_check && args.bytecode_corpus_root.is_none() {
         return Err(anyhow!(

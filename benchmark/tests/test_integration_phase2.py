@@ -7,6 +7,8 @@ These tests cover end-to-end flows including:
 - Build-only mode execution
 - Inventory fetching and resolution
 - Gas budget ladder retries
+
+Tests that call inhabit_runner.main() require the Rust binary to be built.
 """
 
 from __future__ import annotations
@@ -15,12 +17,15 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from smi_bench.checkpoint import load_checkpoint, write_checkpoint
 from smi_bench.inhabit_runner import (
     InhabitRunResult,
 )
 
 
+@pytest.mark.integration
 def test_phase2_full_run_with_baseline_agent(tmp_path: Path) -> None:
     """Complete Phase II execution with baseline agent succeeds."""
     corpus_root = tmp_path / "corpus"
@@ -115,6 +120,7 @@ def test_phase2_checkpoint_and_resume(tmp_path: Path) -> None:
     assert loaded_dict["packages"][1]["package_id"] == "0x2"
 
 
+@pytest.mark.integration
 def test_phase2_dry_run_mode(tmp_path: Path, monkeypatch) -> None:
     """Dry-run mode executes transaction simulation."""
     corpus_root = tmp_path / "corpus"
@@ -173,6 +179,7 @@ def test_phase2_dry_run_mode(tmp_path: Path, monkeypatch) -> None:
             # Note: mock_sim is not called because we use _run_tx_sim_with_fallback in actual code
 
 
+@pytest.mark.integration
 def test_phase2_build_only_mode(tmp_path: Path) -> None:
     """Build-only mode doesn't execute transaction simulation."""
     corpus_root = tmp_path / "corpus"
@@ -226,6 +233,7 @@ def test_phase2_build_only_mode(tmp_path: Path) -> None:
             assert out_json.exists()
 
 
+@pytest.mark.integration
 def test_phase2_inventory_fetch_and_resolution(tmp_path: Path, monkeypatch) -> None:
     """Inventory fetching and placeholder resolution works correctly."""
     corpus_root = tmp_path / "corpus"
@@ -311,6 +319,7 @@ def test_phase2_inventory_fetch_and_resolution(tmp_path: Path, monkeypatch) -> N
             assert mock_inventory.called
 
 
+@pytest.mark.integration
 def test_phase2_gas_budget_ladder_retries(tmp_path: Path) -> None:
     """Gas budget ladder retries on gas errors."""
     corpus_root = tmp_path / "corpus"

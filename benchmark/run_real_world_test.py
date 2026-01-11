@@ -45,6 +45,12 @@ MODEL_CONFIGS = {
         "description": "OpenAI GPT-4o-mini (fast, cheaper)",
         "expected_duration": "10-60s per package",
     },
+    "gpt-5": {
+        "name": "GPT-5.2",
+        "provider": "openai",
+        "description": "OpenAI GPT-5.2 (latest)",
+        "expected_duration": "20-90s per package",
+    },
     "google/gemini-3-flash-preview": {
         "name": "Gemini Flash 3",
         "provider": "google",

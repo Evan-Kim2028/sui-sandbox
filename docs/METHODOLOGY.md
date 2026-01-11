@@ -109,7 +109,45 @@ Researchers should correlate `avg_hit_rate` with these levels to identify if an 
 
 ---
 
-## 4. Limitations and Edge Cases
+## 4. Local Bytecode Sandbox Methodology
+
+The **Local Bytecode Sandbox** (`benchmark-local` command) provides offline type inhabitation testing. See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for architecture.
+
+### Failure Taxonomy (Primary Metric)
+
+The key metric for LLM evaluation is **failure distribution by stage**, not a single pass rate. Each stage reveals different information:
+
+| Stage | Name | What Failure Indicates |
+|-------|------|------------------------|
+| **A1** | Target Resolution | Function/module doesn't exist in bytecode |
+| **A2** | Type Layout | Unknown struct, recursive type, or unresolvable generic |
+| **A3** | Type Synthesis | No constructor path to create required type |
+| **A5** | Type Parameters | Generic type parameter bounds violation |
+| **B1** | Constructor Execution | Dependency constructor aborted |
+| **B2** | Target Execution | Function aborted (assertion or unsupported native) |
+
+### Interpreting Failure Distribution
+
+A single pass rate obscures critical distinctions:
+
+- **A3 failures** indicate a **synthesizability ceiling**—types the sandbox cannot create regardless of LLM capability
+- **B2 failures with error 1000** are **expected boundaries** (crypto, randomness)—not LLM failures
+- **B2 assertion failures** indicate actual LLM type understanding issues
+
+For researchers: focus on *where failures cluster* rather than aggregate pass rates.
+
+### Synthesizability Ceiling
+
+Some types cannot be synthesized offline:
+- Types requiring multi-hop constructor chains beyond current depth
+- Types depending on existing chain state (shared objects)
+- Types using unsupported natives (signatures, randomness)
+
+This ceiling is a property of the sandbox, not LLM capability. Report it separately.
+
+---
+
+## 5. Limitations and Edge Cases
 
 - **Private Visibility**: Our bytecode extractor captures **private** functions, which help identify constructors that RPC-based tools might miss.
 - **Inventory Dependency**: Many functions require existing objects. The benchmark results depend on the sender's on-chain inventory.
@@ -118,7 +156,7 @@ Researchers should correlate `avg_hit_rate` with these levels to identify if an 
 
 ---
 
-## 4. Platform Integration (AgentBeats)
+## 6. Platform Integration (AgentBeats)
 
 This framework is designed as a **"Green Agent" substrate** for the Berkeley RDI [AgentBeats](https://rdi.berkeley.edu/agentx-agentbeats) evaluation ecosystem.
 

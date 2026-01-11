@@ -223,9 +223,24 @@ def _repo_root() -> Path:
 
 
 def _default_dev_inspect_binary() -> Path:
+    """
+    Locate the smi_tx_sim binary.
+
+    Checks (in order):
+    1. `SMI_TX_SIM_BIN` environment variable (Strict: if set, must exist)
+    2. `target/release/smi_tx_sim` (or `.exe` on Windows) in repo root
+    3. `/usr/local/bin/smi_tx_sim`
+    """
+    env_bin_s = os.environ.get("SMI_TX_SIM_BIN")
+    if env_bin_s:
+        env_bin = Path(env_bin_s)
+        if not env_bin.is_file():
+            raise RuntimeError(f"SMI_TX_SIM_BIN set but file not found: {env_bin}")
+        return env_bin
+
     exe = "smi_tx_sim.exe" if os.name == "nt" else "smi_tx_sim"
     local = _repo_root() / "target" / "release" / exe
-    if local.exists():
+    if local.is_file():
         return local
     return Path("/usr/local/bin") / exe
 
@@ -898,7 +913,10 @@ def run(
                         calls=plan_item["calls"] if isinstance(plan_item, dict) else [],
                     )
                     try:
-                        ai_calls = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
+                        llm_resp = real_agent.complete_json(prompt, timeout_s=max(1.0, remaining))
+                        total_prompt_tokens += llm_resp.usage.prompt_tokens
+                        total_completion_tokens += llm_resp.usage.completion_tokens
+                        ai_calls = llm_resp.content
                     except Exception as e:
                         last_failure_ctx = {"harness_error": str(e)}
                         # Let the next plan attempt retry; if we run out of attempts,
@@ -953,7 +971,7 @@ def run(
                         )
 
                         try:
-                            ai_response = real_agent.complete_json(
+                            llm_resp = real_agent.complete_json(
                                 prompt,
                                 timeout_s=max(1.0, remaining),
                                 logger=logger,
@@ -963,6 +981,9 @@ def run(
                                     "planning_call": planning_call_i,
                                 },
                             )
+                            total_prompt_tokens += llm_resp.usage.prompt_tokens
+                            total_completion_tokens += llm_resp.usage.completion_tokens
+                            ai_response = llm_resp.content
 
                             if isinstance(ai_response, dict) and "need_more" in ai_response:
                                 # Update targets for next focused summary
@@ -993,7 +1014,7 @@ def run(
                                             },
                                             interface_summary=iface_summary,
                                         )
-                                        ai_response = real_agent.complete_json(
+                                        llm_resp2 = real_agent.complete_json(
                                             prompt,
                                             timeout_s=max(1.0, remaining),
                                             logger=logger,
@@ -1003,8 +1024,11 @@ def run(
                                                 "planning_call": planning_call_i + 1,
                                             },
                                         )
-                                        if isinstance(ai_response, dict) and "calls" in ai_response:
-                                            ptb_spec_base = ai_response
+                                        total_prompt_tokens += llm_resp2.usage.prompt_tokens
+                                        total_completion_tokens += llm_resp2.usage.completion_tokens
+                                        ai_response2 = llm_resp2.content
+                                        if isinstance(ai_response2, dict) and "calls" in ai_response2:
+                                            ptb_spec_base = ai_response2
                                         break
 
                                     current_requested_targets.update(targets_to_add)

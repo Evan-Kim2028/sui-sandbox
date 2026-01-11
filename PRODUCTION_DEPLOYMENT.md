@@ -341,6 +341,83 @@ pricing = {
 
 ---
 
+## 🔌 Offline Mode & Air-Gapped Deployment
+
+The benchmark system supports fully offline operation for air-gapped environments.
+
+### Local Benchmark (No-Chain)
+
+Use the `benchmark-local` command for network-free validation:
+
+```bash
+# Inside container or on host
+./target/release/sui_move_interface_extractor benchmark-local \
+    --target-corpus /app/corpus/0x.../bytecode_modules \
+    --output results.jsonl \
+    --restricted-state
+```
+
+**Benefits:**
+- No RPC access required
+- No funded accounts needed
+- Deterministic, reproducible results
+- Fast validation (~6000 modules in <500ms for Tier A)
+
+See [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for technical details.
+
+### Framework Bytecode Caching
+
+The Docker container includes pre-compiled Sui framework bytecode for offline helper package builds:
+
+```
+framework_bytecode/
+├── sui-framework/
+│   └── bytecode_modules/*.mv
+├── move-stdlib/
+│   └── bytecode_modules/*.mv
+└── sui-system/
+    └── bytecode_modules/*.mv
+```
+
+**To update framework bytecode:**
+```bash
+# Build fresh framework bytecode (requires Sui CLI)
+sui move build --path framework_bytecode/sui-framework
+
+# Or copy from existing Sui installation
+cp -r ~/.sui/sui_config/framework/* framework_bytecode/
+```
+
+### Docker Offline Artifacts
+
+The Docker image includes:
+- **Sui CLI**: For deterministic helper package builds
+- **Framework bytecode**: For offline compilation
+- **Rust binaries**: Pre-built `sui_move_interface_extractor`
+
+**Persisting artifacts between runs:**
+```yaml
+# docker-compose.yml
+volumes:
+  - ./framework_bytecode:/app/framework_bytecode:ro
+  - ./benchmark/results:/app/results
+  - ./benchmark/logs:/app/logs
+```
+
+### E2E One-Package (Offline)
+
+Test the full pipeline without API keys:
+
+```bash
+cd benchmark
+uv run python scripts/e2e_one_package.py \
+    --corpus-root tests/fake_corpus \
+    --package-id 0x1 \
+    --out-dir results/offline_test
+```
+
+---
+
 ## 📁 File Locations
 
 ```
@@ -385,11 +462,15 @@ Before deploying to production:
 
 ## 📚 Documentation
 
+- **[Quick Start Guide](QUICK_START_GUIDE.md)** - 30-second quick start with all features
 - **[Getting Started](benchmark/GETTING_STARTED.md)** - Benchmark introduction
 - **[Testing Guide](benchmark/docs/INTEGRATION_TESTING.md)** - Complete testing reference
 - **[API Examples](benchmark/docs/A2A_EXAMPLES.md)** - All endpoints with examples
-- **[Quick Start](benchmark/TESTING_QUICKSTART.md)** - 5-minute testing guide
+- **[Quick Testing](benchmark/TESTING_QUICKSTART.md)** - 5-minute testing guide
 - **[Architecture](benchmark/docs/ARCHITECTURE.md)** - System design
+- **[No-Chain Spec](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md)** - Local benchmark technical spec
+- **[CLI Reference](docs/CLI_REFERENCE.md)** - All CLI commands including `benchmark-local`
+- **[Test Fixtures](docs/TEST_FIXTURES.md)** - Fixture organization for testing
 
 ---
 

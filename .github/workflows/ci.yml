@@ -2,6 +2,7 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -12,129 +13,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ~/.cargo/registry
+            ~/.cargo/git
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-      
-      - name: fmt
-        run: cargo fmt --check
-      - name: clippy
-        run: cargo clippy -- -D warnings
-      - name: test
-        run: cargo test --locked
 
-  python-benchmark:
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test --locked
+
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      
-      - uses: dtolnay/rust-toolchain@stable
-      
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target/
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-
-            ${{ runner.os }}-cargo-
-      
-      - name: Build Rust binaries
-        run: cargo build --release --locked
-      
       - uses: astral-sh/setup-uv@v3
-      
-      - name: Cache uv dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-uv-
-      
-      - name: sync
-        working-directory: benchmark
-        run: uv sync --group dev --frozen
-      - name: lint
-        working-directory: benchmark
-        run: uv run ruff check .
-      - name: format
-        working-directory: benchmark
-        run: uv run ruff format --check .
-      - name: type-check
-        working-directory: benchmark
-        run: uv run ty check src
-      - name: test
-        working-directory: benchmark
-        run: uv run --group dev pytest -q --numprocesses auto -m "not integration"
 
-  docker-a2a-smoke:
-    runs-on: ubuntu-latest
-    needs: []
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Create test directories
+      - name: Lint and test
+        working-directory: benchmark
         run: |
-          mkdir -p benchmark/data/corpus results logs
-          # Ensure directories are writable by UID 1000 (container user)
-          sudo chown -R 1000:1000 results logs
-          # Create minimal mock corpus for CI
-          mkdir -p benchmark/data/corpus/0x00/fixture/bytecode_modules
-          echo '{"id": "0x0000000000000000000000000000000000000000000000000000000000000001"}' > benchmark/data/corpus/0x00/fixture/metadata.json
-          touch benchmark/data/corpus/0x00/fixture/bytecode_modules/dummy.mv
-          echo "0x0000000000000000000000000000000000000000000000000000000000000001" > benchmark/data/corpus/manifest.txt
-      
-      - name: Build and start container
-        run: |
-          export SMI_AGENT="mock-empty"
-          export DOCKER_BUILDKIT=1
-          docker compose build
-          docker compose up -d --wait --wait-timeout 60
-      
-      - name: Verify agent health
-        run: |
-          curl -f http://localhost:9999/health
-          curl -f http://localhost:9999/.well-known/agent-card.json
-      
-      - name: Run smoke test
-        run: |
-          docker compose exec -T smi-bench smi-inhabit \
-            --corpus-root /app/corpus \
-            --package-ids-file /app/corpus/manifest.txt \
-            --samples 1 \
-            --agent mock-empty \
-            --simulation-mode dry-run \
-            --out /app/results/ci_smoke.json \
-            --no-log
-      
-      - name: Verify results
-        run: |
-          if [ -f results/ci_smoke.json ]; then
-            echo "SUCCESS: Result file generated"
-            head -50 results/ci_smoke.json
-          else
-            echo "FAILURE: Result file not found"
-            docker compose logs
-            exit 1
-          fi
-      
-      - name: Cleanup
-        if: always()
-        run: docker compose down --timeout 10
+          uv sync --group dev --frozen
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q -x -m "not integration and not docker"

@@ -1,4 +1,8 @@
-"""Integration tests for dataset CLI functionality (In-process)."""
+"""Integration tests for dataset CLI functionality (In-process).
+
+These tests require the Rust binary to be built and are marked as integration tests.
+Run with: pytest -m integration
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ from pathlib import Path
 import pytest
 
 from smi_bench import inhabit_runner
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="session")

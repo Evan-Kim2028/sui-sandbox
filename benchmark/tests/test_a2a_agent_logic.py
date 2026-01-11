@@ -29,9 +29,13 @@ def test_purple_agent_card_generation():
     assert card.name == "smi-bench-purple"
 
 
-def test_green_agent_config_defaults():
+def test_green_agent_config_defaults(tmp_path: Path):
     """Verify config loading handles defaults correctly."""
-    raw = {"corpus_root": "/tmp/corpus", "package_ids_file": "/tmp/manifest.txt"}
+    # Create a temporary manifest file
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("0x1\n")
+
+    raw = {"corpus_root": "/tmp/corpus", "package_ids_file": str(manifest)}
     cfg = _load_cfg(raw)
     assert cfg.rpc_url == "https://fullnode.mainnet.sui.io:443"
     assert cfg.max_plan_attempts == 2

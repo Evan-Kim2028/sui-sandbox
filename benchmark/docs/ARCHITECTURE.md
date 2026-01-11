@@ -1,8 +1,26 @@
 # Benchmark Code Architecture (`benchmark/src/smi_bench`)
 
-This document is a maintainers’ map of the Python benchmark harness: **what lives where**, **how data flows**, and **which invariants matter** for refactors.
+> **Note:** This document covers the Python benchmark harness. For the Rust **Local Bytecode Sandbox** (the core execution engine), see:
+> - [../../docs/LOCAL_BYTECODE_SANDBOX.md](../../docs/LOCAL_BYTECODE_SANDBOX.md) - Architecture and concepts
+> - [../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) - Technical specification
+> - [../../IMPLEMENTATION_SUMMARY.md](../../IMPLEMENTATION_SUMMARY.md) - Implementation details
 
-It is intentionally short and “source-first.” When in doubt, trust the code.
+## Local Bytecode Sandbox Integration
+
+The Python harness orchestrates the **Local Bytecode Sandbox**—a deterministic, offline Move VM environment implemented in Rust. The sandbox:
+
+- Loads external package bytecode from `.mv` files (no mainnet deployment)
+- Executes LLM-generated helper packages against real bytecode
+- Validates type inhabitation through actual VM execution
+- Requires no gas, tokens, or network access
+
+The harness calls the sandbox via the Rust CLI (`benchmark-local` subcommand) or `smi_tx_sim` binary.
+
+---
+
+This document is a maintainers' map of the Python benchmark harness: **what lives where**, **how data flows**, and **which invariants matter** for refactors.
+
+It is intentionally short and "source-first." When in doubt, trust the code.
 
 ## High-level flow
 

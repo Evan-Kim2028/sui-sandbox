@@ -26,6 +26,11 @@
 .pytest_cache/
 __pycache__/
 .DS_Store
+
+# Local logs and specs
+/logs/
+/specs/
+
 # Benchmark
 benchmark/.venv
 benchmark/.uv-cache

@@ -10,6 +10,8 @@ Tests cover:
 6. Edge cases and error messages
 """
 
+from pathlib import Path
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -22,27 +24,34 @@ from smi_bench.a2a_green_agent import (
     _detect_unknown_fields,
     _get_config_schema,
     _load_cfg,
-    _safe_bool,
-    _safe_float,
-    _safe_int,
     _validate_config_dry_run,
 )
+from smi_bench.utils import safe_bool
+from smi_bench.utils import safe_parse_float as _safe_float
+from smi_bench.utils import safe_parse_int as _safe_int
+
+
+@pytest.fixture
+def real_manifest(tmp_path):
+    p = tmp_path / "ids.txt"
+    p.write_text("0x1\n")
+    return str(p)
 
 
 class TestEvalConfigAllFields:
     """Test that all EvalConfig fields are properly parsed."""
 
-    def test_minimal_config(self):
+    def test_minimal_config(self, real_manifest):
         """Minimal valid config should use all defaults."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
             }
         )
 
         assert cfg.corpus_root == "/tmp/corpus"
-        assert cfg.package_ids_file == "/tmp/ids.txt"
+        assert cfg.package_ids_file == real_manifest
         assert cfg.samples == 0
         assert cfg.agent == "real-openai-compatible"
         assert cfg.rpc_url == DEFAULT_RPC_URL
@@ -69,12 +78,12 @@ class TestEvalConfigAllFields:
         assert cfg.include_created_types is False
         assert cfg.require_dry_run is False
 
-    def test_full_config_all_fields(self):
+    def test_full_config_all_fields(self, real_manifest):
         """Full config with all fields specified."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/my/corpus",
-                "package_ids_file": "/my/ids.txt",
+                "package_ids_file": real_manifest,
                 "samples": 100,
                 "agent": "baseline-search",
                 "rpc_url": "https://custom.rpc.com",
@@ -121,109 +130,121 @@ class TestEvalConfigAllFields:
 
 
 class TestValidationRules:
-    """Test all validation rules for config fields."""
+    """Test all validation rules for config fields.
+    Critical fields (gas_budget, max_errors, timeouts) should raise errors if out of range.
+    Less critical fields (seed, samples) are clamped.
+    """
 
-    def test_seed_must_be_non_negative(self):
+    def test_seed_must_be_non_negative(self, real_manifest):
+        """Seed is clamped, not error."""
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": real_manifest,
+                "seed": -1,
+            }
+        )
+        assert cfg.seed == 0
+
+    def test_gas_budget_must_be_positive(self, real_manifest):
+        """Gas budget is strictly validated."""
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "seed": -1,
-                }
-            )
-        assert "seed" in str(exc.value)
-        assert ">= 0" in str(exc.value)
-
-    def test_gas_budget_must_be_positive(self):
-        with pytest.raises(InvalidConfigError) as exc:
-            _load_cfg(
-                {
-                    "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "gas_budget": 0,
                 }
             )
         assert "gas_budget" in str(exc.value)
-        assert "> 0" in str(exc.value)
 
-    def test_max_errors_must_be_positive(self):
+    def test_max_errors_must_be_positive(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "max_errors": 0,
                 }
             )
         assert "max_errors" in str(exc.value)
 
-    def test_max_run_seconds_must_be_positive_if_provided(self):
+    def test_max_run_seconds_must_be_at_least_one_if_provided(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "max_run_seconds": -100,
+                    "package_ids_file": real_manifest,
+                    "max_run_seconds": 0.5,
                 }
             )
         assert "max_run_seconds" in str(exc.value)
 
-    def test_max_planning_calls_must_be_positive(self):
+    def test_max_planning_calls_must_be_positive(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "max_planning_calls": 0,
                 }
             )
-        assert "max_planning_calls" in str(exc.value)
+        assert "range_validation" in str(exc.value)
 
-    def test_checkpoint_every_must_be_positive(self):
+    def test_checkpoint_every_must_be_positive(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "checkpoint_every": 0,
                 }
             )
-        assert "checkpoint_every" in str(exc.value)
+        assert "range_validation" in str(exc.value)
 
-    def test_max_heuristic_variants_must_be_at_least_one(self):
+    def test_max_heuristic_variants_must_be_at_least_one(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "max_heuristic_variants": 0,
                 }
             )
-        assert "max_heuristic_variants" in str(exc.value)
+        assert "range_validation" in str(exc.value)
 
-    def test_baseline_max_candidates_must_be_at_least_one(self):
+    def test_baseline_max_candidates_must_be_at_least_one(self, real_manifest):
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "baseline_max_candidates": 0,
                 }
             )
-        assert "baseline_max_candidates" in str(exc.value)
+        assert "range_validation" in str(exc.value)
+
+    def test_null_byte_rejection(self, real_manifest):
+        with pytest.raises(InvalidConfigError) as exc:
+            _load_cfg(
+                {
+                    "corpus_root": "/tmp\0",
+                    "package_ids_file": real_manifest,
+                }
+            )
+        assert "null bytes" in str(exc.value)
 
 
 class TestCrossFieldValidation:
     """Test cross-field validation rules."""
 
-    def test_require_dry_run_needs_dry_run_mode(self):
+    def test_require_dry_run_needs_dry_run_mode(self, real_manifest):
         """require_dry_run can only be true with simulation_mode='dry-run'."""
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "require_dry_run": True,
                     "simulation_mode": "dev-inspect",
                     "sender": "0x123",  # required for dev-inspect
@@ -232,36 +253,36 @@ class TestCrossFieldValidation:
         assert "require_dry_run" in str(exc.value)
         assert "dry-run" in str(exc.value)
 
-    def test_dev_inspect_requires_sender(self):
+    def test_dev_inspect_requires_sender(self, real_manifest):
         """dev-inspect mode requires sender to be set."""
         with pytest.raises(InvalidConfigError) as exc:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": real_manifest,
                     "simulation_mode": "dev-inspect",
                     # sender missing
                 }
             )
         assert "sender" in str(exc.value)
 
-    def test_dry_run_does_not_require_sender(self):
+    def test_dry_run_does_not_require_sender(self, real_manifest):
         """dry-run mode works without sender."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
                 "simulation_mode": "dry-run",
             }
         )
         assert cfg.sender is None
 
-    def test_build_only_does_not_require_sender(self):
+    def test_build_only_does_not_require_sender(self, real_manifest):
         """build-only mode works without sender."""
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
                 "simulation_mode": "build-only",
             }
         )
@@ -283,11 +304,11 @@ class TestUnknownFieldDetection:
         assert "another_bad" in unknown
         assert "corpus_root" not in unknown
 
-    def test_no_unknown_fields(self):
+    def test_no_unknown_fields(self, real_manifest):
         unknown = _detect_unknown_fields(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
                 "samples": 10,
             }
         )
@@ -307,11 +328,11 @@ class TestUnknownFieldDetection:
 class TestValidateConfigDryRun:
     """Test the /validate endpoint logic."""
 
-    def test_valid_config_returns_valid_true(self):
+    def test_valid_config_returns_valid_true(self, real_manifest):
         result = _validate_config_dry_run(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
             }
         )
         assert result["valid"] is True
@@ -328,11 +349,11 @@ class TestValidateConfigDryRun:
         assert result["valid"] is False
         assert "error" in result
 
-    def test_unknown_fields_produce_warnings(self):
+    def test_unknown_fields_produce_warnings(self, real_manifest):
         result = _validate_config_dry_run(
             {
                 "corpus_root": "/tmp/corpus",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": real_manifest,
                 "typo_field": 123,
             }
         )
@@ -390,23 +411,23 @@ class TestTypeCoercion:
     """Test type coercion helpers."""
 
     def test_safe_bool_true_values(self):
-        assert _safe_bool(True, False) is True
-        assert _safe_bool("true", False) is True
-        assert _safe_bool("True", False) is True
-        assert _safe_bool("TRUE", False) is True
-        assert _safe_bool("1", False) is True
-        assert _safe_bool("yes", False) is True
-        assert _safe_bool("YES", False) is True
+        assert safe_bool(True, False) is True
+        assert safe_bool("true", False) is True
+        assert safe_bool("True", False) is True
+        assert safe_bool("TRUE", False) is True
+        assert safe_bool("1", False) is True
+        assert safe_bool("yes", False) is True
+        assert safe_bool("YES", False) is True
 
     def test_safe_bool_false_values(self):
-        assert _safe_bool(False, True) is False
-        assert _safe_bool("false", True) is False
-        assert _safe_bool("0", True) is False
-        assert _safe_bool("no", True) is False
+        assert safe_bool(False, True) is False
+        assert safe_bool("false", True) is False
+        assert safe_bool("0", True) is False
+        assert safe_bool("no", True) is False
 
     def test_safe_bool_none_uses_default(self):
-        assert _safe_bool(None, True) is True
-        assert _safe_bool(None, False) is False
+        assert safe_bool(None, True) is True
+        assert safe_bool(None, False) is False
 
     def test_safe_int_with_strings(self):
         assert _safe_int("42", 0) == 42
@@ -420,53 +441,76 @@ class TestTypeCoercion:
 class TestPropertyBasedConfigParsing:
     """Property-based tests for config parsing robustness."""
 
+    def setup_method(self):
+        """Create a real manifest file for Hypothesis tests."""
+        self.manifest_dir = Path("/tmp/smi_test_manifests")
+        self.manifest_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest = self.manifest_dir / "ids.txt"
+        self.manifest.write_text("0x1\n")
+
     @given(st.integers(min_value=0, max_value=1000))
     @settings(max_examples=50)
     def test_valid_seed_always_parses(self, seed: int):
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": str(self.manifest),
                 "seed": seed,
             }
         )
         assert cfg.seed == seed
 
-    @given(st.integers(min_value=1, max_value=100_000_000))
+    @given(st.integers(min_value=1_000_000, max_value=100_000_000))
     @settings(max_examples=50)
     def test_valid_gas_budget_always_parses(self, gas_budget: int):
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": str(self.manifest),
                 "gas_budget": gas_budget,
             }
         )
         assert cfg.gas_budget == gas_budget
 
-    @given(st.floats(min_value=0.001, max_value=86400.0, allow_nan=False, allow_infinity=False))
+    @given(st.floats(min_value=1.0, max_value=86400.0, allow_nan=False, allow_infinity=False))
     @settings(max_examples=50)
     def test_valid_max_run_seconds_always_parses(self, max_run_seconds: float):
         cfg = _load_cfg(
             {
                 "corpus_root": "/tmp",
-                "package_ids_file": "/tmp/ids.txt",
+                "package_ids_file": str(self.manifest),
                 "max_run_seconds": max_run_seconds,
             }
         )
         assert abs(cfg.max_run_seconds - max_run_seconds) < 0.0001
 
-    @given(st.integers(max_value=-1))
-    @settings(max_examples=20)
-    def test_negative_seed_always_rejected(self, seed: int):
+    def test_max_run_seconds_clamping(self):
+        """Test max_run_seconds below 1.0 clamping behavior.
+
+        Though _load_cfg currently uses validate_range which errors.
+        """
+        # Note: _load_cfg uses validate_range for max_run_seconds, so it errors.
+        # This test verifies our understanding of which fields error vs clamp.
         with pytest.raises(InvalidConfigError):
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
-                    "seed": seed,
+                    "package_ids_file": str(self.manifest),
+                    "max_run_seconds": 0.5,
                 }
             )
+
+    @given(st.integers(max_value=-1))
+    @settings(max_examples=20)
+    def test_negative_seed_clamped(self, seed: int):
+        cfg = _load_cfg(
+            {
+                "corpus_root": "/tmp",
+                "package_ids_file": str(self.manifest),
+                "seed": seed,
+            }
+        )
+        assert cfg.seed == 0
 
     @given(st.integers(max_value=0))
     @settings(max_examples=20)
@@ -475,7 +519,18 @@ class TestPropertyBasedConfigParsing:
             _load_cfg(
                 {
                     "corpus_root": "/tmp",
-                    "package_ids_file": "/tmp/ids.txt",
+                    "package_ids_file": str(self.manifest),
                     "gas_budget": gas_budget,
+                }
+            )
+
+    @given(st.text().map(lambda x: x + "\0"))
+    @settings(max_examples=10)
+    def test_path_null_bytes_always_rejected(self, bad_path: str):
+        with pytest.raises(InvalidConfigError):
+            _load_cfg(
+                {
+                    "corpus_root": bad_path,
+                    "package_ids_file": str(self.manifest),
                 }
             )
