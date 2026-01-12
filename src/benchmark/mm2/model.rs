@@ -41,12 +41,45 @@ pub struct FunctionSignature {
     pub type_parameters: Vec<TypeParam>,
     /// Parameter info (names and formatted type strings)
     pub parameters: Vec<ParamInfo>,
-    /// Number of return values
+    /// Return type info (for return value chaining)
+    pub returns: Vec<ReturnInfo>,
+    /// Number of return values (kept for backwards compatibility)
     pub return_count: usize,
     /// Whether the function is public
     pub is_public: bool,
     /// Whether the function is an entry function
     pub is_entry: bool,
+}
+
+/// Information about a function return type.
+#[derive(Debug, Clone)]
+pub struct ReturnInfo {
+    /// Formatted type string
+    pub type_str: String,
+    /// Parsed struct info if this is a struct type (for return value chaining)
+    pub struct_type: Option<ReturnStructType>,
+}
+
+/// Parsed struct type information from a return value.
+#[derive(Debug, Clone)]
+pub struct ReturnStructType {
+    /// Module address containing the struct
+    pub module_addr: AccountAddress,
+    /// Module name
+    pub module_name: String,
+    /// Struct name
+    pub struct_name: String,
+    /// Type arguments (as indices into function type params, or concrete types)
+    pub type_args: Vec<ReturnTypeArg>,
+}
+
+/// Type argument in a return type.
+#[derive(Debug, Clone)]
+pub enum ReturnTypeArg {
+    /// Reference to a function type parameter by index
+    TypeParam(usize),
+    /// A concrete type (formatted string)
+    Concrete(String),
 }
 
 /// Type parameter with constraints.
@@ -174,6 +207,17 @@ impl TypeModel {
 
         let summary = function.summary();
 
+        // Parse return types for return value chaining
+        let returns: Vec<ReturnInfo> = summary
+            .return_
+            .iter()
+            .map(|ret_type| {
+                let type_str = format_type(ret_type);
+                let struct_type = parse_return_struct_type(ret_type);
+                ReturnInfo { type_str, struct_type }
+            })
+            .collect();
+
         Some(FunctionSignature {
             module_addr: *module_addr,
             module_name: module_name.to_string(),
@@ -202,6 +246,7 @@ impl TypeModel {
                     }
                 })
                 .collect(),
+            returns,
             return_count: summary.return_.len(),
             is_public: matches!(
                 summary.visibility,
@@ -348,7 +393,7 @@ pub fn format_type(ty: &summary::Type) -> String {
         summary::Type::TypeParameter(idx) => format!("T{}", idx),
         summary::Type::NamedTypeParameter(name) => name.to_string(),
         summary::Type::Datatype(dt) => {
-            let base = format!("{}::{}", dt.module.address, dt.name);
+            let base = format!("{}::{}::{}", dt.module.address, dt.module.name, dt.name);
             if dt.type_arguments.is_empty() {
                 base
             } else {
@@ -369,6 +414,56 @@ pub fn format_type(ty: &summary::Type) -> String {
             format!("|{}| -> {}", arg_str.join(", "), format_type(ret))
         }
         summary::Type::Any => "_".to_string(),
+    }
+}
+
+/// Parse a return type to extract struct information for return value chaining.
+///
+/// This is used to identify functions that produce capability types (AdminCap, etc.)
+/// that can be used as inputs to other functions.
+fn parse_return_struct_type(ty: &summary::Type) -> Option<ReturnStructType> {
+    match ty {
+        summary::Type::Datatype(dt) => {
+            // dt.module.address is a Symbol (formatted string), need to parse it
+            let addr_str = dt.module.address.as_str();
+            let module_addr = AccountAddress::from_hex_literal(addr_str).ok()?;
+            let module_name = dt.module.name.to_string();
+            let struct_name = dt.name.to_string();
+
+            // Parse type arguments
+            let type_args: Vec<ReturnTypeArg> = dt
+                .type_arguments
+                .iter()
+                .map(|ta| parse_type_arg(&ta.argument))
+                .collect();
+
+            Some(ReturnStructType {
+                module_addr,
+                module_name,
+                struct_name,
+                type_args,
+            })
+        }
+        // For references, extract the inner type
+        summary::Type::Reference(_, inner) => parse_return_struct_type(inner),
+        _ => None,
+    }
+}
+
+/// Parse a type argument from a return type.
+fn parse_type_arg(ty: &summary::Type) -> ReturnTypeArg {
+    match ty {
+        summary::Type::TypeParameter(idx) => ReturnTypeArg::TypeParam(*idx as usize),
+        summary::Type::NamedTypeParameter(name) => {
+            // Try to extract index from name like "T0", "T1"
+            if let Some(idx_str) = name.as_str().strip_prefix('T') {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    return ReturnTypeArg::TypeParam(idx);
+                }
+            }
+            ReturnTypeArg::Concrete(name.to_string())
+        }
+        _ => ReturnTypeArg::Concrete(format_type(ty)),
     }
 }
 

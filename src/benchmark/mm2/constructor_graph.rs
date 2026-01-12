@@ -2,14 +2,29 @@
 //!
 //! This module provides an MM2-based approach to finding constructors,
 //! with better type analysis than the bytecode-only approach.
+//!
+//! ## Multi-Hop Constructor Chains
+//!
+//! The graph supports multi-hop constructor resolution via BFS. For example,
+//! to construct type C which needs B which needs A:
+//!
+//! ```text
+//! A (primitives only) -> B (needs A) -> C (needs B)
+//! ```
+//!
+//! The `find_execution_chain()` method returns constructors in topological order
+//! (A, B, C) so they can be executed sequentially with proper dependencies.
 
-use crate::benchmark::mm2::model::{FunctionSignature, TypeModel};
+use crate::benchmark::constructor_map::{ConstructorInfo, ParamKind};
+use crate::benchmark::mm2::model::{FunctionSignature, ReturnTypeArg, TypeModel};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use move_model_2::summary::{self, Ability};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// Maximum depth for constructor chain resolution
-const MAX_CHAIN_DEPTH: usize = 5;
+pub const MAX_CHAIN_DEPTH: usize = 5;
 
 /// A node in the constructor graph representing a type and how to construct it.
 #[derive(Debug, Clone)]
@@ -22,8 +37,11 @@ pub struct TypeNode {
     pub type_name: String,
     /// Abilities of this type
     pub abilities: summary::AbilitySet,
-    /// Available constructors for this type
+    /// Available constructors for this type (identified by naming patterns)
     pub constructors: Vec<Constructor>,
+    /// Available producers for this type (identified by return type analysis)
+    /// Each producer includes the return index where this type appears
+    pub producers: Vec<(Producer, usize)>,
     /// Whether this is a primitive type
     pub is_primitive: bool,
 }
@@ -44,6 +62,44 @@ pub struct Constructor {
     pub is_entry: bool,
     /// Synthesis complexity score (lower = easier to construct)
     pub complexity: usize,
+}
+
+/// A producer function that returns one or more types (for return value chaining).
+///
+/// Unlike constructors which are identified by naming patterns (new_*, create_*),
+/// producers are identified by analyzing actual return types. A producer can
+/// return multiple types (e.g., `create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)`).
+#[derive(Debug, Clone)]
+pub struct Producer {
+    /// Module containing the producer
+    pub module_addr: AccountAddress,
+    pub module_name: String,
+    /// Function name
+    pub function_name: String,
+    /// Parameter requirements
+    pub params: Vec<ParamRequirement>,
+    /// Number of type parameters
+    pub type_param_count: usize,
+    /// Types this function produces, with their return index
+    /// (return_idx, type_key) where type_key is "addr::module::name"
+    pub produces: Vec<(usize, ProducedType)>,
+    /// Synthesis complexity score
+    pub complexity: usize,
+}
+
+/// A type produced by a producer function.
+#[derive(Debug, Clone)]
+pub struct ProducedType {
+    /// Full type key: "addr::module::name"
+    pub type_key: String,
+    /// Module address
+    pub module_addr: AccountAddress,
+    /// Module name
+    pub module_name: String,
+    /// Type name
+    pub type_name: String,
+    /// Type arguments (indices into producer's type params)
+    pub type_args: Vec<ReturnTypeArg>,
 }
 
 /// What a constructor parameter requires.
@@ -94,6 +150,126 @@ impl ParamRequirement {
             ParamRequirement::Unsupported(_) => false,
         }
     }
+
+    /// Check if this is a reference to a constructible type (not TxContext/Clock).
+    pub fn is_constructible_reference(&self) -> bool {
+        match self {
+            ParamRequirement::Reference { inner, .. } => {
+                matches!(inner.as_ref(), ParamRequirement::Type { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Get the inner type for a reference parameter.
+    pub fn get_reference_inner(&self) -> Option<(&ParamRequirement, bool)> {
+        match self {
+            ParamRequirement::Reference { inner, is_mut } => Some((inner.as_ref(), *is_mut)),
+            _ => None,
+        }
+    }
+}
+
+/// A producer-based chain for return value chaining.
+///
+/// Unlike ExecutionChain which uses naming-pattern constructors, ProducerChain
+/// uses return type analysis to identify how to produce a type. This enables
+/// chaining like: create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
+#[derive(Debug, Clone)]
+pub struct ProducerChain {
+    /// Steps in topological order (dependencies first)
+    pub steps: Vec<ProducerStep>,
+    /// The final target type key
+    pub target_type_key: String,
+    /// Total depth of the chain
+    pub depth: usize,
+}
+
+/// A single step in a producer chain.
+#[derive(Debug, Clone)]
+pub struct ProducerStep {
+    /// The producer function to call
+    pub producer: Producer,
+    /// Which return value index contains the type we need
+    pub target_return_idx: usize,
+    /// Parameter dependencies: param_idx -> type_key from previous step
+    pub dependencies: BTreeMap<usize, String>,
+}
+
+impl ProducerChain {
+    /// Check if this chain is empty.
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Get all types produced by this chain (for multi-return functions).
+    pub fn all_produced_types(&self) -> Vec<&ProducedType> {
+        self.steps
+            .iter()
+            .flat_map(|s| s.producer.produces.iter().map(|(_, pt)| pt))
+            .collect()
+    }
+
+    /// Check if executing this chain would also produce other types we might need.
+    /// This is useful for planning - one producer call might give us multiple capabilities.
+    pub fn bonus_types(&self) -> Vec<&ProducedType> {
+        self.steps
+            .iter()
+            .flat_map(|s| {
+                s.producer.produces.iter().filter_map(|(idx, pt)| {
+                    if *idx != s.target_return_idx {
+                        Some(pt)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect()
+    }
+}
+
+/// An execution-ready constructor chain with proper topological ordering.
+///
+/// This structure is designed to be consumed by runner.rs for Tier B execution.
+/// The constructors are ordered such that dependencies come before dependents.
+#[derive(Debug, Clone)]
+pub struct ExecutionChain {
+    /// Constructors in topological order (dependencies first).
+    /// Each entry includes the type key it constructs for lookup.
+    pub steps: Vec<ExecutionStep>,
+    /// Total depth of the chain (1 = direct, 2 = single-hop, etc.)
+    pub depth: usize,
+}
+
+/// A single step in an execution chain.
+#[derive(Debug, Clone)]
+pub struct ExecutionStep {
+    /// The type key this step constructs (addr::module::name)
+    pub type_key: String,
+    /// The constructor to execute
+    pub constructor: Constructor,
+    /// Converted ConstructorInfo for runner.rs compatibility
+    pub ctor_info: ConstructorInfo,
+    /// Which parameters of this constructor depend on previously constructed types.
+    /// Maps param_idx -> type_key of the dependency.
+    pub dependencies: BTreeMap<usize, String>,
+}
+
+impl ExecutionChain {
+    /// Check if this chain is empty (no constructors).
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Get the final constructed type key.
+    pub fn target_type(&self) -> Option<&str> {
+        self.steps.last().map(|s| s.type_key.as_str())
+    }
+
+    /// Convert to a list of ConstructorInfo for backwards compatibility.
+    pub fn to_ctor_infos(&self) -> Vec<ConstructorInfo> {
+        self.steps.iter().map(|s| s.ctor_info.clone()).collect()
+    }
 }
 
 /// Constructor graph built from MM2 model.
@@ -122,6 +298,7 @@ impl ConstructorGraph {
                         type_name: struct_name.clone(),
                         abilities: struct_info.abilities.clone(),
                         constructors: Vec::new(),
+                        producers: Vec::new(),
                         is_primitive: false,
                     };
 
@@ -167,6 +344,89 @@ impl ConstructorGraph {
         // Sort constructors by complexity
         for node in types.values_mut() {
             node.constructors.sort_by_key(|c| c.complexity);
+        }
+
+        // Third pass: analyze return types to find producers
+        // This enables return value chaining (e.g., create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo))
+        for (addr, module_name) in model.modules() {
+            for func_name in model.functions_in_module(&addr, &module_name) {
+                if let Some(sig) = model.get_function(&addr, &module_name, &func_name) {
+                    // Only consider public/entry functions
+                    if !sig.is_public && !sig.is_entry {
+                        continue;
+                    }
+
+                    // Skip functions with no returns
+                    if sig.returns.is_empty() {
+                        continue;
+                    }
+
+                    // Analyze return types to find struct types we can produce
+                    let mut produced_types: Vec<(usize, ProducedType)> = Vec::new();
+
+                    for (return_idx, ret_info) in sig.returns.iter().enumerate() {
+                        if let Some(struct_type) = &ret_info.struct_type {
+                            let type_key = format!(
+                                "{}::{}::{}",
+                                struct_type.module_addr, struct_type.module_name, struct_type.struct_name
+                            );
+
+                            // Only consider types we know about
+                            if types.contains_key(&type_key) {
+                                produced_types.push((
+                                    return_idx,
+                                    ProducedType {
+                                        type_key: type_key.clone(),
+                                        module_addr: struct_type.module_addr,
+                                        module_name: struct_type.module_name.clone(),
+                                        type_name: struct_type.struct_name.clone(),
+                                        type_args: struct_type.type_args.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+
+                    // If this function produces any struct types, create a producer
+                    if !produced_types.is_empty() {
+                        // Analyze parameters
+                        let params: Vec<ParamRequirement> = sig
+                            .parameters
+                            .iter()
+                            .map(|p| Self::classify_param(&p.type_str))
+                            .collect();
+
+                        let complexity = params
+                            .iter()
+                            .filter(|p| !p.is_synthesizable())
+                            .count()
+                            * 10
+                            + sig.type_parameters.len() * 2;
+
+                        let producer = Producer {
+                            module_addr: addr,
+                            module_name: module_name.clone(),
+                            function_name: func_name.clone(),
+                            params,
+                            type_param_count: sig.type_parameters.len(),
+                            produces: produced_types.clone(),
+                            complexity,
+                        };
+
+                        // Register this producer with each type it produces
+                        for (return_idx, produced_type) in &produced_types {
+                            if let Some(node) = types.get_mut(&produced_type.type_key) {
+                                node.producers.push((producer.clone(), *return_idx));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort producers by complexity
+        for node in types.values_mut() {
+            node.producers.sort_by_key(|(p, _)| p.complexity);
         }
 
         ConstructorGraph {
@@ -408,6 +668,195 @@ impl ConstructorGraph {
         None
     }
 
+    /// Find a producer that can synthesize a given type.
+    ///
+    /// This method looks at all functions that return the target type (via return type analysis)
+    /// rather than relying on naming patterns. This is especially useful for capability types
+    /// like AdminCap, CollectionFeeCap, etc.
+    ///
+    /// Returns (Producer, return_index) if found.
+    pub fn find_producer(
+        &self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+    ) -> Option<(Producer, usize)> {
+        let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+        let node = self.types.get(&key)?;
+
+        // Find a producer whose params are all synthesizable
+        for (producer, return_idx) in &node.producers {
+            if producer.params.iter().all(|p| p.is_synthesizable()) {
+                return Some((producer.clone(), *return_idx));
+            }
+        }
+
+        None
+    }
+
+    /// Find all producers for a given type (including those with non-synthesizable params).
+    pub fn find_all_producers(
+        &self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+    ) -> Vec<(Producer, usize)> {
+        let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+        self.types
+            .get(&key)
+            .map(|n| n.producers.clone())
+            .unwrap_or_default()
+    }
+
+    /// Find a producer chain that can synthesize a given type.
+    ///
+    /// Similar to find_chain() but uses producers (return type analysis) instead of
+    /// constructors (naming patterns). This enables return value chaining.
+    ///
+    /// Returns a ProducerChain that specifies exactly which return value to use.
+    pub fn find_producer_chain(
+        &self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+    ) -> Option<ProducerChain> {
+        let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+        let node = self.types.get(&key)?;
+
+        // Try direct producers first (all params synthesizable)
+        for (producer, return_idx) in &node.producers {
+            if producer.params.iter().all(|p| p.is_synthesizable()) {
+                return Some(ProducerChain {
+                    steps: vec![ProducerStep {
+                        producer: producer.clone(),
+                        target_return_idx: *return_idx,
+                        dependencies: BTreeMap::new(),
+                    }],
+                    target_type_key: key,
+                    depth: 1,
+                });
+            }
+        }
+
+        // BFS for multi-hop producer chains
+        self.bfs_find_producer_chain(&key, MAX_CHAIN_DEPTH)
+    }
+
+    /// BFS to find producer chain.
+    fn bfs_find_producer_chain(&self, target_key: &str, max_depth: usize) -> Option<ProducerChain> {
+        let target_node = self.types.get(target_key)?;
+
+        // BFS state: (current_type_key, chain_so_far, depth)
+        let mut queue: VecDeque<(String, Vec<ProducerStep>, usize)> = VecDeque::new();
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+
+        queue.push_back((target_key.to_string(), Vec::new(), 0));
+        visited.insert(target_key.to_string());
+
+        while let Some((current_key, chain, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+
+            let Some(node) = self.types.get(&current_key) else {
+                continue;
+            };
+
+            for (producer, return_idx) in &node.producers {
+                // Build dependency map for this step
+                let mut dependencies = BTreeMap::new();
+                let mut all_resolvable = true;
+                let mut unresolved_types = Vec::new();
+
+                for (param_idx, param) in producer.params.iter().enumerate() {
+                    if !param.is_synthesizable() {
+                        if let ParamRequirement::Type {
+                            module_addr,
+                            module_name,
+                            type_name,
+                        } = param
+                        {
+                            let dep_key = format!("{}::{}::{}", module_addr, module_name, type_name);
+
+                            // Check if this dependency is already in our chain
+                            let already_in_chain = chain.iter().any(|step| {
+                                step.producer.produces.iter().any(|(_, pt)| pt.type_key == dep_key)
+                            });
+
+                            if already_in_chain {
+                                dependencies.insert(param_idx, dep_key);
+                            } else if !visited.contains(&dep_key) {
+                                unresolved_types.push(dep_key);
+                            } else {
+                                // Already visited but not resolved - might be circular
+                                all_resolvable = false;
+                                break;
+                            }
+                        } else if let ParamRequirement::Reference { inner, .. } = param {
+                            // Handle reference to constructible type
+                            if let ParamRequirement::Type {
+                                module_addr,
+                                module_name,
+                                type_name,
+                            } = inner.as_ref()
+                            {
+                                let dep_key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                                let already_in_chain = chain.iter().any(|step| {
+                                    step.producer.produces.iter().any(|(_, pt)| pt.type_key == dep_key)
+                                });
+                                if already_in_chain {
+                                    dependencies.insert(param_idx, dep_key);
+                                } else if !visited.contains(&dep_key) {
+                                    unresolved_types.push(dep_key);
+                                } else {
+                                    all_resolvable = false;
+                                    break;
+                                }
+                            } else {
+                                all_resolvable = false;
+                                break;
+                            }
+                        } else {
+                            all_resolvable = false;
+                            break;
+                        }
+                    }
+                }
+
+                if !all_resolvable {
+                    continue;
+                }
+
+                let mut new_chain = chain.clone();
+                new_chain.push(ProducerStep {
+                    producer: producer.clone(),
+                    target_return_idx: *return_idx,
+                    dependencies,
+                });
+
+                if unresolved_types.is_empty() {
+                    // Found a complete chain - return in proper order (dependencies first)
+                    new_chain.reverse();
+                    return Some(ProducerChain {
+                        steps: new_chain,
+                        target_type_key: target_key.to_string(),
+                        depth: depth + 1,
+                    });
+                }
+
+                // Add unresolved types to queue
+                for dep_key in unresolved_types {
+                    if !visited.contains(&dep_key) {
+                        visited.insert(dep_key.clone());
+                        queue.push_back((dep_key, new_chain.clone(), depth + 1));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Get a type node by key.
     pub fn get_type(&self, key: &str) -> Option<&TypeNode> {
         self.types.get(key)
@@ -427,18 +876,110 @@ impl ConstructorGraph {
         self.types.values()
     }
 
+    /// Find an execution-ready constructor chain for a type.
+    ///
+    /// Unlike `find_chain()`, this method returns constructors in proper
+    /// topological order (dependencies first) with all necessary metadata
+    /// for execution by runner.rs.
+    ///
+    /// Returns `None` if no chain can be found within `MAX_CHAIN_DEPTH`.
+    pub fn find_execution_chain(
+        &mut self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+    ) -> Option<ExecutionChain> {
+        let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+
+        // Use existing find_chain which does BFS
+        let chain = self.find_chain(module_addr, module_name, type_name)?;
+
+        if chain.is_empty() {
+            return None;
+        }
+
+        // Build execution steps with proper topological ordering
+        // The chain from find_chain is already in the right order (target last),
+        // but we need to build dependency information
+        let mut steps = Vec::new();
+        let mut constructed_types: BTreeSet<String> = BTreeSet::new();
+
+        for ctor in chain.iter() {
+            // Determine what type this constructor builds
+            // We need to infer from the constructor's context
+            let type_key = format!(
+                "{}::{}::{}",
+                ctor.module_addr,
+                ctor.module_name,
+                infer_return_type_from_ctor(&ctor.function_name, &ctor.module_name)
+            );
+
+            // Build dependency map
+            let mut dependencies = BTreeMap::new();
+            for (param_idx, param) in ctor.params.iter().enumerate() {
+                if let ParamRequirement::Type {
+                    module_addr,
+                    module_name,
+                    type_name,
+                } = param
+                {
+                    let dep_key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                    if constructed_types.contains(&dep_key) {
+                        dependencies.insert(param_idx, dep_key);
+                    }
+                }
+            }
+
+            // Convert to ConstructorInfo
+            let ctor_info = constructor_to_info(ctor, &key);
+
+            steps.push(ExecutionStep {
+                type_key: type_key.clone(),
+                constructor: ctor.clone(),
+                ctor_info,
+                dependencies,
+            });
+
+            constructed_types.insert(type_key);
+        }
+
+        Some(ExecutionChain {
+            depth: steps.len(),
+            steps,
+        })
+    }
+
+    /// Find an execution chain for a reference parameter.
+    ///
+    /// This handles the case where we have `&T` or `&mut T` and need to
+    /// construct `T` first, then pass a reference to it.
+    pub fn find_execution_chain_for_ref(
+        &mut self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+        is_mut: bool,
+    ) -> Option<(ExecutionChain, bool)> {
+        self.find_execution_chain(module_addr, module_name, type_name)
+            .map(|chain| (chain, is_mut))
+    }
+
     /// Get statistics about the constructor graph.
     pub fn stats(&self) -> ConstructorGraphStats {
         let total_types = self.types.len();
         let types_with_constructors = self.types.values().filter(|n| !n.constructors.is_empty()).count();
         let total_constructors: usize = self.types.values().map(|n| n.constructors.len()).sum();
         let object_types = self.types.values().filter(|n| n.abilities.0.contains(&Ability::Key)).count();
+        let types_with_producers = self.types.values().filter(|n| !n.producers.is_empty()).count();
+        let total_producers: usize = self.types.values().map(|n| n.producers.len()).sum();
 
         ConstructorGraphStats {
             total_types,
             types_with_constructors,
             total_constructors,
             object_types,
+            types_with_producers,
+            total_producers,
         }
     }
 }
@@ -450,6 +991,8 @@ pub struct ConstructorGraphStats {
     pub types_with_constructors: usize,
     pub total_constructors: usize,
     pub object_types: usize,
+    pub types_with_producers: usize,
+    pub total_producers: usize,
 }
 
 /// Convert snake_case to PascalCase.
@@ -463,6 +1006,122 @@ fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Infer return type name from constructor function name.
+///
+/// Common patterns:
+/// - `new_foo` -> `Foo`
+/// - `create_foo` -> `Foo`
+/// - `new` / `create` / `init` -> module name as PascalCase
+fn infer_return_type_from_ctor(func_name: &str, module_name: &str) -> String {
+    if func_name.starts_with("new_") {
+        to_pascal_case(&func_name[4..])
+    } else if func_name.starts_with("create_") {
+        to_pascal_case(&func_name[7..])
+    } else if func_name == "new" || func_name == "create" || func_name == "init" {
+        to_pascal_case(module_name)
+    } else {
+        // Default: use module name
+        to_pascal_case(module_name)
+    }
+}
+
+/// Convert a ParamRequirement to a ParamKind for runner.rs compatibility.
+fn param_requirement_to_kind(req: &ParamRequirement) -> ParamKind {
+    match req {
+        ParamRequirement::Primitive(s) => {
+            let tag = match s.as_str() {
+                "bool" => TypeTag::Bool,
+                "u8" => TypeTag::U8,
+                "u16" => TypeTag::U16,
+                "u32" => TypeTag::U32,
+                "u64" => TypeTag::U64,
+                "u128" => TypeTag::U128,
+                "u256" => TypeTag::U256,
+                "address" => TypeTag::Address,
+                _ => TypeTag::U64, // Default
+            };
+            ParamKind::Primitive(tag)
+        }
+        ParamRequirement::Vector(inner) => {
+            if let ParamKind::Primitive(tag) = param_requirement_to_kind(inner) {
+                ParamKind::PrimitiveVector(tag)
+            } else {
+                ParamKind::Unsupported("complex vector".to_string())
+            }
+        }
+        ParamRequirement::TxContext => ParamKind::TxContext,
+        ParamRequirement::Clock => ParamKind::Clock,
+        ParamRequirement::TypeParam(idx) => ParamKind::TypeParam(*idx),
+        ParamRequirement::Type {
+            module_addr,
+            module_name,
+            type_name,
+        } => {
+            let struct_tag = StructTag {
+                address: *module_addr,
+                module: Identifier::new(module_name.clone()).unwrap_or_else(|_| {
+                    Identifier::new("unknown").unwrap()
+                }),
+                name: Identifier::new(type_name.clone()).unwrap_or_else(|_| {
+                    Identifier::new("Unknown").unwrap()
+                }),
+                type_params: vec![],
+            };
+            ParamKind::Struct(struct_tag)
+        }
+        ParamRequirement::Reference { inner, .. } => {
+            // References are handled specially - this shouldn't be called for them
+            param_requirement_to_kind(inner)
+        }
+        ParamRequirement::Unsupported(s) => ParamKind::Unsupported(s.clone()),
+    }
+}
+
+/// Convert a Constructor to ConstructorInfo for runner.rs compatibility.
+fn constructor_to_info(ctor: &Constructor, target_key: &str) -> ConstructorInfo {
+    // Parse target_key to get StructTag
+    let parts: Vec<&str> = target_key.split("::").collect();
+    let (addr, module_name, type_name) = if parts.len() >= 3 {
+        let addr = AccountAddress::from_hex_literal(parts[0])
+            .unwrap_or(AccountAddress::ZERO);
+        (addr, parts[1].to_string(), parts[2].to_string())
+    } else {
+        (ctor.module_addr, ctor.module_name.clone(), infer_return_type_from_ctor(&ctor.function_name, &ctor.module_name))
+    };
+
+    let module_id = ModuleId::new(
+        ctor.module_addr,
+        Identifier::new(ctor.module_name.clone()).unwrap_or_else(|_| {
+            Identifier::new("unknown").unwrap()
+        }),
+    );
+
+    let returns = StructTag {
+        address: addr,
+        module: Identifier::new(module_name).unwrap_or_else(|_| {
+            Identifier::new("unknown").unwrap()
+        }),
+        name: Identifier::new(type_name).unwrap_or_else(|_| {
+            Identifier::new("Unknown").unwrap()
+        }),
+        type_params: vec![],
+    };
+
+    let params: Vec<ParamKind> = ctor
+        .params
+        .iter()
+        .map(param_requirement_to_kind)
+        .collect();
+
+    ConstructorInfo {
+        module_id,
+        function_name: ctor.function_name.clone(),
+        type_params: ctor.type_param_count,
+        params,
+        returns,
+    }
 }
 
 #[cfg(test)]

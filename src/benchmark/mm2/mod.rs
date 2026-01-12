@@ -30,8 +30,12 @@
 
 pub mod constructor_graph;
 pub mod model;
+pub mod type_synthesizer;
 pub mod type_validator;
 
-pub use constructor_graph::ConstructorGraph;
+pub use constructor_graph::{
+    ConstructorGraph, ExecutionChain, ExecutionStep, ParamRequirement, Producer, ProducerChain, ProducerStep, MAX_CHAIN_DEPTH,
+};
 pub use model::TypeModel;
+pub use type_synthesizer::{SynthesisResult, TypeSynthesizer};
 pub use type_validator::TypeValidator;
