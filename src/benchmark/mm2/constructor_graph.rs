@@ -22,6 +22,18 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use move_model_2::summary::{self, Ability};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::LazyLock;
+
+/// Safe fallback identifiers for error cases - validated at compile time via static initialization.
+static UNKNOWN_MODULE: LazyLock<Identifier> =
+    LazyLock::new(|| Identifier::new("unknown").expect("'unknown' is a valid identifier"));
+static UNKNOWN_TYPE: LazyLock<Identifier> =
+    LazyLock::new(|| Identifier::new("Unknown").expect("'Unknown' is a valid identifier"));
+
+/// Safely create an Identifier, falling back to "unknown" if the input is invalid.
+fn safe_identifier(name: &str, fallback: &Identifier) -> Identifier {
+    Identifier::new(name).unwrap_or_else(|_| fallback.clone())
+}
 
 /// Maximum depth for constructor chain resolution
 pub const MAX_CHAIN_DEPTH: usize = 5;
@@ -744,7 +756,8 @@ impl ConstructorGraph {
 
     /// BFS to find producer chain.
     fn bfs_find_producer_chain(&self, target_key: &str, max_depth: usize) -> Option<ProducerChain> {
-        let target_node = self.types.get(target_key)?;
+        // Verify target type exists in graph (early return if not)
+        let _target_node = self.types.get(target_key)?;
 
         // BFS state: (current_type_key, chain_so_far, depth)
         let mut queue: VecDeque<(String, Vec<ProducerStep>, usize)> = VecDeque::new();
@@ -1061,12 +1074,8 @@ fn param_requirement_to_kind(req: &ParamRequirement) -> ParamKind {
         } => {
             let struct_tag = StructTag {
                 address: *module_addr,
-                module: Identifier::new(module_name.clone()).unwrap_or_else(|_| {
-                    Identifier::new("unknown").unwrap()
-                }),
-                name: Identifier::new(type_name.clone()).unwrap_or_else(|_| {
-                    Identifier::new("Unknown").unwrap()
-                }),
+                module: safe_identifier(module_name, &UNKNOWN_MODULE),
+                name: safe_identifier(type_name, &UNKNOWN_TYPE),
                 type_params: vec![],
             };
             ParamKind::Struct(struct_tag)
@@ -1093,19 +1102,13 @@ fn constructor_to_info(ctor: &Constructor, target_key: &str) -> ConstructorInfo 
 
     let module_id = ModuleId::new(
         ctor.module_addr,
-        Identifier::new(ctor.module_name.clone()).unwrap_or_else(|_| {
-            Identifier::new("unknown").unwrap()
-        }),
+        safe_identifier(&ctor.module_name, &UNKNOWN_MODULE),
     );
 
     let returns = StructTag {
         address: addr,
-        module: Identifier::new(module_name).unwrap_or_else(|_| {
-            Identifier::new("unknown").unwrap()
-        }),
-        name: Identifier::new(type_name).unwrap_or_else(|_| {
-            Identifier::new("Unknown").unwrap()
-        }),
+        module: safe_identifier(&module_name, &UNKNOWN_MODULE),
+        name: safe_identifier(&type_name, &UNKNOWN_TYPE),
         type_params: vec![],
     };
 

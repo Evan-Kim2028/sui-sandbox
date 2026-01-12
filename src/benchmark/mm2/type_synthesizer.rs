@@ -33,8 +33,12 @@ const SUI_SYSTEM: &str = "000000000000000000000000000000000000000000000000000000
 #[cfg(test)]
 const SUI_SYSTEM_HEX: &str = "0x0000000000000000000000000000000000000000000000000000000000000003";
 
-/// Default number of validators to synthesize to avoid division by zero errors
+/// Default number of validators to synthesize to avoid division by zero errors.
+/// IMPORTANT: Must be > 0 to prevent division by zero in stake calculations.
 const DEFAULT_VALIDATOR_COUNT: usize = 10;
+
+// Compile-time assertion that DEFAULT_VALIDATOR_COUNT > 0
+const _: () = assert!(DEFAULT_VALIDATOR_COUNT > 0, "DEFAULT_VALIDATOR_COUNT must be > 0 to avoid division by zero");
 
 /// Type synthesizer that generates BCS bytes for Move types.
 ///
@@ -369,25 +373,29 @@ impl<'a> TypeSynthesizer<'a> {
                     }));
                 }
                 // coin::Coin<T> - id + balance
+                // Use 1 SUI (1_000_000_000 MIST) as default to avoid zero-balance failures
                 ("coin", "Coin") => {
                     let mut bytes = Vec::new();
                     bytes.extend_from_slice(&[0u8; 32]); // id: UID
-                    bytes.extend_from_slice(&0u64.to_le_bytes()); // balance: Balance<T> (just u64)
+                    let one_sui: u64 = 1_000_000_000; // 1 SUI in MIST
+                    bytes.extend_from_slice(&one_sui.to_le_bytes()); // balance: Balance<T>
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Coin(0)".to_string(),
+                        description: "Coin(1_SUI)".to_string(),
                     }));
                 }
                 // coin::TreasuryCap<T> - id + total_supply
+                // Use non-zero supply to avoid division-by-zero in percentage calculations
                 ("coin", "TreasuryCap") => {
                     let mut bytes = Vec::new();
                     bytes.extend_from_slice(&[0u8; 32]); // id: UID
-                    bytes.extend_from_slice(&0u64.to_le_bytes()); // total_supply: Supply<T>
+                    let initial_supply: u64 = 1_000_000_000_000; // 1000 SUI total supply
+                    bytes.extend_from_slice(&initial_supply.to_le_bytes()); // total_supply: Supply<T>
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TreasuryCap(synthetic)".to_string(),
+                        description: "TreasuryCap(1000_SUI_supply)".to_string(),
                     }));
                 }
                 // clock::Clock - id + timestamp_ms

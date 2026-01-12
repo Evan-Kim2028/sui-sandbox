@@ -36,6 +36,7 @@ enum ConstructorChainEntry {
     ConstructedRef {
         param_idx: usize,
         ctor: ConstructorInfo,
+        #[allow(dead_code)] // Preserved for debugging/future use
         is_mut: bool,
     },
     /// Multi-hop execution chain (from ConstructorGraph)
@@ -43,7 +44,9 @@ enum ConstructorChainEntry {
     MultiHopChain {
         param_idx: usize,
         chain: ExecutionChain,
+        #[allow(dead_code)] // Preserved for debugging/future use
         is_ref: bool,
+        #[allow(dead_code)] // Preserved for debugging/future use
         is_mut: bool,
     },
     /// Producer chain (from return type analysis)
@@ -52,7 +55,9 @@ enum ConstructorChainEntry {
         param_idx: usize,
         chain: ProducerChain,
         target_return_idx: usize,
+        #[allow(dead_code)] // Preserved for debugging/future use
         is_ref: bool,
+        #[allow(dead_code)] // Preserved for debugging/future use
         is_mut: bool,
     },
     /// Synthesized type (from MM2 type analysis, no execution needed)
@@ -62,6 +67,7 @@ enum ConstructorChainEntry {
         /// Pre-computed BCS bytes for the synthesized value
         bytes: Vec<u8>,
         /// Type description for logging
+        #[allow(dead_code)] // Preserved for debugging/future use
         type_desc: String,
     },
 }
