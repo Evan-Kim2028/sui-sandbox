@@ -41,3 +41,7 @@ benchmark/.tmp*
 benchmark/logs/*
 benchmark/results/a2a/*
 benchmark/tmp_dbg*
+
+# Test artifacts
+benchmark/real_world_test_results_*.json
+benchmark/corpus/
