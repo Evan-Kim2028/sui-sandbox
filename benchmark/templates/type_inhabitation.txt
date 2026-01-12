@@ -1,15 +1,15 @@
-# Type Inhabitation Prompt v1
-# ===========================
-# This is the main prompt for the type inhabitation benchmark.
-# Researchers can customize this prompt to experiment with different approaches.
+# Type Inhabitation Prompt Template (Default)
+# ============================================
+# The main prompt template for the type inhabitation benchmark.
+# This minimal template works well for capable LLMs.
 #
 # Template variables (replaced at runtime):
-#   {{PACKAGE_ID}}       - The on-chain package ID being tested
+#   {{PACKAGE_ID}}        - The on-chain package ID being tested
 #   {{INTERFACE_SUMMARY}} - A summary of the target package's public interface
-#   {{MAX_ATTEMPTS}}     - Number of retry attempts allowed
-#   {{MOVE_EDITION}}     - Move edition to use (default: 2024.beta)
+#   {{MAX_ATTEMPTS}}      - Number of retry attempts allowed
+#   {{MOVE_EDITION}}      - Move edition to use (default: 2024.beta)
 #
-# The LLM should return a JSON object matching the helper_pkg_v1 schema.
+# Expected output: JSON object with move_toml, files, entrypoints, assumptions
 
 GOAL: Create a Move helper package that demonstrates TYPE INHABITATION of the TARGET PACKAGE.
 Your entry functions MUST create or use types defined in the target package (shown below).

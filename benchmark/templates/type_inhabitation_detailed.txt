@@ -1,7 +1,8 @@
-# Type Inhabitation Prompt v2 (Detailed)
-# ======================================
+# Type Inhabitation Prompt Template (Detailed)
+# =============================================
 # An enhanced prompt with more Move-specific guidance to reduce common errors.
-# This version includes examples and explicit rules about Move 2024 syntax.
+# Use this template for LLMs that struggle with the minimal template.
+# Includes examples and explicit rules about Move 2024 syntax.
 #
 # Template variables:
 #   {{PACKAGE_ID}}        - The on-chain package ID being tested

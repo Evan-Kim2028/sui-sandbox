@@ -1,11 +1,12 @@
 //! Error codes and diagnostic messages for type inhabitation evaluation.
 //!
-//! # Error Taxonomy (v0.4.0)
+//! # Error Taxonomy (v0.5.0)
 //!
 //! The type inhabitation pipeline uses a phase-based error taxonomy:
 //!
 //! | Phase | Purpose | Error Codes |
 //! |-------|---------|-------------|
+//! | Build | Compile Move code | E001-E006 |
 //! | Resolution | Find modules/functions | E101-E103 |
 //! | TypeCheck | Static type validation | E201-E205 |
 //! | Synthesis | Build argument values | E301-E304 |
@@ -17,6 +18,7 @@
 //! - Code: Specific error type
 //! - Message: Human-readable description
 //! - is_expected_limitation: Whether this is a sandbox limitation vs LLM failure
+//! - error_source: Attribution (LLM error, infrastructure limitation, etc.)
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -27,10 +29,12 @@ use std::fmt;
 
 /// Phase of the type inhabitation pipeline.
 ///
-/// The pipeline processes in order: Resolution -> TypeCheck -> Synthesis -> Execution -> Validation
+/// The pipeline processes in order: Build -> Resolution -> TypeCheck -> Synthesis -> Execution -> Validation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
+    /// Phase 0: Build/compile the Move code
+    Build,
     /// Phase 1: Module and function resolution
     Resolution,
     /// Phase 2: Static type checking (MM2)
@@ -44,9 +48,10 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// Get the numeric prefix for this phase (1xx, 2xx, etc.)
+    /// Get the numeric prefix for this phase (0xx, 1xx, 2xx, etc.)
     pub fn code_prefix(&self) -> u16 {
         match self {
+            Phase::Build => 0,
             Phase::Resolution => 100,
             Phase::TypeCheck => 200,
             Phase::Synthesis => 300,
@@ -58,6 +63,7 @@ impl Phase {
     /// Get a short name for this phase
     pub fn short_name(&self) -> &'static str {
         match self {
+            Phase::Build => "build",
             Phase::Resolution => "resolution",
             Phase::TypeCheck => "typecheck",
             Phase::Synthesis => "synthesis",
@@ -76,6 +82,7 @@ impl fmt::Display for Phase {
 /// Specific error codes within each phase.
 ///
 /// Error codes are numbered by phase:
+/// - 0xx: Build errors (pre-pipeline, Move compiler)
 /// - 1xx: Resolution errors
 /// - 2xx: Type check errors
 /// - 3xx: Synthesis errors
@@ -83,6 +90,33 @@ impl fmt::Display for Phase {
 /// - 5xx: Validation errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ErrorCode {
+    // =========================================================================
+    // Build Errors (0xx) - Move compiler errors from `sui move build`
+    // =========================================================================
+    /// E001: Module address not defined in Move.toml
+    #[serde(rename = "E001")]
+    ModuleAddressUndefined,
+
+    /// E002: Invalid Move.toml syntax
+    #[serde(rename = "E002")]
+    InvalidManifest,
+
+    /// E003: Import resolution failed (use statement points to non-existent module/type)
+    #[serde(rename = "E003")]
+    ImportResolutionFailed,
+
+    /// E004: Type syntax error (E03006 from Move compiler - invalid qualified path in field)
+    #[serde(rename = "E004")]
+    TypeSyntaxError,
+
+    /// E005: Entry function signature invalid (Sui E02002 - wrong return type, etc.)
+    #[serde(rename = "E005")]
+    InvalidEntrySignature,
+
+    /// E006: Ability constraint error at compile time (missing copy/drop/store/key)
+    #[serde(rename = "E006")]
+    CompileTimeAbilityError,
+
     // =========================================================================
     // Resolution Errors (1xx)
     // =========================================================================
@@ -172,9 +206,16 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// Get the numeric code (e.g., 101, 201, etc.)
+    /// Get the numeric code (e.g., 1, 101, 201, etc.)
     pub fn numeric_code(&self) -> u16 {
         match self {
+            // Build (0xx)
+            ErrorCode::ModuleAddressUndefined => 1,
+            ErrorCode::InvalidManifest => 2,
+            ErrorCode::ImportResolutionFailed => 3,
+            ErrorCode::TypeSyntaxError => 4,
+            ErrorCode::InvalidEntrySignature => 5,
+            ErrorCode::CompileTimeAbilityError => 6,
             // Resolution (1xx)
             ErrorCode::ModuleNotFound => 101,
             ErrorCode::FunctionNotFound => 102,
@@ -204,6 +245,7 @@ impl ErrorCode {
     /// Get the phase this error belongs to
     pub fn phase(&self) -> Phase {
         match self.numeric_code() / 100 {
+            0 => Phase::Build,
             1 => Phase::Resolution,
             2 => Phase::TypeCheck,
             3 => Phase::Synthesis,
@@ -216,6 +258,13 @@ impl ErrorCode {
     /// Get a short description of this error
     pub fn description(&self) -> &'static str {
         match self {
+            // Build
+            ErrorCode::ModuleAddressUndefined => "module address not defined in Move.toml",
+            ErrorCode::InvalidManifest => "invalid Move.toml syntax",
+            ErrorCode::ImportResolutionFailed => "import resolution failed (use statement)",
+            ErrorCode::TypeSyntaxError => "type syntax error (qualified path in field)",
+            ErrorCode::InvalidEntrySignature => "invalid entry function signature",
+            ErrorCode::CompileTimeAbilityError => "ability constraint error at compile time",
             // Resolution
             ErrorCode::ModuleNotFound => "module not found in bytecode corpus",
             ErrorCode::FunctionNotFound => "function not found in module",
@@ -253,15 +302,116 @@ impl ErrorCode {
         )
     }
 
-    /// Get the string code (e.g., "E101", "E201", etc.)
+    /// Get the string code (e.g., "E001", "E101", "E201", etc.)
     pub fn code_string(&self) -> String {
-        format!("E{}", self.numeric_code())
+        let code = self.numeric_code();
+        if code < 100 {
+            format!("E{:03}", code) // E001, E002, etc.
+        } else {
+            format!("E{}", code) // E101, E201, etc.
+        }
+    }
+
+    /// Get the default error source attribution for this error code.
+    ///
+    /// This provides a reasonable default, but specific instances may override
+    /// based on context (e.g., NoConstructor may be LLM error or target limitation).
+    pub fn default_error_source(&self) -> ErrorSource {
+        match self {
+            // Build errors are almost always LLM mistakes
+            ErrorCode::ModuleAddressUndefined
+            | ErrorCode::InvalidManifest
+            | ErrorCode::ImportResolutionFailed
+            | ErrorCode::TypeSyntaxError
+            | ErrorCode::InvalidEntrySignature
+            | ErrorCode::CompileTimeAbilityError => ErrorSource::LlmError,
+
+            // Resolution errors depend on context
+            ErrorCode::ModuleNotFound | ErrorCode::FunctionNotFound | ErrorCode::NotCallable => {
+                ErrorSource::LlmError
+            }
+
+            // TypeCheck errors are usually LLM mistakes
+            ErrorCode::TypeMismatch
+            | ErrorCode::AbilityViolation
+            | ErrorCode::GenericBoundsViolation
+            | ErrorCode::UnknownType => ErrorSource::LlmError,
+            ErrorCode::RecursiveType => ErrorSource::InfrastructureLimitation,
+
+            // Synthesis errors can be either
+            ErrorCode::NoConstructor => ErrorSource::Unknown, // Context-dependent
+            ErrorCode::ChainTooDeep | ErrorCode::UnsupportedConstructorParam => {
+                ErrorSource::InfrastructureLimitation
+            }
+            ErrorCode::BCSSerializationFailed => ErrorSource::InfrastructureLimitation,
+
+            // Execution errors
+            ErrorCode::VMSetupFailed => ErrorSource::InfrastructureLimitation,
+            ErrorCode::ConstructorAborted | ErrorCode::TargetAborted => ErrorSource::Unknown,
+            ErrorCode::UnsupportedNative => ErrorSource::InfrastructureLimitation,
+
+            // Validation errors
+            ErrorCode::NoTargetModulesAccessed => ErrorSource::LlmError,
+            ErrorCode::ReturnTypeMismatch => ErrorSource::LlmError,
+        }
     }
 }
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.code_string(), self.description())
+    }
+}
+
+// =============================================================================
+// Error Source Attribution (P1 Improvement)
+// =============================================================================
+
+/// Attribution for where an error originated.
+///
+/// This helps distinguish between:
+/// - LLM mistakes (should be counted against the model)
+/// - Infrastructure limitations (should not penalize the model)
+/// - Target package issues (package has no valid entry points)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorSource {
+    /// LLM generated incorrect code (should penalize model)
+    LlmError,
+    /// Infrastructure limitation - sandbox can't simulate this (don't penalize)
+    InfrastructureLimitation,
+    /// Target package has no valid entry points or constructible types
+    TargetPackageLimitation,
+    /// Unknown or ambiguous source (needs manual review)
+    Unknown,
+}
+
+impl ErrorSource {
+    /// Whether this error should count against the LLM's score
+    pub fn counts_against_llm(&self) -> bool {
+        matches!(self, ErrorSource::LlmError)
+    }
+
+    /// Human-readable description
+    pub fn description(&self) -> &'static str {
+        match self {
+            ErrorSource::LlmError => "LLM generated incorrect code",
+            ErrorSource::InfrastructureLimitation => "sandbox infrastructure limitation",
+            ErrorSource::TargetPackageLimitation => "target package has no valid entry points",
+            ErrorSource::Unknown => "unknown or ambiguous error source",
+        }
+    }
+}
+
+impl fmt::Display for ErrorSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl Default for ErrorSource {
+    fn default() -> Self {
+        ErrorSource::Unknown
     }
 }
 
@@ -275,7 +425,11 @@ pub struct Failure {
     /// Human-readable error message with context
     pub message: String,
     /// Whether this is an expected sandbox limitation (not an LLM failure)
+    /// **Deprecated**: Use `error_source` instead
     pub is_expected_limitation: bool,
+    /// Attribution for where this error originated
+    #[serde(default)]
+    pub error_source: ErrorSource,
     /// Optional additional context (e.g., which type failed, which function)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<FailureContext>,
@@ -301,23 +455,39 @@ pub struct FailureContext {
 impl Failure {
     /// Create a new failure with just the essentials
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        let error_source = code.default_error_source();
         Self {
             phase: code.phase(),
             code,
             message: message.into(),
             is_expected_limitation: code.is_expected_limitation(),
+            error_source,
             context: None,
         }
     }
 
     /// Create a failure with context
     pub fn with_context(code: ErrorCode, message: impl Into<String>, context: FailureContext) -> Self {
+        let error_source = code.default_error_source();
         Self {
             phase: code.phase(),
             code,
             message: message.into(),
             is_expected_limitation: code.is_expected_limitation(),
+            error_source,
             context: Some(context),
+        }
+    }
+
+    /// Create a failure with explicit error source
+    pub fn with_source(code: ErrorCode, message: impl Into<String>, source: ErrorSource) -> Self {
+        Self {
+            phase: code.phase(),
+            code,
+            message: message.into(),
+            is_expected_limitation: code.is_expected_limitation(),
+            error_source: source,
+            context: None,
         }
     }
 
@@ -327,9 +497,22 @@ impl Failure {
         self
     }
 
+    /// Set the error source attribution
+    pub fn set_source(mut self, source: ErrorSource) -> Self {
+        self.error_source = source;
+        // Keep is_expected_limitation in sync
+        self.is_expected_limitation = matches!(
+            source,
+            ErrorSource::InfrastructureLimitation | ErrorSource::TargetPackageLimitation
+        );
+        self
+    }
+
     /// Mark this failure as an expected limitation
+    #[deprecated(note = "Use set_source(ErrorSource::InfrastructureLimitation) instead")]
     pub fn mark_expected(mut self) -> Self {
         self.is_expected_limitation = true;
+        self.error_source = ErrorSource::InfrastructureLimitation;
         self
     }
 }
@@ -343,6 +526,171 @@ impl fmt::Display for Failure {
             self.code.code_string(),
             self.message
         )
+    }
+}
+
+// =============================================================================
+// Scoring Rubric (P1 Improvement)
+// =============================================================================
+
+/// Scoring criteria for partial credit evaluation.
+///
+/// Instead of binary pass/fail, this provides more granular scoring
+/// to distinguish between models that fail early vs. late in the pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScoringCriteria {
+    /// Whether the code compiled successfully (0.25 points)
+    pub compiles: bool,
+    /// Whether the code imports/uses the target package (0.25 points)
+    pub imports_target: bool,
+    /// Whether target types were successfully created (0.25 points)
+    pub creates_target_type: bool,
+    /// Whether execution completed without errors (0.25 points)
+    pub executes_cleanly: bool,
+}
+
+impl ScoringCriteria {
+    /// Calculate the total score (0.0 to 1.0)
+    pub fn score(&self) -> f64 {
+        let mut score = 0.0;
+        if self.compiles {
+            score += 0.25;
+        }
+        if self.imports_target {
+            score += 0.25;
+        }
+        if self.creates_target_type {
+            score += 0.25;
+        }
+        if self.executes_cleanly {
+            score += 0.25;
+        }
+        score
+    }
+
+    /// Get the furthest phase reached in the pipeline
+    pub fn phase_reached(&self) -> Phase {
+        if self.executes_cleanly {
+            Phase::Validation
+        } else if self.creates_target_type {
+            Phase::Execution
+        } else if self.imports_target {
+            Phase::Synthesis
+        } else if self.compiles {
+            Phase::Resolution
+        } else {
+            Phase::Build
+        }
+    }
+
+    /// Create criteria from a phase (for when execution stops at a given phase)
+    pub fn from_phase(phase: Phase) -> Self {
+        match phase {
+            Phase::Build => Self::default(),
+            Phase::Resolution => Self {
+                compiles: true,
+                ..Default::default()
+            },
+            Phase::TypeCheck | Phase::Synthesis => Self {
+                compiles: true,
+                imports_target: true,
+                ..Default::default()
+            },
+            Phase::Execution => Self {
+                compiles: true,
+                imports_target: true,
+                creates_target_type: true,
+                ..Default::default()
+            },
+            Phase::Validation => Self {
+                compiles: true,
+                imports_target: true,
+                creates_target_type: true,
+                executes_cleanly: true,
+            },
+        }
+    }
+}
+
+/// Complete evaluation result with scoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationResult {
+    /// Whether the evaluation passed completely
+    pub ok: bool,
+    /// Numeric score from 0.0 to 1.0
+    pub score: f64,
+    /// Detailed scoring criteria
+    pub criteria: ScoringCriteria,
+    /// Failure information if not ok (None if passed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Failure>,
+    /// Partial credit explanation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_credit_reason: Option<String>,
+}
+
+impl EvaluationResult {
+    /// Create a successful result
+    pub fn success() -> Self {
+        Self {
+            ok: true,
+            score: 1.0,
+            criteria: ScoringCriteria {
+                compiles: true,
+                imports_target: true,
+                creates_target_type: true,
+                executes_cleanly: true,
+            },
+            failure: None,
+            partial_credit_reason: None,
+        }
+    }
+
+    /// Create a failed result with partial credit
+    pub fn failed(failure: Failure) -> Self {
+        let criteria = ScoringCriteria::from_phase(failure.phase);
+        let score = criteria.score();
+        let phase_reached = criteria.phase_reached();
+
+        let partial_credit_reason = if score > 0.0 {
+            Some(format!(
+                "Reached {} phase before failure",
+                phase_reached
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            ok: false,
+            score,
+            criteria,
+            failure: Some(failure),
+            partial_credit_reason,
+        }
+    }
+
+    /// Create a failed result with custom criteria
+    pub fn failed_with_criteria(failure: Failure, criteria: ScoringCriteria) -> Self {
+        let score = criteria.score();
+        let phase_reached = criteria.phase_reached();
+
+        let partial_credit_reason = if score > 0.0 {
+            Some(format!(
+                "Reached {} phase before failure",
+                phase_reached
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            ok: false,
+            score,
+            criteria,
+            failure: Some(failure),
+            partial_credit_reason,
+        }
     }
 }
 
@@ -423,6 +771,13 @@ impl From<FailureStage> for ErrorCode {
 impl From<ErrorCode> for FailureStage {
     fn from(code: ErrorCode) -> Self {
         match code {
+            // Build errors -> A1 (closest match: code didn't even compile)
+            ErrorCode::ModuleAddressUndefined
+            | ErrorCode::InvalidManifest
+            | ErrorCode::ImportResolutionFailed
+            | ErrorCode::TypeSyntaxError
+            | ErrorCode::InvalidEntrySignature
+            | ErrorCode::CompileTimeAbilityError => FailureStage::A1,
             // Resolution -> A1
             ErrorCode::ModuleNotFound
             | ErrorCode::FunctionNotFound
@@ -759,5 +1114,208 @@ mod tests {
         let json = serde_json::to_string(&failure).unwrap();
         assert!(json.contains("\"phase\":\"synthesis\""));
         assert!(json.contains("\"code\":\"E301\""));
+    }
+
+    // =========================================================================
+    // Build Phase Error Tests (v0.5.0)
+    // =========================================================================
+
+    #[test]
+    fn test_build_error_codes() {
+        assert_eq!(ErrorCode::ModuleAddressUndefined.numeric_code(), 1);
+        assert_eq!(ErrorCode::InvalidManifest.numeric_code(), 2);
+        assert_eq!(ErrorCode::ImportResolutionFailed.numeric_code(), 3);
+        assert_eq!(ErrorCode::TypeSyntaxError.numeric_code(), 4);
+        assert_eq!(ErrorCode::InvalidEntrySignature.numeric_code(), 5);
+        assert_eq!(ErrorCode::CompileTimeAbilityError.numeric_code(), 6);
+    }
+
+    #[test]
+    fn test_build_error_phase() {
+        assert_eq!(ErrorCode::ModuleAddressUndefined.phase(), Phase::Build);
+        assert_eq!(ErrorCode::InvalidManifest.phase(), Phase::Build);
+        assert_eq!(ErrorCode::TypeSyntaxError.phase(), Phase::Build);
+    }
+
+    #[test]
+    fn test_build_error_code_string() {
+        assert_eq!(ErrorCode::ModuleAddressUndefined.code_string(), "E001");
+        assert_eq!(ErrorCode::InvalidManifest.code_string(), "E002");
+        assert_eq!(ErrorCode::CompileTimeAbilityError.code_string(), "E006");
+    }
+
+    #[test]
+    fn test_build_phase_display() {
+        assert_eq!(format!("{}", Phase::Build), "build");
+    }
+
+    // =========================================================================
+    // Error Source Attribution Tests (v0.5.0)
+    // =========================================================================
+
+    #[test]
+    fn test_error_source_default() {
+        // Build errors should default to LLM error
+        assert_eq!(
+            ErrorCode::TypeSyntaxError.default_error_source(),
+            ErrorSource::LlmError
+        );
+        // Infrastructure limitations
+        assert_eq!(
+            ErrorCode::UnsupportedNative.default_error_source(),
+            ErrorSource::InfrastructureLimitation
+        );
+        // Unknown/context-dependent
+        assert_eq!(
+            ErrorCode::NoConstructor.default_error_source(),
+            ErrorSource::Unknown
+        );
+    }
+
+    #[test]
+    fn test_error_source_counts_against_llm() {
+        assert!(ErrorSource::LlmError.counts_against_llm());
+        assert!(!ErrorSource::InfrastructureLimitation.counts_against_llm());
+        assert!(!ErrorSource::TargetPackageLimitation.counts_against_llm());
+        assert!(!ErrorSource::Unknown.counts_against_llm());
+    }
+
+    #[test]
+    fn test_failure_with_source() {
+        let failure = Failure::with_source(
+            ErrorCode::NoConstructor,
+            "no ctor",
+            ErrorSource::TargetPackageLimitation,
+        );
+        assert_eq!(failure.error_source, ErrorSource::TargetPackageLimitation);
+    }
+
+    #[test]
+    fn test_failure_set_source() {
+        let failure = Failure::new(ErrorCode::NoConstructor, "no ctor")
+            .set_source(ErrorSource::LlmError);
+        assert_eq!(failure.error_source, ErrorSource::LlmError);
+        assert!(!failure.is_expected_limitation);
+    }
+
+    #[test]
+    fn test_error_source_serialization() {
+        let failure = Failure::with_source(
+            ErrorCode::TypeSyntaxError,
+            "syntax error",
+            ErrorSource::LlmError,
+        );
+        let json = serde_json::to_string(&failure).unwrap();
+        assert!(json.contains("\"error_source\":\"llm_error\""));
+    }
+
+    // =========================================================================
+    // Scoring Rubric Tests (v0.5.0)
+    // =========================================================================
+
+    #[test]
+    fn test_scoring_criteria_score() {
+        let empty = ScoringCriteria::default();
+        assert_eq!(empty.score(), 0.0);
+
+        let compiles_only = ScoringCriteria {
+            compiles: true,
+            ..Default::default()
+        };
+        assert_eq!(compiles_only.score(), 0.25);
+
+        let full = ScoringCriteria {
+            compiles: true,
+            imports_target: true,
+            creates_target_type: true,
+            executes_cleanly: true,
+        };
+        assert_eq!(full.score(), 1.0);
+    }
+
+    #[test]
+    fn test_scoring_criteria_phase_reached() {
+        let empty = ScoringCriteria::default();
+        assert_eq!(empty.phase_reached(), Phase::Build);
+
+        let compiles = ScoringCriteria {
+            compiles: true,
+            ..Default::default()
+        };
+        assert_eq!(compiles.phase_reached(), Phase::Resolution);
+
+        let imports = ScoringCriteria {
+            compiles: true,
+            imports_target: true,
+            ..Default::default()
+        };
+        assert_eq!(imports.phase_reached(), Phase::Synthesis);
+    }
+
+    #[test]
+    fn test_scoring_criteria_from_phase() {
+        let build = ScoringCriteria::from_phase(Phase::Build);
+        assert!(!build.compiles);
+        assert_eq!(build.score(), 0.0);
+
+        let resolution = ScoringCriteria::from_phase(Phase::Resolution);
+        assert!(resolution.compiles);
+        assert!(!resolution.imports_target);
+        assert_eq!(resolution.score(), 0.25);
+
+        let validation = ScoringCriteria::from_phase(Phase::Validation);
+        assert!(validation.compiles);
+        assert!(validation.imports_target);
+        assert!(validation.creates_target_type);
+        assert!(validation.executes_cleanly);
+        assert_eq!(validation.score(), 1.0);
+    }
+
+    #[test]
+    fn test_evaluation_result_success() {
+        let result = EvaluationResult::success();
+        assert!(result.ok);
+        assert_eq!(result.score, 1.0);
+        assert!(result.failure.is_none());
+    }
+
+    #[test]
+    fn test_evaluation_result_failed() {
+        let failure = Failure::new(ErrorCode::TypeSyntaxError, "bad syntax");
+        let result = EvaluationResult::failed(failure);
+        assert!(!result.ok);
+        assert_eq!(result.score, 0.0); // Build phase = 0 points
+        assert!(result.failure.is_some());
+    }
+
+    #[test]
+    fn test_evaluation_result_partial_credit() {
+        let failure = Failure::new(ErrorCode::TargetAborted, "abort");
+        let result = EvaluationResult::failed(failure);
+        assert!(!result.ok);
+        // Execution phase reached = compiles + imports + creates = 0.75
+        assert_eq!(result.score, 0.75);
+        assert!(result.partial_credit_reason.is_some());
+    }
+
+    #[test]
+    fn test_evaluation_result_serialization() {
+        let result = EvaluationResult::success();
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"score\":1"));
+    }
+
+    #[test]
+    fn test_legacy_build_error_conversion() {
+        // Build errors should map to A1 in legacy system
+        assert_eq!(
+            FailureStage::from(ErrorCode::TypeSyntaxError),
+            FailureStage::A1
+        );
+        assert_eq!(
+            FailureStage::from(ErrorCode::InvalidManifest),
+            FailureStage::A1
+        );
     }
 }
