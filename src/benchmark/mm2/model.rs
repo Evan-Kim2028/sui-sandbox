@@ -214,7 +214,10 @@ impl TypeModel {
             .map(|ret_type| {
                 let type_str = format_type(ret_type);
                 let struct_type = parse_return_struct_type(ret_type);
-                ReturnInfo { type_str, struct_type }
+                ReturnInfo {
+                    type_str,
+                    struct_type,
+                }
             })
             .collect();
 
@@ -330,7 +333,11 @@ impl TypeModel {
     }
 
     /// List all structs in a module.
-    pub fn structs_in_module(&self, module_addr: &AccountAddress, module_name: &str) -> Vec<String> {
+    pub fn structs_in_module(
+        &self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+    ) -> Vec<String> {
         let module_name_sym = Symbol::from(module_name);
 
         self.model

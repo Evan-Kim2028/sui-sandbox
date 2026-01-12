@@ -79,11 +79,17 @@ fn test_mm2_struct_info() {
 
     let info = coin_info.unwrap();
     assert_eq!(info.name, "Coin");
-    assert!(!info.type_parameters.is_empty(), "Coin should have type params");
+    assert!(
+        !info.type_parameters.is_empty(),
+        "Coin should have type params"
+    );
 
     // Coin should have store ability
     assert!(
-        info.abilities.0.iter().any(|a| *a == move_model_2::summary::Ability::Store),
+        info.abilities
+            .0
+            .iter()
+            .any(|a| *a == move_model_2::summary::Ability::Store),
         "Coin should have store ability"
     );
 }
@@ -127,7 +133,11 @@ fn test_phase_resolution() {
     };
 
     let result = resolution::resolve(config);
-    assert!(result.is_ok(), "Should resolve coin::value: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Should resolve coin::value: {:?}",
+        result.err()
+    );
 
     let ctx = result.unwrap();
     assert_eq!(ctx.target_module_name, "coin");
@@ -153,7 +163,11 @@ fn test_phase_typecheck() {
 
     // Now type check
     let tc_result = typecheck::validate(&ctx);
-    assert!(tc_result.is_ok(), "Type check should succeed: {:?}", tc_result.err());
+    assert!(
+        tc_result.is_ok(),
+        "Type check should succeed: {:?}",
+        tc_result.err()
+    );
 
     let tc = tc_result.unwrap();
     // coin::value takes one parameter (a reference to Coin<T>)
@@ -235,13 +249,14 @@ fn test_type_synthesizer_sui_system_state() {
 
     // SuiSystemState should be synthesizable (address 0x3)
     let sui_system_addr = move_core_types::account_address::AccountAddress::from_hex_literal(
-        "0x0000000000000000000000000000000000000000000000000000000000000003"
-    ).expect("Valid address");
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+    )
+    .expect("Valid address");
 
     let result = synthesizer.synthesize_struct(
         &sui_system_addr,
         "sui_system_state_inner",
-        "SuiSystemStateV2"
+        "SuiSystemStateV2",
     );
 
     // The synthesizer should handle this type (even if with a stub)
@@ -249,12 +264,18 @@ fn test_type_synthesizer_sui_system_state() {
     // The key test is that it doesn't panic
     match result {
         Ok(synth) => {
-            assert!(!synth.bytes.is_empty(), "Synthesized bytes should not be empty");
+            assert!(
+                !synth.bytes.is_empty(),
+                "Synthesized bytes should not be empty"
+            );
         }
         Err(e) => {
             // Some types may not be fully synthesizable - that's OK
             // We just want to ensure no panic
-            eprintln!("Note: SuiSystemStateV2 synthesis returned error (expected): {}", e);
+            eprintln!(
+                "Note: SuiSystemStateV2 synthesis returned error (expected): {}",
+                e
+            );
         }
     }
 }
@@ -272,19 +293,19 @@ fn test_type_synthesizer_validator_set() {
 
     // ValidatorSet synthesis (from sui_system module at 0x3)
     let sui_system_addr = move_core_types::account_address::AccountAddress::from_hex_literal(
-        "0x0000000000000000000000000000000000000000000000000000000000000003"
-    ).expect("Valid address");
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+    )
+    .expect("Valid address");
 
-    let result = synthesizer.synthesize_struct(
-        &sui_system_addr,
-        "validator_set",
-        "ValidatorSet"
-    );
+    let result = synthesizer.synthesize_struct(&sui_system_addr, "validator_set", "ValidatorSet");
 
     // ValidatorSet should be synthesizable with our special handling
     match result {
         Ok(synth) => {
-            assert!(!synth.bytes.is_empty(), "ValidatorSet bytes should not be empty");
+            assert!(
+                !synth.bytes.is_empty(),
+                "ValidatorSet bytes should not be empty"
+            );
             // Should indicate it was synthesized (may be a stub)
             eprintln!("ValidatorSet synthesis succeeded: {}", synth.description);
         }
@@ -308,11 +329,7 @@ fn test_coin_synthesis_has_balance() {
 
     let sui_addr = move_core_types::account_address::AccountAddress::TWO;
 
-    let result = synthesizer.synthesize_struct(
-        &sui_addr,
-        "coin",
-        "Coin"
-    );
+    let result = synthesizer.synthesize_struct(&sui_addr, "coin", "Coin");
 
     match result {
         Ok(synth) => {
@@ -325,7 +342,11 @@ fn test_coin_synthesis_has_balance() {
                 synth.description.contains("1_SUI") || synth.description.contains("Coin"),
                 "Coin should be synthesized with realistic balance"
             );
-            eprintln!("Coin synthesis: {} ({} bytes)", synth.description, synth.bytes.len());
+            eprintln!(
+                "Coin synthesis: {} ({} bytes)",
+                synth.description,
+                synth.bytes.len()
+            );
         }
         Err(e) => {
             panic!("Coin synthesis should succeed: {}", e);

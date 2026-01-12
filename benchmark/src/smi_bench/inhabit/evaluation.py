@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
 # =============================================================================
 # Phase-Based Error Taxonomy (v0.5.0)
 # =============================================================================
@@ -31,6 +30,7 @@ class Phase(str, Enum):
     The pipeline processes in order:
     Build -> Resolution -> TypeCheck -> Synthesis -> Execution -> Validation
     """
+
     BUILD = "build"
     RESOLUTION = "resolution"
     TYPECHECK = "typecheck"
@@ -63,6 +63,7 @@ class ErrorCode(str, Enum):
     - 4xx: Execution errors
     - 5xx: Validation errors
     """
+
     # Build Errors (0xx)
     MODULE_ADDRESS_UNDEFINED = "E001"
     INVALID_MANIFEST = "E002"
@@ -173,8 +174,12 @@ class ErrorCode(str, Enum):
             return ErrorSource.LLM_ERROR
 
         # TypeCheck errors
-        if self in {ErrorCode.TYPE_MISMATCH, ErrorCode.ABILITY_VIOLATION,
-                    ErrorCode.GENERIC_BOUNDS_VIOLATION, ErrorCode.UNKNOWN_TYPE}:
+        if self in {
+            ErrorCode.TYPE_MISMATCH,
+            ErrorCode.ABILITY_VIOLATION,
+            ErrorCode.GENERIC_BOUNDS_VIOLATION,
+            ErrorCode.UNKNOWN_TYPE,
+        }:
             return ErrorSource.LLM_ERROR
         if self == ErrorCode.RECURSIVE_TYPE:
             return ErrorSource.INFRASTRUCTURE_LIMITATION
@@ -182,8 +187,11 @@ class ErrorCode(str, Enum):
         # Synthesis errors
         if self == ErrorCode.NO_CONSTRUCTOR:
             return ErrorSource.UNKNOWN  # Context-dependent
-        if self in {ErrorCode.CHAIN_TOO_DEEP, ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM,
-                    ErrorCode.BCS_SERIALIZATION_FAILED}:
+        if self in {
+            ErrorCode.CHAIN_TOO_DEEP,
+            ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM,
+            ErrorCode.BCS_SERIALIZATION_FAILED,
+        }:
             return ErrorSource.INFRASTRUCTURE_LIMITATION
 
         # Execution errors
@@ -203,6 +211,7 @@ class ErrorCode(str, Enum):
 
 class ErrorSource(str, Enum):
     """Attribution for where an error originated."""
+
     LLM_ERROR = "llm_error"
     INFRASTRUCTURE_LIMITATION = "infrastructure_limitation"
     TARGET_PACKAGE_LIMITATION = "target_package_limitation"
@@ -233,6 +242,7 @@ class ErrorSource(str, Enum):
 @dataclass
 class FailureContext:
     """Additional context for a failure."""
+
     module: str | None = None
     function: str | None = None
     type_name: str | None = None
@@ -255,6 +265,7 @@ class FailureContext:
 @dataclass
 class Failure:
     """Complete failure information for the pipeline."""
+
     phase: Phase
     code: ErrorCode
     message: str
@@ -290,7 +301,7 @@ class Failure:
         self.error_source = source
         self.is_expected_limitation = source in {
             ErrorSource.INFRASTRUCTURE_LIMITATION,
-            ErrorSource.TARGET_PACKAGE_LIMITATION
+            ErrorSource.TARGET_PACKAGE_LIMITATION,
         }
         return self
 
@@ -320,6 +331,7 @@ class ScoringCriteria:
     Instead of binary pass/fail, this provides more granular scoring
     to distinguish between models that fail early vs. late in the pipeline.
     """
+
     compiles: bool = False
     imports_target: bool = False
     creates_target_type: bool = False
@@ -384,6 +396,7 @@ class ScoringCriteria:
 
 class UninhabitedReason(str, Enum):
     """Reason why a type could not be inhabited."""
+
     NO_CONSTRUCTOR = "no_constructor"
     UNSUPPORTED_PARAM = "unsupported_param"
     CHAIN_TOO_DEEP = "chain_too_deep"
@@ -396,6 +409,7 @@ class UninhabitedReason(str, Enum):
 @dataclass
 class UninhabitedType:
     """A type that could not be inhabited, with reason."""
+
     type_name: str
     reason: UninhabitedReason
     details: str | None = None
@@ -429,6 +443,7 @@ class InhabitationMetrics:
     - synthesis_rate(): Fraction of functions that could have args synthesized
     - execution_rate(): Fraction of functions that executed successfully (tier_b_hit only)
     """
+
     target_types_total: int = 0
     target_types_inhabited: int = 0
     inhabited_types: list[str] = field(default_factory=list)
@@ -489,6 +504,7 @@ class InhabitationMetrics:
 
 class AbortCategory(str, Enum):
     """Category of abort for easier analysis."""
+
     UNSUPPORTED_NATIVE = "unsupported_native"
     ASSERTION_FAILED = "assertion_failed"
     OBJECT_ERROR = "object_error"
@@ -505,6 +521,7 @@ E_NOT_SUPPORTED = 1000  # Abort code for unsupported natives
 @dataclass
 class StackFrame:
     """A frame in the call stack."""
+
     module: str
     function: str
     instruction_offset: int | None = None
@@ -522,6 +539,7 @@ class StackFrame:
 @dataclass
 class AbortInfo:
     """Detailed information about an abort during execution."""
+
     message: str
     is_expected: bool
     category: AbortCategory
@@ -585,6 +603,7 @@ class AbortInfo:
 @dataclass
 class FunctionCall:
     """Information about a function call during execution."""
+
     module: str
     function: str
     type_args: list[str] = field(default_factory=list)
@@ -607,6 +626,7 @@ class FunctionCall:
 @dataclass
 class ExecutionTrace:
     """Execution trace for debugging and analysis."""
+
     execution_attempted: bool = False
     modules_loaded: list[str] = field(default_factory=list)
     functions_called: list[FunctionCall] = field(default_factory=list)
@@ -616,12 +636,14 @@ class ExecutionTrace:
 
     def record_call(self, module: str, function: str, type_args: list[str] | None = None) -> None:
         """Record a function call."""
-        self.functions_called.append(FunctionCall(
-            module=module,
-            function=function,
-            type_args=type_args or [],
-            succeeded=True,
-        ))
+        self.functions_called.append(
+            FunctionCall(
+                module=module,
+                function=function,
+                type_args=type_args or [],
+                succeeded=True,
+            )
+        )
 
     def mark_last_failed(self, error: str) -> None:
         """Mark the last call as failed."""
@@ -654,6 +676,7 @@ class ExecutionTrace:
 @dataclass
 class EvaluationResult:
     """Complete evaluation result with scoring."""
+
     ok: bool
     score: float
     criteria: ScoringCriteria

@@ -19,27 +19,21 @@ import re
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from smi_bench.inhabit.evaluation import (
-    AbortCategory,
     AbortInfo,
     ErrorCode,
-    ErrorSource,
     EvaluationResult,
     ExecutionTrace,
     Failure,
-    FailureContext,
     FunctionCall,
     InhabitationMetrics,
-    Phase,
     ScoringCriteria,
-    StackFrame,
     UninhabitedReason,
     UninhabitedType,
     parse_build_error,
 )
 
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # MM2 Result Parsing
@@ -134,9 +128,14 @@ def extract_inhabitation_metrics(
     # Helper package address (always 0x0 in the local benchmark)
     HELPER_PKG = "0x0000000000000000000000000000000000000000000000000000000000000000"
     # Framework addresses to exclude
-    FRAMEWORK_PREFIXES = ("0x1", "0x2", "0x3", "0x0000000000000000000000000000000000000000000000000000000000000001",
-                          "0x0000000000000000000000000000000000000000000000000000000000000002",
-                          "0x0000000000000000000000000000000000000000000000000000000000000003")
+    FRAMEWORK_PREFIXES = (
+        "0x1",
+        "0x2",
+        "0x3",
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+    )
 
     for entry in accepted:
         if not isinstance(entry, dict):
@@ -185,11 +184,13 @@ def extract_inhabitation_metrics(
 
         # Map failure reason to UninhabitedReason
         reason = _map_failure_to_uninhabited_reason(reason_str, stage)
-        uninhabited.append(UninhabitedType(
-            type_name=target,
-            reason=reason,
-            details=reason_str if reason_str else None,
-        ))
+        uninhabited.append(
+            UninhabitedType(
+                type_name=target,
+                reason=reason,
+                details=reason_str if reason_str else None,
+            )
+        )
 
     # Populate metrics
     metrics.target_types_inhabited = len(inhabited_types)
@@ -304,7 +305,7 @@ def _parse_abort_from_error(error: str) -> AbortInfo | None:
 
     # Extract abort code from sub_status
     abort_code = None
-    sub_status_match = re.search(r'sub_status:\s*Some\((\d+)\)', error)
+    sub_status_match = re.search(r"sub_status:\s*Some\((\d+)\)", error)
     if sub_status_match:
         abort_code = int(sub_status_match.group(1))
 
@@ -330,7 +331,7 @@ def _parse_abort_from_error(error: str) -> AbortInfo | None:
 
     # Add stack frame if we have module info
     if module_location and location:
-        func_match = re.search(r'::(\w+)\s+at\s+offset', location)
+        func_match = re.search(r"::(\w+)\s+at\s+offset", location)
         if func_match:
             abort_info.push_frame(
                 module=module_location,
@@ -381,9 +382,14 @@ def compute_scoring_criteria(
     # Helper package address (always 0x0 in the local benchmark)
     HELPER_PKG = "0x0000000000000000000000000000000000000000000000000000000000000000"
     # Framework addresses to exclude
-    FRAMEWORK_PREFIXES = ("0x1", "0x2", "0x3", "0x0000000000000000000000000000000000000000000000000000000000000001",
-                          "0x0000000000000000000000000000000000000000000000000000000000000002",
-                          "0x0000000000000000000000000000000000000000000000000000000000000003")
+    FRAMEWORK_PREFIXES = (
+        "0x1",
+        "0x2",
+        "0x3",
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+    )
 
     for entry in accepted:
         if not isinstance(entry, dict):
@@ -499,9 +505,7 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
         if stderr_log.exists():
             error_text = stderr_log.read_text(encoding="utf-8", errors="replace")
             return evaluate_build_failure(error_text)
-        return EvaluationResult.failed(
-            Failure.from_code(ErrorCode.INVALID_MANIFEST, "Build failed - no output")
-        )
+        return EvaluationResult.failed(Failure.from_code(ErrorCode.INVALID_MANIFEST, "Build failed - no output"))
 
     # Load MM2 mapping results
     # Prefer combined mapping (has real target bytecode) over plain mm2_mapping (has stubs)
@@ -524,9 +528,7 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
             logger.warning("Failed to parse mm2_mapping.json: %s", e)
 
     if mm2_data is None:
-        return EvaluationResult.failed(
-            Failure.from_code(ErrorCode.VM_SETUP_FAILED, "MM2 mapping failed")
-        )
+        return EvaluationResult.failed(Failure.from_code(ErrorCode.VM_SETUP_FAILED, "MM2 mapping failed"))
 
     # Load target interface for metrics
     target_interface = None
@@ -573,18 +575,16 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
     if not criteria.imports_target:
         failure = Failure.from_code(
             ErrorCode.NO_TARGET_MODULES_ACCESSED,
-            "Helper package compiled but did not import any target package modules"
+            "Helper package compiled but did not import any target package modules",
         )
     elif not criteria.creates_target_type:
         failure = Failure.from_code(
-            ErrorCode.NO_CONSTRUCTOR,
-            "Imported target modules but did not create any target types"
+            ErrorCode.NO_CONSTRUCTOR, "Imported target modules but did not create any target types"
         )
     else:
         # Has types but execution failed
         failure = Failure.from_code(
-            ErrorCode.TARGET_ABORTED,
-            "Created target types but execution did not complete cleanly"
+            ErrorCode.TARGET_ABORTED, "Created target types but execution did not complete cleanly"
         )
 
     return EvaluationResult.failed_with_details(
@@ -629,15 +629,10 @@ def evaluate_from_validation_report(
         return evaluate_build_failure(error_text)
 
     if any("mm2 mapping failed" in e.lower() for e in errors):
-        return EvaluationResult.failed(
-            Failure.from_code(ErrorCode.VM_SETUP_FAILED, error_text)
-        )
+        return EvaluationResult.failed(Failure.from_code(ErrorCode.VM_SETUP_FAILED, error_text))
 
     if any("no tier_b_hit" in e.lower() or "no target" in e.lower() for e in errors):
-        failure = Failure.from_code(
-            ErrorCode.NO_TARGET_MODULES_ACCESSED,
-            error_text
-        )
+        failure = Failure.from_code(ErrorCode.NO_TARGET_MODULES_ACCESSED, error_text)
         # This means build succeeded but no execution
         criteria = ScoringCriteria(compiles=True, imports_target=True)
         return EvaluationResult.failed_with_details(
@@ -646,6 +641,4 @@ def evaluate_from_validation_report(
         )
 
     # Generic failure
-    return EvaluationResult.failed(
-        Failure.from_code(ErrorCode.TYPE_SYNTAX_ERROR, error_text)
-    )
+    return EvaluationResult.failed(Failure.from_code(ErrorCode.TYPE_SYNTAX_ERROR, error_text))

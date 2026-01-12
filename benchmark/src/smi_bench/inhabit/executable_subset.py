@@ -351,9 +351,7 @@ def summarize_interface(
 
     # Handle difficulty_ranked mode specially - process in provided order
     if mode == "difficulty_ranked" and difficulty_ranking:
-        return _summarize_by_difficulty(
-            interface_json, max_functions, difficulty_ranking, modules
-        )
+        return _summarize_by_difficulty(interface_json, max_functions, difficulty_ranking, modules)
 
     requested_targets = requested_targets or set()
     requested_by_mod: dict[str, set[str]] = {}

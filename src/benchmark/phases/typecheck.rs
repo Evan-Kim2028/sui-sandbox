@@ -108,7 +108,13 @@ pub fn check_synthesizability(result: &TypeCheckResult) -> Result<(), Failure> {
     let problematic: Vec<String> = result
         .unsynthesizable_indices
         .iter()
-        .map(|&i| format!("param {} ({})", i, result.param_types.get(i).map(|s| s.as_str()).unwrap_or("?")))
+        .map(|&i| {
+            format!(
+                "param {} ({})",
+                i,
+                result.param_types.get(i).map(|s| s.as_str()).unwrap_or("?")
+            )
+        })
         .collect();
 
     Err(Failure::new(

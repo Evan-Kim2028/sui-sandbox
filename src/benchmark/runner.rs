@@ -12,7 +12,10 @@ use crate::args::BenchmarkLocalArgs;
 use crate::benchmark::bytecode_analyzer::{self, StaticFunctionCall};
 use crate::benchmark::constructor_map::{ConstructorInfo, ConstructorMap, ParamKind};
 use crate::benchmark::errors::{is_unsupported_native_error, unsupported_native_error_message};
-use crate::benchmark::mm2::{ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, TypeModel, TypeSynthesizer};
+use crate::benchmark::mm2::{
+    ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, TypeModel,
+    TypeSynthesizer,
+};
 use crate::benchmark::resolver::LocalModuleResolver;
 use crate::benchmark::validator::Validator;
 use crate::benchmark::vm::VMHarness;
@@ -158,10 +161,7 @@ fn extract_ref_struct_tag(
 }
 
 /// Simple token to TypeTag conversion for reference extraction
-fn token_to_type_tag_simple(
-    token: &SignatureToken,
-    module: &CompiledModule,
-) -> Option<TypeTag> {
+fn token_to_type_tag_simple(token: &SignatureToken, module: &CompiledModule) -> Option<TypeTag> {
     match token {
         SignatureToken::Bool => Some(TypeTag::Bool),
         SignatureToken::U8 => Some(TypeTag::U8),
@@ -518,7 +518,8 @@ fn attempt_function(
                         is_mut,
                     });
                     let mut_str = if is_mut { "&mut " } else { "&" };
-                    resolved_params.push(format!("constructible_ref:{}{}", mut_str, struct_tag.name));
+                    resolved_params
+                        .push(format!("constructible_ref:{}{}", mut_str, struct_tag.name));
                     default_values.push(vec![]); // Placeholder - filled during execution
                     continue;
                 }
@@ -555,7 +556,9 @@ fn attempt_function(
                 ) {
                     let depth = producer_chain.depth;
                     // Find which return index produces our target type
-                    let target_return_idx = producer_chain.steps.last()
+                    let target_return_idx = producer_chain
+                        .steps
+                        .last()
                         .map(|s| s.target_return_idx)
                         .unwrap_or(0);
                     constructor_chain.push(ConstructorChainEntry::ProducerChain {
@@ -590,7 +593,10 @@ fn attempt_function(
                         is_mut,
                     });
                     let mut_str = if is_mut { "&mut " } else { "&" };
-                    resolved_params.push(format!("constructible_ref_hop:{}{}", mut_str, struct_tag.name));
+                    resolved_params.push(format!(
+                        "constructible_ref_hop:{}{}",
+                        mut_str, struct_tag.name
+                    ));
                     default_values.push(vec![]); // Placeholder - filled during execution
                     continue;
                 }
@@ -609,10 +615,7 @@ fn attempt_function(
                         bytes: result.bytes,
                         type_desc: format!("{}{}", mut_str, struct_tag.name),
                     });
-                    resolved_params.push(format!(
-                        "synthesized_ref:{}{}",
-                        mut_str, struct_tag.name
-                    ));
+                    resolved_params.push(format!("synthesized_ref:{}{}", mut_str, struct_tag.name));
                     default_values.push(vec![]); // Placeholder - filled by Synthesized entry
                     continue;
                 }
@@ -770,7 +773,9 @@ fn attempt_function(
                         struct_tag.name.as_str(),
                     ) {
                         let depth = producer_chain.depth;
-                        let target_return_idx = producer_chain.steps.last()
+                        let target_return_idx = producer_chain
+                            .steps
+                            .last()
                             .map(|s| s.target_return_idx)
                             .unwrap_or(0);
                         constructor_chain.push(ConstructorChainEntry::ProducerChain {
@@ -874,7 +879,12 @@ fn attempt_function(
     for entry in &constructor_chain {
         match entry {
             // MultiHopChain: Execute all steps in the chain, then store the final result
-            ConstructorChainEntry::MultiHopChain { param_idx, chain, is_ref: _, is_mut: _ } => {
+            ConstructorChainEntry::MultiHopChain {
+                param_idx,
+                chain,
+                is_ref: _,
+                is_mut: _,
+            } => {
                 // Execute each step in the chain in order
                 for step in &chain.steps {
                     let ctor = &step.ctor_info;
@@ -940,8 +950,10 @@ fn attempt_function(
                         }
                     } else {
                         report.failure_stage = Some(FailureStage::B1);
-                        report.failure_reason =
-                            Some(format!("multi-hop chain target type not found: {}", target_key));
+                        report.failure_reason = Some(format!(
+                            "multi-hop chain target type not found: {}",
+                            target_key
+                        ));
                         return Ok(report);
                     }
                 }
@@ -949,7 +961,13 @@ fn attempt_function(
 
             // ProducerChain: Execute producer functions that return multiple types
             // e.g., create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
-            ConstructorChainEntry::ProducerChain { param_idx, chain, target_return_idx, is_ref: _, is_mut: _ } => {
+            ConstructorChainEntry::ProducerChain {
+                param_idx,
+                chain,
+                target_return_idx,
+                is_ref: _,
+                is_mut: _,
+            } => {
                 // Execute each step in the producer chain
                 for step in &chain.steps {
                     let producer = &step.producer;
@@ -970,7 +988,9 @@ fn attempt_function(
                         }
                     };
 
-                    let type_args: Vec<_> = (0..producer.type_param_count).map(|_| TypeTag::U64).collect();
+                    let type_args: Vec<_> = (0..producer.type_param_count)
+                        .map(|_| TypeTag::U64)
+                        .collect();
 
                     let module_id = ModuleId::new(
                         producer.module_addr,
@@ -988,8 +1008,7 @@ fn attempt_function(
                         Ok(r) => r,
                         Err(e) => {
                             report.failure_stage = Some(FailureStage::B1);
-                            report.failure_reason =
-                                Some(format!("producer execution failed: {e}"));
+                            report.failure_reason = Some(format!("producer execution failed: {e}"));
                             return Ok(report);
                         }
                     };
@@ -997,10 +1016,8 @@ fn attempt_function(
                     // Store ALL return values in intermediates (multi-return support)
                     for (ret_idx, (_, produced_type)) in producer.produces.iter().enumerate() {
                         if ret_idx < returns.len() {
-                            constructed_intermediates.insert(
-                                produced_type.type_key.clone(),
-                                returns[ret_idx].clone(),
-                            );
+                            constructed_intermediates
+                                .insert(produced_type.type_key.clone(), returns[ret_idx].clone());
                         }
                     }
                 }
@@ -1020,15 +1037,20 @@ fn attempt_function(
                     }
                 } else {
                     report.failure_stage = Some(FailureStage::B1);
-                    report.failure_reason =
-                        Some(format!("producer chain target type not found: {} (return_idx: {})",
-                            chain.target_type_key, target_return_idx));
+                    report.failure_reason = Some(format!(
+                        "producer chain target type not found: {} (return_idx: {})",
+                        chain.target_type_key, target_return_idx
+                    ));
                     return Ok(report);
                 }
             }
 
             // Synthesized entry - no execution needed, just use pre-computed bytes
-            ConstructorChainEntry::Synthesized { param_idx, bytes, type_desc: _ } => {
+            ConstructorChainEntry::Synthesized {
+                param_idx,
+                bytes,
+                type_desc: _,
+            } => {
                 if *param_idx < final_args.len() {
                     final_args[*param_idx] = bytes.clone();
                 } else {
@@ -1071,12 +1093,12 @@ fn attempt_function(
                     // witness: T, decimals: u8, symbol: vector<u8>, name: vector<u8>,
                     // description: vector<u8>, icon_url: Option<Url>, ctx: &mut TxContext
                     let args = vec![
-                        vec![1u8], // witness: OTW { dummy: true }
-                        vec![9u8], // decimals: 9 like SUI
-                        bcs_encode_vector(b"TEST"), // symbol
+                        vec![1u8],                                              // witness: OTW { dummy: true }
+                        vec![9u8],                        // decimals: 9 like SUI
+                        bcs_encode_vector(b"TEST"),       // symbol
                         bcs_encode_vector(b"Test Token"), // name
                         bcs_encode_vector(b"Test token for type inhabitation"), // description
-                        vec![0u8], // icon_url: None
+                        vec![0u8],                        // icon_url: None
                         harness.synthesize_tx_context()?, // ctx: &mut TxContext
                     ];
 
@@ -1473,9 +1495,9 @@ fn build_producer_args_with_intermediates(
                         type_name,
                     } => {
                         let key = format!("{}::{}::{}", module_addr, module_name, type_name);
-                        let bytes = intermediates
-                            .get(&key)
-                            .ok_or_else(|| anyhow!("intermediate struct {} not found for ref", key))?;
+                        let bytes = intermediates.get(&key).ok_or_else(|| {
+                            anyhow!("intermediate struct {} not found for ref", key)
+                        })?;
                         args.push(bytes.clone());
                     }
                     _ => {

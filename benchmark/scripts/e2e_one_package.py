@@ -16,12 +16,21 @@ QUICK START
        --package-id 0x1 \\
        --out-dir results/my_test
 
-2. Real LLM test (requires API key):
+2. Single LST package test (canonical benchmark):
    $ export SMI_E2E_REAL_LLM=1
    $ export OPENROUTER_API_KEY=sk-or-v1-...
    $ uv run python scripts/e2e_one_package.py \\
        --corpus-root ../sui-packages/packages/mainnet_most_used \\
-       --dataset type_inhabitation_top25 \\
+       --dataset single_lst \\
+       --model google/gemini-3-flash-preview \\
+       --out-dir results/lst_test
+
+3. Real LLM test with multiple packages:
+   $ export SMI_E2E_REAL_LLM=1
+   $ export OPENROUTER_API_KEY=sk-or-v1-...
+   $ uv run python scripts/e2e_one_package.py \\
+       --corpus-root ../sui-packages/packages/mainnet_most_used \\
+       --dataset quickstart_top5 \\
        --samples 5 \\
        --model google/gemini-3-flash-preview \\
        --out-dir results/e2e_run
@@ -559,6 +568,7 @@ def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "tar
         Dict mapping module name to Move source code string
     """
     import warnings
+
     warnings.warn(
         "_generate_move_source_stubs is deprecated since v0.4.0. "
         "Use smi_bench.rust.emit_move_stubs() instead for correct Move 2024 syntax.",
@@ -737,8 +747,14 @@ def _vendor_target_deps_into_helper(
         'version = "0.0.1"\n'
         'edition = "2024.beta"\n\n'
         "[dependencies]\n"
-        'Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }\n'
-        'SuiSystem = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-system", rev = "framework/mainnet" }\n\n'
+        "Sui = { "
+        'git = "https://github.com/MystenLabs/sui.git", '
+        'subdir = "crates/sui-framework/packages/sui-framework", '
+        'rev = "framework/mainnet" }\n'
+        "SuiSystem = { "
+        'git = "https://github.com/MystenLabs/sui.git", '
+        'subdir = "crates/sui-framework/packages/sui-system", '
+        'rev = "framework/mainnet" }\n\n'
         "[addresses]\n"
         f'{dep_name} = "{module_addr}"\n'
         'std = "0x1"\n'
@@ -1934,11 +1950,11 @@ EXAMPLES:
         try:
             # Run MM2 target mapping to get oracle data
             ok_oracle, oracle_mm2 = _mm2_map_target(
-                target_pkg_dir=target_pkg_dir,
-                out_path=run_dir / "mm2_target_mapping.json"
+                target_pkg_dir=target_pkg_dir, out_path=run_dir / "mm2_target_mapping.json"
             )
             if ok_oracle:
                 from smi_bench.inhabit import PackageOracle
+
                 oracle = PackageOracle.from_mm2_target_mapping(run_dir / "mm2_target_mapping.json", pkg_id)
                 oracle_info = {
                     "total_functions": oracle.total_functions,
@@ -1964,8 +1980,7 @@ EXAMPLES:
             template = "\n".join(template_lines).strip()
             # Replace template variables
             instruction = (
-                template
-                .replace("{{PACKAGE_ID}}", pkg_id)
+                template.replace("{{PACKAGE_ID}}", pkg_id)
                 .replace("{{INTERFACE_SUMMARY}}", iface_summary)
                 .replace("{{MAX_ATTEMPTS}}", str(max_attempts))
                 .replace("{{MOVE_EDITION}}", move_edition)
@@ -1983,7 +1998,8 @@ EXAMPLES:
                     "\n"
                     "SCORING:\n"
                     f"- This package has {oracle_info['total_functions']} public/entry functions.\n"
-                    f"- Maximum achievable execution score: {max_exec_pct}% (some functions require chain state unavailable in sandbox).\n"
+                    f"- Maximum achievable execution score: {max_exec_pct}% "
+                    "(some functions require chain state unavailable in sandbox).\n"
                     "- Your goal: Maximize the number of target package functions you successfully call.\n"
                     "- Efficiency matters: Achieve the highest score in the fewest attempts.\n"
                     "- Partial credit: Even functions that compile but don't execute earn points.\n"

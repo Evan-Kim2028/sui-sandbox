@@ -34,7 +34,8 @@ pub mod type_synthesizer;
 pub mod type_validator;
 
 pub use constructor_graph::{
-    ConstructorGraph, ExecutionChain, ExecutionStep, ParamRequirement, Producer, ProducerChain, ProducerStep, MAX_CHAIN_DEPTH,
+    ConstructorGraph, ExecutionChain, ExecutionStep, ParamRequirement, Producer, ProducerChain,
+    ProducerStep, MAX_CHAIN_DEPTH,
 };
 pub use model::TypeModel;
 pub use type_synthesizer::{SynthesisResult, TypeSynthesizer};

@@ -15,6 +15,16 @@ set -e
 #   ./scripts/run_docker_benchmark.sh openai/gpt-5.2 25 9998
 #   ./scripts/run_docker_benchmark.sh openai/gpt-5.2 25 9999 --restart  # Force container restart
 #   ./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999 --cleanup  # Stop and remove container
+#   ./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999 --dataset achievable_5  # Use specific dataset
+#   ./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999 --simulation-mode build-only  # Build-only mode
+#
+# New v0.4.0 Features:
+#   --dataset NAME           Use a named dataset from manifests/datasets/<NAME>.txt
+#   --simulation-mode MODE   Set simulation mode: dry-run (default), dev-inspect, build-only
+#   --max-plan-attempts N    Max PTB replanning attempts per package (default: 5)
+#   --per-package-timeout N  Timeout per package in seconds (default: 120)
+#   --single-shot            Disable repair loop - single attempt only
+#   --direct                 Run smi-inhabit directly instead of A2A server
 # ========================================================================================
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -25,6 +35,10 @@ DEFAULT_MODEL="google/gemini-3-flash-preview"
 DEFAULT_SENDER="0x064d87c3da8b7201b18c05bfc3189eb817920b2d089b33e207d1d99dc5ce08e0"
 DEFAULT_SAMPLES=25
 DEFAULT_PORT=9999
+DEFAULT_DATASET="quickstart_top5"
+DEFAULT_SIMULATION_MODE="dry-run"
+DEFAULT_MAX_PLAN_ATTEMPTS=5
+DEFAULT_PER_PACKAGE_TIMEOUT=120
 
 # Override from arguments or env vars
 MODEL="${1:-${SMI_MODEL:-$DEFAULT_MODEL}}"
@@ -33,12 +47,20 @@ PORT="${3:-$DEFAULT_PORT}"
 SENDER="${SMI_SENDER:-$DEFAULT_SENDER}"
 AGENT="${SMI_AGENT:-real-openai-compatible}"
 
+# New configurable options
+DATASET="$DEFAULT_DATASET"
+SIMULATION_MODE="$DEFAULT_SIMULATION_MODE"
+MAX_PLAN_ATTEMPTS="$DEFAULT_MAX_PLAN_ATTEMPTS"
+PER_PACKAGE_TIMEOUT="$DEFAULT_PER_PACKAGE_TIMEOUT"
+SINGLE_SHOT=0
+DIRECT_MODE=0
+
 # Parse optional flags
 RESTART_CONTAINER=0
 CLEANUP_ONLY=0
 STATUS_ONLY=0
 MODEL_OVERRIDE=""
-shift 3  # Shift past positional args
+shift 3 2>/dev/null || true  # Shift past positional args (if provided)
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --restart)
@@ -57,9 +79,45 @@ while [[ $# -gt 0 ]]; do
             MODEL_OVERRIDE="$2"
             shift 2
             ;;
+        --dataset)
+            DATASET="$2"
+            shift 2
+            ;;
+        --simulation-mode)
+            SIMULATION_MODE="$2"
+            shift 2
+            ;;
+        --max-plan-attempts)
+            MAX_PLAN_ATTEMPTS="$2"
+            shift 2
+            ;;
+        --per-package-timeout)
+            PER_PACKAGE_TIMEOUT="$2"
+            shift 2
+            ;;
+        --single-shot)
+            SINGLE_SHOT=1
+            shift
+            ;;
+        --direct)
+            DIRECT_MODE=1
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [MODEL] [SAMPLES] [PORT] [--restart] [--cleanup] [--status] [--model-override MODEL]"
+            echo "Usage: $0 [MODEL] [SAMPLES] [PORT] [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --restart              Force container restart"
+            echo "  --cleanup              Stop and remove container"
+            echo "  --status               Show container status"
+            echo "  --model-override MODEL Override model in JSON payload"
+            echo "  --dataset NAME         Use dataset from manifests/datasets/<NAME>.txt"
+            echo "  --simulation-mode MODE dry-run, dev-inspect, or build-only"
+            echo "  --max-plan-attempts N  Max PTB replanning attempts (default: 5)"
+            echo "  --per-package-timeout  Timeout per package in seconds (default: 120)"
+            echo "  --single-shot          Single attempt only, no repair loop"
+            echo "  --direct               Run smi-inhabit directly (not via A2A server)"
             exit 1
             ;;
     esac
@@ -104,12 +162,17 @@ else
 fi
 
 # --- Manifest Setup ---
-# Use Top 25 dataset by default
-DATASET_SOURCE="$BENCHMARK_DIR/manifests/datasets/type_inhabitation_top25.txt"
+# Use specified dataset (default: type_inhabitation_top25)
+DATASET_SOURCE="$BENCHMARK_DIR/manifests/datasets/${DATASET}.txt"
 if [ -f "$DATASET_SOURCE" ]; then
+    echo "Using dataset: $DATASET"
     cp "$DATASET_SOURCE" "$MANIFEST_HOST"
 else
-    echo "Warning: Top 25 dataset not found. Using a dummy manifest."
+    echo "Warning: Dataset '$DATASET' not found at $DATASET_SOURCE"
+    echo "Available datasets:"
+    ls -1 "$BENCHMARK_DIR/manifests/datasets/"*.txt 2>/dev/null | xargs -n1 basename | sed 's/\.txt$//' | sed 's/^/  - /'
+    echo ""
+    echo "Falling back to dummy manifest."
     echo "0x0000000000000000000000000000000000000000000000000000000000000001" > "$MANIFEST_HOST"
 fi
 
@@ -117,14 +180,21 @@ fi
 # Unique ID for this specific execution
 SAFE_MODEL=$(echo "$MODEL" | tr '/' '_')
 RUN_ID="bench_${SAFE_MODEL}_$(date +%Y%m%d_%H%M%S)"
-echo "----------------------------------------------------------------"
-echo "Starting Benchmark Run"
-echo "Run ID:    $RUN_ID"
-echo "Model:     $MODEL"
-echo "Samples:   $SAMPLES"
-echo "Results:   $RESULTS_HOST/$RUN_ID.json"
-echo "Logs:      $LOGS_HOST/$RUN_ID/"
-echo "----------------------------------------------------------------"
+echo "================================================================"
+echo "Starting Benchmark Run (v0.4.0)"
+echo "================================================================"
+echo "Run ID:          $RUN_ID"
+echo "Model:           $MODEL"
+echo "Dataset:         $DATASET"
+echo "Samples:         $SAMPLES"
+echo "Simulation Mode: $SIMULATION_MODE"
+echo "Max Attempts:    $MAX_PLAN_ATTEMPTS"
+echo "Timeout/pkg:     ${PER_PACKAGE_TIMEOUT}s"
+echo "Single-shot:     $([ $SINGLE_SHOT -eq 1 ] && echo 'yes' || echo 'no')"
+echo "Direct mode:     $([ $DIRECT_MODE -eq 1 ] && echo 'yes' || echo 'no')"
+echo "Results:         $RESULTS_HOST/$RUN_ID.json"
+echo "Logs:            $LOGS_HOST/$RUN_ID/"
+echo "================================================================"
 
 # --- Docker Setup ---
 echo "Checking Docker image..."
@@ -258,9 +328,57 @@ for i in {1..30}; do
     sleep 1
 done
 
-echo "Submitting task to localhost:$PORT..."
-# JSON-RPC payload
-PAYLOAD=$(cat <<EOF
+# --- Direct Mode vs A2A Server Mode ---
+if [ $DIRECT_MODE -eq 1 ]; then
+    echo "Running in direct mode (smi-inhabit CLI)..."
+
+    # Build single-shot flag
+    SINGLE_SHOT_FLAG=""
+    if [ $SINGLE_SHOT -eq 1 ]; then
+        SINGLE_SHOT_FLAG="--max-plan-attempts 1"
+    fi
+
+    # Run smi-inhabit directly instead of A2A server
+    docker run --rm \
+        --name "smi-direct-${RUN_ID}" \
+        --entrypoint "/usr/bin/tini" \
+        --env-file "$BENCHMARK_DIR/.env" \
+        -e SMI_MODEL="$MODEL" \
+        ${SMI_MAX_TOKENS:+-e SMI_MAX_TOKENS="$SMI_MAX_TOKENS"} \
+        -v "$CORPUS_HOST:/app/corpus" \
+        -v "$MANIFEST_HOST:/app/manifest.txt" \
+        -v "$RESULTS_HOST:/app/results" \
+        -v "$LOGS_HOST:/app/benchmark/logs" \
+        smi-bench:latest -- smi-inhabit \
+            --corpus-root "$CONTAINER_CORPUS_PATH" \
+            --package-ids-file "/app/manifest.txt" \
+            --samples "$SAMPLES" \
+            --agent "$AGENT" \
+            --simulation-mode "$SIMULATION_MODE" \
+            --max-plan-attempts "$MAX_PLAN_ATTEMPTS" \
+            --per-package-timeout-seconds "$PER_PACKAGE_TIMEOUT" \
+            --out "/app/results/$RUN_ID.json" \
+            --run-id "$RUN_ID" \
+            --checkpoint-every 1 \
+            --continue-on-error \
+            $SINGLE_SHOT_FLAG
+
+    echo ""
+    echo "================================================================"
+    echo "Benchmark complete! Results saved to:"
+    echo "  $RESULTS_HOST/$RUN_ID.json"
+    echo "================================================================"
+else
+    echo "Submitting task to localhost:$PORT (A2A server mode)..."
+    # Build additional config options
+    EXTRA_CONFIG=""
+    [ -n "$MODEL_OVERRIDE" ] && EXTRA_CONFIG="$EXTRA_CONFIG, \"model\": \"$MODEL_OVERRIDE\""
+    [ "$SIMULATION_MODE" != "dry-run" ] && EXTRA_CONFIG="$EXTRA_CONFIG, \"simulation_mode\": \"$SIMULATION_MODE\""
+    [ "$MAX_PLAN_ATTEMPTS" != "5" ] && EXTRA_CONFIG="$EXTRA_CONFIG, \"max_plan_attempts\": $MAX_PLAN_ATTEMPTS"
+    [ "$PER_PACKAGE_TIMEOUT" != "120" ] && EXTRA_CONFIG="$EXTRA_CONFIG, \"per_package_timeout_seconds\": $PER_PACKAGE_TIMEOUT"
+
+    # JSON-RPC payload with v0.4.0 features
+    PAYLOAD=$(cat <<EOF
 {
   "jsonrpc": "2.0",
   "id": "1",
@@ -271,7 +389,7 @@ PAYLOAD=$(cat <<EOF
       "role": "user",
       "parts": [
         {
-          "text": "{\"config\": { \"corpus_root\": \"$CONTAINER_CORPUS_PATH\", \"package_ids_file\": \"/app/manifest.txt\", \"agent\": \"$AGENT\", \"samples\": $SAMPLES, \"simulation_mode\": \"dry-run\", \"run_id\": \"$RUN_ID\", \"continue_on_error\": true, \"resume\": false, \"sender\": \"$SENDER\", \"checkpoint_every\": 1${MODEL_OVERRIDE:+, \"model\": \"$MODEL_OVERRIDE\"}}, \"out_dir\": \"/app/results\"}"
+          "text": "{\"config\": { \"corpus_root\": \"$CONTAINER_CORPUS_PATH\", \"package_ids_file\": \"/app/manifest.txt\", \"agent\": \"$AGENT\", \"samples\": $SAMPLES, \"simulation_mode\": \"$SIMULATION_MODE\", \"run_id\": \"$RUN_ID\", \"continue_on_error\": true, \"resume\": false, \"sender\": \"$SENDER\", \"checkpoint_every\": 1, \"max_plan_attempts\": $MAX_PLAN_ATTEMPTS, \"per_package_timeout_seconds\": $PER_PACKAGE_TIMEOUT$EXTRA_CONFIG}, \"out_dir\": \"/app/results\"}"
         }
       ]
     }
@@ -280,11 +398,12 @@ PAYLOAD=$(cat <<EOF
 EOF
 )
 
-if [ -n "$MODEL_OVERRIDE" ]; then
-    echo "Model override active: $MODEL_OVERRIDE"
+    if [ -n "$MODEL_OVERRIDE" ]; then
+        echo "Model override active: $MODEL_OVERRIDE"
+    fi
+
+    curl -s -X POST http://localhost:$PORT/ -H "Content-Type: application/json" -d "$PAYLOAD" > /dev/null
+
+    echo "Benchmark running. Tailing logs (Ctrl+C to detach, run continues)..."
+    docker logs -f "$CONTAINER_ID"
 fi
-
-curl -s -X POST http://localhost:$PORT/ -H "Content-Type: application/json" -d "$PAYLOAD" > /dev/null
-
-echo "Benchmark running. Tailing logs (Ctrl+C to detach, run continues)..."
-docker logs -f "$CONTAINER_ID"

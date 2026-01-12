@@ -1,0 +1,24 @@
+# Quickstart Top-5 Type Inhabitation Dataset
+# ===========================================
+# A curated subset of top25 for quickstart evaluation.
+# Mix: 1 easier, 2 medium, 2 hard/impossible targets.
+#
+# This dataset tests both LLM intelligence and infrastructure limits
+# without revealing which packages are achievable.
+#
+# Generated: 2026-01-12
+
+# Package 1 - Easier: Has some publicly accessible constructors
+0x719955743d23874522250584b34d19462b41eed2816334adb5744308217f378a
+
+# Package 2 - Medium: Requires understanding of type relationships
+0x2498b31986f1521f2958fb707f33139ec7f7ee64fcc55a96c25006d538d739c7
+
+# Package 3 - Medium: Complex but potentially achievable
+0x1d9f9d85da513286bb7c31a150e07e9974cc98bb240a53616a039bf404d50cc8
+
+# Package 4 - Hard: Admin-gated or complex chain state required
+0xc681beced336875c26f1410ee5549138425301b08725ee38e625544b9eaaade7
+
+# Package 5 - Very Hard: LST-style package with privileged access requirements
+0x059f94b85c07eb74d2847f8255d8cc0a67c9a8dcc039eabf9f8b9e23a0de2700

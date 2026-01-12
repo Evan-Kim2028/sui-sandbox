@@ -343,7 +343,8 @@ impl ConstructorGraph {
 
                         // Find the target type this constructor produces
                         // This is heuristic - we look for the struct this function likely creates
-                        if let Some(target_key) = Self::infer_return_type(&sig, &addr, &module_name) {
+                        if let Some(target_key) = Self::infer_return_type(&sig, &addr, &module_name)
+                        {
                             if let Some(node) = types.get_mut(&target_key) {
                                 node.constructors.push(ctor);
                             }
@@ -380,7 +381,9 @@ impl ConstructorGraph {
                         if let Some(struct_type) = &ret_info.struct_type {
                             let type_key = format!(
                                 "{}::{}::{}",
-                                struct_type.module_addr, struct_type.module_name, struct_type.struct_name
+                                struct_type.module_addr,
+                                struct_type.module_name,
+                                struct_type.struct_name
                             );
 
                             // Only consider types we know about
@@ -408,10 +411,7 @@ impl ConstructorGraph {
                             .map(|p| Self::classify_param(&p.type_str))
                             .collect();
 
-                        let complexity = params
-                            .iter()
-                            .filter(|p| !p.is_synthesizable())
-                            .count()
+                        let complexity = params.iter().filter(|p| !p.is_synthesizable()).count()
                             * 10
                             + sig.type_parameters.len() * 2;
 
@@ -566,10 +566,10 @@ impl ConstructorGraph {
         let func_name = &sig.name;
 
         // Try to extract type name from function name
-        let type_name = if func_name.starts_with("new_") {
-            Some(to_pascal_case(&func_name[4..]))
-        } else if func_name.starts_with("create_") {
-            Some(to_pascal_case(&func_name[7..]))
+        let type_name = if let Some(suffix) = func_name.strip_prefix("new_") {
+            Some(to_pascal_case(suffix))
+        } else if let Some(suffix) = func_name.strip_prefix("create_") {
+            Some(to_pascal_case(suffix))
         } else if func_name == "new" || func_name == "create" || func_name == "init" {
             // Return module name as type name
             Some(to_pascal_case(module_name))
@@ -789,11 +789,15 @@ impl ConstructorGraph {
                             type_name,
                         } = param
                         {
-                            let dep_key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                            let dep_key =
+                                format!("{}::{}::{}", module_addr, module_name, type_name);
 
                             // Check if this dependency is already in our chain
                             let already_in_chain = chain.iter().any(|step| {
-                                step.producer.produces.iter().any(|(_, pt)| pt.type_key == dep_key)
+                                step.producer
+                                    .produces
+                                    .iter()
+                                    .any(|(_, pt)| pt.type_key == dep_key)
                             });
 
                             if already_in_chain {
@@ -813,9 +817,13 @@ impl ConstructorGraph {
                                 type_name,
                             } = inner.as_ref()
                             {
-                                let dep_key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                                let dep_key =
+                                    format!("{}::{}::{}", module_addr, module_name, type_name);
                                 let already_in_chain = chain.iter().any(|step| {
-                                    step.producer.produces.iter().any(|(_, pt)| pt.type_key == dep_key)
+                                    step.producer
+                                        .produces
+                                        .iter()
+                                        .any(|(_, pt)| pt.type_key == dep_key)
                                 });
                                 if already_in_chain {
                                     dependencies.insert(param_idx, dep_key);
@@ -876,7 +884,12 @@ impl ConstructorGraph {
     }
 
     /// Check if a type has the key ability (is an object).
-    pub fn is_object_type(&self, module_addr: &AccountAddress, module_name: &str, type_name: &str) -> bool {
+    pub fn is_object_type(
+        &self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        type_name: &str,
+    ) -> bool {
         let key = format!("{}::{}::{}", module_addr, module_name, type_name);
         self.types
             .get(&key)
@@ -980,10 +993,22 @@ impl ConstructorGraph {
     /// Get statistics about the constructor graph.
     pub fn stats(&self) -> ConstructorGraphStats {
         let total_types = self.types.len();
-        let types_with_constructors = self.types.values().filter(|n| !n.constructors.is_empty()).count();
+        let types_with_constructors = self
+            .types
+            .values()
+            .filter(|n| !n.constructors.is_empty())
+            .count();
         let total_constructors: usize = self.types.values().map(|n| n.constructors.len()).sum();
-        let object_types = self.types.values().filter(|n| n.abilities.0.contains(&Ability::Key)).count();
-        let types_with_producers = self.types.values().filter(|n| !n.producers.is_empty()).count();
+        let object_types = self
+            .types
+            .values()
+            .filter(|n| n.abilities.0.contains(&Ability::Key))
+            .count();
+        let types_with_producers = self
+            .types
+            .values()
+            .filter(|n| !n.producers.is_empty())
+            .count();
         let total_producers: usize = self.types.values().map(|n| n.producers.len()).sum();
 
         ConstructorGraphStats {
@@ -1028,10 +1053,10 @@ fn to_pascal_case(s: &str) -> String {
 /// - `create_foo` -> `Foo`
 /// - `new` / `create` / `init` -> module name as PascalCase
 fn infer_return_type_from_ctor(func_name: &str, module_name: &str) -> String {
-    if func_name.starts_with("new_") {
-        to_pascal_case(&func_name[4..])
-    } else if func_name.starts_with("create_") {
-        to_pascal_case(&func_name[7..])
+    if let Some(suffix) = func_name.strip_prefix("new_") {
+        to_pascal_case(suffix)
+    } else if let Some(suffix) = func_name.strip_prefix("create_") {
+        to_pascal_case(suffix)
     } else if func_name == "new" || func_name == "create" || func_name == "init" {
         to_pascal_case(module_name)
     } else {
@@ -1093,11 +1118,14 @@ fn constructor_to_info(ctor: &Constructor, target_key: &str) -> ConstructorInfo 
     // Parse target_key to get StructTag
     let parts: Vec<&str> = target_key.split("::").collect();
     let (addr, module_name, type_name) = if parts.len() >= 3 {
-        let addr = AccountAddress::from_hex_literal(parts[0])
-            .unwrap_or(AccountAddress::ZERO);
+        let addr = AccountAddress::from_hex_literal(parts[0]).unwrap_or(AccountAddress::ZERO);
         (addr, parts[1].to_string(), parts[2].to_string())
     } else {
-        (ctor.module_addr, ctor.module_name.clone(), infer_return_type_from_ctor(&ctor.function_name, &ctor.module_name))
+        (
+            ctor.module_addr,
+            ctor.module_name.clone(),
+            infer_return_type_from_ctor(&ctor.function_name, &ctor.module_name),
+        )
     };
 
     let module_id = ModuleId::new(
@@ -1112,11 +1140,7 @@ fn constructor_to_info(ctor: &Constructor, target_key: &str) -> ConstructorInfo 
         type_params: vec![],
     };
 
-    let params: Vec<ParamKind> = ctor
-        .params
-        .iter()
-        .map(param_requirement_to_kind)
-        .collect();
+    let params: Vec<ParamKind> = ctor.params.iter().map(param_requirement_to_kind).collect();
 
     ConstructorInfo {
         module_id,
@@ -1157,7 +1181,10 @@ mod tests {
     #[test]
     fn test_classify_param_reference() {
         let req = ConstructorGraph::classify_param("&mut tx_context::TxContext");
-        assert!(matches!(req, ParamRequirement::Reference { is_mut: true, .. }));
+        assert!(matches!(
+            req,
+            ParamRequirement::Reference { is_mut: true, .. }
+        ));
         assert!(req.is_synthesizable());
     }
 

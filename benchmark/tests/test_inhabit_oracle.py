@@ -2,7 +2,6 @@
 
 import json
 import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -265,9 +264,7 @@ class TestPackageOracle:
             oracle = PackageOracle.from_mm2_target_mapping(f.name)
 
         # Get all but impossible
-        funcs = oracle.get_functions_by_difficulty(
-            max_level=DifficultyLevel.VERY_DIFFICULT
-        )
+        funcs = oracle.get_functions_by_difficulty(max_level=DifficultyLevel.VERY_DIFFICULT)
         assert all(f.level != DifficultyLevel.IMPOSSIBLE for f in funcs)
 
         # Get with limit

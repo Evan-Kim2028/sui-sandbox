@@ -16,12 +16,12 @@ use crate::comparator::{
     bytecode_module_check, compare_interface_rpc_vs_bytecode, InterfaceCompareOptions,
 };
 use crate::corpus::collect_package_ids;
+use crate::move_stubs::emit_move_stubs;
 use crate::rpc::{
     build_interface_value_for_package, fetch_bcs_module_map_bytes, fetch_bcs_module_names,
     resolve_package_address_from_package_info,
 };
 use crate::types::{BatchSummaryRow, InterfaceCompareReport};
-use crate::move_stubs::emit_move_stubs;
 use crate::utils::{check_stability, write_canonical_json};
 
 pub async fn run_single(
@@ -249,7 +249,11 @@ pub async fn run_single_local_bytecode_dir(args: &Args) -> Result<()> {
     }
 
     let mut list_modules = args.list_modules;
-    if !list_modules && args.emit_bytecode_json.is_none() && args.emit_move_stubs.is_none() && !args.sanity {
+    if !list_modules
+        && args.emit_bytecode_json.is_none()
+        && args.emit_move_stubs.is_none()
+        && !args.sanity
+    {
         list_modules = true;
     }
     if list_modules {

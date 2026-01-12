@@ -31,19 +31,21 @@ logger = logging.getLogger(__name__)
 
 class DifficultyLevel(str, Enum):
     """Difficulty level for a function."""
-    TRIVIAL = "trivial"           # No params or only primitives
-    SIMPLE = "simple"             # Primitives + simple vectors
-    MODERATE = "moderate"         # System objects (Clock, TxContext)
-    COMPLEX = "complex"           # Custom types with constructors
-    CHALLENGING = "challenging"   # Type parameters or deep chains
-    DIFFICULT = "difficult"       # Multiple complex requirements
+
+    TRIVIAL = "trivial"  # No params or only primitives
+    SIMPLE = "simple"  # Primitives + simple vectors
+    MODERATE = "moderate"  # System objects (Clock, TxContext)
+    COMPLEX = "complex"  # Custom types with constructors
+    CHALLENGING = "challenging"  # Type parameters or deep chains
+    DIFFICULT = "difficult"  # Multiple complex requirements
     VERY_DIFFICULT = "very_difficult"  # Object params, no execution possible
-    IMPOSSIBLE = "impossible"     # No synthesis path exists
+    IMPOSSIBLE = "impossible"  # No synthesis path exists
 
 
 @dataclass
 class FunctionDifficulty:
     """Difficulty assessment for a single function."""
+
     module: str
     function: str
     level: DifficultyLevel
@@ -94,6 +96,7 @@ class PackageOracle:
     Key insight: If the oracle shows a function can't be synthesized/executed,
     then the LLM can't be blamed for failing on it.
     """
+
     package_id: str
     total_functions: int
 
@@ -155,7 +158,8 @@ class PackageOracle:
         for entry in accepted:
             status = entry.get("status", "")
             tier_a = entry.get("tier_a_details", {})
-            tier_b = entry.get("tier_b_details", {})
+            # tier_b_details extracted but not currently used
+            _ = entry.get("tier_b_details", {})
 
             module = entry.get("target_module", "")
             func = entry.get("target_function", "")
@@ -169,12 +173,14 @@ class PackageOracle:
                 # Check if blocked by object params (infra limitation)
                 if tier_a.get("has_object_params"):
                     tier_b_blocked += 1
-                    infra_blocked.append({
-                        "module": module,
-                        "function": func,
-                        "reason": "requires object params (infra limitation)",
-                        "resolved_params": tier_a.get("resolved_params", []),
-                    })
+                    infra_blocked.append(
+                        {
+                            "module": module,
+                            "function": func,
+                            "reason": "requires object params (infra limitation)",
+                            "resolved_params": tier_a.get("resolved_params", []),
+                        }
+                    )
                 else:
                     # Synthesis succeeded but execution failed
                     tier_b_failed += 1
@@ -190,12 +196,14 @@ class PackageOracle:
             reason = entry.get("failure_reason", "unknown")
             stage = entry.get("failure_stage", "")
 
-            impossible.append({
-                "module": module,
-                "function": func,
-                "reason": reason,
-                "failure_stage": stage,
-            })
+            impossible.append(
+                {
+                    "module": module,
+                    "function": func,
+                    "reason": reason,
+                    "failure_stage": stage,
+                }
+            )
 
             # Mark as impossible difficulty
             diff = FunctionDifficulty(
@@ -292,10 +300,7 @@ class PackageOracle:
         min_idx = order.index(min_level)
         max_idx = order.index(max_level)
 
-        filtered = [
-            f for f in self.functions_by_difficulty
-            if min_idx <= order.index(f.level) <= max_idx
-        ]
+        filtered = [f for f in self.functions_by_difficulty if min_idx <= order.index(f.level) <= max_idx]
 
         if limit is not None:
             filtered = filtered[:limit]
@@ -325,14 +330,9 @@ def _compute_function_difficulty(entry: dict[str, Any]) -> FunctionDifficulty:
     has_constructible_ref = any("constructible_ref:" in p for p in resolved_params)
     # Multi-hop ref patterns: constructible_ref_hop, constructible_ref_hop2, etc.
     has_constructible_ref_hop = any("constructible_ref_hop" in p for p in resolved_params)
-    requires_synthesis = [
-        p.split(":")[1] for p in resolved_params if p.startswith("synthesizable:")
-    ]
+    requires_synthesis = [p.split(":")[1] for p in resolved_params if p.startswith("synthesizable:")]
     # Extract constructible ref types for logging
-    constructible_ref_types = [
-        p.split(":")[-1] for p in resolved_params
-        if "constructible_ref" in p
-    ]
+    constructible_ref_types = [p.split(":")[-1] for p in resolved_params if "constructible_ref" in p]
 
     # Calculate constructor depth from resolved_params patterns
     # construct_hopN or constructible_ref_hopN where N is the depth
@@ -344,7 +344,7 @@ def _compute_function_difficulty(entry: dict[str, Any]) -> FunctionDifficulty:
         for p in resolved_params:
             if "construct_hop" in p or "constructible_ref_hop" in p:
                 # Extract number from patterns like "construct_hop2:TypeName"
-                match = re.search(r'(?:construct_hop|constructible_ref_hop)(\d+)?:', p)
+                match = re.search(r"(?:construct_hop|constructible_ref_hop)(\d+)?:", p)
                 if match:
                     depth_str = match.group(1)
                     if depth_str:
@@ -447,6 +447,7 @@ class LLMScores:
 
     These are comparable across packages and LLM runs.
     """
+
     # Raw counts from LLM result (target package functions only)
     llm_tier_b_hits: int  # Functions that executed successfully
     llm_tier_a_hits: int  # Functions synthesized but not executed
@@ -510,22 +511,14 @@ def compute_llm_scores(
         if not pkg or pkg.startswith("0x0"):
             return False
         # Match full ID or last 16 chars (short form)
-        return pkg == target_pkg or (
-            len(target_pkg) >= 16 and pkg.endswith(target_pkg[-16:])
-        )
+        return pkg == target_pkg or (len(target_pkg) >= 16 and pkg.endswith(target_pkg[-16:]))
 
     accepted = data.get("accepted", [])
     rejected = data.get("rejected", [])
 
     # Count LLM results for TARGET package only
-    llm_tier_b = len([
-        x for x in accepted
-        if x.get("status") == "tier_b_hit" and is_target_pkg(x)
-    ])
-    llm_tier_a = len([
-        x for x in accepted
-        if x.get("status") == "tier_a_hit" and is_target_pkg(x)
-    ])
+    llm_tier_b = len([x for x in accepted if x.get("status") == "tier_b_hit" and is_target_pkg(x)])
+    llm_tier_a = len([x for x in accepted if x.get("status") == "tier_a_hit" and is_target_pkg(x)])
     llm_rejected = len([x for x in rejected if is_target_pkg(x)])
 
     llm_total = llm_tier_b + llm_tier_a
@@ -590,7 +583,7 @@ def rank_functions_for_llm(
 
         # Round-robin from each level
         result = []
-        levels = [l for l in DifficultyLevel if l in by_level]
+        levels = [lvl for lvl in DifficultyLevel if lvl in by_level]
         while len(result) < limit and any(by_level.values()):
             for level in levels:
                 if by_level.get(level):

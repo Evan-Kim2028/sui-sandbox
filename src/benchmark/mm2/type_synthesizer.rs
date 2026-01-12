@@ -38,7 +38,10 @@ const SUI_SYSTEM_HEX: &str = "0x000000000000000000000000000000000000000000000000
 const DEFAULT_VALIDATOR_COUNT: usize = 10;
 
 // Compile-time assertion that DEFAULT_VALIDATOR_COUNT > 0
-const _: () = assert!(DEFAULT_VALIDATOR_COUNT > 0, "DEFAULT_VALIDATOR_COUNT must be > 0 to avoid division by zero");
+const _: () = assert!(
+    DEFAULT_VALIDATOR_COUNT > 0,
+    "DEFAULT_VALIDATOR_COUNT must be > 0 to avoid division by zero"
+);
 
 /// Type synthesizer that generates BCS bytes for Move types.
 ///
@@ -117,7 +120,9 @@ impl<'a> TypeSynthesizer<'a> {
         // Check for Sui framework types first (special handling)
         let addr_str = format!("{}", module_addr);
         if addr_str == SUI_FRAMEWORK || addr_str == MOVE_STDLIB || addr_str == SUI_SYSTEM {
-            if let Some(result) = self.synthesize_framework_type(&addr_str, module_name, struct_name)? {
+            if let Some(result) =
+                self.synthesize_framework_type(&addr_str, module_name, struct_name)?
+            {
                 return Ok(result);
             }
         }
@@ -169,7 +174,7 @@ impl<'a> TypeSynthesizer<'a> {
                     bytes: vec![0], // false
                     is_stub: false,
                     description: "bool(false)".to_string(),
-                })
+                });
             }
             "u8" => {
                 return Ok(SynthesisResult {
@@ -484,7 +489,10 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: format!("SuiSystemState(synthetic, {} validators assumed)", DEFAULT_VALIDATOR_COUNT),
+                        description: format!(
+                            "SuiSystemState(synthetic, {} validators assumed)",
+                            DEFAULT_VALIDATOR_COUNT
+                        ),
                     }));
                 }
 
@@ -808,7 +816,10 @@ mod tests {
         let primitives = ["bool", "u8", "u16", "u32", "u64", "u128", "u256", "address"];
         for prim in primitives {
             assert!(
-                matches!(prim, "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "address"),
+                matches!(
+                    prim,
+                    "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "address"
+                ),
                 "primitive {} should be recognized",
                 prim
             );
@@ -824,8 +835,8 @@ mod tests {
 
     /// Helper to create a TypeModel with framework modules for testing.
     fn create_test_model() -> TypeModel {
-        let resolver = LocalModuleResolver::with_sui_framework()
-            .expect("Failed to load Sui framework");
+        let resolver =
+            LocalModuleResolver::with_sui_framework().expect("Failed to load Sui framework");
         let modules: Vec<_> = resolver.iter_modules().cloned().collect();
         TypeModel::from_modules(modules).expect("Failed to build TypeModel")
     }
@@ -837,14 +848,22 @@ mod tests {
 
         // Test SuiSystemState synthesis
         let sui_system_addr = AccountAddress::from_hex_literal(SUI_SYSTEM_HEX).unwrap();
-        let result = synthesizer.synthesize_struct(&sui_system_addr, "sui_system", "SuiSystemState");
-        assert!(result.is_ok(), "SuiSystemState synthesis should succeed: {:?}", result.err());
+        let result =
+            synthesizer.synthesize_struct(&sui_system_addr, "sui_system", "SuiSystemState");
+        assert!(
+            result.is_ok(),
+            "SuiSystemState synthesis should succeed: {:?}",
+            result.err()
+        );
 
         let result = result.unwrap();
         // SuiSystemState: UID (32 bytes) + version (8 bytes) = 40 bytes
         assert_eq!(result.bytes.len(), 40, "SuiSystemState should be 40 bytes");
         assert!(result.is_stub, "Should be marked as stub");
-        assert!(result.description.contains("10 validators"), "Description should mention validator count");
+        assert!(
+            result.description.contains("10 validators"),
+            "Description should mention validator count"
+        );
     }
 
     #[test]
@@ -853,14 +872,26 @@ mod tests {
         let mut synthesizer = TypeSynthesizer::new(&model);
 
         let sui_system_addr = AccountAddress::from_hex_literal(SUI_SYSTEM_HEX).unwrap();
-        let result = synthesizer.synthesize_struct(&sui_system_addr, "validator_set", "ValidatorSet");
-        assert!(result.is_ok(), "ValidatorSet synthesis should succeed: {:?}", result.err());
+        let result =
+            synthesizer.synthesize_struct(&sui_system_addr, "validator_set", "ValidatorSet");
+        assert!(
+            result.is_ok(),
+            "ValidatorSet synthesis should succeed: {:?}",
+            result.err()
+        );
 
         let result = result.unwrap();
         // ValidatorSet should have non-trivial size due to 10 validators
-        assert!(result.bytes.len() > 100, "ValidatorSet should have substantial data: got {} bytes", result.bytes.len());
+        assert!(
+            result.bytes.len() > 100,
+            "ValidatorSet should have substantial data: got {} bytes",
+            result.bytes.len()
+        );
         assert!(result.is_stub, "Should be marked as stub");
-        assert!(result.description.contains("10 validators"), "Description should mention validator count");
+        assert!(
+            result.description.contains("10 validators"),
+            "Description should mention validator count"
+        );
     }
 
     #[test]
@@ -870,7 +901,11 @@ mod tests {
 
         let sui_system_addr = AccountAddress::from_hex_literal(SUI_SYSTEM_HEX).unwrap();
         let result = synthesizer.synthesize_struct(&sui_system_addr, "staking_pool", "StakingPool");
-        assert!(result.is_ok(), "StakingPool synthesis should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "StakingPool synthesis should succeed: {:?}",
+            result.err()
+        );
 
         let result = result.unwrap();
         assert!(result.bytes.len() > 0, "StakingPool should have data");
@@ -884,7 +919,11 @@ mod tests {
 
         let sui_system_addr = AccountAddress::from_hex_literal(SUI_SYSTEM_HEX).unwrap();
         let result = synthesizer.synthesize_struct(&sui_system_addr, "staking_pool", "StakedSui");
-        assert!(result.is_ok(), "StakedSui synthesis should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "StakedSui synthesis should succeed: {:?}",
+            result.err()
+        );
 
         let result = result.unwrap();
         // StakedSui: UID (32) + pool_id (32) + activation_epoch (8) + principal (8) = 80 bytes

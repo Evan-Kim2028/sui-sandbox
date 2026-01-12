@@ -11,6 +11,12 @@ These tests verify the evaluator's ability to:
 
 import pytest
 
+from smi_bench.inhabit.evaluation import (
+    ErrorCode,
+    Phase,
+    ScoringCriteria,
+    UninhabitedReason,
+)
 from smi_bench.inhabit.evaluator import (
     compute_scoring_criteria,
     evaluate_build_failure,
@@ -20,14 +26,6 @@ from smi_bench.inhabit.evaluator import (
     extract_inhabitation_metrics,
     parse_mm2_entry,
 )
-from smi_bench.inhabit.evaluation import (
-    AbortCategory,
-    ErrorCode,
-    Phase,
-    ScoringCriteria,
-    UninhabitedReason,
-)
-
 
 # =============================================================================
 # Test Data Fixtures
@@ -394,4 +392,6 @@ class TestIntegration:
         }
         for phase in Phase:
             criteria = ScoringCriteria.from_phase(phase)
-            assert criteria.score() == expected_scores[phase], f"Phase {phase} should have score {expected_scores[phase]}"
+            assert criteria.score() == expected_scores[phase], (
+                f"Phase {phase} should have score {expected_scores[phase]}"
+            )

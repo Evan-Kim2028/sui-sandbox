@@ -1,9 +1,9 @@
 # Phase II (type inhabitation) benchmark scaffolding.
 
 from smi_bench.inhabit.evaluation import (
+    E_NOT_SUPPORTED,
     AbortCategory,
     AbortInfo,
-    E_NOT_SUPPORTED,
     ErrorCode,
     ErrorSource,
     EvaluationResult,

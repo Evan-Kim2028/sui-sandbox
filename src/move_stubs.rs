@@ -157,7 +157,10 @@ impl<'a> StubContext<'a> {
             });
             if use_qualified {
                 // Function position - use full path
-                format!("{}::{}::{}{}", package, module_name, struct_name, type_args_str)
+                format!(
+                    "{}::{}::{}{}",
+                    package, module_name, struct_name, type_args_str
+                )
             } else {
                 // Struct field - use unqualified (relies on import)
                 format!("{}{}", struct_name, type_args_str)

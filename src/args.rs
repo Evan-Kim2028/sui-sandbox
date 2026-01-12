@@ -223,7 +223,6 @@ pub struct BenchmarkLocalArgs {
     pub restricted_state: bool,
 
     // === v0.4.0 MM2 enhancements (now default) ===
-
     /// Use MM2-based static type checking (Phase 2). ON by default in v0.4.0.
     /// Provides better error messages and catches type errors earlier.
     /// Use --no-mm2 to disable and fall back to legacy bytecode analysis.

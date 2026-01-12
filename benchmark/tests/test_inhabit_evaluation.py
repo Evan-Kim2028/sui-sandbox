@@ -1,29 +1,27 @@
 """Tests for the inhabit evaluation module."""
 
 import json
+
 import pytest
 
 from smi_bench.inhabit.evaluation import (
+    E_NOT_SUPPORTED,
     AbortCategory,
     AbortInfo,
-    E_NOT_SUPPORTED,
     ErrorCode,
     ErrorSource,
     EvaluationResult,
     ExecutionTrace,
     Failure,
     FailureContext,
-    FunctionCall,
     InhabitationMetrics,
     Phase,
     ScoringCriteria,
-    StackFrame,
     UninhabitedReason,
     UninhabitedType,
     is_unsupported_native_error,
     parse_build_error,
 )
-
 
 # =============================================================================
 # Phase Tests
@@ -198,8 +196,16 @@ class TestScoringCriteria:
         assert ScoringCriteria().phase_reached() == Phase.BUILD
         assert ScoringCriteria(compiles=True).phase_reached() == Phase.RESOLUTION
         assert ScoringCriteria(compiles=True, imports_target=True).phase_reached() == Phase.SYNTHESIS
-        assert ScoringCriteria(compiles=True, imports_target=True, creates_target_type=True).phase_reached() == Phase.EXECUTION
-        assert ScoringCriteria(compiles=True, imports_target=True, creates_target_type=True, executes_cleanly=True).phase_reached() == Phase.VALIDATION
+        assert (
+            ScoringCriteria(compiles=True, imports_target=True, creates_target_type=True).phase_reached()
+            == Phase.EXECUTION
+        )
+        assert (
+            ScoringCriteria(
+                compiles=True, imports_target=True, creates_target_type=True, executes_cleanly=True
+            ).phase_reached()
+            == Phase.VALIDATION
+        )
 
     def test_from_phase(self):
         build = ScoringCriteria.from_phase(Phase.BUILD)
@@ -266,7 +272,7 @@ class TestInhabitationMetrics:
         assert d["target_types_total"] == 10
         assert d["target_types_inhabited"] == 5
         assert d["inhabitation_rate"] == 0.5
-        assert d["entry_coverage"] == pytest.approx(1/3)
+        assert d["entry_coverage"] == pytest.approx(1 / 3)
         assert d["inhabited_types"] == ["Foo", "Bar"]
 
 

@@ -1,6 +1,5 @@
 """Tests for prompt template loading and variable substitution."""
 
-import pytest
 from pathlib import Path
 
 # Path to templates directory (relative to benchmark root)

@@ -373,7 +373,7 @@ impl fmt::Display for ErrorCode {
 /// - LLM mistakes (should be counted against the model)
 /// - Infrastructure limitations (should not penalize the model)
 /// - Target package issues (package has no valid entry points)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorSource {
     /// LLM generated incorrect code (should penalize model)
@@ -383,6 +383,7 @@ pub enum ErrorSource {
     /// Target package has no valid entry points or constructible types
     TargetPackageLimitation,
     /// Unknown or ambiguous source (needs manual review)
+    #[default]
     Unknown,
 }
 
@@ -406,12 +407,6 @@ impl ErrorSource {
 impl fmt::Display for ErrorSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.description())
-    }
-}
-
-impl Default for ErrorSource {
-    fn default() -> Self {
-        ErrorSource::Unknown
     }
 }
 
@@ -467,7 +462,11 @@ impl Failure {
     }
 
     /// Create a failure with context
-    pub fn with_context(code: ErrorCode, message: impl Into<String>, context: FailureContext) -> Self {
+    pub fn with_context(
+        code: ErrorCode,
+        message: impl Into<String>,
+        context: FailureContext,
+    ) -> Self {
         let error_source = code.default_error_source();
         Self {
             phase: code.phase(),
@@ -910,10 +909,7 @@ impl EvaluationResult {
     }
 
     /// Create a successful result with metrics and trace
-    pub fn success_with_details(
-        metrics: InhabitationMetrics,
-        trace: ExecutionTrace,
-    ) -> Self {
+    pub fn success_with_details(metrics: InhabitationMetrics, trace: ExecutionTrace) -> Self {
         Self {
             ok: true,
             score: 1.0,
@@ -937,10 +933,7 @@ impl EvaluationResult {
         let phase_reached = criteria.phase_reached();
 
         let partial_credit_reason = if score > 0.0 {
-            Some(format!(
-                "Reached {} phase before failure",
-                phase_reached
-            ))
+            Some(format!("Reached {} phase before failure", phase_reached))
         } else {
             None
         };
@@ -962,10 +955,7 @@ impl EvaluationResult {
         let phase_reached = criteria.phase_reached();
 
         let partial_credit_reason = if score > 0.0 {
-            Some(format!(
-                "Reached {} phase before failure",
-                phase_reached
-            ))
+            Some(format!("Reached {} phase before failure", phase_reached))
         } else {
             None
         };
@@ -992,10 +982,7 @@ impl EvaluationResult {
         let phase_reached = criteria.phase_reached();
 
         let partial_credit_reason = if score > 0.0 {
-            Some(format!(
-                "Reached {} phase before failure",
-                phase_reached
-            ))
+            Some(format!("Reached {} phase before failure", phase_reached))
         } else {
             None
         };
@@ -1109,9 +1096,9 @@ impl From<ErrorCode> for FailureStage {
             | ErrorCode::InvalidEntrySignature
             | ErrorCode::CompileTimeAbilityError => FailureStage::A1,
             // Resolution -> A1
-            ErrorCode::ModuleNotFound
-            | ErrorCode::FunctionNotFound
-            | ErrorCode::NotCallable => FailureStage::A1,
+            ErrorCode::ModuleNotFound | ErrorCode::FunctionNotFound | ErrorCode::NotCallable => {
+                FailureStage::A1
+            }
             // TypeCheck -> A2 or A5
             ErrorCode::TypeMismatch
             | ErrorCode::AbilityViolation
@@ -1339,7 +1326,10 @@ mod tests {
         assert_eq!(ErrorCode::TypeMismatch.phase(), Phase::TypeCheck);
         assert_eq!(ErrorCode::NoConstructor.phase(), Phase::Synthesis);
         assert_eq!(ErrorCode::TargetAborted.phase(), Phase::Execution);
-        assert_eq!(ErrorCode::NoTargetModulesAccessed.phase(), Phase::Validation);
+        assert_eq!(
+            ErrorCode::NoTargetModulesAccessed.phase(),
+            Phase::Validation
+        );
     }
 
     #[test]
@@ -1379,7 +1369,10 @@ mod tests {
 
     #[test]
     fn test_legacy_conversion_to_error_code() {
-        assert_eq!(FailureStage::A1.to_error_code(), ErrorCode::FunctionNotFound);
+        assert_eq!(
+            FailureStage::A1.to_error_code(),
+            ErrorCode::FunctionNotFound
+        );
         assert_eq!(FailureStage::A2.to_error_code(), ErrorCode::UnknownType);
         assert_eq!(FailureStage::A3.to_error_code(), ErrorCode::NoConstructor);
         assert_eq!(FailureStage::B2.to_error_code(), ErrorCode::TargetAborted);
@@ -1387,10 +1380,22 @@ mod tests {
 
     #[test]
     fn test_legacy_conversion_from_error_code() {
-        assert_eq!(FailureStage::from(ErrorCode::ModuleNotFound), FailureStage::A1);
-        assert_eq!(FailureStage::from(ErrorCode::RecursiveType), FailureStage::A2);
-        assert_eq!(FailureStage::from(ErrorCode::NoConstructor), FailureStage::A3);
-        assert_eq!(FailureStage::from(ErrorCode::UnsupportedNative), FailureStage::B2);
+        assert_eq!(
+            FailureStage::from(ErrorCode::ModuleNotFound),
+            FailureStage::A1
+        );
+        assert_eq!(
+            FailureStage::from(ErrorCode::RecursiveType),
+            FailureStage::A2
+        );
+        assert_eq!(
+            FailureStage::from(ErrorCode::NoConstructor),
+            FailureStage::A3
+        );
+        assert_eq!(
+            FailureStage::from(ErrorCode::UnsupportedNative),
+            FailureStage::B2
+        );
     }
 
     #[test]
@@ -1522,8 +1527,8 @@ mod tests {
 
     #[test]
     fn test_failure_set_source() {
-        let failure = Failure::new(ErrorCode::NoConstructor, "no ctor")
-            .set_source(ErrorSource::LlmError);
+        let failure =
+            Failure::new(ErrorCode::NoConstructor, "no ctor").set_source(ErrorSource::LlmError);
         assert_eq!(failure.error_source, ErrorSource::LlmError);
         assert!(!failure.is_expected_limitation);
     }
@@ -1745,11 +1750,7 @@ mod tests {
 
     #[test]
     fn test_abort_info_push_frame() {
-        let mut abort = AbortInfo::from_move_abort(
-            1,
-            None,
-            "error".to_string(),
-        );
+        let mut abort = AbortInfo::from_move_abort(1, None, "error".to_string());
         abort.push_frame("0x2::coin".to_string(), "mint".to_string(), Some(42));
         abort.push_frame("0x1::test".to_string(), "main".to_string(), None);
         assert_eq!(abort.call_stack.len(), 2);
@@ -1786,7 +1787,10 @@ mod tests {
         };
         let result = EvaluationResult::success().with_metrics(metrics);
         assert!(result.inhabitation_metrics.is_some());
-        assert_eq!(result.inhabitation_metrics.unwrap().target_types_inhabited, 3);
+        assert_eq!(
+            result.inhabitation_metrics.unwrap().target_types_inhabited,
+            3
+        );
     }
 
     #[test]
@@ -1815,12 +1819,8 @@ mod tests {
             "assert failed".to_string(),
         ));
 
-        let result = EvaluationResult::failed_with_details(
-            failure,
-            criteria,
-            Some(metrics),
-            Some(trace),
-        );
+        let result =
+            EvaluationResult::failed_with_details(failure, criteria, Some(metrics), Some(trace));
 
         assert!(!result.ok);
         assert!(result.inhabitation_metrics.is_some());
