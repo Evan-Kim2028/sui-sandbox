@@ -612,6 +612,261 @@ impl ScoringCriteria {
     }
 }
 
+// =============================================================================
+// Inhabitation Metrics
+// =============================================================================
+
+/// Metrics about type inhabitation success.
+///
+/// Tracks which types from the target package were successfully created/used.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InhabitationMetrics {
+    /// Total number of types in the target package interface
+    pub target_types_total: usize,
+    /// Number of target types that were successfully inhabited
+    pub target_types_inhabited: usize,
+    /// List of type names that were successfully inhabited
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub inhabited_types: Vec<String>,
+    /// List of type names that could not be inhabited (with reason)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub uninhabited_types: Vec<UninhabitedType>,
+    /// Number of entry functions in target package
+    pub target_entry_functions: usize,
+    /// Number of entry functions successfully called
+    pub entry_functions_called: usize,
+    /// Types used from stdlib (for context, not counted as inhabitation)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub stdlib_types_used: Vec<String>,
+}
+
+/// A type that could not be inhabited, with reason.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UninhabitedType {
+    /// Fully qualified type name
+    pub type_name: String,
+    /// Why it couldn't be inhabited
+    pub reason: UninhabitedReason,
+    /// Additional details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+/// Reason why a type could not be inhabited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UninhabitedReason {
+    /// No public constructor available
+    NoConstructor,
+    /// Constructor requires unsupported parameter type
+    UnsupportedParam,
+    /// Constructor chain too deep
+    ChainTooDeep,
+    /// Type is recursive
+    RecursiveType,
+    /// Ability constraints prevent construction
+    AbilityConstraint,
+    /// Type requires runtime values (Clock, Random, etc.)
+    RequiresRuntimeValue,
+    /// Unknown/other reason
+    Unknown,
+}
+
+impl InhabitationMetrics {
+    /// Calculate inhabitation rate (0.0 to 1.0)
+    pub fn inhabitation_rate(&self) -> f64 {
+        if self.target_types_total == 0 {
+            0.0
+        } else {
+            self.target_types_inhabited as f64 / self.target_types_total as f64
+        }
+    }
+
+    /// Calculate entry function coverage (0.0 to 1.0)
+    pub fn entry_coverage(&self) -> f64 {
+        if self.target_entry_functions == 0 {
+            0.0
+        } else {
+            self.entry_functions_called as f64 / self.target_entry_functions as f64
+        }
+    }
+}
+
+// =============================================================================
+// Execution Trace
+// =============================================================================
+
+/// Execution trace for debugging and analysis.
+///
+/// Records what happened during VM execution, including call stack at abort.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionTrace {
+    /// Whether execution was attempted
+    pub execution_attempted: bool,
+    /// Modules that were loaded during execution
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub modules_loaded: Vec<String>,
+    /// Functions that were called (in order)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub functions_called: Vec<FunctionCall>,
+    /// Call stack at point of failure (if execution aborted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abort_info: Option<AbortInfo>,
+    /// Gas used during execution (if tracked)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gas_used: Option<u64>,
+    /// Execution duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Information about a function call during execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCall {
+    /// Module containing the function
+    pub module: String,
+    /// Function name
+    pub function: String,
+    /// Type arguments (if generic)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub type_args: Vec<String>,
+    /// Whether the call succeeded
+    pub succeeded: bool,
+    /// Error message if call failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Detailed information about an abort during execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbortInfo {
+    /// The abort code (if MoveAbort)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abort_code: Option<u64>,
+    /// Module where abort occurred
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abort_location: Option<String>,
+    /// Call stack at time of abort (deepest first)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub call_stack: Vec<StackFrame>,
+    /// Human-readable abort message
+    pub message: String,
+    /// Whether this was a known/expected abort (e.g., E_NOT_SUPPORTED)
+    pub is_expected: bool,
+    /// Category of the abort for analysis
+    pub category: AbortCategory,
+}
+
+/// A frame in the call stack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackFrame {
+    /// Module address and name (e.g., "0x2::object")
+    pub module: String,
+    /// Function name
+    pub function: String,
+    /// Instruction offset within function (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction_offset: Option<u64>,
+}
+
+/// Category of abort for easier analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbortCategory {
+    /// Abort from unsupported native function (crypto, random, etc.)
+    UnsupportedNative,
+    /// Assertion failure in user code
+    AssertionFailed,
+    /// Object/ownership error
+    ObjectError,
+    /// Arithmetic error (overflow, divide by zero)
+    ArithmeticError,
+    /// Vector bounds error
+    VectorBoundsError,
+    /// Type/ability error at runtime
+    TypeError,
+    /// Out of gas
+    OutOfGas,
+    /// Unknown/uncategorized abort
+    Unknown,
+}
+
+impl AbortInfo {
+    /// Create abort info from a MoveAbort error
+    pub fn from_move_abort(code: u64, location: Option<String>, message: String) -> Self {
+        let is_expected = code == E_NOT_SUPPORTED;
+        let category = Self::categorize_abort(code, &message);
+
+        Self {
+            abort_code: Some(code),
+            abort_location: location,
+            call_stack: Vec::new(),
+            message,
+            is_expected,
+            category,
+        }
+    }
+
+    /// Categorize an abort based on code and message
+    fn categorize_abort(code: u64, message: &str) -> AbortCategory {
+        // Check for known abort codes
+        if code == E_NOT_SUPPORTED {
+            return AbortCategory::UnsupportedNative;
+        }
+
+        // Check message for patterns
+        let msg_lower = message.to_lowercase();
+        if msg_lower.contains("assert") {
+            AbortCategory::AssertionFailed
+        } else if msg_lower.contains("object") || msg_lower.contains("ownership") {
+            AbortCategory::ObjectError
+        } else if msg_lower.contains("overflow")
+            || msg_lower.contains("underflow")
+            || msg_lower.contains("divide")
+        {
+            AbortCategory::ArithmeticError
+        } else if msg_lower.contains("vector") || msg_lower.contains("index") {
+            AbortCategory::VectorBoundsError
+        } else if msg_lower.contains("type") || msg_lower.contains("ability") {
+            AbortCategory::TypeError
+        } else if msg_lower.contains("gas") {
+            AbortCategory::OutOfGas
+        } else {
+            AbortCategory::Unknown
+        }
+    }
+
+    /// Add a stack frame to the call stack
+    pub fn push_frame(&mut self, module: String, function: String, offset: Option<u64>) {
+        self.call_stack.push(StackFrame {
+            module,
+            function,
+            instruction_offset: offset,
+        });
+    }
+}
+
+impl ExecutionTrace {
+    /// Record a function call
+    pub fn record_call(&mut self, module: String, function: String, type_args: Vec<String>) {
+        self.functions_called.push(FunctionCall {
+            module,
+            function,
+            type_args,
+            succeeded: true,
+            error: None,
+        });
+    }
+
+    /// Mark the last call as failed
+    pub fn mark_last_failed(&mut self, error: String) {
+        if let Some(last) = self.functions_called.last_mut() {
+            last.succeeded = false;
+            last.error = Some(error);
+        }
+    }
+}
+
 /// Complete evaluation result with scoring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvaluationResult {
@@ -627,6 +882,12 @@ pub struct EvaluationResult {
     /// Partial credit explanation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partial_credit_reason: Option<String>,
+    /// Inhabitation metrics (what types were successfully inhabited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inhabitation_metrics: Option<InhabitationMetrics>,
+    /// Execution trace (if execution was attempted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_trace: Option<ExecutionTrace>,
 }
 
 impl EvaluationResult {
@@ -643,6 +904,29 @@ impl EvaluationResult {
             },
             failure: None,
             partial_credit_reason: None,
+            inhabitation_metrics: None,
+            execution_trace: None,
+        }
+    }
+
+    /// Create a successful result with metrics and trace
+    pub fn success_with_details(
+        metrics: InhabitationMetrics,
+        trace: ExecutionTrace,
+    ) -> Self {
+        Self {
+            ok: true,
+            score: 1.0,
+            criteria: ScoringCriteria {
+                compiles: true,
+                imports_target: true,
+                creates_target_type: true,
+                executes_cleanly: true,
+            },
+            failure: None,
+            partial_credit_reason: None,
+            inhabitation_metrics: Some(metrics),
+            execution_trace: Some(trace),
         }
     }
 
@@ -667,6 +951,8 @@ impl EvaluationResult {
             criteria,
             failure: Some(failure),
             partial_credit_reason,
+            inhabitation_metrics: None,
+            execution_trace: None,
         }
     }
 
@@ -690,7 +976,51 @@ impl EvaluationResult {
             criteria,
             failure: Some(failure),
             partial_credit_reason,
+            inhabitation_metrics: None,
+            execution_trace: None,
         }
+    }
+
+    /// Create a failed result with full details
+    pub fn failed_with_details(
+        failure: Failure,
+        criteria: ScoringCriteria,
+        metrics: Option<InhabitationMetrics>,
+        trace: Option<ExecutionTrace>,
+    ) -> Self {
+        let score = criteria.score();
+        let phase_reached = criteria.phase_reached();
+
+        let partial_credit_reason = if score > 0.0 {
+            Some(format!(
+                "Reached {} phase before failure",
+                phase_reached
+            ))
+        } else {
+            None
+        };
+
+        Self {
+            ok: false,
+            score,
+            criteria,
+            failure: Some(failure),
+            partial_credit_reason,
+            inhabitation_metrics: metrics,
+            execution_trace: trace,
+        }
+    }
+
+    /// Add inhabitation metrics to an existing result
+    pub fn with_metrics(mut self, metrics: InhabitationMetrics) -> Self {
+        self.inhabitation_metrics = Some(metrics);
+        self
+    }
+
+    /// Add execution trace to an existing result
+    pub fn with_trace(mut self, trace: ExecutionTrace) -> Self {
+        self.execution_trace = Some(trace);
+        self
     }
 }
 
@@ -1317,5 +1647,213 @@ mod tests {
             FailureStage::from(ErrorCode::InvalidManifest),
             FailureStage::A1
         );
+    }
+
+    // =========================================================================
+    // Inhabitation Metrics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_inhabitation_metrics_rate() {
+        let metrics = InhabitationMetrics {
+            target_types_total: 10,
+            target_types_inhabited: 3,
+            ..Default::default()
+        };
+        assert_eq!(metrics.inhabitation_rate(), 0.3);
+    }
+
+    #[test]
+    fn test_inhabitation_metrics_zero_total() {
+        let metrics = InhabitationMetrics::default();
+        assert_eq!(metrics.inhabitation_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_inhabitation_metrics_entry_coverage() {
+        let metrics = InhabitationMetrics {
+            target_entry_functions: 5,
+            entry_functions_called: 2,
+            ..Default::default()
+        };
+        assert_eq!(metrics.entry_coverage(), 0.4);
+    }
+
+    #[test]
+    fn test_uninhabited_type() {
+        let uninhabited = UninhabitedType {
+            type_name: "0x1::foo::Bar".to_string(),
+            reason: UninhabitedReason::NoConstructor,
+            details: Some("No public new() function".to_string()),
+        };
+        assert_eq!(uninhabited.reason, UninhabitedReason::NoConstructor);
+    }
+
+    // =========================================================================
+    // Execution Trace Tests
+    // =========================================================================
+
+    #[test]
+    fn test_execution_trace_record_call() {
+        let mut trace = ExecutionTrace::default();
+        trace.record_call(
+            "0x2::coin".to_string(),
+            "mint".to_string(),
+            vec!["0x1::sui::SUI".to_string()],
+        );
+        assert_eq!(trace.functions_called.len(), 1);
+        assert!(trace.functions_called[0].succeeded);
+    }
+
+    #[test]
+    fn test_execution_trace_mark_failed() {
+        let mut trace = ExecutionTrace::default();
+        trace.record_call("0x2::coin".to_string(), "mint".to_string(), vec![]);
+        trace.mark_last_failed("assertion failed".to_string());
+        assert!(!trace.functions_called[0].succeeded);
+        assert_eq!(
+            trace.functions_called[0].error,
+            Some("assertion failed".to_string())
+        );
+    }
+
+    // =========================================================================
+    // Abort Info Tests
+    // =========================================================================
+
+    #[test]
+    fn test_abort_info_unsupported_native() {
+        let abort = AbortInfo::from_move_abort(
+            E_NOT_SUPPORTED,
+            Some("0x2::random".to_string()),
+            "random not supported".to_string(),
+        );
+        assert!(abort.is_expected);
+        assert_eq!(abort.category, AbortCategory::UnsupportedNative);
+    }
+
+    #[test]
+    fn test_abort_info_assertion() {
+        let abort = AbortInfo::from_move_abort(
+            42,
+            Some("0x1::test".to_string()),
+            "assertion failed in test".to_string(),
+        );
+        assert!(!abort.is_expected);
+        assert_eq!(abort.category, AbortCategory::AssertionFailed);
+    }
+
+    #[test]
+    fn test_abort_info_push_frame() {
+        let mut abort = AbortInfo::from_move_abort(
+            1,
+            None,
+            "error".to_string(),
+        );
+        abort.push_frame("0x2::coin".to_string(), "mint".to_string(), Some(42));
+        abort.push_frame("0x1::test".to_string(), "main".to_string(), None);
+        assert_eq!(abort.call_stack.len(), 2);
+        assert_eq!(abort.call_stack[0].function, "mint");
+        assert_eq!(abort.call_stack[1].instruction_offset, None);
+    }
+
+    #[test]
+    fn test_abort_category_detection() {
+        // Arithmetic
+        let abort = AbortInfo::from_move_abort(100, None, "overflow detected".to_string());
+        assert_eq!(abort.category, AbortCategory::ArithmeticError);
+
+        // Vector
+        let abort = AbortInfo::from_move_abort(100, None, "vector index out of bounds".to_string());
+        assert_eq!(abort.category, AbortCategory::VectorBoundsError);
+
+        // Object
+        let abort = AbortInfo::from_move_abort(100, None, "object ownership error".to_string());
+        assert_eq!(abort.category, AbortCategory::ObjectError);
+    }
+
+    // =========================================================================
+    // EvaluationResult with Metrics/Trace Tests
+    // =========================================================================
+
+    #[test]
+    fn test_evaluation_result_with_metrics() {
+        let metrics = InhabitationMetrics {
+            target_types_total: 5,
+            target_types_inhabited: 3,
+            inhabited_types: vec!["Foo".to_string(), "Bar".to_string(), "Baz".to_string()],
+            ..Default::default()
+        };
+        let result = EvaluationResult::success().with_metrics(metrics);
+        assert!(result.inhabitation_metrics.is_some());
+        assert_eq!(result.inhabitation_metrics.unwrap().target_types_inhabited, 3);
+    }
+
+    #[test]
+    fn test_evaluation_result_with_trace() {
+        let mut trace = ExecutionTrace::default();
+        trace.execution_attempted = true;
+        trace.duration_ms = Some(150);
+        let result = EvaluationResult::success().with_trace(trace);
+        assert!(result.execution_trace.is_some());
+        assert_eq!(result.execution_trace.unwrap().duration_ms, Some(150));
+    }
+
+    #[test]
+    fn test_evaluation_result_failed_with_details() {
+        let failure = Failure::new(ErrorCode::TargetAborted, "abort");
+        let criteria = ScoringCriteria::from_phase(Phase::Execution);
+        let metrics = InhabitationMetrics {
+            target_types_total: 10,
+            target_types_inhabited: 5,
+            ..Default::default()
+        };
+        let mut trace = ExecutionTrace::default();
+        trace.abort_info = Some(AbortInfo::from_move_abort(
+            42,
+            Some("0x1::test".to_string()),
+            "assert failed".to_string(),
+        ));
+
+        let result = EvaluationResult::failed_with_details(
+            failure,
+            criteria,
+            Some(metrics),
+            Some(trace),
+        );
+
+        assert!(!result.ok);
+        assert!(result.inhabitation_metrics.is_some());
+        assert!(result.execution_trace.is_some());
+        assert!(result.execution_trace.unwrap().abort_info.is_some());
+    }
+
+    #[test]
+    fn test_evaluation_result_serialization_with_metrics() {
+        let metrics = InhabitationMetrics {
+            target_types_total: 3,
+            target_types_inhabited: 2,
+            inhabited_types: vec!["Foo".to_string()],
+            ..Default::default()
+        };
+        let result = EvaluationResult::success().with_metrics(metrics);
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"inhabitation_metrics\""));
+        assert!(json.contains("\"target_types_total\":3"));
+    }
+
+    #[test]
+    fn test_evaluation_result_serialization_with_abort() {
+        let failure = Failure::new(ErrorCode::TargetAborted, "abort");
+        let mut trace = ExecutionTrace::default();
+        trace.abort_info = Some(AbortInfo::from_move_abort(
+            E_NOT_SUPPORTED,
+            None,
+            "unsupported".to_string(),
+        ));
+        let result = EvaluationResult::failed(failure).with_trace(trace);
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"abort_info\""));
+        assert!(json.contains("\"category\":\"unsupported_native\""));
     }
 }
