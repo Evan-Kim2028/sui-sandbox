@@ -83,6 +83,12 @@ class Phase2PackageRow(TypedDict, total=False):
     causality_valid: bool | None
     causality_score: float | None
     causality_errors: list[str] | None
+    # v0.5.0 Evaluation fields
+    evaluation_result: dict[str, Any] | None  # Full EvaluationResult from evaluation.py
+    scoring_criteria: dict[str, Any] | None  # ScoringCriteria partial credit
+    inhabitation_metrics: dict[str, Any] | None  # InhabitationMetrics
+    execution_trace: dict[str, Any] | None  # ExecutionTrace
+    failure: dict[str, Any] | None  # Failure with error code and source
 
 
 class Phase2RunJson(TypedDict, total=False):
@@ -151,6 +157,12 @@ class Phase2ResultKeys:
     CAUSALITY_VALID = "causality_valid"
     CAUSALITY_SCORE = "causality_score"
     CAUSALITY_ERRORS = "causality_errors"
+    # v0.5.0 Evaluation fields
+    EVALUATION_RESULT = "evaluation_result"
+    SCORING_CRITERIA = "scoring_criteria"
+    INHABITATION_METRICS = "inhabitation_metrics"
+    EXECUTION_TRACE = "execution_trace"
+    FAILURE = "failure"
 
 
 # Validation Functions
