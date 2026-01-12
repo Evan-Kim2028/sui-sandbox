@@ -92,6 +92,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -100,6 +101,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_ROOT = REPO_ROOT / "benchmark"
@@ -379,7 +382,8 @@ def _persist_tmp_tree(*, run_dir: Path, tmp_root: Path | None) -> None:
             out = dest / rel
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, out)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to preserve artifacts: %s", e)
         return
 
 
@@ -702,8 +706,8 @@ def _vendor_target_deps_into_helper(
             module_addr = meta_obj["module_address"]
         elif isinstance(meta_obj, dict) and isinstance(meta_obj.get("originalPackageId"), str):
             module_addr = meta_obj["originalPackageId"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to parse metadata.json for module address: %s", e)
 
     # Generate source stubs using Rust extractor (preferred method)
     # The Rust extractor generates correct Move 2024 syntax with proper imports
@@ -1121,8 +1125,9 @@ def _find_built_bytecode_dir(helper_dir: Path) -> Path | None:
             if sanitized is None:
                 return None
             pkg_name = sanitized
-    except Exception:
+    except Exception as e:
         # If TOML is invalid, we don't attempt to guess with regex
+        logger.debug("Failed to parse Move.toml for bytecode dir: %s", e)
         return None
 
     bytecode_dir = helper_dir / "build" / pkg_name / "bytecode_modules"
@@ -1236,7 +1241,8 @@ def _extract_module_address_from_bytecode(mv_path: Path) -> str | None:
 
         content = mv_path.read_bytes()
         return hashlib.sha256(content).hexdigest()[:8]
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to hash bytecode module %s: %s", mv_path, e)
         return None
 
 
@@ -1585,7 +1591,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     tmm2 = None
     try:
         tmm2 = json.loads((run_dir / "mm2_target_mapping.json").read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse mm2_target_mapping.json: %s", e)
         tmm2 = None
     if not isinstance(tmm2, dict) or tmm2.get("kind") != "mm2_mapping":
         ok = False
@@ -1618,7 +1625,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     # Helper-only tier_b_hits don't demonstrate target package type inhabitation.
     try:
         cmm2 = json.loads((run_dir / "mm2_combined_mapping.json").read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse mm2_combined_mapping.json: %s", e)
         cmm2 = None
 
     # Get target package ID from run config to identify target vs helper modules
@@ -1626,8 +1634,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     try:
         run_cfg = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
         target_pkg_id = run_cfg.get("package_id")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to parse run_config.json for target_pkg_id: %s", e)
 
     if isinstance(cmm2, dict):
         acc = cmm2.get("accepted")
@@ -1690,8 +1698,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
         try:
             interface = json.loads(target_interface_path.read_text(encoding="utf-8"))
             target_package_stats = _extract_target_package_stats(interface)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to extract target package stats: %s", e)
 
     # Load attempt tracking if available
     attempt_tracking: dict[str, Any] | None = None
@@ -1699,8 +1707,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     if attempt_tracking_path.exists():
         try:
             attempt_tracking = json.loads(attempt_tracking_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to load attempt_tracking.json: %s", e)
 
     return {
         "ok": ok,
@@ -1823,8 +1831,8 @@ EXAMPLES:
         dotenv = load_dotenv(BENCH_ROOT / ".env")
         for k, v in dotenv.items():
             os.environ.setdefault(k, v)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to load .env file: %s", e)
 
     if args.dataset_count < 1:
         raise SystemExit("dataset-count must be >= 1")
@@ -2207,7 +2215,8 @@ EXAMPLES:
             try:
                 tmm2 = json.loads(mm2_target_path.read_text(encoding="utf-8"))
                 ok_tmm2 = True
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to load existing mm2_target_mapping.json, regenerating: %s", e)
                 ok_tmm2, tmm2 = _mm2_map_target(target_pkg_dir=target_pkg_dir, out_path=mm2_target_path)
         else:
             ok_tmm2, tmm2 = _mm2_map_target(target_pkg_dir=target_pkg_dir, out_path=mm2_target_path)

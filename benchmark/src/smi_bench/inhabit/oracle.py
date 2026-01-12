@@ -19,11 +19,14 @@ The difficulty ranking answers: "Which functions should we prioritize for testin
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class DifficultyLevel(str, Enum):
@@ -428,8 +431,8 @@ def compute_oracle_from_run_dir(run_dir: Path) -> PackageOracle | None:
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
             package_id = config.get("package_id")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to parse run_config.json: %s", e)
 
     return PackageOracle.from_mm2_target_mapping(mm2_path, package_id)
 

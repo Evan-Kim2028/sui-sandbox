@@ -14,9 +14,12 @@ and the structured evaluation types defined in evaluation.py.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from smi_bench.inhabit.evaluation import (
     AbortCategory,
@@ -510,15 +513,15 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
     if mm2_combined_path.exists():
         try:
             mm2_data = json.loads(mm2_combined_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to parse mm2_combined_mapping.json: %s", e)
 
     # Fall back to plain mm2_mapping (may have stub bytecode for dependencies)
     if mm2_data is None and mm2_path.exists():
         try:
             mm2_data = json.loads(mm2_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to parse mm2_mapping.json: %s", e)
 
     if mm2_data is None:
         return EvaluationResult.failed(
@@ -531,8 +534,8 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
     if interface_path.exists():
         try:
             target_interface = json.loads(interface_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to parse target_interface.json: %s", e)
 
     # Get target package ID from run config
     target_package_id = None
@@ -541,8 +544,8 @@ def evaluate_from_run_dir(run_dir: Path) -> EvaluationResult:
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
             target_package_id = config.get("package_id")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to parse run_config.json: %s", e)
 
     # Compute scoring criteria
     criteria = compute_scoring_criteria(
