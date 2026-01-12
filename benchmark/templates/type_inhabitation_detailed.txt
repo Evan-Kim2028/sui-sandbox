@@ -1,0 +1,116 @@
+# Type Inhabitation Prompt Template (Detailed)
+# =============================================
+# An enhanced prompt with more Move-specific guidance to reduce common errors.
+# Use this template for LLMs that struggle with the minimal template.
+# Includes examples and explicit rules about Move 2024 syntax.
+#
+# Template variables:
+#   {{PACKAGE_ID}}        - The on-chain package ID being tested
+#   {{INTERFACE_SUMMARY}} - A summary of the target package's public interface
+#   {{MAX_ATTEMPTS}}      - Number of retry attempts allowed
+#   {{MOVE_EDITION}}      - Move edition to use (default: 2024.beta)
+
+GOAL: Create a Move helper package that demonstrates TYPE INHABITATION of the TARGET PACKAGE.
+
+## What is Type Inhabitation?
+Your entry functions must CREATE or USE types defined in the target package.
+Simply using stdlib types (vector, Option, u64) does NOT count as success.
+
+## Target Package Interface
+Package ID: {{PACKAGE_ID}}
+
+{{INTERFACE_SUMMARY}}
+
+## Move 2024 Syntax Rules
+
+### 1. Module Declaration
+CORRECT:
+```move
+module helper_pkg::helper {
+    // code
+}
+```
+WRONG:
+```move
+module helper {  // Missing address prefix!
+    // code
+}
+```
+
+### 2. Address Definitions in Move.toml
+CORRECT:
+```toml
+[package]
+name = "helper_pkg"
+edition = "2024.beta"
+
+[addresses]
+helper_pkg = "0x0"
+```
+WRONG:
+```toml
+[addresses]
+[helper_pkg] = "0x0"  # Wrong syntax - no brackets around name!
+```
+
+### 3. Entry Function Signatures
+Entry functions CAN only have these parameter types:
+- `&mut TxContext` or `&TxContext` (implicit, optional)
+- Objects by value, reference, or mutable reference
+- Primitives (u8, u64, bool, address, etc.)
+- vector<T> where T is allowed
+
+Entry functions CANNOT return:
+- Types without `drop` ability (will cause E02002)
+
+CORRECT:
+```move
+public entry fun create_thing(ctx: &mut TxContext) {
+    // Creates and transfers an object
+}
+```
+WRONG:
+```move
+public entry fun get_thing(): SomeStruct {  // Can't return non-drop!
+    // ...
+}
+```
+
+### 4. Importing Target Package Types
+The target package is available as `target_pkg`. Import types like:
+```move
+use target_pkg::module_name::TypeName;
+```
+
+### 5. Struct Construction
+You can only construct structs if:
+- They have a public constructor function, OR
+- They have `copy` or `drop` abilities AND public fields
+
+## Dependencies (Auto-configured)
+- Sui, MoveStdlib, SuiSystem are AUTO-INCLUDED in the helper package
+- target_pkg is pre-configured - just `use target_pkg::...`
+- Do NOT add framework dependencies to Move.toml
+
+## Output Format
+Return a JSON object:
+```json
+{
+  "move_toml": "[package]\nname = \"helper_pkg\"\nedition = \"2024.beta\"\n\n[addresses]\nhelper_pkg = \"0x0\"\n",
+  "files": {
+    "sources/helper.move": "module helper_pkg::helper {\n    use sui::tx_context::TxContext;\n    use target_pkg::some_module::SomeType;\n    \n    public entry fun demo(ctx: &mut TxContext) {\n        // Your code here\n    }\n}"
+  },
+  "entrypoints": [
+    {"target": "helper_pkg::helper::demo"}
+  ],
+  "assumptions": [
+    "Using SomeType from target_pkg to demonstrate type inhabitation"
+  ]
+}
+```
+
+## Constraints
+- {{MAX_ATTEMPTS}} attempts allowed
+- Move edition: {{MOVE_EDITION}}
+- Build tool: `sui move build`
+- You MUST use at least one type from target_pkg

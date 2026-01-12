@@ -125,6 +125,12 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub emit_bytecode_json: Option<PathBuf>,
 
+    /// Write Move source stub files to a directory (one .move file per module).
+    /// These stubs allow the Move compiler to type-check imports from the package.
+    /// Valid for single-package mode (`--package-id`) or local dir mode (`--bytecode-package-dir`).
+    #[arg(long, value_name = "DIR")]
+    pub emit_move_stubs: Option<PathBuf>,
+
     /// Compare RPC normalized interface vs bytecode-derived interface for the package id.
     /// Use `--emit-compare-report` to write mismatch details.
     #[arg(long, default_value_t = false)]
@@ -215,6 +221,63 @@ pub struct BenchmarkLocalArgs {
     /// Use a restricted set of mock objects for Tier B.
     #[arg(long, default_value_t = false)]
     pub restricted_state: bool,
+
+    // === v0.4.0 MM2 enhancements (now default) ===
+    /// Use MM2-based static type checking (Phase 2). ON by default in v0.4.0.
+    /// Provides better error messages and catches type errors earlier.
+    /// Use --no-mm2 to disable and fall back to legacy bytecode analysis.
+    #[arg(long, default_value_t = true)]
+    pub use_mm2: bool,
+
+    /// Disable MM2-based type checking (use legacy bytecode analysis).
+    /// DEPRECATED: The legacy analyzer will be removed in a future version.
+    #[arg(long, default_value_t = false)]
+    pub no_mm2: bool,
+
+    /// Stop after static type checking (no synthesis or execution).
+    /// Useful for quickly validating type signatures without VM overhead.
+    #[arg(long, default_value_t = false)]
+    pub static_only: bool,
+
+    /// Maximum depth for constructor chain resolution.
+    /// Higher values allow more complex type construction but take longer.
+    #[arg(long, default_value_t = 5)]
+    pub max_chain_depth: usize,
+
+    /// Use the new phase-based error taxonomy (E101-E502 codes). ON by default.
+    /// Use --no-phase-errors for legacy A1-A5/B1-B2 failure stages.
+    #[arg(long, default_value_t = true)]
+    pub phase_errors: bool,
+
+    /// Disable phase-based error taxonomy (use legacy A1-A5/B1-B2 stages).
+    /// DEPRECATED: Legacy error stages will be removed in a future version.
+    #[arg(long, default_value_t = false)]
+    pub no_phase_errors: bool,
+
+    /// Output error distribution by phase instead of pass rates.
+    /// Groups failures by Resolution/TypeCheck/Synthesis/Execution/Validation.
+    #[arg(long, default_value_t = false)]
+    pub error_distribution: bool,
+
+    /// Filter to only test functions matching this pattern (regex).
+    #[arg(long, value_name = "PATTERN")]
+    pub function_filter: Option<String>,
+
+    /// Filter to only test modules matching this pattern (regex).
+    #[arg(long, value_name = "PATTERN")]
+    pub module_filter: Option<String>,
+}
+
+impl BenchmarkLocalArgs {
+    /// Get effective MM2 setting (respects --no-mm2 override).
+    pub fn effective_use_mm2(&self) -> bool {
+        self.use_mm2 && !self.no_mm2
+    }
+
+    /// Get effective phase_errors setting (respects --no-phase-errors override).
+    pub fn effective_phase_errors(&self) -> bool {
+        self.phase_errors && !self.no_phase_errors
+    }
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -75,16 +75,43 @@ uv run smi-inhabit \
 
 ### Docker Quick Start (Recommended)
 
-```bash
-# Start the Docker API
-docker compose up -d smi-bench
+The fastest way to get started is with the Docker quickstart script:
 
-# Run Top 25 via HTTP API
-cd benchmark
-uv run python3 run_real_world_test.py \
-    --samples 25 \
-    --models google/gemini-3-flash-preview \
+```bash
+# Run the quickstart (5 packages: 1 easy, 2 medium, 2 hard)
+./scripts/docker_quickstart.sh
+
+# Or test with mock agent (no API key needed)
+./scripts/docker_quickstart.sh --mock
+```
+
+For production benchmarks:
+
+```bash
+# Run full benchmark via A2A server
+./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999
+
+# Or with specific options
+./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999 \
+    --dataset type_inhabitation_top25 \
     --simulation-mode dry-run
+```
+
+### Python CLI Quick Start
+
+For direct Python usage without Docker:
+
+```bash
+cd benchmark
+
+# Single LST package test (canonical benchmark)
+export SMI_E2E_REAL_LLM=1
+export OPENROUTER_API_KEY=sk-or-v1-...
+uv run python scripts/e2e_one_package.py \
+    --corpus-root ../sui-packages/packages/mainnet_most_used \
+    --dataset single_lst \
+    --model google/gemini-3-flash-preview \
+    --out-dir results/lst_test
 ```
 
 See [benchmark/DATASETS.md](benchmark/DATASETS.md) for all available datasets.

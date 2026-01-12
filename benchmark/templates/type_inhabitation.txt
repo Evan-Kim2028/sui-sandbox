@@ -1,0 +1,37 @@
+# Type Inhabitation Prompt Template (Default)
+# ============================================
+# The main prompt template for the type inhabitation benchmark.
+# This minimal template works well for capable LLMs.
+#
+# Template variables (replaced at runtime):
+#   {{PACKAGE_ID}}        - The on-chain package ID being tested
+#   {{INTERFACE_SUMMARY}} - A summary of the target package's public interface
+#   {{MAX_ATTEMPTS}}      - Number of retry attempts allowed
+#   {{MOVE_EDITION}}      - Move edition to use (default: 2024.beta)
+#
+# Expected output: JSON object with move_toml, files, entrypoints, assumptions
+
+GOAL: Create a Move helper package that demonstrates TYPE INHABITATION of the TARGET PACKAGE.
+Your entry functions MUST create or use types defined in the target package (shown below).
+Using only stdlib types (vector, option, u64, etc.) does NOT count as success.
+
+MOVE.TOML SETUP:
+- Sui, MoveStdlib, SuiSystem are AUTO-INCLUDED. Do NOT add them.
+- The target package is pre-configured as dependency 'target_pkg'.
+- A minimal Move.toml only needs: [package], name, edition, and [addresses]
+
+TARGET PACKAGE TO INHABIT (package_id: {{PACKAGE_ID}}):
+{{INTERFACE_SUMMARY}}
+
+CONSTRAINTS:
+- You have {{MAX_ATTEMPTS}} attempts. Build errors will be provided after each attempt.
+- Your code will be compiled with `sui move build`
+- Entry functions must be zero-arg (only implicit TxContext allowed)
+- Use Move edition {{MOVE_EDITION}}
+- You MUST use at least one type from the target package - stdlib-only code will fail evaluation
+
+OUTPUT FORMAT: JSON object with these fields:
+- move_toml: STRING containing full Move.toml contents
+- files: OBJECT mapping relative paths to file contents (e.g. 'sources/helper.move': '...')
+- entrypoints: ARRAY of objects with 'target' field (e.g. 'helper_pkg::helper::my_func')
+- assumptions: ARRAY of strings explaining your approach

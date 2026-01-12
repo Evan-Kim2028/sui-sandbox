@@ -432,6 +432,94 @@ These could PASS our benchmark without true understanding:
 5. **Clock/Random**: Clock and Random system objects not fully synthesized
 6. **Function-level tracing**: We trace module loads, not individual function calls
 
+## Oracle & Evaluation System (v0.4.0)
+
+The v0.4.0 release introduces an oracle-based evaluation system that provides:
+
+### Package Oracle (`inhabit/oracle.py`)
+
+The oracle computes the **theoretical maximum achievable score** for any package by analyzing the MM2 target mapping (running `benchmark-local` directly on the target package without LLM involvement).
+
+**Key Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `execution_ceiling` | Maximum tier_b_hit rate achievable (functions that can execute) |
+| `synthesis_ceiling` | Maximum tier_a_hit rate achievable (functions whose args can be synthesized) |
+| `impossible_functions` | Functions that fail even without LLM (e.g., require on-chain state) |
+
+**Difficulty Ranking:**
+
+Functions are ranked by difficulty based on:
+1. **Parameter complexity** - Number and types of parameters
+2. **Constructor availability** - Whether required types have constructors
+3. **Execution history** - Success/failure from oracle run
+
+```python
+from smi_bench.inhabit.oracle import PackageOracle, load_oracle_from_run
+
+# Load oracle from benchmark run
+oracle = load_oracle_from_run(run_dir)
+
+# Get ceiling scores
+print(f"Execution ceiling: {oracle.execution_ceiling}%")
+print(f"Synthesis ceiling: {oracle.synthesis_ceiling}%")
+
+# Get difficulty distribution
+for level, count in oracle.difficulty_distribution.items():
+    print(f"  {level}: {count} functions")
+```
+
+### Evaluator (`inhabit/evaluator.py`)
+
+The evaluator parses benchmark artifacts and generates structured evaluation results:
+
+```python
+from smi_bench.inhabit.evaluator import evaluate_from_validation_report
+
+result = evaluate_from_validation_report(run_dir)
+
+# Access structured results
+print(f"Phase reached: {result.phase}")
+print(f"Error code: {result.failure.code if result.failure else 'None'}")
+print(f"Tier B hits: {result.metrics.tier_b_hits}")
+print(f"Tier A hits: {result.metrics.tier_a_hits}")
+```
+
+### LLM Scoring
+
+Normalized scores (0-100%) that are **comparable across packages**:
+
+| Score | Formula | Meaning |
+|-------|---------|---------|
+| `execution_score` | `llm_tier_b / oracle_tier_b * 100` | Of executable functions, what % did LLM get? |
+| `synthesis_score` | `llm_tier_a / oracle_tier_a * 100` | Of synthesizable functions, what % did LLM get? |
+
+**Example:**
+```
+Package A: Oracle can execute 20/40 functions
+  - LLM executes 15/40 → execution_score = 15/20 = 75%
+
+Package B: Oracle can execute 5/10 functions
+  - LLM executes 4/10 → execution_score = 4/5 = 80%
+```
+
+This normalization allows fair comparison: Package B's LLM did relatively better despite lower absolute numbers.
+
+### Type Synthesizer Enhancements
+
+The type synthesizer (v0.4.0) handles complex Sui system types:
+
+**SuiSystemState Synthesis:**
+- Synthesizes with 10 validators to avoid division-by-zero errors
+- Includes ValidatorSet, StakingPool, and individual Validator structs
+- Supports StakedSui for liquid staking packages
+
+**Realistic Defaults:**
+- `Coin<T>` synthesized with 1 SUI (1_000_000_000 MIST) instead of 0
+- `TreasuryCap<T>` synthesized with 1000 SUI total supply
+- Prevents zero-balance failures in balance checks
+
 ## Future Work
 
 1. Support generic function instantiation with common type arguments
@@ -439,8 +527,9 @@ These could PASS our benchmark without true understanding:
 3. Expand native function coverage for more complex operations
 4. Add function-level execution tracing via VM instrumentation
 5. Semantic analysis of generated code (not just execution success)
+6. Cross-package difficulty calibration for benchmark fairness
 
 ---
 
-*Last updated: January 2025*  
+*Last updated: January 2026*
 *Framework version: mainnet-v1.62.1*

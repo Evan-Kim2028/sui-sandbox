@@ -4124,6 +4124,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "move-model-2"
+version = "0.1.0"
+source = "git+https://github.com/MystenLabs/sui?tag=mainnet-v1.62.1#1073a8fbf6cfa0d4a4d2bf34b2494a212116089c"
+dependencies = [
+ "anyhow",
+ "bcs",
+ "codespan",
+ "codespan-reporting",
+ "indexmap 2.13.0",
+ "move-binary-format",
+ "move-bytecode-source-map",
+ "move-command-line-common",
+ "move-compiler",
+ "move-core-types",
+ "move-disassembler",
+ "move-ir-types",
+ "move-symbol-pool",
+ "num",
+ "pretty_simple",
+ "serde",
+ "vfs",
+]
+
+[[package]]
 name = "move-proc-macros"
 version = "0.1.0"
 source = "git+https://github.com/MystenLabs/sui?tag=mainnet-v1.62.1#1073a8fbf6cfa0d4a4d2bf34b2494a212116089c"
@@ -5182,6 +5206,16 @@ checksum = "72dd2d6d381dfb73a193c7fca536518d7caee39fc8503f74e7dc0be0531b425c"
 dependencies = [
  "predicates-core",
  "termtree",
+]
+
+[[package]]
+name = "pretty_simple"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce5f33f1e15ede98d6bf380779f1d4cd90ca3f0943c0aab6637c60fcdd7d9024"
+dependencies = [
+ "insta",
+ "once_cell",
 ]
 
 [[package]]
@@ -7344,7 +7378,9 @@ dependencies = [
  "move-binary-format",
  "move-compiler",
  "move-core-types",
+ "move-model-2",
  "move-stdlib-natives",
+ "move-symbol-pool",
  "move-trace-format",
  "move-vm-runtime",
  "move-vm-types",

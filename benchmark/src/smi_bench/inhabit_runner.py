@@ -517,6 +517,12 @@ class InhabitPackageResult:
     causality_valid: bool | None = None
     causality_score: float | None = None
     causality_errors: list[str] | None = None
+    # v0.5.0 Evaluation fields (partial credit scoring, metrics, traces)
+    evaluation_result: dict[str, Any] | None = None
+    scoring_criteria: dict[str, Any] | None = None
+    inhabitation_metrics: dict[str, Any] | None = None
+    execution_trace: dict[str, Any] | None = None
+    failure: dict[str, Any] | None = None
 
 
 @dataclass
@@ -644,6 +650,12 @@ def _to_package_dict(r: InhabitPackageResult) -> dict[str, Any]:
         k.CAUSALITY_VALID: r.causality_valid,
         k.CAUSALITY_SCORE: r.causality_score,
         k.CAUSALITY_ERRORS: r.causality_errors,
+        # v0.5.0 Evaluation fields
+        k.EVALUATION_RESULT: r.evaluation_result,
+        k.SCORING_CRITERIA: r.scoring_criteria,
+        k.INHABITATION_METRICS: r.inhabitation_metrics,
+        k.EXECUTION_TRACE: r.execution_trace,
+        k.FAILURE: r.failure,
     }
 
 

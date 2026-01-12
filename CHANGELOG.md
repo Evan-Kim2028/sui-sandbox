@@ -2,6 +2,91 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.4.0] - 2026-01-12
+
+### 🎯 Headline Features: MM2 Type Validation & Oracle-Based Evaluation
+
+**Move Model 2 (MM2) Integration for Static Type Validation**
+- New `mm2/` module with TypeModel, TypeValidator, and ConstructorGraph components
+- Static type checking before VM execution catches type errors earlier
+- Phase-based error taxonomy (Resolution → TypeCheck → Synthesis → Execution → Validation)
+- Comprehensive error codes: E101-E502 covering all failure modes
+
+**Producer Chains for Return Value Chaining**
+- Support for multi-return functions (functions returning multiple values)
+- Automatic discovery of producer functions via return type analysis
+- Return value chaining: use results from one function as inputs to another
+- `ProducerChain` synthesis variant in the benchmark runner
+
+**Type Synthesizer Enhancements**
+- SuiSystemState synthesis with 10 validators (avoids division-by-zero errors)
+- ValidatorSet and StakingPool synthesis for staking-related functions
+- StakedSui synthesis for LST (Liquid Staking Token) packages
+- Realistic default values: Coins now synthesized with 1 SUI instead of 0
+
+**Oracle & Evaluation System for Benchmark Scoring**
+- New `inhabit/oracle.py`: Computes theoretical maximum scores (ceiling) for packages
+- New `inhabit/evaluator.py`: Parses MM2 results and scores LLM output
+- Difficulty ranking: Functions ranked by parameter complexity and execution success
+- Normalized scores (0-100%) comparable across packages and LLM runs
+
+**Prompt Template System**
+- `--prompt-file` flag for externalized, customizable prompts
+- Template variables: `{{PACKAGE_ID}}`, `{{INTERFACE_SUMMARY}}`, `{{MAX_ATTEMPTS}}`, etc.
+- Three templates: `type_inhabitation.txt`, `type_inhabitation_detailed.txt`, `repair_build_error.txt`
+
+### Added
+
+**Rust MM2 Components (`src/benchmark/mm2/`)**
+- `model.rs`: TypeModel wrapper around MM2's Model for bytecode analysis
+- `type_validator.rs`: Static type checking for function calls and constructor chains
+- `constructor_graph.rs`: Graph-based constructor discovery with BFS traversal
+- `type_synthesizer.rs`: BCS byte generation for 40+ framework types
+
+**Python Evaluation Modules (`benchmark/src/smi_bench/inhabit/`)**
+- `oracle.py`: PackageOracle for ceiling computation, FunctionDifficulty ranking
+- `evaluator.py`: EvaluationResult generation from benchmark artifacts
+- `evaluation.py`: Type definitions for Phase, ErrorCode, ScoringCriteria
+
+**Testing**
+- `tests/mm2_integration_test.rs`: 7 integration tests for MM2 components
+- `tests/test_inhabit_oracle.py`: 22 tests for oracle functionality
+- `tests/test_inhabit_evaluator.py`: 26 tests for evaluator logic
+- `tests/test_prompt_templates.py`: 18 tests for template rendering
+
+### Changed
+
+**Error Handling Improvements**
+- Added logging to 15+ silent exception handlers in Python files
+- Compile-time assertion ensures DEFAULT_VALIDATOR_COUNT > 0
+- Safe identifier creation with LazyLock fallbacks (no panic risk)
+
+**Type Synthesis Defaults**
+- `Coin<T>` now synthesized with 1 SUI (1_000_000_000 MIST) balance
+- `TreasuryCap<T>` now synthesized with 1000 SUI total supply
+- Prevents zero-balance failures in balance checks
+
+### Technical Details
+
+**New Error Taxonomy Phases**
+- Resolution (1xx): Module/function existence validation
+- TypeCheck (2xx): Static type compatibility, ability constraints
+- Synthesis (3xx): Constructor chain discovery, BCS serialization
+- Execution (4xx): VM execution, constructor/target aborts
+- Validation (5xx): Target access verification, return type matching
+
+**Oracle Metrics**
+- `execution_ceiling`: Maximum tier_b_hit rate achievable for package
+- `synthesis_ceiling`: Maximum tier_a_hit rate achievable
+- `difficulty_distribution`: Function counts by difficulty level (easy/medium/hard/impossible)
+
+### Fixed
+- ARITHMETIC_ERROR in ValidatorSet with 0 validators (now always 10)
+- Silent exception handling that masked debugging information
+- Potential panic in Identifier::new() fallback chains
+
+---
+
 ## [0.3.0] - 2026-01-11
 
 ### 🎯 Headline Features: Comprehensive VM Execution Support

@@ -16,12 +16,21 @@ QUICK START
        --package-id 0x1 \\
        --out-dir results/my_test
 
-2. Real LLM test (requires API key):
+2. Single LST package test (canonical benchmark):
    $ export SMI_E2E_REAL_LLM=1
    $ export OPENROUTER_API_KEY=sk-or-v1-...
    $ uv run python scripts/e2e_one_package.py \\
        --corpus-root ../sui-packages/packages/mainnet_most_used \\
-       --dataset type_inhabitation_top25 \\
+       --dataset single_lst \\
+       --model google/gemini-3-flash-preview \\
+       --out-dir results/lst_test
+
+3. Real LLM test with multiple packages:
+   $ export SMI_E2E_REAL_LLM=1
+   $ export OPENROUTER_API_KEY=sk-or-v1-...
+   $ uv run python scripts/e2e_one_package.py \\
+       --corpus-root ../sui-packages/packages/mainnet_most_used \\
+       --dataset quickstart_top5 \\
        --samples 5 \\
        --model google/gemini-3-flash-preview \\
        --out-dir results/e2e_run
@@ -92,6 +101,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -100,6 +110,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCH_ROOT = REPO_ROOT / "benchmark"
@@ -379,7 +391,8 @@ def _persist_tmp_tree(*, run_dir: Path, tmp_root: Path | None) -> None:
             out = dest / rel
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, out)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to preserve artifacts: %s", e)
         return
 
 
@@ -466,7 +479,12 @@ def _write_helper_package(*, helper_dir: Path, payload: dict[str, Any]) -> None:
 
 
 def _type_to_move(t: dict[str, Any], pkg_alias: str = "target_pkg") -> str:
-    """Convert interface JSON type representation to Move source syntax."""
+    """Convert interface JSON type representation to Move source syntax.
+
+    .. deprecated:: 0.4.0
+        This is part of the deprecated Python stub generator. Use the Rust
+        extractor's ``--emit-move-stubs`` instead.
+    """
     kind = t.get("kind", "")
 
     if kind == "bool":
@@ -531,6 +549,13 @@ def _type_to_move(t: dict[str, Any], pkg_alias: str = "target_pkg") -> str:
 def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "target_pkg") -> dict[str, str]:
     """Generate Move source stub files from interface JSON.
 
+    .. deprecated:: 0.4.0
+        Use the Rust extractor's ``--emit-move-stubs`` flag instead via
+        :func:`smi_bench.rust.emit_move_stubs`. The Rust version generates
+        correct Move 2024 syntax with proper ``use`` imports. This Python
+        fallback has known issues with qualified type paths in struct fields
+        (causes E03006 errors).
+
     Creates minimal .move source files that declare all types and function signatures
     from the bytecode interface. Function bodies are stubs that abort.
     This allows the Move compiler to type-check code that imports these types.
@@ -542,6 +567,14 @@ def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "tar
     Returns:
         Dict mapping module name to Move source code string
     """
+    import warnings
+
+    warnings.warn(
+        "_generate_move_source_stubs is deprecated since v0.4.0. "
+        "Use smi_bench.rust.emit_move_stubs() instead for correct Move 2024 syntax.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     modules = interface.get("modules", {})
     sources: dict[str, str] = {}
 
@@ -649,17 +682,18 @@ def _generate_move_source_stubs(interface: dict[str, Any], pkg_alias: str = "tar
 
 
 def _vendor_target_deps_into_helper(
-    *, target_pkg_dir: Path, helper_dir: Path, interface: dict[str, Any] | None = None
+    *, target_pkg_dir: Path, helper_dir: Path, interface: dict[str, Any] | None = None, rust_bin: Path | None = None
 ) -> None:
     """Vendor target package as a local dependency for the helper package.
 
-    Creates source stub files from the interface JSON so the Move compiler can
+    Creates source stub files using the Rust extractor so the Move compiler can
     type-check imports. At runtime, the real bytecode is used for execution.
 
     Args:
         target_pkg_dir: Path to the target package directory (with bytecode_modules/)
         helper_dir: Path to the helper package directory
-        interface: Optional interface JSON; if not provided, will be loaded from target_pkg_dir
+        interface: Optional interface JSON; if not provided, will be loaded from target_pkg_dir (DEPRECATED, unused now)
+        rust_bin: Path to the Rust extractor binary; if not provided, will use default
     """
     dep_name = "target_pkg"
     dep_dir = helper_dir / "deps" / dep_name
@@ -667,7 +701,8 @@ def _vendor_target_deps_into_helper(
         shutil.rmtree(dep_dir)
 
     # Create sources directory for stub files (Move compiler needs source, not just bytecode)
-    (dep_dir / "sources").mkdir(parents=True, exist_ok=True)
+    sources_dir = dep_dir / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
 
     # Also keep bytecode for runtime execution
     (dep_dir / "bytecode_modules").mkdir(parents=True, exist_ok=True)
@@ -681,24 +716,50 @@ def _vendor_target_deps_into_helper(
             module_addr = meta_obj["module_address"]
         elif isinstance(meta_obj, dict) and isinstance(meta_obj.get("originalPackageId"), str):
             module_addr = meta_obj["originalPackageId"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to parse metadata.json for module address: %s", e)
 
-    # Generate source stubs from interface if provided
-    if interface is not None:
-        source_stubs = _generate_move_source_stubs(interface, dep_name)
-        for mod_name, source in source_stubs.items():
-            _atomic_write_text(dep_dir / "sources" / f"{mod_name}.move", source)
+    # Generate source stubs using Rust extractor (preferred method)
+    # The Rust extractor generates correct Move 2024 syntax with proper imports
+    try:
+        from smi_bench.rust import default_rust_binary, emit_move_stubs, validate_rust_binary
+
+        if rust_bin is None:
+            rust_bin = default_rust_binary()
+        validate_rust_binary(rust_bin)
+        emit_move_stubs(package_dir=target_pkg_dir, stubs_dir=sources_dir, rust_bin=rust_bin)
+    except Exception as e:
+        # Fallback to Python-generated stubs if Rust extractor fails
+        # This is a legacy path that may have syntax issues with Move 2024
+        logger.warning(f"Rust stub generation failed, falling back to Python stubs: {e}")
+        if interface is not None:
+            source_stubs = _generate_move_source_stubs(interface, dep_name)
+            for mod_name, source in source_stubs.items():
+                _atomic_write_text(sources_dir / f"{mod_name}.move", source)
 
     # Create Move.toml for the dependency
-    # SuiSystem is auto-included in Sui 1.45+ so we don't need to add it explicitly
+    # The stubs may use `use std::`, `use sui::`, and `use sui_system::` imports,
+    # so we need to include framework dependencies. We use the standard Sui framework
+    # git dependencies which are automatically resolved by the Move compiler.
     dep_move_toml = (
         "[package]\n"
         f'name = "{dep_name}"\n'
         'version = "0.0.1"\n'
         'edition = "2024.beta"\n\n'
+        "[dependencies]\n"
+        "Sui = { "
+        'git = "https://github.com/MystenLabs/sui.git", '
+        'subdir = "crates/sui-framework/packages/sui-framework", '
+        'rev = "framework/mainnet" }\n'
+        "SuiSystem = { "
+        'git = "https://github.com/MystenLabs/sui.git", '
+        'subdir = "crates/sui-framework/packages/sui-system", '
+        'rev = "framework/mainnet" }\n\n'
         "[addresses]\n"
         f'{dep_name} = "{module_addr}"\n'
+        'std = "0x1"\n'
+        'sui = "0x2"\n'
+        'sui_system = "0x3"\n'
     )
     _atomic_write_text(dep_dir / "Move.toml", dep_move_toml)
 
@@ -1080,8 +1141,9 @@ def _find_built_bytecode_dir(helper_dir: Path) -> Path | None:
             if sanitized is None:
                 return None
             pkg_name = sanitized
-    except Exception:
+    except Exception as e:
         # If TOML is invalid, we don't attempt to guess with regex
+        logger.debug("Failed to parse Move.toml for bytecode dir: %s", e)
         return None
 
     bytecode_dir = helper_dir / "build" / pkg_name / "bytecode_modules"
@@ -1112,9 +1174,9 @@ def _run_local_vm_entry(*, helper_dir: Path, call_target: str, out_path: Path) -
             *_benchmark_local_cli_prefix(),
             "benchmark-local",
             "--target-corpus",
-            str(target_corpus),
+            str(target_corpus.resolve()),  # Absolute path for cwd=REPO_ROOT
             "--output",
-            str(tmp_out),
+            str(tmp_out.resolve()),
             "--restricted-state",
         ],
         cwd=REPO_ROOT,
@@ -1149,9 +1211,9 @@ def _run_local_vm_entry_on_corpus(*, corpus_dir: Path, call_target: str, out_pat
             *_benchmark_local_cli_prefix(),
             "benchmark-local",
             "--target-corpus",
-            str(corpus_dir),
+            str(corpus_dir.resolve()),  # Absolute path for cwd=REPO_ROOT
             "--output",
-            str(tmp_out),
+            str(tmp_out.resolve()),
             "--restricted-state",
         ],
         cwd=REPO_ROOT,
@@ -1195,7 +1257,8 @@ def _extract_module_address_from_bytecode(mv_path: Path) -> str | None:
 
         content = mv_path.read_bytes()
         return hashlib.sha256(content).hexdigest()[:8]
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to hash bytecode module %s: %s", mv_path, e)
         return None
 
 
@@ -1266,9 +1329,9 @@ def _mm2_map_helper(*, helper_dir: Path, out_path: Path) -> tuple[bool, dict[str
             *_benchmark_local_cli_prefix(),
             "benchmark-local",
             "--target-corpus",
-            str(target_corpus),
+            str(target_corpus.resolve()),  # Absolute path for cwd=REPO_ROOT
             "--output",
-            str(tmp_out),
+            str(tmp_out.resolve()),
             "--restricted-state",
         ],
         cwd=REPO_ROOT,
@@ -1315,9 +1378,9 @@ def _mm2_map_target(*, target_pkg_dir: Path, out_path: Path) -> tuple[bool, dict
             *_benchmark_local_cli_prefix(),
             "benchmark-local",
             "--target-corpus",
-            str(corpus),
+            str(corpus.resolve()),  # Absolute path for cwd=REPO_ROOT
             "--output",
-            str(tmp_out),
+            str(tmp_out.resolve()),
             "--restricted-state",
         ],
         cwd=REPO_ROOT,
@@ -1363,9 +1426,9 @@ def _mm2_map_combined(*, combined_corpus_dir: Path, out_path: Path) -> tuple[boo
             *_benchmark_local_cli_prefix(),
             "benchmark-local",
             "--target-corpus",
-            str(combined_corpus_dir),
+            str(combined_corpus_dir.resolve()),  # Absolute path for cwd=REPO_ROOT
             "--output",
-            str(tmp_out),
+            str(tmp_out.resolve()),
             "--restricted-state",
         ],
         cwd=REPO_ROOT,
@@ -1435,6 +1498,90 @@ def _ptb_plan_target_first(*, target_mm2: dict[str, Any], helper_mm2: dict[str, 
     return _ptb_plan_from_mapping(mm2=helper_mm2)
 
 
+def _extract_target_package_stats(interface: dict[str, Any]) -> dict[str, Any]:
+    """Extract statistics from target package interface JSON.
+
+    Returns a dict with:
+      - module_count: number of modules
+      - module_names: list of module names
+      - total_functions: total public/entry functions
+      - entry_functions: count of entry functions
+      - public_functions: count of public (non-entry) functions
+      - total_structs: total struct definitions
+      - struct_names: list of struct names per module
+      - type_params_used: whether any functions use type parameters
+      - object_params_functions: count of functions with object parameters
+    """
+    stats: dict[str, Any] = {}
+    modules = interface.get("modules", {})
+    module_names = interface.get("module_names", list(modules.keys()))
+
+    stats["module_count"] = len(module_names)
+    stats["module_names"] = module_names
+
+    total_functions = 0
+    entry_functions = 0
+    public_functions = 0
+    total_structs = 0
+    struct_names_by_module: dict[str, list[str]] = {}
+    type_params_used = False
+    object_params_functions = 0
+    functions_by_module: dict[str, list[str]] = {}
+
+    for mod_name, mod_data in modules.items():
+        if not isinstance(mod_data, dict):
+            continue
+
+        # Count functions
+        funcs = mod_data.get("functions", {})
+        func_names = []
+        for fn_name, fn_data in funcs.items():
+            if not isinstance(fn_data, dict):
+                continue
+            func_names.append(fn_name)
+            total_functions += 1
+            if fn_data.get("is_entry"):
+                entry_functions += 1
+            elif fn_data.get("visibility") == "public":
+                public_functions += 1
+
+            # Check for type parameters
+            type_params = fn_data.get("type_params", [])
+            if type_params:
+                type_params_used = True
+
+            # Check for object parameters (datatype with key ability)
+            params = fn_data.get("params", [])
+            for param in params:
+                if isinstance(param, dict):
+                    # Check if it's a reference to a datatype
+                    if param.get("kind") == "ref":
+                        param = param.get("to", {})
+                    if param.get("kind") == "datatype":
+                        object_params_functions += 1
+                        break
+
+        functions_by_module[mod_name] = func_names
+
+        # Count structs
+        structs = mod_data.get("structs", {})
+        struct_list = list(structs.keys()) if isinstance(structs, dict) else []
+        total_structs += len(struct_list)
+        if struct_list:
+            struct_names_by_module[mod_name] = struct_list
+
+    stats["total_functions"] = total_functions
+    stats["entry_functions"] = entry_functions
+    stats["public_functions"] = public_functions
+    stats["total_structs"] = total_structs
+    stats["struct_names_by_module"] = struct_names_by_module
+    stats["functions_by_module"] = functions_by_module
+    stats["type_params_used"] = type_params_used
+    stats["object_params_functions"] = object_params_functions
+
+    return stats
+
+
 def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, Any] | None) -> dict[str, Any]:
     # Minimal validation report; real checks will be tightened as wiring is completed.
     ok = True
@@ -1460,7 +1607,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     tmm2 = None
     try:
         tmm2 = json.loads((run_dir / "mm2_target_mapping.json").read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse mm2_target_mapping.json: %s", e)
         tmm2 = None
     if not isinstance(tmm2, dict) or tmm2.get("kind") != "mm2_mapping":
         ok = False
@@ -1493,7 +1641,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     # Helper-only tier_b_hits don't demonstrate target package type inhabitation.
     try:
         cmm2 = json.loads((run_dir / "mm2_combined_mapping.json").read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to parse mm2_combined_mapping.json: %s", e)
         cmm2 = None
 
     # Get target package ID from run config to identify target vs helper modules
@@ -1501,8 +1650,8 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
     try:
         run_cfg = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
         target_pkg_id = run_cfg.get("package_id")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to parse run_config.json for target_pkg_id: %s", e)
 
     if isinstance(cmm2, dict):
         acc = cmm2.get("accepted")
@@ -1557,7 +1706,32 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
                         f"not just framework/stdlib types."
                     )
                 # else: Success - we have tier_b execution that accessed target package modules
-    return {"ok": ok, "errors": errors}
+
+    # Extract target package statistics
+    target_package_stats: dict[str, Any] | None = None
+    target_interface_path = run_dir / "target_interface.json"
+    if target_interface_path.exists():
+        try:
+            interface = json.loads(target_interface_path.read_text(encoding="utf-8"))
+            target_package_stats = _extract_target_package_stats(interface)
+        except Exception as e:
+            logger.debug("Failed to extract target package stats: %s", e)
+
+    # Load attempt tracking if available
+    attempt_tracking: dict[str, Any] | None = None
+    attempt_tracking_path = run_dir / "attempt_tracking.json"
+    if attempt_tracking_path.exists():
+        try:
+            attempt_tracking = json.loads(attempt_tracking_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug("Failed to load attempt_tracking.json: %s", e)
+
+    return {
+        "ok": ok,
+        "errors": errors,
+        "target_package_stats": target_package_stats,
+        "attempt_tracking": attempt_tracking,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1630,6 +1804,40 @@ EXAMPLES:
         default=None,
         help="If set, copy /tmp benchmark-local artifacts and logs into this directory for debugging.",
     )
+    p.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=None,
+        help="Path to custom prompt template file (default: uses built-in prompt). "
+        "Template variables: {{PACKAGE_ID}}, {{INTERFACE_SUMMARY}}, {{MAX_ATTEMPTS}}, {{MOVE_EDITION}}",
+    )
+    # Prompt configuration flags for researchers to test different hypotheses
+    p.add_argument(
+        "--no-interface-types",
+        action="store_true",
+        help="Strip type information from interface summary (function names only)",
+    )
+    p.add_argument(
+        "--no-interface-docs",
+        action="store_true",
+        help="Strip documentation from interface summary",
+    )
+    p.add_argument(
+        "--no-scoring-hints",
+        action="store_true",
+        help="Don't tell LLM the max achievable score (oracle ceiling)",
+    )
+    p.add_argument(
+        "--single-shot",
+        action="store_true",
+        help="Disable repair loop - single attempt only, no error feedback",
+    )
+    p.add_argument(
+        "--interface-limit",
+        type=int,
+        default=30,
+        help="Max functions to include in interface summary (default: 30)",
+    )
     args = p.parse_args(argv)
 
     # Load benchmark/.env so real LLM runs work even when the caller didn't export env vars.
@@ -1639,8 +1847,8 @@ EXAMPLES:
         dotenv = load_dotenv(BENCH_ROOT / ".env")
         for k, v in dotenv.items():
             os.environ.setdefault(k, v)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to load .env file: %s", e)
 
     if args.dataset_count < 1:
         raise SystemExit("dataset-count must be >= 1")
@@ -1702,6 +1910,9 @@ EXAMPLES:
                 "model": cfg.model,
                 "enable_dryrun": cfg.enable_dryrun,
                 "out_dir": str(cfg.out_dir),
+                # Prompt configuration flags
+                "no_scoring_hints": args.no_scoring_hints,
+                "no_docs_hints": args.no_docs_hints,
             },
         )
 
@@ -1722,24 +1933,79 @@ EXAMPLES:
             rust_bin = default_rust_binary()
             validate_rust_binary(rust_bin)
             iface = emit_bytecode_json(package_dir=target_pkg_dir, rust_bin=rust_bin)
-            iface_summary = summarize_interface(iface, max_functions=30, mode="entry_then_public")
+            iface_summary = summarize_interface(
+                iface,
+                max_functions=args.interface_limit,
+                mode="entry_then_public",
+                strip_types=args.no_interface_types,
+                strip_docs=args.no_interface_docs,
+            )
             _atomic_write_json(run_dir / "target_interface.json", iface)
         except Exception as e:
             iface_summary = f"<failed to summarize interface: {e}>"
 
-        # Build minimal, goal-oriented prompt without prescriptive guidance
-        # Let the LLM figure out HOW to achieve type inhabitation
-        max_attempts = args.max_attempts
-        prompt = {
-            "schema": "helper_pkg_v1",
-            "package_id": pkg_id,
-            "seed": cfg.seed,
-            "reference_interface": iface_summary,
-            "constraints": {
-                "max_attempts": max_attempts,
-                "move_edition": "2024.beta",
-            },
-            "instruction": (
+        # Compute oracle (max achievable score) BEFORE building prompt
+        # This tells the LLM what score is theoretically achievable without revealing which functions work
+        oracle_info: dict[str, Any] = {}
+        try:
+            # Run MM2 target mapping to get oracle data
+            ok_oracle, oracle_mm2 = _mm2_map_target(
+                target_pkg_dir=target_pkg_dir, out_path=run_dir / "mm2_target_mapping.json"
+            )
+            if ok_oracle:
+                from smi_bench.inhabit import PackageOracle
+
+                oracle = PackageOracle.from_mm2_target_mapping(run_dir / "mm2_target_mapping.json", pkg_id)
+                oracle_info = {
+                    "total_functions": oracle.total_functions,
+                    "max_synthesis_rate": round(oracle.max_synthesis_rate, 3),
+                    "max_execution_rate": round(oracle.max_execution_rate, 3),
+                    # Don't reveal which functions are possible - that's the cheat sheet!
+                }
+                _atomic_write_json(run_dir / "package_oracle.json", oracle.to_dict())
+        except Exception as e:
+            # Oracle computation is optional - continue without it
+            oracle_info = {"error": str(e)}
+
+        # Build the instruction from template file or use built-in default
+        # --single-shot overrides max_attempts to 1 (no repair loop)
+        max_attempts = 1 if args.single_shot else args.max_attempts
+        move_edition = "2024.beta"
+
+        if args.prompt_file and args.prompt_file.exists():
+            # Load custom prompt template
+            template = args.prompt_file.read_text(encoding="utf-8")
+            # Strip comment lines (start with #)
+            template_lines = [ln for ln in template.split("\n") if not ln.strip().startswith("#")]
+            template = "\n".join(template_lines).strip()
+            # Replace template variables
+            instruction = (
+                template.replace("{{PACKAGE_ID}}", pkg_id)
+                .replace("{{INTERFACE_SUMMARY}}", iface_summary)
+                .replace("{{MAX_ATTEMPTS}}", str(max_attempts))
+                .replace("{{MOVE_EDITION}}", move_edition)
+                .replace("{{TOTAL_FUNCTIONS}}", str(oracle_info.get("total_functions", "?")))
+                .replace("{{MAX_EXECUTION_RATE}}", str(int(oracle_info.get("max_execution_rate", 0) * 100)))
+                .replace("{{MAX_SYNTHESIS_RATE}}", str(int(oracle_info.get("max_synthesis_rate", 0) * 100)))
+            )
+        else:
+            # Built-in default prompt
+            # Build scoring section if oracle data is available (unless --no-scoring-hints)
+            scoring_section = ""
+            if not args.no_scoring_hints and oracle_info and "total_functions" in oracle_info:
+                max_exec_pct = int(oracle_info["max_execution_rate"] * 100)
+                scoring_section = (
+                    "\n"
+                    "SCORING:\n"
+                    f"- This package has {oracle_info['total_functions']} public/entry functions.\n"
+                    f"- Maximum achievable execution score: {max_exec_pct}% "
+                    "(some functions require chain state unavailable in sandbox).\n"
+                    "- Your goal: Maximize the number of target package functions you successfully call.\n"
+                    "- Efficiency matters: Achieve the highest score in the fewest attempts.\n"
+                    "- Partial credit: Even functions that compile but don't execute earn points.\n"
+                )
+
+            instruction = (
                 "GOAL: Create a Move helper package that demonstrates TYPE INHABITATION of the TARGET PACKAGE.\n"
                 "Your entry functions MUST create or use types defined in the target package (shown below).\n"
                 "Using only stdlib types (vector, option, u64, etc.) does NOT count as success.\n"
@@ -1753,18 +2019,34 @@ EXAMPLES:
                 f"{iface_summary}"
                 "\n\n"
                 "CONSTRAINTS:\n"
-                f"- You have {max_attempts} attempts. Build errors will be provided after each attempt.\n"
+                f"- You have {max_attempts} attempts total. Build errors will be provided after each attempt.\n"
                 "- Your code will be compiled with `sui move build`\n"
                 "- Entry functions must be zero-arg (only implicit TxContext allowed)\n"
-                "- Use Move edition 2024.beta\n"
+                f"- Use Move edition {move_edition}\n"
                 "- You MUST use at least one type from the target package - stdlib-only code will fail evaluation\n"
+                f"{scoring_section}"
                 "\n"
                 "OUTPUT FORMAT: JSON object with these fields:\n"
                 "- move_toml: STRING containing full Move.toml contents\n"
                 "- files: OBJECT mapping relative paths to file contents (e.g. 'sources/helper.move': '...')\n"
                 "- entrypoints: ARRAY of objects with 'target' field (e.g. 'helper_pkg::helper::my_func')\n"
                 "- assumptions: ARRAY of strings explaining your approach"
-            ),
+            )
+
+        prompt = {
+            "schema": "helper_pkg_v1",
+            "package_id": pkg_id,
+            "seed": cfg.seed,
+            "reference_interface": iface_summary,
+            "constraints": {
+                "max_attempts": max_attempts,
+                "move_edition": move_edition,
+            },
+            # Only include oracle info if scoring hints are enabled
+            # This prevents leaking max achievable scores to the LLM
+            "oracle": oracle_info if not args.no_scoring_hints else None,
+            "current_attempt": 1,  # Will be updated in retry loop
+            "instruction": instruction,
         }
         _atomic_write_json(run_dir / "llm_request.json", prompt)
 
@@ -1782,9 +2064,18 @@ EXAMPLES:
         # Track context across attempts for progressive disclosure
         last_valid_response: dict[str, Any] | None = None  # Last response that passed JSON validation
         attempt_history: list[str] = []  # Brief summary of each attempt for LLM context
+        successful_attempt: int | None = None  # Which attempt succeeded (1-indexed)
+        total_attempts: int = 0  # Total attempts made
 
         if use_real:
             for attempt in range(1, max_attempts + 1):
+                total_attempts = attempt
+                # Update current attempt number in prompt
+                prompt = dict(prompt)
+                prompt["current_attempt"] = attempt
+                if attempt > 1:
+                    prompt["attempts_remaining"] = max_attempts - attempt + 1
+
                 if timed_out():
                     _atomic_write_json(run_dir / "validation_report.json", {"ok": False, "errors": ["package timeout"]})
                     overall_ok = False
@@ -1868,8 +2159,12 @@ EXAMPLES:
                 # Build succeeded - write final logs and break
                 _atomic_write_text(run_dir / "helper_build_stdout.log", out_s)
                 _atomic_write_text(run_dir / "helper_build_stderr.log", err_s)
+                successful_attempt = attempt
+                attempt_history.append(f"Attempt {attempt}: Build succeeded!")
                 break
         else:
+            # Stub/offline mode - single attempt
+            total_attempts = 1
             raw = _stub_llm_helper_payload()
             _atomic_write_json(run_dir / "llm_response.json", raw)
             raw = _coerce_model_output_to_helper_payload(raw)
@@ -1887,7 +2182,9 @@ EXAMPLES:
                 ok_build, out_s, err_s = _sui_move_build_with_bytecode(helper_dir)
                 _atomic_write_text(run_dir / "helper_build_stdout.log", out_s)
                 _atomic_write_text(run_dir / "helper_build_stderr.log", err_s)
-                if not ok_build:
+                if ok_build:
+                    successful_attempt = 1
+                else:
                     last_errors = ["build failed (stub mode)"]
                     helper_payload = None
 
@@ -1905,6 +2202,17 @@ EXAMPLES:
             overall_ok = False
             continue
 
+        # Save attempt tracking data
+        _atomic_write_json(
+            run_dir / "attempt_tracking.json",
+            {
+                "max_attempts": max_attempts,
+                "total_attempts": total_attempts,
+                "successful_attempt": successful_attempt,
+                "attempt_history": attempt_history,
+            },
+        )
+
         # MM2 mapping/type-inhabitation
         ok_mm2, mm2 = _mm2_map_helper(helper_dir=helper_dir, out_path=run_dir / "mm2_mapping.json")
         if not ok_mm2:
@@ -1917,7 +2225,18 @@ EXAMPLES:
             {"accepted": len(mm2.get("accepted", [])), "rejected": len(mm2.get("rejected", []))},
         )
 
-        ok_tmm2, tmm2 = _mm2_map_target(target_pkg_dir=target_pkg_dir, out_path=run_dir / "mm2_target_mapping.json")
+        # Check if we already ran mm2_target_mapping for oracle (skip duplicate work)
+        mm2_target_path = run_dir / "mm2_target_mapping.json"
+        if mm2_target_path.exists():
+            try:
+                tmm2 = json.loads(mm2_target_path.read_text(encoding="utf-8"))
+                ok_tmm2 = True
+            except Exception as e:
+                logger.debug("Failed to load existing mm2_target_mapping.json, regenerating: %s", e)
+                ok_tmm2, tmm2 = _mm2_map_target(target_pkg_dir=target_pkg_dir, out_path=mm2_target_path)
+        else:
+            ok_tmm2, tmm2 = _mm2_map_target(target_pkg_dir=target_pkg_dir, out_path=mm2_target_path)
+
         if not ok_tmm2:
             _atomic_write_json(
                 run_dir / "validation_report.json", {"ok": False, "errors": ["target mm2 mapping failed"]}
@@ -2003,6 +2322,48 @@ EXAMPLES:
 
         report = _validate_artifacts(run_dir=run_dir, mm2=mm2, txsim=txsim)
         _atomic_write_json(run_dir / "validation_report.json", report)
+
+        # Generate detailed evaluation result using the evaluator module
+        try:
+            from smi_bench.inhabit import evaluate_from_run_dir
+
+            eval_result = evaluate_from_run_dir(run_dir)
+            _atomic_write_json(run_dir / "evaluation_result.json", eval_result.to_dict())
+        except Exception as e:
+            # Evaluation is optional - don't fail the run if it errors
+            _atomic_write_json(run_dir / "evaluation_result.json", {"error": str(e)})
+
+        # Update oracle with LLM comparison (oracle was generated early for prompt)
+        try:
+            oracle_path = run_dir / "package_oracle.json"
+            mm2_combined_path = run_dir / "mm2_combined_mapping.json"
+            if oracle_path.exists() and mm2_combined_path.exists():
+                from smi_bench.inhabit import PackageOracle, compute_llm_scores
+
+                oracle_dict = json.loads(oracle_path.read_text(encoding="utf-8"))
+
+                # Compute normalized LLM scores relative to ceiling
+                # Note: Don't pass pkg_id - let oracle extract the on-chain address
+                # from mm2_target_mapping (which may differ from the original pkg_id
+                # if the package was upgraded)
+                oracle = PackageOracle.from_mm2_target_mapping(
+                    run_dir / "mm2_target_mapping.json",
+                )
+                llm_scores = compute_llm_scores(oracle, mm2_combined_path)
+
+                # Add new normalized scores (0-100%)
+                oracle_dict["llm_scores"] = llm_scores.to_dict()
+
+                # Keep legacy fields for backwards compat, but mark as deprecated
+                if isinstance(eval_result, object) and hasattr(eval_result, "score"):
+                    oracle_dict["llm_score"] = eval_result.score  # Legacy binary score
+                oracle_dict["successful_attempt"] = successful_attempt
+                oracle_dict["total_attempts"] = total_attempts
+
+                _atomic_write_json(oracle_path, oracle_dict)
+        except Exception as e:
+            _atomic_write_json(run_dir / "package_oracle.json", {"error": str(e)})
+
         _persist_tmp_tree(run_dir=run_dir, tmp_root=tmp_root)
 
         hit = bool(report.get("ok") is True)
@@ -2031,6 +2392,9 @@ EXAMPLES:
             "txsim_combined_effects.json",
             "ptb_plan.json",
             "validation_report.json",
+            "evaluation_result.json",
+            "package_oracle.json",
+            "attempt_tracking.json",
             "hit_metric.json",
             "target_interface.json",
             "helper_pkg/Move.toml",

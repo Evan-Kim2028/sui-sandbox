@@ -1,0 +1,16 @@
+# Build Error Repair Prompt
+# =========================
+# This prompt is appended when the LLM's code fails to compile.
+# It includes the build errors so the LLM can fix them.
+#
+# Template variables:
+#   {{BUILD_ERRORS}}     - The build error messages from `sui move build`
+#   {{ATTEMPT_NUMBER}}   - Current attempt number
+#   {{MAX_ATTEMPTS}}     - Total attempts allowed
+
+The Move code failed to compile. Fix these build errors, then return ONLY helper_pkg_v1 JSON.
+
+IMPORTANT: Keep what worked (e.g., if Move.toml compiled, don't change it). Only fix the specific errors.
+
+BUILD ERRORS:
+{{BUILD_ERRORS}}

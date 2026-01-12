@@ -227,12 +227,94 @@ def json_type_to_string(t: dict) -> str:
     return "unknown"
 
 
+def _summarize_by_difficulty(
+    interface_json: dict,
+    max_functions: int,
+    difficulty_ranking: list[tuple[str, str]],
+    modules: dict,
+) -> str:
+    """Generate summary with functions ordered by difficulty (hardest first).
+
+    Args:
+        interface_json: The interface JSON.
+        max_functions: Maximum functions to include.
+        difficulty_ranking: List of (module_name, function_name) in desired order.
+        modules: The modules dict from interface_json.
+
+    Returns:
+        Formatted summary string with functions ordered by difficulty.
+    """
+    pkg_id = interface_json.get("package_id", "0x0")
+    lines = [f"Package: {pkg_id}", "", "Functions (ordered by difficulty, hardest first):", ""]
+
+    total_added = 0
+    seen_modules: set[str] = set()
+    module_groups: dict[str, list[str]] = {}
+
+    for module_name, fun_name in difficulty_ranking:
+        if total_added >= max_functions:
+            break
+
+        mod = modules.get(module_name)
+        if not isinstance(mod, dict):
+            continue
+
+        funs = mod.get("functions")
+        if not isinstance(funs, dict):
+            continue
+
+        f = funs.get(fun_name)
+        if not isinstance(f, dict):
+            continue
+
+        # Skip init and non-public/non-entry
+        if fun_name == "init":
+            continue
+        is_entry = f.get("is_entry") is True
+        is_public = f.get("visibility") == "public"
+        if not is_public and not is_entry:
+            continue
+
+        # Build signature
+        vis = f.get("visibility", "private")
+        entry = " entry" if is_entry else ""
+        params = f.get("params", [])
+        param_strs = [json_type_to_string(p) for p in params if isinstance(p, dict)]
+        type_params = f.get("type_params", [])
+
+        if type_params:
+            sig = f"{vis}{entry} fun {fun_name}<{len(type_params)} type params>({', '.join(param_strs)})"
+        else:
+            sig = f"{vis}{entry} fun {fun_name}({', '.join(param_strs)})"
+
+        module_groups.setdefault(module_name, []).append(f"  - {sig}")
+        total_added += 1
+
+    # Output grouped by module but in order of first appearance
+    for module_name, fun_name in difficulty_ranking:
+        if module_name in seen_modules:
+            continue
+        if module_name in module_groups:
+            lines.append(f"Module: {module_name}")
+            lines.extend(module_groups[module_name])
+            lines.append("")
+            seen_modules.add(module_name)
+
+    if total_added >= max_functions:
+        lines.append(f"... (truncated after {max_functions} functions)")
+
+    return "\n".join(lines)
+
+
 def summarize_interface(
     interface_json: dict,
     max_functions: int = 200,
     *,
     mode: str = "entry_then_public",
     requested_targets: set[str] | None = None,
+    difficulty_ranking: list[tuple[str, str]] | None = None,
+    strip_types: bool = False,
+    strip_docs: bool = False,
 ) -> str:
     """Generate a human-readable summary of functions for prompting.
 
@@ -242,6 +324,18 @@ def summarize_interface(
       - "names_only": only module + function names (no signatures).
       - "focused": include only functions whose fully-qualified target string
         ("0xADDR::module::function") is in `requested_targets`.
+      - "difficulty_ranked": order functions by difficulty (hardest first).
+        Requires `difficulty_ranking` parameter.
+
+    Args:
+        interface_json: The interface JSON from bytecode extraction.
+        max_functions: Maximum number of functions to include.
+        mode: One of the modes above.
+        requested_targets: For "focused" mode, the target strings to include.
+        difficulty_ranking: For "difficulty_ranked" mode, a list of
+            (module_name, function_name) tuples in desired order (hardest first).
+        strip_types: If True, show only function names without type signatures.
+        strip_docs: If True, omit any docstrings from the summary.
     """
     modules = interface_json.get("modules")
     if not isinstance(modules, dict):
@@ -252,8 +346,12 @@ def summarize_interface(
     lines.append(f"Package: {pkg_id}")
     lines.append("")
 
-    if mode not in {"entry_then_public", "entry_only", "names_only", "focused"}:
+    if mode not in {"entry_then_public", "entry_only", "names_only", "focused", "difficulty_ranked"}:
         mode = "entry_then_public"
+
+    # Handle difficulty_ranked mode specially - process in provided order
+    if mode == "difficulty_ranked" and difficulty_ranking:
+        return _summarize_by_difficulty(interface_json, max_functions, difficulty_ranking, modules)
 
     requested_targets = requested_targets or set()
     requested_by_mod: dict[str, set[str]] = {}
@@ -305,7 +403,7 @@ def summarize_interface(
                 if not is_public and not is_entry:
                     continue
 
-            if mode == "names_only":
+            if mode == "names_only" or strip_types:
                 module_lines.append(f"  - {fun_name}")
             else:
                 # Signature construction
@@ -320,6 +418,18 @@ def summarize_interface(
                     sig = f"{vis}{entry} fun {fun_name}<{len(type_params)} type params>({', '.join(param_strs)})"
 
                 module_lines.append(f"  - {sig}")
+
+                # Add docstring if available and not stripped
+                if not strip_docs:
+                    doc = f.get("doc")
+                    if doc and isinstance(doc, str):
+                        # Truncate long docs and indent
+                        doc_lines = doc.strip().split("\n")
+                        if doc_lines:
+                            first_line = doc_lines[0][:80]
+                            if len(doc_lines) > 1 or len(doc_lines[0]) > 80:
+                                first_line += "..."
+                            module_lines.append(f"      // {first_line}")
             total_funs_added += 1
 
         if module_lines:

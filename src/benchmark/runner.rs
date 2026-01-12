@@ -12,6 +12,10 @@ use crate::args::BenchmarkLocalArgs;
 use crate::benchmark::bytecode_analyzer::{self, StaticFunctionCall};
 use crate::benchmark::constructor_map::{ConstructorInfo, ConstructorMap, ParamKind};
 use crate::benchmark::errors::{is_unsupported_native_error, unsupported_native_error_message};
+use crate::benchmark::mm2::{
+    ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, TypeModel,
+    TypeSynthesizer,
+};
 use crate::benchmark::resolver::LocalModuleResolver;
 use crate::benchmark::validator::Validator;
 use crate::benchmark::vm::VMHarness;
@@ -29,6 +33,45 @@ enum ConstructorChainEntry {
     FinalParam {
         param_idx: usize,
         ctor: ConstructorInfo,
+    },
+    /// Reference to a constructed value - construct first, then pass by reference
+    /// The constructed value is stored in the VM and a reference is passed
+    ConstructedRef {
+        param_idx: usize,
+        ctor: ConstructorInfo,
+        #[allow(dead_code)] // Preserved for debugging/future use
+        is_mut: bool,
+    },
+    /// Multi-hop execution chain (from ConstructorGraph)
+    /// Contains all constructors in topological order
+    MultiHopChain {
+        param_idx: usize,
+        chain: ExecutionChain,
+        #[allow(dead_code)] // Preserved for debugging/future use
+        is_ref: bool,
+        #[allow(dead_code)] // Preserved for debugging/future use
+        is_mut: bool,
+    },
+    /// Producer chain (from return type analysis)
+    /// Handles multi-return functions like create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
+    ProducerChain {
+        param_idx: usize,
+        chain: ProducerChain,
+        target_return_idx: usize,
+        #[allow(dead_code)] // Preserved for debugging/future use
+        is_ref: bool,
+        #[allow(dead_code)] // Preserved for debugging/future use
+        is_mut: bool,
+    },
+    /// Synthesized type (from MM2 type analysis, no execution needed)
+    /// Used as fallback when constructors/producers aren't available or fail
+    Synthesized {
+        param_idx: usize,
+        /// Pre-computed BCS bytes for the synthesized value
+        bytes: Vec<u8>,
+        /// Type description for logging
+        #[allow(dead_code)] // Preserved for debugging/future use
+        type_desc: String,
     },
 }
 
@@ -69,6 +112,86 @@ fn is_synthesizable_sui_param(
     }
 
     None
+}
+
+/// Extract StructTag from a reference parameter token.
+/// Returns (struct_tag, is_mutable) if the reference points to a struct.
+fn extract_ref_struct_tag(
+    token: &SignatureToken,
+    module: &CompiledModule,
+) -> Option<(move_core_types::language_storage::StructTag, bool)> {
+    let (inner, is_mut) = match token {
+        SignatureToken::MutableReference(inner) => (inner.as_ref(), true),
+        SignatureToken::Reference(inner) => (inner.as_ref(), false),
+        _ => return None,
+    };
+
+    // Extract the struct index
+    let idx = match inner {
+        SignatureToken::Datatype(idx) => *idx,
+        SignatureToken::DatatypeInstantiation(inst) => inst.0,
+        _ => return None,
+    };
+
+    let handle = module.datatype_handle_at(idx);
+    let module_handle = module.module_handle_at(handle.module);
+    let address = *module.address_identifier_at(module_handle.address);
+    let module_name = module.identifier_at(module_handle.name).to_owned();
+    let name = module.identifier_at(handle.name).to_owned();
+
+    // Handle type args for DatatypeInstantiation
+    let type_params = if let SignatureToken::DatatypeInstantiation(inst) = inner {
+        inst.1
+            .iter()
+            .filter_map(|t| token_to_type_tag_simple(t, module))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    Some((
+        move_core_types::language_storage::StructTag {
+            address,
+            module: module_name,
+            name,
+            type_params,
+        },
+        is_mut,
+    ))
+}
+
+/// Simple token to TypeTag conversion for reference extraction
+fn token_to_type_tag_simple(token: &SignatureToken, module: &CompiledModule) -> Option<TypeTag> {
+    match token {
+        SignatureToken::Bool => Some(TypeTag::Bool),
+        SignatureToken::U8 => Some(TypeTag::U8),
+        SignatureToken::U16 => Some(TypeTag::U16),
+        SignatureToken::U32 => Some(TypeTag::U32),
+        SignatureToken::U64 => Some(TypeTag::U64),
+        SignatureToken::U128 => Some(TypeTag::U128),
+        SignatureToken::U256 => Some(TypeTag::U256),
+        SignatureToken::Address => Some(TypeTag::Address),
+        SignatureToken::TypeParameter(_) => Some(TypeTag::U64), // Default to u64
+        SignatureToken::Vector(inner) => {
+            token_to_type_tag_simple(inner, module).map(|t| TypeTag::Vector(Box::new(t)))
+        }
+        SignatureToken::Datatype(idx) => {
+            let handle = module.datatype_handle_at(*idx);
+            let module_handle = module.module_handle_at(handle.module);
+            let address = *module.address_identifier_at(module_handle.address);
+            let module_name = module.identifier_at(module_handle.name).to_owned();
+            let name = module.identifier_at(handle.name).to_owned();
+            Some(TypeTag::Struct(Box::new(
+                move_core_types::language_storage::StructTag {
+                    address,
+                    module: module_name,
+                    name,
+                    type_params: vec![],
+                },
+            )))
+        }
+        _ => None,
+    }
 }
 
 /// Result status of a type inhabitation attempt.
@@ -234,9 +357,20 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
 
     let validator = Validator::new(&resolver);
 
-    // Build constructor map for struct param synthesis
+    // Build constructor map for struct param synthesis (single-hop fallback)
     let all_modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
     let constructor_map = ConstructorMap::from_modules(&all_modules);
+
+    // Build MM2 constructor graph for multi-hop chains
+    let type_model = TypeModel::from_modules(all_modules.clone())
+        .map_err(|e| anyhow!("Failed to build TypeModel: {:?}", e))?;
+    let mut constructor_graph = ConstructorGraph::from_model(&type_model);
+    let graph_stats = constructor_graph.stats();
+    eprintln!(
+        "Built constructor graph: {} types, {} with constructors, {} total constructors, {} with producers, {} total producers",
+        graph_stats.total_types, graph_stats.types_with_constructors, graph_stats.total_constructors,
+        graph_stats.types_with_producers, graph_stats.total_producers
+    );
 
     let output_file = File::create(&args.output)
         .with_context(|| format!("create output file {}", args.output.display()))?;
@@ -276,6 +410,8 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
                 &validator,
                 &resolver,
                 &constructor_map,
+                &mut constructor_graph,
+                &type_model,
                 addr,
                 module,
                 &module_name,
@@ -294,6 +430,8 @@ fn attempt_function(
     validator: &Validator,
     resolver: &LocalModuleResolver,
     constructor_map: &ConstructorMap,
+    constructor_graph: &mut ConstructorGraph,
+    type_model: &TypeModel,
     package_addr: AccountAddress,
     module: &CompiledModule,
     module_name: &str,
@@ -368,7 +506,122 @@ fn attempt_function(
                 synthesizable_params.push(synth_type);
                 continue;
             }
-            // Non-synthesizable object reference - blocks Tier B for now
+
+            // NEW: Check if the referenced type is constructible
+            // If we can construct the value, we can pass a reference to it
+            if let Some((struct_tag, is_mut)) = extract_ref_struct_tag(token, module) {
+                // Try direct synthesizable constructor first (fastest path)
+                if let Some(ctor) = constructor_map.find_synthesizable_constructor(&struct_tag) {
+                    constructor_chain.push(ConstructorChainEntry::ConstructedRef {
+                        param_idx,
+                        ctor: ctor.clone(),
+                        is_mut,
+                    });
+                    let mut_str = if is_mut { "&mut " } else { "&" };
+                    resolved_params
+                        .push(format!("constructible_ref:{}{}", mut_str, struct_tag.name));
+                    default_values.push(vec![]); // Placeholder - filled during execution
+                    continue;
+                }
+
+                // Try multi-hop constructor chain via ConstructorGraph (MM2-based)
+                // This handles chains of any depth up to MAX_CHAIN_DEPTH
+                if let Some(chain) = constructor_graph.find_execution_chain(
+                    &struct_tag.address,
+                    struct_tag.module.as_str(),
+                    struct_tag.name.as_str(),
+                ) {
+                    let depth = chain.depth;
+                    constructor_chain.push(ConstructorChainEntry::MultiHopChain {
+                        param_idx,
+                        chain,
+                        is_ref: true,
+                        is_mut,
+                    });
+                    let mut_str = if is_mut { "&mut " } else { "&" };
+                    resolved_params.push(format!(
+                        "constructible_ref_hop{}:{}{}",
+                        depth, mut_str, struct_tag.name
+                    ));
+                    default_values.push(vec![]); // Placeholder - filled during execution
+                    continue;
+                }
+
+                // Try producer chain via return type analysis
+                // This handles multi-return functions like create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
+                if let Some(producer_chain) = constructor_graph.find_producer_chain(
+                    &struct_tag.address,
+                    struct_tag.module.as_str(),
+                    struct_tag.name.as_str(),
+                ) {
+                    let depth = producer_chain.depth;
+                    // Find which return index produces our target type
+                    let target_return_idx = producer_chain
+                        .steps
+                        .last()
+                        .map(|s| s.target_return_idx)
+                        .unwrap_or(0);
+                    constructor_chain.push(ConstructorChainEntry::ProducerChain {
+                        param_idx,
+                        chain: producer_chain,
+                        target_return_idx,
+                        is_ref: true,
+                        is_mut,
+                    });
+                    let mut_str = if is_mut { "&mut " } else { "&" };
+                    resolved_params.push(format!(
+                        "producer_ref_hop{}:{}{}",
+                        depth, mut_str, struct_tag.name
+                    ));
+                    default_values.push(vec![]); // Placeholder - filled during execution
+                    continue;
+                }
+
+                // Fallback: Try single-hop constructor from bytecode-based map
+                if let Some((ctor, dep_ctors)) =
+                    constructor_map.find_single_hop_constructor(&struct_tag)
+                {
+                    // Add dependency constructors first
+                    for dep_ctor in dep_ctors.iter() {
+                        constructor_chain
+                            .push(ConstructorChainEntry::Intermediate((*dep_ctor).clone()));
+                    }
+                    // Then add the main constructor as a ConstructedRef
+                    constructor_chain.push(ConstructorChainEntry::ConstructedRef {
+                        param_idx,
+                        ctor: ctor.clone(),
+                        is_mut,
+                    });
+                    let mut_str = if is_mut { "&mut " } else { "&" };
+                    resolved_params.push(format!(
+                        "constructible_ref_hop:{}{}",
+                        mut_str, struct_tag.name
+                    ));
+                    default_values.push(vec![]); // Placeholder - filled during execution
+                    continue;
+                }
+
+                // Last resort: Try direct type synthesis via MM2
+                // This creates valid BCS bytes without executing any function
+                let mut synthesizer = TypeSynthesizer::new(type_model);
+                if let Ok(result) = synthesizer.synthesize_struct(
+                    &struct_tag.address,
+                    struct_tag.module.as_str(),
+                    struct_tag.name.as_str(),
+                ) {
+                    let mut_str = if is_mut { "&mut " } else { "&" };
+                    constructor_chain.push(ConstructorChainEntry::Synthesized {
+                        param_idx,
+                        bytes: result.bytes,
+                        type_desc: format!("{}{}", mut_str, struct_tag.name),
+                    });
+                    resolved_params.push(format!("synthesized_ref:{}{}", mut_str, struct_tag.name));
+                    default_values.push(vec![]); // Placeholder - filled by Synthesized entry
+                    continue;
+                }
+            }
+
+            // Non-synthesizable and non-constructible object reference - blocks Tier B
             has_real_object_params = true;
             resolved_params.push("object".to_string());
             continue;
@@ -493,7 +746,51 @@ fn attempt_function(
                         continue;
                     }
 
-                    // Try single-hop constructor (one level of struct dependencies)
+                    // Try multi-hop constructor chain via ConstructorGraph (MM2-based)
+                    // This handles chains of any depth up to MAX_CHAIN_DEPTH
+                    if let Some(chain) = constructor_graph.find_execution_chain(
+                        &struct_tag.address,
+                        struct_tag.module.as_str(),
+                        struct_tag.name.as_str(),
+                    ) {
+                        let depth = chain.depth;
+                        constructor_chain.push(ConstructorChainEntry::MultiHopChain {
+                            param_idx,
+                            chain,
+                            is_ref: false,
+                            is_mut: false,
+                        });
+                        resolved_params.push(format!("construct_hop{}:{}", depth, struct_tag.name));
+                        default_values.push(vec![]); // Placeholder - filled during execution
+                        continue;
+                    }
+
+                    // Try producer chain via return type analysis
+                    // This handles multi-return functions like create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
+                    if let Some(producer_chain) = constructor_graph.find_producer_chain(
+                        &struct_tag.address,
+                        struct_tag.module.as_str(),
+                        struct_tag.name.as_str(),
+                    ) {
+                        let depth = producer_chain.depth;
+                        let target_return_idx = producer_chain
+                            .steps
+                            .last()
+                            .map(|s| s.target_return_idx)
+                            .unwrap_or(0);
+                        constructor_chain.push(ConstructorChainEntry::ProducerChain {
+                            param_idx,
+                            chain: producer_chain,
+                            target_return_idx,
+                            is_ref: false,
+                            is_mut: false,
+                        });
+                        resolved_params.push(format!("producer_hop{}:{}", depth, struct_tag.name));
+                        default_values.push(vec![]); // Placeholder - filled during execution
+                        continue;
+                    }
+
+                    // Fallback: Try single-hop constructor from bytecode-based map
                     if let Some((ctor, dep_ctors)) =
                         constructor_map.find_single_hop_constructor(struct_tag)
                     {
@@ -511,6 +808,23 @@ fn attempt_function(
                         resolved_params.push(format!("construct_hop:{}", struct_tag.name));
                         // Push placeholder - will be replaced during execution
                         default_values.push(vec![]);
+                        continue;
+                    }
+
+                    // Last resort: Try direct type synthesis via MM2
+                    let mut synthesizer = TypeSynthesizer::new(type_model);
+                    if let Ok(result) = synthesizer.synthesize_struct(
+                        &struct_tag.address,
+                        struct_tag.module.as_str(),
+                        struct_tag.name.as_str(),
+                    ) {
+                        constructor_chain.push(ConstructorChainEntry::Synthesized {
+                            param_idx,
+                            bytes: result.bytes,
+                            type_desc: struct_tag.name.to_string(),
+                        });
+                        resolved_params.push(format!("synthesized:{}", struct_tag.name));
+                        default_values.push(vec![]); // Placeholder - filled by Synthesized entry
                         continue;
                     }
                 }
@@ -563,106 +877,326 @@ fn attempt_function(
         std::collections::HashMap::new();
 
     for entry in &constructor_chain {
-        // Extract the constructor info from the entry
-        let ctor = match entry {
-            ConstructorChainEntry::Intermediate(c) => c,
-            ConstructorChainEntry::FinalParam { ctor, .. } => ctor,
-        };
+        match entry {
+            // MultiHopChain: Execute all steps in the chain, then store the final result
+            ConstructorChainEntry::MultiHopChain {
+                param_idx,
+                chain,
+                is_ref: _,
+                is_mut: _,
+            } => {
+                // Execute each step in the chain in order
+                for step in &chain.steps {
+                    let ctor = &step.ctor_info;
 
-        // Special case: coin::create_currency needs OTW handling
-        let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency"
-            && ctor.module_id.address() == &AccountAddress::TWO
-        {
-            // Get OTW type for create_currency
-            let otw = constructor_map
-                .get_first_otw()
-                .ok_or_else(|| anyhow!("no OTW type available for create_currency"))?;
+                    // Build args, using constructed_intermediates for dependencies
+                    let args = match build_constructor_args_with_intermediates(
+                        &mut harness,
+                        ctor,
+                        validator,
+                        &constructed_intermediates,
+                    ) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason =
+                                Some(format!("multi-hop constructor arg build failed: {e}"));
+                            return Ok(report);
+                        }
+                    };
 
-            // Type arg is the OTW type
-            let type_args = vec![otw.type_tag.clone()];
+                    let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
 
-            // Build args for create_currency:
-            // witness: T, decimals: u8, symbol: vector<u8>, name: vector<u8>,
-            // description: vector<u8>, icon_url: Option<Url>, ctx: &mut TxContext
-            let args = vec![
-                vec![1u8],                                              // witness: OTW { dummy: true }
-                vec![9u8],                                              // decimals: 9 like SUI
-                bcs_encode_vector(b"TEST"),                             // symbol
-                bcs_encode_vector(b"Test Token"),                       // name
-                bcs_encode_vector(b"Test token for type inhabitation"), // description
-                vec![0u8],                                              // icon_url: None
-                harness.synthesize_tx_context()?,                       // ctx: &mut TxContext
-            ];
+                    // Execute this step's constructor
+                    let returns = match harness.execute_function_with_return(
+                        &ctor.module_id,
+                        &ctor.function_name,
+                        type_args,
+                        args,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason =
+                                Some(format!("multi-hop constructor execution failed: {e}"));
+                            return Ok(report);
+                        }
+                    };
 
-            (type_args, args)
-        } else {
-            // Normal constructor - pass constructed_intermediates to resolve struct params
-            let args = match build_constructor_args_with_intermediates(
-                &mut harness,
-                ctor,
-                validator,
-                &constructed_intermediates,
-            ) {
-                Ok(args) => args,
-                Err(e) => {
-                    report.failure_stage = Some(FailureStage::B1);
-                    report.failure_reason = Some(format!("constructor arg build failed: {e}"));
-                    return Ok(report);
+                    // Store result in intermediates keyed by type
+                    if let Some(constructed_bytes) = returns.into_iter().next() {
+                        constructed_intermediates.insert(step.type_key.clone(), constructed_bytes);
+                    } else {
+                        report.failure_stage = Some(FailureStage::B1);
+                        report.failure_reason =
+                            Some("multi-hop constructor returned no value".to_string());
+                        return Ok(report);
+                    }
                 }
-            };
 
-            let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
-
-            (type_args, args)
-        };
-
-        // Execute constructor and get return value
-        let returns = match harness.execute_function_with_return(
-            &ctor.module_id,
-            &ctor.function_name,
-            ctor_type_args,
-            ctor_args,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                report.failure_stage = Some(FailureStage::B1);
-                report.failure_reason = Some(format!("constructor execution failed: {e}"));
-                return Ok(report);
-            }
-        };
-
-        // Use the first return value as the constructed struct
-        if let Some(constructed_bytes) = returns.into_iter().next() {
-            match entry {
-                ConstructorChainEntry::Intermediate(ctor) => {
-                    // Intermediate value - store by return type for later use
-                    let key = format!(
-                        "{}::{}::{}",
-                        ctor.returns.address.to_hex_literal(),
-                        ctor.returns.module,
-                        ctor.returns.name
-                    );
-                    constructed_intermediates.insert(key, constructed_bytes);
-                }
-                ConstructorChainEntry::FinalParam { param_idx, ctor: _ } => {
-                    // Final param - store in final_args (with bounds check)
-                    if *param_idx < final_args.len() {
-                        final_args[*param_idx] = constructed_bytes;
+                // Get the final constructed value from intermediates
+                if let Some(target_key) = chain.target_type() {
+                    if let Some(final_bytes) = constructed_intermediates.get(target_key) {
+                        if *param_idx < final_args.len() {
+                            final_args[*param_idx] = final_bytes.clone();
+                        } else {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason = Some(format!(
+                                "MultiHopChain param_idx {} out of bounds (final_args len: {})",
+                                param_idx,
+                                final_args.len()
+                            ));
+                            return Ok(report);
+                        }
                     } else {
                         report.failure_stage = Some(FailureStage::B1);
                         report.failure_reason = Some(format!(
-                            "constructor chain param_idx {} out of bounds (final_args len: {})",
-                            param_idx,
-                            final_args.len()
+                            "multi-hop chain target type not found: {}",
+                            target_key
                         ));
                         return Ok(report);
                     }
                 }
             }
-        } else {
-            report.failure_stage = Some(FailureStage::B1);
-            report.failure_reason = Some("constructor returned no value".to_string());
-            return Ok(report);
+
+            // ProducerChain: Execute producer functions that return multiple types
+            // e.g., create_lst() -> (AdminCap, CollectionFeeCap, LiquidStakingInfo)
+            ConstructorChainEntry::ProducerChain {
+                param_idx,
+                chain,
+                target_return_idx,
+                is_ref: _,
+                is_mut: _,
+            } => {
+                // Execute each step in the producer chain
+                for step in &chain.steps {
+                    let producer = &step.producer;
+
+                    // Build args for the producer, using constructed_intermediates for dependencies
+                    let args = match build_producer_args_with_intermediates(
+                        &mut harness,
+                        producer,
+                        validator,
+                        &constructed_intermediates,
+                    ) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason =
+                                Some(format!("producer chain arg build failed: {e}"));
+                            return Ok(report);
+                        }
+                    };
+
+                    let type_args: Vec<_> = (0..producer.type_param_count)
+                        .map(|_| TypeTag::U64)
+                        .collect();
+
+                    let module_id = ModuleId::new(
+                        producer.module_addr,
+                        Identifier::new(producer.module_name.clone())
+                            .unwrap_or_else(|_| Identifier::new("unknown").unwrap()),
+                    );
+
+                    // Execute producer function - may return multiple values
+                    let returns = match harness.execute_function_with_return(
+                        &module_id,
+                        &producer.function_name,
+                        type_args,
+                        args,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason = Some(format!("producer execution failed: {e}"));
+                            return Ok(report);
+                        }
+                    };
+
+                    // Store ALL return values in intermediates (multi-return support)
+                    for (ret_idx, (_, produced_type)) in producer.produces.iter().enumerate() {
+                        if ret_idx < returns.len() {
+                            constructed_intermediates
+                                .insert(produced_type.type_key.clone(), returns[ret_idx].clone());
+                        }
+                    }
+                }
+
+                // Get the target return value from intermediates
+                if let Some(final_bytes) = constructed_intermediates.get(&chain.target_type_key) {
+                    if *param_idx < final_args.len() {
+                        final_args[*param_idx] = final_bytes.clone();
+                    } else {
+                        report.failure_stage = Some(FailureStage::B1);
+                        report.failure_reason = Some(format!(
+                            "ProducerChain param_idx {} out of bounds (final_args len: {})",
+                            param_idx,
+                            final_args.len()
+                        ));
+                        return Ok(report);
+                    }
+                } else {
+                    report.failure_stage = Some(FailureStage::B1);
+                    report.failure_reason = Some(format!(
+                        "producer chain target type not found: {} (return_idx: {})",
+                        chain.target_type_key, target_return_idx
+                    ));
+                    return Ok(report);
+                }
+            }
+
+            // Synthesized entry - no execution needed, just use pre-computed bytes
+            ConstructorChainEntry::Synthesized {
+                param_idx,
+                bytes,
+                type_desc: _,
+            } => {
+                if *param_idx < final_args.len() {
+                    final_args[*param_idx] = bytes.clone();
+                } else {
+                    report.failure_stage = Some(FailureStage::B1);
+                    report.failure_reason = Some(format!(
+                        "Synthesized param_idx {} out of bounds (final_args len: {})",
+                        param_idx,
+                        final_args.len()
+                    ));
+                    return Ok(report);
+                }
+                continue;
+            }
+
+            // Single-step entries (Intermediate, FinalParam, ConstructedRef)
+            _ => {
+                // Extract the constructor info from the entry
+                let ctor = match entry {
+                    ConstructorChainEntry::Intermediate(c) => c,
+                    ConstructorChainEntry::FinalParam { ctor, .. } => ctor,
+                    ConstructorChainEntry::ConstructedRef { ctor, .. } => ctor,
+                    ConstructorChainEntry::MultiHopChain { .. } => unreachable!(),
+                    ConstructorChainEntry::ProducerChain { .. } => unreachable!(),
+                    ConstructorChainEntry::Synthesized { .. } => unreachable!(),
+                };
+
+                // Special case: coin::create_currency needs OTW handling
+                let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency"
+                    && ctor.module_id.address() == &AccountAddress::TWO
+                {
+                    // Get OTW type for create_currency
+                    let otw = constructor_map
+                        .get_first_otw()
+                        .ok_or_else(|| anyhow!("no OTW type available for create_currency"))?;
+
+                    // Type arg is the OTW type
+                    let type_args = vec![otw.type_tag.clone()];
+
+                    // Build args for create_currency:
+                    // witness: T, decimals: u8, symbol: vector<u8>, name: vector<u8>,
+                    // description: vector<u8>, icon_url: Option<Url>, ctx: &mut TxContext
+                    let args = vec![
+                        vec![1u8],                                              // witness: OTW { dummy: true }
+                        vec![9u8],                        // decimals: 9 like SUI
+                        bcs_encode_vector(b"TEST"),       // symbol
+                        bcs_encode_vector(b"Test Token"), // name
+                        bcs_encode_vector(b"Test token for type inhabitation"), // description
+                        vec![0u8],                        // icon_url: None
+                        harness.synthesize_tx_context()?, // ctx: &mut TxContext
+                    ];
+
+                    (type_args, args)
+                } else {
+                    // Normal constructor - pass constructed_intermediates to resolve struct params
+                    let args = match build_constructor_args_with_intermediates(
+                        &mut harness,
+                        ctor,
+                        validator,
+                        &constructed_intermediates,
+                    ) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            report.failure_stage = Some(FailureStage::B1);
+                            report.failure_reason =
+                                Some(format!("constructor arg build failed: {e}"));
+                            return Ok(report);
+                        }
+                    };
+
+                    let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
+                    (type_args, args)
+                };
+
+                // Execute constructor and get return value
+                let returns = match harness.execute_function_with_return(
+                    &ctor.module_id,
+                    &ctor.function_name,
+                    ctor_type_args,
+                    ctor_args,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        report.failure_stage = Some(FailureStage::B1);
+                        report.failure_reason = Some(format!("constructor execution failed: {e}"));
+                        return Ok(report);
+                    }
+                };
+
+                // Use the first return value as the constructed struct
+                if let Some(constructed_bytes) = returns.into_iter().next() {
+                    match entry {
+                        ConstructorChainEntry::Intermediate(ctor) => {
+                            // Intermediate value - store by return type for later use
+                            let key = format!(
+                                "{}::{}::{}",
+                                ctor.returns.address.to_hex_literal(),
+                                ctor.returns.module,
+                                ctor.returns.name
+                            );
+                            constructed_intermediates.insert(key, constructed_bytes);
+                        }
+                        ConstructorChainEntry::FinalParam { param_idx, ctor: _ } => {
+                            // Final param - store in final_args (with bounds check)
+                            if *param_idx < final_args.len() {
+                                final_args[*param_idx] = constructed_bytes;
+                            } else {
+                                report.failure_stage = Some(FailureStage::B1);
+                                report.failure_reason = Some(format!(
+                                    "constructor chain param_idx {} out of bounds (final_args len: {})",
+                                    param_idx,
+                                    final_args.len()
+                                ));
+                                return Ok(report);
+                            }
+                        }
+                        ConstructorChainEntry::ConstructedRef {
+                            param_idx,
+                            ctor: _,
+                            is_mut: _,
+                        } => {
+                            // ConstructedRef: We've constructed the value, and the VM will handle
+                            // borrowing when we pass it as an argument. The constructed bytes ARE
+                            // the value, and Move's calling convention will borrow from it.
+                            if *param_idx < final_args.len() {
+                                final_args[*param_idx] = constructed_bytes;
+                            } else {
+                                report.failure_stage = Some(FailureStage::B1);
+                                report.failure_reason = Some(format!(
+                                    "ConstructedRef param_idx {} out of bounds (final_args len: {})",
+                                    param_idx,
+                                    final_args.len()
+                                ));
+                                return Ok(report);
+                            }
+                        }
+                        ConstructorChainEntry::MultiHopChain { .. } => unreachable!(),
+                        ConstructorChainEntry::ProducerChain { .. } => unreachable!(),
+                        ConstructorChainEntry::Synthesized { .. } => unreachable!(),
+                    }
+                } else {
+                    report.failure_stage = Some(FailureStage::B1);
+                    report.failure_reason = Some("constructor returned no value".to_string());
+                    return Ok(report);
+                }
+            }
         }
     }
 
@@ -871,6 +1405,107 @@ fn build_constructor_args_with_intermediates(
                 args.push(bytes.clone());
             }
             ParamKind::Unsupported(desc) => {
+                return Err(anyhow!("unsupported param type: {}", desc));
+            }
+        }
+    }
+
+    Ok(args)
+}
+
+/// Build arguments for a producer function (uses ParamRequirement instead of ParamKind)
+fn build_producer_args_with_intermediates(
+    harness: &mut VMHarness,
+    producer: &Producer,
+    validator: &Validator,
+    intermediates: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<Vec<Vec<u8>>> {
+    let mut args = Vec::new();
+
+    for param in &producer.params {
+        match param {
+            ParamRequirement::Primitive(type_str) => {
+                // Convert type string to TypeTag and generate default
+                let tag = match type_str.as_str() {
+                    "bool" => TypeTag::Bool,
+                    "u8" => TypeTag::U8,
+                    "u16" => TypeTag::U16,
+                    "u32" => TypeTag::U32,
+                    "u64" => TypeTag::U64,
+                    "u128" => TypeTag::U128,
+                    "u256" => TypeTag::U256,
+                    "address" => TypeTag::Address,
+                    _ => return Err(anyhow!("unknown primitive type: {}", type_str)),
+                };
+                let layout = validator.resolve_type_layout(&tag)?;
+                let value = generate_default_value(&layout)
+                    .ok_or_else(|| anyhow!("no default for primitive {}", type_str))?;
+                let bytes = value
+                    .simple_serialize()
+                    .ok_or_else(|| anyhow!("serialize failed"))?;
+                args.push(bytes);
+            }
+            ParamRequirement::Vector(inner) => {
+                // For vectors, check if inner is primitive
+                if inner.is_synthesizable() {
+                    args.push(vec![0]); // BCS encoding of empty vector
+                } else {
+                    return Err(anyhow!("unsupported vector type"));
+                }
+            }
+            ParamRequirement::TxContext => {
+                let ctx_bytes = harness.synthesize_tx_context()?;
+                args.push(ctx_bytes);
+            }
+            ParamRequirement::Clock => {
+                let clock_bytes = harness.synthesize_clock()?;
+                args.push(clock_bytes);
+            }
+            ParamRequirement::TypeParam(_idx) => {
+                // Type parameter instantiated with u64
+                let bytes = 0u64.to_le_bytes().to_vec();
+                args.push(bytes);
+            }
+            ParamRequirement::Type {
+                module_addr,
+                module_name,
+                type_name,
+            } => {
+                // Look up previously constructed value
+                let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                let bytes = intermediates
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("intermediate struct {} not found", key))?;
+                args.push(bytes.clone());
+            }
+            ParamRequirement::Reference { inner, .. } => {
+                // For references, handle the inner type
+                match inner.as_ref() {
+                    ParamRequirement::TxContext => {
+                        let ctx_bytes = harness.synthesize_tx_context()?;
+                        args.push(ctx_bytes);
+                    }
+                    ParamRequirement::Clock => {
+                        let clock_bytes = harness.synthesize_clock()?;
+                        args.push(clock_bytes);
+                    }
+                    ParamRequirement::Type {
+                        module_addr,
+                        module_name,
+                        type_name,
+                    } => {
+                        let key = format!("{}::{}::{}", module_addr, module_name, type_name);
+                        let bytes = intermediates.get(&key).ok_or_else(|| {
+                            anyhow!("intermediate struct {} not found for ref", key)
+                        })?;
+                        args.push(bytes.clone());
+                    }
+                    _ => {
+                        return Err(anyhow!("unsupported reference inner type"));
+                    }
+                }
+            }
+            ParamRequirement::Unsupported(desc) => {
                 return Err(anyhow!("unsupported param type: {}", desc));
             }
         }

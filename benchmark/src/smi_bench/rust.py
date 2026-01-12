@@ -22,6 +22,7 @@ __all__ = [
     "default_rust_binary",
     "validate_rust_binary",
     "emit_bytecode_json",
+    "emit_move_stubs",
     "build_rust",
     "BinaryNotFoundError",
     "BinaryNotExecutableError",
@@ -134,3 +135,52 @@ def emit_bytecode_json(*, package_dir: Path, rust_bin: Path, timeout_s: float = 
     )
 
     return safe_json_loads(out, context=f"Rust extractor output for {package_dir}")
+
+
+def emit_move_stubs(*, package_dir: Path, stubs_dir: Path, rust_bin: Path, timeout_s: float = 60.0) -> None:
+    """
+    Generate Move source stub files for a local bytecode package directory.
+
+    Stubs allow the Move compiler to type-check imports from the package even when
+    only bytecode is available. The Rust extractor generates correct Move 2024 syntax
+    with proper `use` imports for external types.
+
+    Args:
+        package_dir: Path to a local bytecode package directory (must contain `bytecode_modules/`).
+        stubs_dir: Path to the directory where stub files will be written.
+        rust_bin: Path to the Rust extractor binary (should be validated with validate_rust_binary()).
+        timeout_s: Timeout in seconds for the subprocess call (default: 60s).
+
+    Raises:
+        TimeoutError: If the subprocess times out after retries.
+        RuntimeError: If the Rust binary fails after retries.
+    """
+
+    def _run() -> None:
+        try:
+            subprocess.check_call(
+                [
+                    str(rust_bin),
+                    "--bytecode-package-dir",
+                    str(package_dir),
+                    "--emit-move-stubs",
+                    str(stubs_dir),
+                ],
+                timeout=timeout_s,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(f"Rust extractor timed out after {timeout_s}s for {package_dir}") from e
+        except subprocess.CalledProcessError as e:
+            stderr_snippet = e.stderr[:500] if e.stderr else "N/A"
+            raise RuntimeError(
+                f"Rust extractor failed (exit {e.returncode}) for {package_dir}\nStderr: {stderr_snippet}"
+            ) from e
+
+    # Apply retry logic to handle transient filesystem or binary issues
+    retry_with_backoff(
+        _run,
+        max_attempts=3,
+        base_delay=2.0,
+        retryable_exceptions=(RuntimeError, TimeoutError),
+    )
