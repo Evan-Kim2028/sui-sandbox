@@ -1671,6 +1671,13 @@ EXAMPLES:
         default=None,
         help="If set, copy /tmp benchmark-local artifacts and logs into this directory for debugging.",
     )
+    p.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=None,
+        help="Path to custom prompt template file (default: uses built-in prompt). "
+        "Template variables: {{PACKAGE_ID}}, {{INTERFACE_SUMMARY}}, {{MAX_ATTEMPTS}}, {{MOVE_EDITION}}",
+    )
     args = p.parse_args(argv)
 
     # Load benchmark/.env so real LLM runs work even when the caller didn't export env vars.
@@ -1768,19 +1775,27 @@ EXAMPLES:
         except Exception as e:
             iface_summary = f"<failed to summarize interface: {e}>"
 
-        # Build minimal, goal-oriented prompt without prescriptive guidance
-        # Let the LLM figure out HOW to achieve type inhabitation
+        # Build the instruction from template file or use built-in default
         max_attempts = args.max_attempts
-        prompt = {
-            "schema": "helper_pkg_v1",
-            "package_id": pkg_id,
-            "seed": cfg.seed,
-            "reference_interface": iface_summary,
-            "constraints": {
-                "max_attempts": max_attempts,
-                "move_edition": "2024.beta",
-            },
-            "instruction": (
+        move_edition = "2024.beta"
+
+        if args.prompt_file and args.prompt_file.exists():
+            # Load custom prompt template
+            template = args.prompt_file.read_text(encoding="utf-8")
+            # Strip comment lines (start with #)
+            template_lines = [ln for ln in template.split("\n") if not ln.strip().startswith("#")]
+            template = "\n".join(template_lines).strip()
+            # Replace template variables
+            instruction = (
+                template
+                .replace("{{PACKAGE_ID}}", pkg_id)
+                .replace("{{INTERFACE_SUMMARY}}", iface_summary)
+                .replace("{{MAX_ATTEMPTS}}", str(max_attempts))
+                .replace("{{MOVE_EDITION}}", move_edition)
+            )
+        else:
+            # Built-in default prompt
+            instruction = (
                 "GOAL: Create a Move helper package that demonstrates TYPE INHABITATION of the TARGET PACKAGE.\n"
                 "Your entry functions MUST create or use types defined in the target package (shown below).\n"
                 "Using only stdlib types (vector, option, u64, etc.) does NOT count as success.\n"
@@ -1797,7 +1812,7 @@ EXAMPLES:
                 f"- You have {max_attempts} attempts. Build errors will be provided after each attempt.\n"
                 "- Your code will be compiled with `sui move build`\n"
                 "- Entry functions must be zero-arg (only implicit TxContext allowed)\n"
-                "- Use Move edition 2024.beta\n"
+                f"- Use Move edition {move_edition}\n"
                 "- You MUST use at least one type from the target package - stdlib-only code will fail evaluation\n"
                 "\n"
                 "OUTPUT FORMAT: JSON object with these fields:\n"
@@ -1805,7 +1820,18 @@ EXAMPLES:
                 "- files: OBJECT mapping relative paths to file contents (e.g. 'sources/helper.move': '...')\n"
                 "- entrypoints: ARRAY of objects with 'target' field (e.g. 'helper_pkg::helper::my_func')\n"
                 "- assumptions: ARRAY of strings explaining your approach"
-            ),
+            )
+
+        prompt = {
+            "schema": "helper_pkg_v1",
+            "package_id": pkg_id,
+            "seed": cfg.seed,
+            "reference_interface": iface_summary,
+            "constraints": {
+                "max_attempts": max_attempts,
+                "move_edition": move_edition,
+            },
+            "instruction": instruction,
         }
         _atomic_write_json(run_dir / "llm_request.json", prompt)
 
