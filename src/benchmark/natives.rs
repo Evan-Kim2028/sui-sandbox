@@ -92,16 +92,146 @@ fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
     )
 }
 
+/// Mock clock that advances on each access.
+///
+/// This provides sensible time values for time-dependent Move code.
+/// The clock starts at a realistic timestamp and advances by a configurable
+/// increment on each access, simulating the passage of time.
+pub struct MockClock {
+    /// Base timestamp in milliseconds (default: 2024-01-01 00:00:00 UTC = 1704067200000)
+    pub base_ms: u64,
+    /// Increment per access in milliseconds (default: 1000 = 1 second)
+    pub tick_ms: u64,
+    /// Number of times the clock has been accessed
+    accesses: AtomicU64,
+}
+
+impl Default for MockClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockClock {
+    /// Default base timestamp: 2024-01-01 00:00:00 UTC
+    pub const DEFAULT_BASE_MS: u64 = 1704067200000;
+    /// Default tick: 1 second per access
+    pub const DEFAULT_TICK_MS: u64 = 1000;
+
+    pub fn new() -> Self {
+        Self {
+            base_ms: Self::DEFAULT_BASE_MS,
+            tick_ms: Self::DEFAULT_TICK_MS,
+            accesses: AtomicU64::new(0),
+        }
+    }
+
+    pub fn with_base(base_ms: u64) -> Self {
+        Self {
+            base_ms,
+            tick_ms: Self::DEFAULT_TICK_MS,
+            accesses: AtomicU64::new(0),
+        }
+    }
+
+    /// Get the current timestamp, advancing the clock.
+    pub fn timestamp_ms(&self) -> u64 {
+        let n = self.accesses.fetch_add(1, Ordering::SeqCst);
+        self.base_ms + (n * self.tick_ms)
+    }
+
+    /// Get the current timestamp without advancing (for inspection).
+    pub fn peek_timestamp_ms(&self) -> u64 {
+        let n = self.accesses.load(Ordering::SeqCst);
+        self.base_ms + (n * self.tick_ms)
+    }
+
+    /// Reset the clock to its initial state.
+    pub fn reset(&self) {
+        self.accesses.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Mock random number generator that produces deterministic "random" values.
+///
+/// This allows code that uses randomness to execute with reproducible results.
+/// The generator uses a seed and counter to produce deterministic output.
+pub struct MockRandom {
+    /// Seed for the random generator (default: all zeros)
+    seed: [u8; 32],
+    /// Counter for deterministic sequence
+    counter: AtomicU64,
+}
+
+impl Default for MockRandom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockRandom {
+    pub fn new() -> Self {
+        Self {
+            seed: [0u8; 32],
+            counter: AtomicU64::new(0),
+        }
+    }
+
+    pub fn with_seed(seed: [u8; 32]) -> Self {
+        Self {
+            seed,
+            counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Generate the next batch of deterministic "random" bytes.
+    ///
+    /// Uses SHA-256(seed || counter) to produce deterministic output.
+    pub fn next_bytes(&self, len: usize) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+
+        let n = self.counter.fetch_add(1, Ordering::SeqCst);
+        let mut hasher = Sha256::new();
+        hasher.update(self.seed);
+        hasher.update(n.to_le_bytes());
+        let hash = hasher.finalize();
+
+        // Return requested length (truncate or repeat if needed)
+        if len <= 32 {
+            hash[..len].to_vec()
+        } else {
+            // For longer outputs, just repeat the hash
+            let mut result = Vec::with_capacity(len);
+            while result.len() < len {
+                result.extend_from_slice(&hash[..std::cmp::min(32, len - result.len())]);
+            }
+            result
+        }
+    }
+
+    /// Reset the counter to produce the same sequence again.
+    pub fn reset(&self) {
+        self.counter.store(0, Ordering::SeqCst);
+    }
+}
+
 /// Mock state for native function execution.
 ///
-/// Note: Dynamic field storage is now handled by ObjectRuntime (a VM extension)
-/// rather than being stored here. This struct only holds simple state like
-/// sender address and ID counter.
+/// This struct holds all mock state needed for the Local Move VM Sandbox:
+/// - Transaction context (sender, epoch, IDs)
+/// - Clock (advancing timestamps)
+/// - Random (deterministic randomness)
+///
+/// Note: Dynamic field storage is handled by ObjectRuntime (a VM extension).
 pub struct MockNativeState {
     pub sender: AccountAddress,
     pub epoch: u64,
     pub epoch_timestamp_ms: u64,
     ids_created: AtomicU64,
+    /// Mock clock for time-dependent code
+    pub clock: MockClock,
+    /// Mock random for randomness-dependent code
+    pub random: MockRandom,
 }
 
 impl Default for MockNativeState {
@@ -115,8 +245,22 @@ impl MockNativeState {
         Self {
             sender: AccountAddress::ZERO,
             epoch: 0,
-            epoch_timestamp_ms: 0,
+            epoch_timestamp_ms: MockClock::DEFAULT_BASE_MS,
             ids_created: AtomicU64::new(0),
+            clock: MockClock::new(),
+            random: MockRandom::new(),
+        }
+    }
+
+    /// Create with a specific random seed for reproducible tests.
+    pub fn with_random_seed(seed: [u8; 32]) -> Self {
+        Self {
+            sender: AccountAddress::ZERO,
+            epoch: 0,
+            epoch_timestamp_ms: MockClock::DEFAULT_BASE_MS,
+            ids_created: AtomicU64::new(0),
+            clock: MockClock::new(),
+            random: MockRandom::with_seed(seed),
         }
     }
 
@@ -130,6 +274,16 @@ impl MockNativeState {
 
     pub fn ids_created(&self) -> u64 {
         self.ids_created.load(Ordering::SeqCst)
+    }
+
+    /// Get the current clock timestamp (advances the clock).
+    pub fn clock_timestamp_ms(&self) -> u64 {
+        self.clock.timestamp_ms()
+    }
+
+    /// Get deterministic random bytes.
+    pub fn random_bytes(&self, len: usize) -> Vec<u8> {
+        self.random.next_bytes(len)
     }
 }
 
@@ -564,14 +718,14 @@ fn build_sui_natives(
     // ============================================================
     // CATEGORY B+: DYNAMIC FIELD SUPPORT (partial)
     // ============================================================
-    add_dynamic_field_natives(&mut natives, state);
+    add_dynamic_field_natives(&mut natives, state.clone());
 
     // ============================================================
     // CATEGORY C: PERMISSIVE CRYPTO MOCKS
     // These return success values to allow LLM code to execute.
     // See add_permissive_crypto_mocks() for details.
     // ============================================================
-    add_permissive_crypto_mocks(&mut natives);
+    add_permissive_crypto_mocks(&mut natives, state);
 
     natives
 }
@@ -846,8 +1000,12 @@ fn add_dynamic_field_natives(
 /// - Verification functions return `true` (verification "passes")
 /// - Recovery functions return valid-looking public key bytes
 /// - Hash functions return 32 zero bytes (valid structure)
+/// - Random returns deterministic bytes from MockRandom
 /// - The LLM must still construct correct types and call signatures
-fn add_permissive_crypto_mocks(natives: &mut Vec<(&'static str, &'static str, NativeFunction)>) {
+fn add_permissive_crypto_mocks(
+    natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
+    state: Arc<MockNativeState>,
+) {
     // ============================================================
     // BLS12-381 - Signature verification returns true
     // ============================================================
@@ -1189,17 +1347,19 @@ fn add_permissive_crypto_mocks(natives: &mut Vec<(&'static str, &'static str, Na
     ));
 
     // ============================================================
-    // Random - On-chain randomness (Phase 2 will improve this)
+    // Random - Deterministic randomness using MockRandom
     // ============================================================
+    let state_clone = state.clone();
     natives.push((
         "random",
         "random_internal",
-        make_native(|_ctx, _ty_args, _args| {
-            // Return deterministic "random" bytes
-            // TODO: Phase 2 will make this properly deterministic with counter
+        make_native(move |_ctx, _ty_args, _args| {
+            // Return deterministic "random" bytes from MockRandom
+            // Each call advances the counter, producing a new value
+            let bytes = state_clone.random_bytes(32);
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::vector_u8(vec![0u8; 32])],
+                smallvec![Value::vector_u8(bytes)],
             ))
         }),
     ));

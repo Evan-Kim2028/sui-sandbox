@@ -336,15 +336,20 @@ impl<'a> VMHarness<'a> {
         Ok(create_synthetic_tx_context_bytes())
     }
 
-    /// Synthesize Clock bytes (placeholder - returns minimal valid structure)
+    /// Synthesize Clock bytes with advancing timestamp from MockClock.
+    ///
+    /// The Clock struct has: { id: UID, timestamp_ms: u64 }
+    /// Each call to this function advances the mock clock.
     pub fn synthesize_clock(&self) -> Result<Vec<u8>> {
         // Clock struct: { id: UID, timestamp_ms: u64 }
-        // UID is a 32-byte object ID
         let mut bytes = Vec::new();
-        // id: UID (32 bytes)
-        bytes.extend_from_slice(&[0u8; 32]);
-        // timestamp_ms: u64
-        bytes.extend_from_slice(&0u64.to_le_bytes());
+        // id: UID (32 bytes) - Clock has a well-known ID on mainnet (0x6)
+        let mut clock_id = [0u8; 32];
+        clock_id[31] = 0x06; // 0x0...06 is the Clock object ID
+        bytes.extend_from_slice(&clock_id);
+        // timestamp_ms: u64 - get from MockClock (advances each call)
+        let timestamp = self.native_state.clock_timestamp_ms();
+        bytes.extend_from_slice(&timestamp.to_le_bytes());
         Ok(bytes)
     }
 }
