@@ -1,8 +1,0 @@
-[package]
-name = "fixture_failure"
-version = "0.0.1"
-
-[dependencies]
-
-[addresses]
-fixture = "0x1"

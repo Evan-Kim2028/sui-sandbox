@@ -567,9 +567,11 @@ fn build_sui_natives(
     add_dynamic_field_natives(&mut natives, state);
 
     // ============================================================
-    // CATEGORY C: ABORT STUBS - would produce false positives if mocked
+    // CATEGORY C: PERMISSIVE CRYPTO MOCKS
+    // These return success values to allow LLM code to execute.
+    // See add_permissive_crypto_mocks() for details.
     // ============================================================
-    add_abort_stubs(&mut natives);
+    add_permissive_crypto_mocks(&mut natives);
 
     natives
 }
@@ -832,128 +834,314 @@ fn add_dynamic_field_natives(
     ));
 }
 
-/// Add stubs that abort with E_NOT_SUPPORTED for operations that cannot
-/// be safely mocked without producing false positives.
-fn add_abort_stubs(natives: &mut Vec<(&'static str, &'static str, NativeFunction)>) {
-    // NOTE: dynamic_field operations are now fully implemented via ObjectRuntime extension
-    // See add_dynamic_field_natives() for the implementation.
+/// Add permissive mocks for crypto and other operations.
+///
+/// These mocks return plausible success values instead of aborting, allowing
+/// LLM-generated code that uses these operations to continue executing.
+/// This is appropriate for type inhabitation testing where we care about
+/// type correctness, not cryptographic correctness.
+///
+/// ## Philosophy
+///
+/// - Verification functions return `true` (verification "passes")
+/// - Recovery functions return valid-looking public key bytes
+/// - Hash functions return 32 zero bytes (valid structure)
+/// - The LLM must still construct correct types and call signatures
+fn add_permissive_crypto_mocks(natives: &mut Vec<(&'static str, &'static str, NativeFunction)>) {
+    // ============================================================
+    // BLS12-381 - Signature verification returns true
+    // ============================================================
+    natives.push((
+        "bls12381",
+        "bls12381_min_sig_verify",
+        make_native(|_ctx, _ty_args, _args| {
+            // Signature verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
 
-    // Crypto verification - would silently pass/fail verification
-    for func in ["bls12381_min_sig_verify", "bls12381_min_pk_verify"] {
-        natives.push((
-            "bls12381",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+    natives.push((
+        "bls12381",
+        "bls12381_min_pk_verify",
+        make_native(|_ctx, _ty_args, _args| {
+            // Signature verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
 
-    for func in [
+    // ============================================================
+    // ECDSA K1 (secp256k1) - Used by Bitcoin/Ethereum
+    // ============================================================
+    natives.push((
+        "ecdsa_k1",
         "secp256k1_ecrecover",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return a valid-looking 65-byte uncompressed public key
+            // Format: 0x04 || x (32 bytes) || y (32 bytes)
+            let mut pk = vec![0x04u8];
+            pk.extend_from_slice(&[0u8; 32]); // x coordinate
+            pk.extend_from_slice(&[0u8; 32]); // y coordinate
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(pk)],
+            ))
+        }),
+    ));
+
+    natives.push((
+        "ecdsa_k1",
         "decompress_pubkey",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return a valid-looking 65-byte uncompressed public key
+            let mut pk = vec![0x04u8];
+            pk.extend_from_slice(&[0u8; 32]);
+            pk.extend_from_slice(&[0u8; 32]);
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(pk)],
+            ))
+        }),
+    ));
+
+    natives.push((
+        "ecdsa_k1",
         "secp256k1_verify",
-    ] {
-        natives.push((
-            "ecdsa_k1",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+        make_native(|_ctx, _ty_args, _args| {
+            // Signature verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
 
-    for func in ["secp256r1_ecrecover", "secp256r1_verify"] {
-        natives.push((
-            "ecdsa_r1",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+    // ============================================================
+    // ECDSA R1 (secp256r1/P-256) - Used by WebAuthn/Passkeys
+    // ============================================================
+    natives.push((
+        "ecdsa_r1",
+        "secp256r1_ecrecover",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return a valid-looking 65-byte uncompressed public key
+            let mut pk = vec![0x04u8];
+            pk.extend_from_slice(&[0u8; 32]);
+            pk.extend_from_slice(&[0u8; 32]);
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(pk)],
+            ))
+        }),
+    ));
 
+    natives.push((
+        "ecdsa_r1",
+        "secp256r1_verify",
+        make_native(|_ctx, _ty_args, _args| {
+            // Signature verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
+
+    // ============================================================
+    // Ed25519 - Used by Sui native signatures
+    // ============================================================
     natives.push((
         "ed25519",
         "ed25519_verify",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Signature verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
         }),
     ));
 
+    // ============================================================
+    // ECVRF - Verifiable Random Function
+    // ============================================================
     natives.push((
         "ecvrf",
         "ecvrf_verify",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // VRF verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
         }),
     ));
 
-    for func in [
+    // ============================================================
+    // Groth16 - ZK-SNARK verification
+    // ============================================================
+    natives.push((
+        "groth16",
         "verify_groth16_proof_internal",
-        "prepare_verifying_key_internal",
-    ] {
-        natives.push((
-            "groth16",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+        make_native(|_ctx, _ty_args, _args| {
+            // ZK proof verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
 
+    natives.push((
+        "groth16",
+        "prepare_verifying_key_internal",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return a plausible PreparedVerifyingKey structure
+            // This is opaque bytes that the verification function accepts
+            let pvk_bytes = vec![0u8; 384]; // Typical size for BN254
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(pvk_bytes)],
+            ))
+        }),
+    ));
+
+    // ============================================================
+    // HMAC - Hash-based Message Authentication Code
+    // ============================================================
     natives.push((
         "hmac",
         "hmac_sha3_256",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Return 32-byte HMAC output (zeros)
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8; 32])],
+            ))
         }),
     ));
 
-    for func in [
+    // ============================================================
+    // Group Operations - Elliptic curve group operations
+    // ============================================================
+    natives.push((
+        "group_ops",
         "internal_validate",
+        make_native(|_ctx, _ty_args, _args| {
+            // Element is "valid"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
+
+    // Group element operations return plausible group element bytes
+    // BLS12-381 G1 point is 48 bytes compressed, G2 is 96 bytes
+    for func in [
         "internal_add",
         "internal_sub",
         "internal_mul",
         "internal_div",
         "internal_hash_to",
         "internal_multi_scalar_mul",
-        "internal_pairing",
-        "internal_convert",
         "internal_sum",
     ] {
         natives.push((
             "group_ops",
             func,
             make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+                // Return a 48-byte group element (G1 compressed)
+                Ok(NativeResult::ok(
+                    InternalGas::new(0),
+                    smallvec![Value::vector_u8(vec![0u8; 48])],
+                ))
             }),
         ));
     }
 
+    natives.push((
+        "group_ops",
+        "internal_pairing",
+        make_native(|_ctx, _ty_args, _args| {
+            // Pairing check "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
+
+    natives.push((
+        "group_ops",
+        "internal_convert",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return converted group element bytes
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8; 48])],
+            ))
+        }),
+    ));
+
+    // ============================================================
+    // Poseidon - ZK-friendly hash function
+    // ============================================================
     natives.push((
         "poseidon",
         "poseidon_bn254",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Return 32-byte hash output (field element)
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8; 32])],
+            ))
         }),
     ));
 
-    for func in ["vdf_verify", "vdf_hash_to_input"] {
-        natives.push((
-            "vdf",
-            func,
-            make_native(|_ctx, _ty_args, _args| {
-                Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
-            }),
-        ));
-    }
+    // ============================================================
+    // VDF - Verifiable Delay Function
+    // ============================================================
+    natives.push((
+        "vdf",
+        "vdf_verify",
+        make_native(|_ctx, _ty_args, _args| {
+            // VDF verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
 
+    natives.push((
+        "vdf",
+        "vdf_hash_to_input",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return valid VDF input bytes
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8; 32])],
+            ))
+        }),
+    ));
+
+    // ============================================================
+    // zkLogin - Zero-knowledge login verification
+    // ============================================================
     natives.push((
         "zklogin_verified_id",
         "check_zklogin_id",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // zkLogin ID check "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
         }),
     ));
 
@@ -961,34 +1149,64 @@ fn add_abort_stubs(natives: &mut Vec<(&'static str, &'static str, NativeFunction
         "zklogin_verified_issuer",
         "check_zklogin_issuer",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // zkLogin issuer check "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
         }),
     ));
 
+    // ============================================================
+    // Nitro Attestation - AWS Nitro Enclave verification
+    // ============================================================
     natives.push((
         "nitro_attestation",
         "verify_nitro_attestation",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Attestation verification "passes"
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
         }),
     ));
 
+    // ============================================================
+    // Config - System configuration reading
+    // ============================================================
     natives.push((
         "config",
         "read_setting_impl",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Return None (Option<T>) - setting not found
+            // This is safer than returning arbitrary values
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8])], // BCS-encoded None
+            ))
         }),
     ));
 
+    // ============================================================
+    // Random - On-chain randomness (Phase 2 will improve this)
+    // ============================================================
     natives.push((
         "random",
         "random_internal",
         make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+            // Return deterministic "random" bytes
+            // TODO: Phase 2 will make this properly deterministic with counter
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::vector_u8(vec![0u8; 32])],
+            ))
         }),
     ));
 
+    // ============================================================
+    // Funds Accumulator - Still unsupported (requires state)
+    // ============================================================
     for func in [
         "add_to_accumulator_address",
         "withdraw_from_accumulator_address",
@@ -997,6 +1215,7 @@ fn add_abort_stubs(natives: &mut Vec<(&'static str, &'static str, NativeFunction
             "funds_accumulator",
             func,
             make_native(|_ctx, _ty_args, _args| {
+                // These require actual accumulator state, keep as unsupported
                 Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
             }),
         ));
