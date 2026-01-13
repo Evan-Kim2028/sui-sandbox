@@ -1,333 +1,300 @@
-# Plausible Simulation: Implementation Checklist
+# Local Move VM Sandbox: Implementation Checklist
 
 ## Overview
 
-This document tracks the concrete implementation tasks for achieving "mainnet-plausible" local simulation.
+This document tracks the implementation tasks for the complete Local Move VM Sandbox.
+
+**Execution Order**: Phase 1 → 2 → 3 → 6 → 4 → 5
 
 ---
 
 ## Phase 1: Permissive Crypto Mocks
-
-**Goal**: Crypto verification returns success instead of aborting.
-
-**Status**: Not Started
+**Priority: P0 | Effort: 4 hours | Status: Not Started**
 
 ### Tasks
 
-- [ ] **1.1** Update `ed25519_verify` to return `true`
-  - File: `src/benchmark/natives.rs`
-  - Current: `NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED)`
-  - Target: `NativeResult::ok(InternalGas::new(0), smallvec![Value::bool(true)])`
+- [ ] **1.1** `ed25519::ed25519_verify` → return `true`
+- [ ] **1.2** `ecdsa_k1::secp256k1_verify` → return `true`
+- [ ] **1.3** `ecdsa_k1::secp256k1_ecrecover` → return 33-byte compressed pubkey `[0x02; 33]`
+- [ ] **1.4** `ecdsa_k1::decompress_pubkey` → return 65-byte uncompressed pubkey
+- [ ] **1.5** `ecdsa_r1::secp256r1_verify` → return `true`
+- [ ] **1.6** `ecdsa_r1::secp256r1_ecrecover` → return 33-byte compressed pubkey
+- [ ] **1.7** `bls12381::bls12381_min_sig_verify` → return `true`
+- [ ] **1.8** `bls12381::bls12381_min_pk_verify` → return `true`
+- [ ] **1.9** `ecvrf::ecvrf_verify` → return `true`
+- [ ] **1.10** `groth16::verify_groth16_proof_internal` → return `true`
+- [ ] **1.11** `groth16::prepare_verifying_key_internal` → return valid PreparedVerifyingKey bytes
+- [ ] **1.12** `hmac::hmac_sha3_256` → return 32 zero bytes
+- [ ] **1.13** `poseidon::poseidon_bn254` → return 32 zero bytes
+- [ ] **1.14** `vdf::vdf_verify` → return `true`
+- [ ] **1.15** `vdf::vdf_hash_to_input` → return 32 zero bytes
+- [ ] **1.16** `zklogin_verified_id::check_zklogin_id` → return `true`
+- [ ] **1.17** `zklogin_verified_issuer::check_zklogin_issuer` → return `true`
+- [ ] **1.18** `group_ops::internal_validate` → return `true`
+- [ ] **1.19** `group_ops::internal_add` → return valid group element bytes
+- [ ] **1.20** `group_ops::internal_sub` → return valid group element bytes
+- [ ] **1.21** `group_ops::internal_mul` → return valid group element bytes
+- [ ] **1.22** `group_ops::internal_div` → return valid group element bytes
+- [ ] **1.23** `group_ops::internal_hash_to` → return valid group element bytes
+- [ ] **1.24** `group_ops::internal_multi_scalar_mul` → return valid group element bytes
+- [ ] **1.25** `group_ops::internal_pairing` → return `true`
+- [ ] **1.26** `group_ops::internal_convert` → return valid bytes
+- [ ] **1.27** `group_ops::internal_sum` → return valid group element bytes
 
-- [ ] **1.2** Update `secp256k1_verify` to return `true`
-  - File: `src/benchmark/natives.rs`
-
-- [ ] **1.3** Update `secp256k1_ecrecover` to return valid pubkey bytes
-  - Return: 33-byte compressed pubkey (starts with 0x02 or 0x03)
-
-- [ ] **1.4** Update `secp256r1_verify` to return `true`
-
-- [ ] **1.5** Update `secp256r1_ecrecover` to return valid pubkey bytes
-
-- [ ] **1.6** Update `bls12381_min_sig_verify` to return `true`
-
-- [ ] **1.7** Update `bls12381_min_pk_verify` to return `true`
-
-- [ ] **1.8** Update `ecvrf_verify` to return `true`
-
-- [ ] **1.9** Update `groth16::verify_groth16_proof_internal` to return `true`
-
-- [ ] **1.10** Update `groth16::prepare_verifying_key_internal` to return valid struct
-  - Need to understand return type structure
-
-- [ ] **1.11** Update `hmac_sha3_256` to return 32 zero bytes
-  - Valid output structure, just not cryptographically correct
-
-- [ ] **1.12** Update `group_ops::internal_*` functions
-  - These need careful analysis - some return `bool`, some return group elements
-
-- [ ] **1.13** Update `poseidon_bn254` to return 32 zero bytes
-
-- [ ] **1.14** Update `vdf_verify` to return `true`
-
-- [ ] **1.15** Update `vdf_hash_to_input` to return valid bytes
-
-- [ ] **1.16** Update `zklogin_verified_id::check_zklogin_id` to return `true`
-
-- [ ] **1.17** Update `zklogin_verified_issuer::check_zklogin_issuer` to return `true`
+### Files
+- `src/benchmark/natives.rs` - modify `add_abort_stubs()` function
 
 ### Testing
-
-- [ ] Add unit tests for each mock
-- [ ] Test with a package that uses crypto verification
-- [ ] Verify no regressions in existing tests
+- [ ] Unit test each mock returns expected type
+- [ ] Integration test with package using crypto
 
 ---
 
 ## Phase 2: Clock & Randomness
-
-**Goal**: Sensible system state values.
-
-**Status**: Not Started
+**Priority: P1 | Effort: 6 hours | Status: Not Started**
 
 ### Tasks
 
 #### Clock
-
-- [ ] **2.1** Create `MockClock` struct
+- [ ] **2.1** Create `MockClock` struct in `natives.rs`
   ```rust
-  struct MockClock {
-      base_ms: u64,      // Default: 1704067200000 (2024-01-01)
-      tick_ms: u64,      // Default: 1000 (1 second)
+  pub struct MockClock {
+      base_ms: u64,        // 1704067200000 (2024-01-01 00:00:00 UTC)
+      tick_ms: u64,        // 1000 (1 second)
       accesses: AtomicU64,
   }
   ```
-
 - [ ] **2.2** Add `MockClock` to `MockNativeState`
-
-- [ ] **2.3** Update `synthesize_clock()` in `vm.rs`
-  - Current: Returns zeros
-  - Target: Returns Clock with advancing timestamp
-
-- [ ] **2.4** Add clock natives if missing
-  - `clock::timestamp_ms` - returns advancing time
+- [ ] **2.3** Implement `clock::timestamp_ms` native (if not exists)
+- [ ] **2.4** Update `synthesize_clock()` in `vm.rs` to use MockClock
 
 #### Randomness
-
 - [ ] **2.5** Create `MockRandom` struct
   ```rust
-  struct MockRandom {
+  pub struct MockRandom {
       seed: [u8; 32],
       counter: AtomicU64,
   }
   ```
+- [ ] **2.6** Add `MockRandom` to `MockNativeState`
+- [ ] **2.7** Update `random::random_internal` to return deterministic bytes
 
-- [ ] **2.6** Update `random::random_internal` native
-  - Current: Aborts
-  - Target: Returns deterministic bytes based on seed + counter
-
-- [ ] **2.7** Add configuration for random seed
-  - Allow setting seed for reproducible tests
+### Files
+- `src/benchmark/natives.rs`
+- `src/benchmark/vm.rs`
 
 ### Testing
-
-- [ ] Test clock advancing behavior
-- [ ] Test randomness determinism (same seed = same sequence)
-- [ ] Test time-dependent package functions
+- [ ] Test clock advances on each access
+- [ ] Test randomness is deterministic (same seed = same sequence)
+- [ ] Test with time-dependent package
 
 ---
 
 ## Phase 3: Test Utility Loading
+**Priority: P1 | Effort: 1-2 days | Status: Not Started**
 
-**Goal**: LLM can use `mint_for_testing` and similar utilities.
+### Research
+- [ ] **3.1** Check if framework bytecode includes test modules
+- [ ] **3.2** Determine how to compile framework with `--test` flag
+- [ ] **3.3** Analyze `coin::mint_for_testing` signature and implementation
 
-**Status**: Not Started
+### Option A: Load Test Modules
+- [ ] **3.4a** Modify `LocalModuleResolver` to detect and load test modules
+- [ ] **3.5a** Update framework loading path to include test bytecode
+- [ ] **3.6a** Test that `mint_for_testing` is callable
 
-### Research Tasks
+### Option B: Native Mocks (Fallback)
+- [ ] **3.4b** Implement `coin::mint_for_testing` native
+- [ ] **3.5b** Implement `coin::burn_for_testing` native
+- [ ] **3.6b** Implement `balance::create_for_testing` native
+- [ ] **3.7b** Implement `balance::destroy_for_testing` native
 
-- [ ] **3.1** Investigate framework bytecode structure
-  - Do compiled frameworks include `#[test_only]` modules?
-  - Where are framework bytecode files located?
-
-- [ ] **3.2** Analyze `coin::mint_for_testing` signature
-  - What module is it in?
-  - What are the exact type parameters?
-
-- [ ] **3.3** Check Move 2024 test module compilation
-  - How does `sui move build --test` affect bytecode?
-
-### Implementation Options
-
-#### Option A: Load Test Modules
-
-- [ ] **3.4a** Modify `LocalModuleResolver` to load test modules
-- [ ] **3.5a** Rebuild framework with test modules included
-- [ ] **3.6a** Add test module paths to resolver
-
-#### Option B: Native Mocks for Test Utilities
-
-- [ ] **3.4b** Add `coin::mint_for_testing` native
-  ```rust
-  fn mint_for_testing<T>(value: u64, ctx: &mut TxContext) -> Coin<T>
-  ```
-
-- [ ] **3.5b** Add `coin::burn_for_testing` native
-
-- [ ] **3.6b** Add `balance::create_for_testing` native
-
-- [ ] **3.7b** Add `balance::destroy_for_testing` native
+### Files
+- `src/benchmark/resolver.rs` (Option A)
+- `src/benchmark/natives.rs` (Option B)
 
 ### Testing
-
-- [ ] Test minting coins
-- [ ] Test burning coins
-- [ ] Test with package that requires Coin input
+- [ ] Test minting Coin<SUI>
+- [ ] Test minting Coin<T> with custom type
+- [ ] Test in constructor chain
 
 ---
 
-## Phase 4: Object Store & Tracking
+## Phase 6: PTB Executor
+**Priority: P2 | Effort: 3-5 days | Status: Not Started**
 
-**Goal**: Track LLM-created objects across function calls.
+### Core Infrastructure
+- [ ] **6.1** Create `src/benchmark/ptb.rs` module
+- [ ] **6.2** Define `Command` enum
+  ```rust
+  pub enum Command {
+      MoveCall { package, module, function, type_args, args },
+      SplitCoins { coin, amounts },
+      MergeCoins { destination, sources },
+      TransferObjects { objects, address },
+      MakeMoveVec { type_tag, elements },
+      Publish { modules, dep_ids },
+      Upgrade { modules, package, ticket },
+  }
+  ```
+- [ ] **6.3** Define `Argument` enum
+  ```rust
+  pub enum Argument {
+      Input(u16),
+      Result(u16),
+      NestedResult(u16, u16),
+  }
+  ```
+- [ ] **6.4** Define `CommandResult` enum
+- [ ] **6.5** Define `InputValue` enum (Pure, Object)
 
-**Status**: Not Started
+### PTBExecutor
+- [ ] **6.6** Create `PTBExecutor` struct
+- [ ] **6.7** Implement `resolve_args()` - resolve Input/Result/NestedResult
+- [ ] **6.8** Implement `execute()` - main command loop
+- [ ] **6.9** Implement `compute_effects()` - generate TransactionEffects
+
+### Command Implementations
+- [ ] **6.10** Implement `MoveCall` - wire to `execute_function_with_return`
+- [ ] **6.11** Implement `SplitCoins` - split Coin into multiple
+- [ ] **6.12** Implement `MergeCoins` - merge multiple Coins into one
+- [ ] **6.13** Implement `TransferObjects` - update ownership
+- [ ] **6.14** Implement `MakeMoveVec` - construct vector from elements
+- [ ] **6.15** Implement `Publish` - load new modules (optional)
+- [ ] **6.16** Implement `Upgrade` - upgrade package (optional)
+
+### Integration
+- [ ] **6.17** Add PTB executor to benchmark harness
+- [ ] **6.18** Add PTB output format for LLM
+- [ ] **6.19** Export from `src/benchmark/mod.rs`
+
+### Files
+- `src/benchmark/ptb.rs` (NEW)
+- `src/benchmark/mod.rs`
+
+### Testing
+- [ ] Test simple MoveCall chain (Result(0) → Input)
+- [ ] Test SplitCoins
+- [ ] Test MergeCoins
+- [ ] Test multi-command PTB
+- [ ] Test with real package scenario
+
+---
+
+## Phase 4: Object Store & Persistence
+**Priority: P2 | Effort: 2-3 days | Status: Not Started**
 
 ### Tasks
-
-- [ ] **4.1** Design `ObjectStore` struct
+- [ ] **4.1** Create `ObjectStore` struct
   ```rust
-  struct ObjectStore {
+  pub struct ObjectStore {
       objects: HashMap<ObjectID, StoredObject>,
       shared: HashSet<ObjectID>,
   }
-
-  struct StoredObject {
+  ```
+- [ ] **4.2** Create `StoredObject` struct
+  ```rust
+  pub struct StoredObject {
       value: Value,
       type_tag: TypeTag,
       owner: Owner,
       version: u64,
   }
   ```
+- [ ] **4.3** Implement `record_created()`
+- [ ] **4.4** Implement `get()` / `get_mut()`
+- [ ] **4.5** Implement `mark_shared()`
+- [ ] **4.6** Implement `delete()`
+- [ ] **4.7** Integrate with `ObjectRuntime`
+- [ ] **4.8** Add object persistence across VM sessions
 
-- [ ] **4.2** Integrate with `ObjectRuntime`
-  - Currently handles dynamic fields
-  - Extend to handle top-level objects
-
-- [ ] **4.3** Add object persistence across VM sessions
-  - Current: Each `execute_function` gets fresh state
-  - Target: Objects persist across calls in same harness
-
-- [ ] **4.4** Implement object lookup by ID
-  - For functions that take object references
-
-- [ ] **4.5** Track ownership transitions
-  - `transfer::transfer_impl` updates owner
-  - `transfer::share_object_impl` marks as shared
-
-- [ ] **4.6** Implement shared object semantics
-  - Version tracking
-  - Concurrent access (for simulation: just allow it)
+### Files
+- `src/benchmark/object_runtime.rs`
+- `src/benchmark/vm.rs`
 
 ### Testing
-
 - [ ] Test object creation and retrieval
-- [ ] Test ownership tracking
-- [ ] Test shared objects
-- [ ] Test multi-function scenarios
+- [ ] Test object mutation
+- [ ] Test shared object marking
+- [ ] Test cross-command object access in PTB
 
 ---
 
 ## Phase 5: Receiving Objects
-
-**Goal**: Support `transfer::receive` pattern.
-
-**Status**: Not Started
+**Priority: P3 | Effort: 4 hours | Status: Not Started**
 
 ### Tasks
+- [ ] **5.1** Add `pending_receives` to ObjectStore
+- [ ] **5.2** Implement `send_to_object()` - stage object for receiving
+- [ ] **5.3** Implement `receive_impl` native using ObjectStore
 
-- [ ] **5.1** Understand receive pattern
-  - How does `Receiving<T>` work?
-  - What state is needed?
-
-- [ ] **5.2** Add `pending_receives` to ObjectStore
-  ```rust
-  pending_receives: HashMap<(ObjectID, ObjectID), StoredObject>
-  // (parent_id, child_id) -> object
-  ```
-
-- [ ] **5.3** Implement `receive_impl` native
-  - Look up object in pending_receives
-  - Return the object value
-
-- [ ] **5.4** Add mechanism to "send" objects to another object
-  - This creates the pending receive state
+### Files
+- `src/benchmark/natives.rs`
+- `src/benchmark/object_runtime.rs`
 
 ### Testing
-
-- [ ] Test basic receive flow
-- [ ] Test with packages using receive pattern
+- [ ] Test basic send → receive flow
+- [ ] Test with package using receive pattern
 
 ---
 
-## Infrastructure Changes
+## Configuration & Infrastructure
 
-### Configuration
-
-- [ ] **I.1** Add `SimulationConfig` struct
+### SimulationConfig
+- [ ] **I.1** Create config struct
   ```rust
   pub struct SimulationConfig {
-      pub mock_crypto_pass: bool,
-      pub deterministic_random: bool,
-      pub advancing_clock: bool,
-      pub permissive_ownership: bool,
-      pub clock_base_ms: u64,
-      pub random_seed: [u8; 32],
+      pub mock_crypto_pass: bool,    // default: true
+      pub advancing_clock: bool,     // default: true
+      pub deterministic_random: bool,// default: true
+      pub permissive_ownership: bool,// default: true
+      pub clock_base_ms: u64,        // default: 1704067200000
+      pub random_seed: [u8; 32],     // default: zeros
   }
   ```
-
 - [ ] **I.2** Thread config through VMHarness
-
-- [ ] **I.3** Add CLI flags for simulation mode
-  - `--strict` for production-like behavior
-  - `--permissive` (default) for benchmarking
-
-### Logging & Debugging
-
-- [ ] **I.4** Add simulation trace output
-  - Log when mocks return fake values
-  - Log ownership warnings in permissive mode
-
-- [ ] **I.5** Add execution summary
-  - Which mocks were used
-  - What objects were created
-  - Ownership state at end
+- [ ] **I.3** Add CLI flags for config options
 
 ### Documentation
-
-- [ ] **I.6** Document simulation modes
-- [ ] **I.7** Document what mocks do
-- [ ] **I.8** Add examples of LLM-friendly patterns
-
----
-
-## Verification Against Mainnet
-
-### Optional Future Work
-
-- [ ] **V.1** Add RPC client for mainnet comparison
-  - Call `sui_devInspectTransactionBlock`
-  - Compare local vs mainnet results
-
-- [ ] **V.2** Add "strict mode" test suite
-  - Run same code against local sim and mainnet
-  - Verify behavior matches
-
-- [ ] **V.3** Generate compatibility report
-  - Which functions pass locally but fail on mainnet?
-  - Which mocks cause false positives?
+- [ ] **I.4** Update README with sandbox documentation
+- [ ] **I.5** Add examples of LLM usage patterns
+- [ ] **I.6** Document what is mocked vs real
 
 ---
 
-## File Change Summary
+## Progress Tracking
 
-| File | Changes |
-|------|---------|
-| `src/benchmark/natives.rs` | Phases 1, 2, 3b, 5 |
-| `src/benchmark/vm.rs` | Phases 2, 4 |
-| `src/benchmark/object_runtime.rs` | Phase 4 |
-| `src/benchmark/resolver.rs` | Phase 3a |
-| `src/benchmark/mod.rs` | Config struct |
-| `src/cli.rs` | CLI flags |
+| Phase | Status | Started | Completed |
+|-------|--------|---------|-----------|
+| Phase 1: Crypto Mocks | Not Started | - | - |
+| Phase 2: Clock/Random | Not Started | - | - |
+| Phase 3: Test Utils | Not Started | - | - |
+| Phase 6: PTB Executor | Not Started | - | - |
+| Phase 4: Object Store | Not Started | - | - |
+| Phase 5: Receiving | Not Started | - | - |
 
 ---
 
-## Priority Matrix
+## Verification Checklist
 
-| Phase | Effort | Impact | Priority |
-|-------|--------|--------|----------|
-| Phase 1 (Crypto) | Low | High | P0 |
-| Phase 2 (Clock/Random) | Low | Medium | P1 |
-| Phase 3 (Test Utils) | Medium | High | P1 |
-| Phase 4 (Object Store) | High | Medium | P2 |
-| Phase 5 (Receiving) | Low | Low | P3 |
+After all phases complete:
 
-**Recommended order**: 1 → 2 → 3 → 4 → 5
+### Type System (must be 100% accurate)
+- [ ] Phantom types enforced correctly
+- [ ] Abilities (key, store, copy, drop) enforced
+- [ ] Generic instantiation works
+- [ ] Visibility rules enforced
+- [ ] OTW validation works
+
+### Execution Coverage
+- [ ] Crypto-using functions execute
+- [ ] Time-dependent functions execute
+- [ ] Random-using functions execute
+- [ ] Multi-hop constructor chains work
+- [ ] PTB command sequences work
+
+### LLM Experience
+- [ ] LLM can discover phantom types by error
+- [ ] LLM can find OTW pattern requirements
+- [ ] LLM can chain constructors
+- [ ] LLM can write valid PTBs
