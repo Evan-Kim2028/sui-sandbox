@@ -38,6 +38,7 @@ pub mod natives;
 pub mod object_runtime;
 pub mod object_store;
 pub mod phases;
+pub mod ptb;
 pub mod resolver;
 pub mod runner;
 pub mod validator;

@@ -716,6 +716,16 @@ fn build_sui_natives(
     ));
 
     // ============================================================
+    // CATEGORY B+: TEST UTILITIES
+    // These enable minting/burning coins for testing without real economics.
+    // Coin<T> = { id: UID, balance: Balance<T> }
+    // Balance<T> = { value: u64 }
+    // UID = { id: ID }
+    // ID = { bytes: address }
+    // ============================================================
+    add_test_utility_natives(&mut natives, state.clone());
+
+    // ============================================================
     // CATEGORY B+: DYNAMIC FIELD SUPPORT (partial)
     // ============================================================
     add_dynamic_field_natives(&mut natives, state.clone());
@@ -737,6 +747,120 @@ fn build_sui_system_natives() -> Vec<(&'static str, &'static str, NativeFunction
         "validate_metadata_bcs",
         make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     )]
+}
+
+/// Add test utility natives for coin/balance minting and burning.
+///
+/// These natives enable LLMs to create test coins and balances without
+/// needing real economics. The `#[test_only]` functions in sui-framework
+/// are not included in production bytecode, so we implement them as natives.
+///
+/// Supported functions:
+/// - `balance::create_for_testing<T>(value: u64) -> Balance<T>`
+/// - `balance::destroy_for_testing<T>(balance: Balance<T>)`
+/// - `coin::mint_for_testing<T>(value: u64, ctx: &mut TxContext) -> Coin<T>`
+/// - `coin::burn_for_testing<T>(coin: Coin<T>)`
+fn add_test_utility_natives(
+    natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
+    state: Arc<MockNativeState>,
+) {
+    // balance::create_for_testing<T>(value: u64) -> Balance<T>
+    // Balance<T> is a struct with a single u64 field: { value: u64 }
+    natives.push((
+        "balance",
+        "create_for_testing",
+        make_native(|_ctx, _ty_args, mut args| {
+            let value = pop_arg!(args, u64);
+            // Balance<T> = struct { value: u64 }
+            // We construct it as a struct with one field
+            let balance = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(
+                value,
+            )]));
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![balance]))
+        }),
+    ));
+
+    // balance::destroy_for_testing<T>(balance: Balance<T>)
+    // Just consumes the balance, no-op
+    natives.push((
+        "balance",
+        "destroy_for_testing",
+        make_native(|_ctx, _ty_args, _args| {
+            // Balance is consumed, nothing to return
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
+    ));
+
+    // coin::mint_for_testing<T>(value: u64, ctx: &mut TxContext) -> Coin<T>
+    // Coin<T> = { id: UID, balance: Balance<T> }
+    // UID = { id: ID }
+    // ID = { bytes: address }
+    let state_clone = state.clone();
+    natives.push((
+        "coin",
+        "mint_for_testing",
+        make_native(move |_ctx, _ty_args, mut args| {
+            // Pop TxContext reference (we ignore it but need to consume it)
+            let _ctx_ref = args.pop_back();
+            let value = pop_arg!(args, u64);
+
+            // Generate a fresh ID for the coin
+            let id_addr = state_clone.fresh_id();
+
+            // Construct ID { bytes: address }
+            let id = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::address(
+                id_addr,
+            )]));
+
+            // Construct UID { id: ID }
+            let uid =
+                Value::struct_(move_vm_types::values::Struct::pack(vec![id]));
+
+            // Construct Balance<T> { value: u64 }
+            let balance = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(
+                value,
+            )]));
+
+            // Construct Coin<T> { id: UID, balance: Balance<T> }
+            let coin = Value::struct_(move_vm_types::values::Struct::pack(vec![uid, balance]));
+
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![coin]))
+        }),
+    ));
+
+    // coin::burn_for_testing<T>(coin: Coin<T>)
+    // Just consumes the coin, no-op
+    natives.push((
+        "coin",
+        "burn_for_testing",
+        make_native(|_ctx, _ty_args, _args| {
+            // Coin is consumed, nothing to return
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
+    ));
+
+    // Additional test utilities that may be useful
+
+    // balance::create_supply_for_testing<T>() -> Supply<T>
+    // Supply<T> = { value: u64 } (tracks total supply)
+    natives.push((
+        "balance",
+        "create_supply_for_testing",
+        make_native(|_ctx, _ty_args, _args| {
+            // Supply<T> = struct { value: u64 } starting at 0
+            let supply = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(0)]));
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![supply]))
+        }),
+    ));
+
+    // balance::destroy_supply_for_testing<T>(supply: Supply<T>)
+    natives.push((
+        "balance",
+        "destroy_supply_for_testing",
+        make_native(|_ctx, _ty_args, _args| {
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
+    ));
 }
 
 /// Extract address from UID { id: ID { bytes: address } }
