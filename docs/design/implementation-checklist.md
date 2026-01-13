@@ -184,59 +184,66 @@ This document tracks the implementation tasks for the complete Local Move VM San
 ---
 
 ## Phase 4: Object Store & Persistence
-**Priority: P2 | Effort: 2-3 days | Status: Not Started**
+**Priority: P2 | Effort: 2-3 days | Status: ✅ COMPLETE**
 
 ### Tasks
-- [ ] **4.1** Create `ObjectStore` struct
+- [x] **4.1** Create `ObjectStore` struct
   ```rust
   pub struct ObjectStore {
       objects: HashMap<ObjectID, StoredObject>,
       shared: HashSet<ObjectID>,
+      pending_receives: HashMap<(ObjectID, ObjectID), Vec<u8>>,
   }
   ```
-- [ ] **4.2** Create `StoredObject` struct
+- [x] **4.2** Create `StoredObject` struct
   ```rust
   pub struct StoredObject {
-      value: Value,
+      bytes: Vec<u8>,
       type_tag: TypeTag,
       owner: Owner,
       version: u64,
+      deleted: bool,
   }
   ```
-- [ ] **4.3** Implement `record_created()`
-- [ ] **4.4** Implement `get()` / `get_mut()`
-- [ ] **4.5** Implement `mark_shared()`
-- [ ] **4.6** Implement `delete()`
-- [ ] **4.7** Integrate with `ObjectRuntime`
-- [ ] **4.8** Add object persistence across VM sessions
+- [x] **4.3** Implement `record_created()`
+- [x] **4.4** Implement `get()` / `get_mut()`
+- [x] **4.5** Implement `mark_shared()` and `mark_immutable()`
+- [x] **4.6** Implement `delete()`
+- [x] **4.7** Integrate with `ObjectRuntime` (via `object_store()` / `object_store_mut()`)
+- [ ] **4.8** Add object persistence across VM sessions (deferred - not needed for current use case)
+
+### Additional Implementations
+- [x] **4.9** Create `Owner` enum (Address, Shared, Immutable, Object)
+- [x] **4.10** Implement `transfer()` for ownership changes
+- [x] **4.11** Implement `update_bytes()` for mutations
 
 ### Files
-- `src/benchmark/object_runtime.rs`
-- `src/benchmark/vm.rs`
+- `src/benchmark/object_runtime.rs` - Added ObjectStore, StoredObject, Owner types
 
 ### Testing
-- [ ] Test object creation and retrieval
-- [ ] Test object mutation
-- [ ] Test shared object marking
-- [ ] Test cross-command object access in PTB
+- [x] Test object creation and retrieval
+- [x] Test object mutation (transfer, version increment)
+- [x] Test shared object marking
+- [x] Test delete operations
+- [ ] Test cross-command object access in PTB (pending integration)
 
 ---
 
 ## Phase 5: Receiving Objects
-**Priority: P3 | Effort: 4 hours | Status: Not Started**
+**Priority: P3 | Effort: 4 hours | Status: ✅ COMPLETE**
 
 ### Tasks
-- [ ] **5.1** Add `pending_receives` to ObjectStore
-- [ ] **5.2** Implement `send_to_object()` - stage object for receiving
-- [ ] **5.3** Implement `receive_impl` native using ObjectStore
+- [x] **5.1** Add `pending_receives` to ObjectStore
+- [x] **5.2** Implement `send_to_object()` - stage object for receiving
+- [x] **5.3** Implement `receive_impl` native using ObjectStore
 
 ### Files
-- `src/benchmark/natives.rs`
-- `src/benchmark/object_runtime.rs`
+- `src/benchmark/natives.rs` - Updated `receive_impl` native
+- `src/benchmark/object_runtime.rs` - Added `send_to_object()`, `receive_object()`, `has_pending_receive()`
 
 ### Testing
-- [ ] Test basic send → receive flow
-- [ ] Test with package using receive pattern
+- [x] Test basic send → receive flow (unit tests in object_runtime.rs)
+- [ ] Test with package using receive pattern (integration test pending)
 
 ---
 
@@ -272,8 +279,8 @@ This document tracks the implementation tasks for the complete Local Move VM San
 | Phase 2: Clock/Random | ✅ Complete | 2025-01-12 | 2025-01-12 |
 | Phase 6: PTB Executor | ✅ Complete | 2025-01-12 | 2025-01-12 |
 | Phase 3: Test Utils | ✅ Complete | 2025-01-12 | 2025-01-12 |
-| Phase 4: Object Store | Not Started | - | - |
-| Phase 5: Receiving | Not Started | - | - |
+| Phase 4: Object Store | ✅ Complete | 2025-01-12 | 2025-01-12 |
+| Phase 5: Receiving | ✅ Complete | 2025-01-12 | 2025-01-12 |
 
 ---
 

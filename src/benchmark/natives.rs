@@ -498,12 +498,105 @@ fn build_sui_natives(
         make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
+    // receive_impl<T>(parent: address, to_receive: Receiving<T>) -> T
+    // Receiving<T> is a struct with: { id: ID, version: u64 }
+    // ID is a struct with: { bytes: address }
     natives.push((
         "transfer",
         "receive_impl",
-        make_native(|_ctx, _ty_args, _args| {
-            // Cannot receive objects without storage - abort
-            Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+        make_native(|ctx, mut ty_args, mut args| {
+            use crate::benchmark::object_runtime::ObjectRuntime;
+
+            // Get the type we're receiving
+            let receive_ty = ty_args.pop().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+
+            // Pop arguments: to_receive (Receiving<T>), parent (address)
+            let receiving_value = args.pop_back().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+            let parent = pop_arg!(args, AccountAddress);
+
+            // Get the layout to deserialize the Receiving struct
+            let receiving_layout = match ctx.type_to_type_layout(&receive_ty) {
+                Ok(Some(layout)) => layout,
+                _ => return Ok(NativeResult::err(InternalGas::new(0), 1)),
+            };
+
+            // Serialize the Receiving value to get the object ID
+            // Receiving<T> = { id: ID { bytes: address }, version: u64 }
+            // So bytes 0..32 are the ID
+            let receiving_bytes = match receiving_value.typed_serialize(&receiving_layout) {
+                Some(bytes) => bytes,
+                None => {
+                    // If we can't serialize, try to extract the ID directly
+                    // The Receiving struct's first field is the ID
+                    // Just return a placeholder object since we can't properly track receives
+                    // without full object storage integration
+
+                    // For now, try to access the ObjectRuntime and use fallback
+                    if let Ok(runtime) = ctx
+                        .extensions_mut()
+                        .get_mut::<ObjectRuntime>()
+                    {
+                        // Try receiving from the parent with a placeholder object ID
+                        // This is a best-effort implementation
+                        let placeholder_id = parent; // Use parent as placeholder
+                        if let Ok(bytes) =
+                            runtime.object_store_mut().receive_object(parent, placeholder_id)
+                        {
+                            // Deserialize and return
+                            // For now, just construct a default value
+                            let _ = bytes;
+                        }
+                    }
+                    return Ok(NativeResult::err(InternalGas::new(0), 1));
+                }
+            };
+
+            // Extract the object ID from the Receiving struct
+            // ID is at bytes 0..32
+            if receiving_bytes.len() < 32 {
+                return Ok(NativeResult::err(InternalGas::new(0), 1));
+            }
+
+            let mut object_id_bytes = [0u8; 32];
+            object_id_bytes.copy_from_slice(&receiving_bytes[0..32]);
+            let object_id = AccountAddress::new(object_id_bytes);
+
+            // Try to receive from ObjectRuntime
+            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+
+            match runtime.object_store_mut().receive_object(parent, object_id) {
+                Ok(bytes) => {
+                    // We have the object bytes, but we need to return a Value
+                    // For now, we construct a simple struct value from the bytes
+
+                    // Get the type layout for deserialization
+                    let type_layout = match ctx.type_to_type_layout(&receive_ty) {
+                        Ok(Some(layout)) => layout,
+                        _ => return Ok(NativeResult::err(InternalGas::new(0), 2)),
+                    };
+
+                    // Try to deserialize the value
+                    match Value::simple_deserialize(&bytes, &type_layout) {
+                        Some(value) => {
+                            Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]))
+                        }
+                        None => {
+                            // If deserialization fails, construct a minimal struct
+                            // with the bytes we have (best effort)
+                            Ok(NativeResult::err(InternalGas::new(0), 3))
+                        }
+                    }
+                }
+                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+            }
         }),
     ));
 

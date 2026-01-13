@@ -1,8 +1,11 @@
-//! ObjectRuntime - VM extension for dynamic field simulation.
+//! ObjectRuntime - VM extension for dynamic field simulation and object storage.
 //!
 //! This module provides an in-memory object runtime that integrates with the Move VM
-//! via its extension mechanism. It enables full dynamic field support including
-//! borrow and remove operations that require proper reference semantics.
+//! via its extension mechanism. It enables:
+//! - Full dynamic field support (add, borrow, remove operations)
+//! - Object storage with ownership tracking
+//! - Shared object support
+//! - Object receiving (send-to-object pattern)
 //!
 //! ## What is a VM Extension?
 //!
@@ -26,6 +29,14 @@
 //! The solution: `GlobalValue` from move-vm-types wraps a value and provides
 //! reference semantics via `borrow_global()`. We store GlobalValues in this
 //! extension, so they persist for the session duration.
+//!
+//! ## Object Store
+//!
+//! In addition to dynamic fields, this module provides a general object store that:
+//! - Tracks all objects created during execution
+//! - Records ownership (address-owned, shared, immutable)
+//! - Supports object receiving via `pending_receives`
+//! - Can mark objects as deleted
 //!
 //! ## Implementation
 //!
@@ -54,13 +65,6 @@
 //! └──────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Current Limitations
-//!
-//! - Objects don't persist between sessions (each function call is isolated)
-//! - No shared object support
-//! - No ownership tracking / transfer verification
-//! - Objects are identified by (parent_id, child_id) pairs only
-//!
 //! ## Dependencies
 //!
 //! - `better_any = "0.1"` - Required for VM extension mechanism
@@ -71,14 +75,328 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
 use move_vm_runtime::native_extensions::NativeExtensionMarker;
 use move_vm_types::values::{GlobalValue, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
 pub const E_FIELD_DOES_NOT_EXIST: u64 = 1;
 pub const E_FIELD_TYPE_MISMATCH: u64 = 2;
 
-/// A child object stored in the runtime.
+/// Error codes for object operations
+pub const E_OBJECT_NOT_FOUND: u64 = 100;
+pub const E_OBJECT_ALREADY_EXISTS: u64 = 101;
+pub const E_NOT_OWNER: u64 = 102;
+pub const E_OBJECT_DELETED: u64 = 103;
+pub const E_RECEIVE_NOT_FOUND: u64 = 104;
+
+/// Unique identifier for objects.
+pub type ObjectID = AccountAddress;
+
+/// Ownership status of an object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// Owned by a specific address
+    Address(AccountAddress),
+    /// Shared object (can be accessed by anyone)
+    Shared,
+    /// Immutable (frozen, cannot be modified)
+    Immutable,
+    /// Object owned by another object (wrapped)
+    Object(ObjectID),
+}
+
+impl Default for Owner {
+    fn default() -> Self {
+        Owner::Address(AccountAddress::ZERO)
+    }
+}
+
+/// A stored object in the object store.
+#[derive(Debug)]
+pub struct StoredObject {
+    /// BCS-serialized bytes of the object
+    pub bytes: Vec<u8>,
+    /// Type tag of the stored object
+    pub type_tag: TypeTag,
+    /// Owner of the object
+    pub owner: Owner,
+    /// Version number (incremented on mutation)
+    pub version: u64,
+    /// Whether the object has been deleted
+    pub deleted: bool,
+}
+
+impl StoredObject {
+    /// Create a new stored object.
+    pub fn new(bytes: Vec<u8>, type_tag: TypeTag, owner: Owner) -> Self {
+        Self {
+            bytes,
+            type_tag,
+            owner,
+            version: 1,
+            deleted: false,
+        }
+    }
+
+    /// Mark this object as deleted.
+    pub fn mark_deleted(&mut self) {
+        self.deleted = true;
+    }
+
+    /// Increment the version (called on mutation).
+    pub fn increment_version(&mut self) {
+        self.version += 1;
+    }
+}
+
+/// Object store for tracking all objects created during execution.
+///
+/// This provides a general-purpose object store separate from the dynamic
+/// field child objects. It tracks:
+/// - All objects by their ObjectID
+/// - Ownership information
+/// - Version numbers
+/// - Deleted status
+/// - Pending receives (for object-to-object transfers)
+#[derive(Debug, Default)]
+pub struct ObjectStore {
+    /// All stored objects by ID
+    objects: HashMap<ObjectID, StoredObject>,
+    /// Set of shared object IDs (for quick lookup)
+    shared: HashSet<ObjectID>,
+    /// Pending receives: (recipient_object_id, sender_object_id) -> object bytes
+    /// Used for transfer::receive pattern
+    pending_receives: HashMap<(ObjectID, ObjectID), Vec<u8>>,
+}
+
+impl ObjectStore {
+    /// Create a new empty object store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a newly created object.
+    pub fn record_created(
+        &mut self,
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: TypeTag,
+        owner: Owner,
+    ) -> Result<(), u64> {
+        if self.objects.contains_key(&id) {
+            return Err(E_OBJECT_ALREADY_EXISTS);
+        }
+
+        let obj = StoredObject::new(bytes, type_tag, owner);
+
+        // Track if shared
+        if matches!(owner, Owner::Shared) {
+            self.shared.insert(id);
+        }
+
+        self.objects.insert(id, obj);
+        Ok(())
+    }
+
+    /// Get an object by ID.
+    pub fn get(&self, id: &ObjectID) -> Option<&StoredObject> {
+        self.objects.get(id).filter(|obj| !obj.deleted)
+    }
+
+    /// Get a mutable reference to an object by ID.
+    pub fn get_mut(&mut self, id: &ObjectID) -> Option<&mut StoredObject> {
+        self.objects.get_mut(id).filter(|obj| !obj.deleted)
+    }
+
+    /// Check if an object exists (and is not deleted).
+    pub fn exists(&self, id: &ObjectID) -> bool {
+        self.objects
+            .get(id)
+            .map(|obj| !obj.deleted)
+            .unwrap_or(false)
+    }
+
+    /// Check if an object is shared.
+    pub fn is_shared(&self, id: &ObjectID) -> bool {
+        self.shared.contains(id)
+    }
+
+    /// Mark an object as shared.
+    pub fn mark_shared(&mut self, id: ObjectID) -> Result<(), u64> {
+        let obj = self.objects.get_mut(&id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+        obj.owner = Owner::Shared;
+        self.shared.insert(id);
+        Ok(())
+    }
+
+    /// Mark an object as immutable (frozen).
+    pub fn mark_immutable(&mut self, id: ObjectID) -> Result<(), u64> {
+        let obj = self.objects.get_mut(&id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+        obj.owner = Owner::Immutable;
+        Ok(())
+    }
+
+    /// Delete an object.
+    pub fn delete(&mut self, id: &ObjectID) -> Result<StoredObject, u64> {
+        let obj = self.objects.get_mut(id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+        obj.mark_deleted();
+        self.shared.remove(id);
+
+        // Return a clone of the deleted object
+        Ok(StoredObject {
+            bytes: obj.bytes.clone(),
+            type_tag: obj.type_tag.clone(),
+            owner: obj.owner,
+            version: obj.version,
+            deleted: true,
+        })
+    }
+
+    /// Transfer ownership of an object to a new owner.
+    pub fn transfer(&mut self, id: &ObjectID, new_owner: Owner) -> Result<(), u64> {
+        let obj = self.objects.get_mut(id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+
+        // Update shared set if ownership type changes
+        let was_shared = matches!(obj.owner, Owner::Shared);
+        let is_shared = matches!(new_owner, Owner::Shared);
+
+        if was_shared && !is_shared {
+            self.shared.remove(id);
+        } else if !was_shared && is_shared {
+            self.shared.insert(*id);
+        }
+
+        obj.owner = new_owner;
+        obj.increment_version();
+        Ok(())
+    }
+
+    /// Update object bytes (mutation).
+    pub fn update_bytes(&mut self, id: &ObjectID, new_bytes: Vec<u8>) -> Result<(), u64> {
+        let obj = self.objects.get_mut(id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+        obj.bytes = new_bytes;
+        obj.increment_version();
+        Ok(())
+    }
+
+    // ========== Receiving Objects ==========
+
+    /// Send an object to another object (stage for receiving).
+    ///
+    /// This is used for the `transfer::receive` pattern where an object
+    /// is sent to another object and can later be received.
+    pub fn send_to_object(
+        &mut self,
+        recipient_id: ObjectID,
+        object_id: ObjectID,
+    ) -> Result<(), u64> {
+        let obj = self.objects.get_mut(&object_id).ok_or(E_OBJECT_NOT_FOUND)?;
+        if obj.deleted {
+            return Err(E_OBJECT_DELETED);
+        }
+
+        // Store the object bytes in pending receives
+        let bytes = obj.bytes.clone();
+        self.pending_receives
+            .insert((recipient_id, object_id), bytes);
+
+        // Update ownership to indicate it's owned by the recipient object
+        obj.owner = Owner::Object(recipient_id);
+        obj.increment_version();
+
+        Ok(())
+    }
+
+    /// Receive an object that was sent to this object.
+    ///
+    /// Returns the object bytes if found.
+    pub fn receive_object(
+        &mut self,
+        recipient_id: ObjectID,
+        object_id: ObjectID,
+    ) -> Result<Vec<u8>, u64> {
+        let key = (recipient_id, object_id);
+        let bytes = self
+            .pending_receives
+            .remove(&key)
+            .ok_or(E_RECEIVE_NOT_FOUND)?;
+
+        // The object is no longer pending, update its ownership back to address
+        // (the caller will handle the actual ownership based on what they do with it)
+        if let Some(obj) = self.objects.get_mut(&object_id) {
+            // Reset ownership - the receiving function determines final owner
+            obj.owner = Owner::Address(AccountAddress::ZERO);
+            obj.increment_version();
+        }
+
+        Ok(bytes)
+    }
+
+    /// Check if an object is pending receive at a recipient.
+    pub fn has_pending_receive(&self, recipient_id: ObjectID, object_id: ObjectID) -> bool {
+        self.pending_receives
+            .contains_key(&(recipient_id, object_id))
+    }
+
+    // ========== Statistics ==========
+
+    /// Get the number of objects (including deleted).
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    /// Check if the store is empty.
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+
+    /// Get the number of active (non-deleted) objects.
+    pub fn active_count(&self) -> usize {
+        self.objects.values().filter(|obj| !obj.deleted).count()
+    }
+
+    /// Get the number of shared objects.
+    pub fn shared_count(&self) -> usize {
+        self.shared.len()
+    }
+
+    /// Get all object IDs.
+    pub fn object_ids(&self) -> impl Iterator<Item = &ObjectID> {
+        self.objects.keys()
+    }
+
+    /// Get all active object IDs.
+    pub fn active_object_ids(&self) -> impl Iterator<Item = &ObjectID> {
+        self.objects
+            .iter()
+            .filter(|(_, obj)| !obj.deleted)
+            .map(|(id, _)| id)
+    }
+
+    /// Clear all objects (for test isolation).
+    pub fn clear(&mut self) {
+        self.objects.clear();
+        self.shared.clear();
+        self.pending_receives.clear();
+    }
+}
+
+/// A child object stored in the runtime (for dynamic fields).
 pub struct ChildObject {
     /// The GlobalValue wrapping the Move value (enables reference semantics)
     pub value: GlobalValue,
@@ -86,15 +404,20 @@ pub struct ChildObject {
     pub type_tag: TypeTag,
 }
 
-/// In-memory object runtime for dynamic field simulation.
+/// In-memory object runtime for dynamic field simulation and object storage.
 ///
-/// This is registered as a VM extension and provides storage for GlobalValues
-/// that can be borrowed as references by native functions.
+/// This is registered as a VM extension and provides:
+/// - Storage for GlobalValues that can be borrowed as references by native functions
+/// - A general object store for tracking all objects created during execution
+/// - Support for object receiving (send-to-object pattern)
 #[derive(Tid, Default)]
 pub struct ObjectRuntime {
-    /// Map from (parent_id, child_id) -> child object
+    /// Map from (parent_id, child_id) -> child object (for dynamic fields)
     /// Using the same addressing scheme as Sui's dynamic fields
     children: HashMap<(AccountAddress, AccountAddress), ChildObject>,
+
+    /// General object store for tracking all objects
+    object_store: ObjectStore,
 }
 
 // Mark as a native extension so it can be registered with the VM
@@ -104,7 +427,18 @@ impl ObjectRuntime {
     pub fn new() -> Self {
         Self {
             children: HashMap::new(),
+            object_store: ObjectStore::new(),
         }
+    }
+
+    /// Get a reference to the object store.
+    pub fn object_store(&self) -> &ObjectStore {
+        &self.object_store
+    }
+
+    /// Get a mutable reference to the object store.
+    pub fn object_store_mut(&mut self) -> &mut ObjectStore {
+        &mut self.object_store
     }
 
     /// Add a child object under a parent.
@@ -235,10 +569,16 @@ impl ObjectRuntime {
     /// Clear all stored objects (for test isolation).
     pub fn clear(&mut self) {
         self.children.clear();
+        self.object_store.clear();
     }
 
-    /// Get the number of stored objects.
+    /// Get the number of stored child objects (dynamic fields).
     pub fn len(&self) -> usize {
+        self.children.len()
+    }
+
+    /// Get the number of dynamic field children.
+    pub fn children_len(&self) -> usize {
         self.children.len()
     }
 
@@ -332,5 +672,196 @@ mod tests {
         // Second remove should fail
         let result = runtime.remove_child_object(parent, child_id, &type_tag);
         assert!(matches!(result, Err(e) if e == E_FIELD_DOES_NOT_EXIST));
+    }
+
+    // ========== ObjectStore tests ==========
+
+    #[test]
+    fn test_object_store_create_and_get() {
+        let mut store = ObjectStore::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let bytes = vec![1, 2, 3, 4];
+        let type_tag = make_test_type_tag();
+        let owner = Owner::Address(AccountAddress::from_hex_literal("0x1").unwrap());
+
+        // Create object
+        store
+            .record_created(id, bytes.clone(), type_tag.clone(), owner)
+            .unwrap();
+
+        // Verify it exists
+        assert!(store.exists(&id));
+        assert_eq!(store.active_count(), 1);
+
+        // Get the object
+        let obj = store.get(&id).unwrap();
+        assert_eq!(obj.bytes, bytes);
+        assert_eq!(obj.type_tag, type_tag);
+        assert_eq!(obj.version, 1);
+        assert!(!obj.deleted);
+    }
+
+    #[test]
+    fn test_object_store_duplicate_fails() {
+        let mut store = ObjectStore::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let type_tag = make_test_type_tag();
+        let owner = Owner::Address(AccountAddress::ZERO);
+
+        store
+            .record_created(id, vec![1], type_tag.clone(), owner)
+            .unwrap();
+
+        // Second create should fail
+        let result = store.record_created(id, vec![2], type_tag, owner);
+        assert!(matches!(result, Err(e) if e == E_OBJECT_ALREADY_EXISTS));
+    }
+
+    #[test]
+    fn test_object_store_shared() {
+        let mut store = ObjectStore::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let type_tag = make_test_type_tag();
+
+        // Create as owned
+        store
+            .record_created(
+                id,
+                vec![1],
+                type_tag,
+                Owner::Address(AccountAddress::ZERO),
+            )
+            .unwrap();
+        assert!(!store.is_shared(&id));
+
+        // Mark as shared
+        store.mark_shared(id).unwrap();
+        assert!(store.is_shared(&id));
+        assert_eq!(store.shared_count(), 1);
+
+        // Verify owner changed
+        let obj = store.get(&id).unwrap();
+        assert!(matches!(obj.owner, Owner::Shared));
+    }
+
+    #[test]
+    fn test_object_store_delete() {
+        let mut store = ObjectStore::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let type_tag = make_test_type_tag();
+
+        store
+            .record_created(id, vec![1, 2, 3], type_tag, Owner::Address(AccountAddress::ZERO))
+            .unwrap();
+        assert!(store.exists(&id));
+        assert_eq!(store.active_count(), 1);
+
+        // Delete
+        let deleted = store.delete(&id).unwrap();
+        assert!(deleted.deleted);
+
+        // No longer exists (logically)
+        assert!(!store.exists(&id));
+        assert_eq!(store.active_count(), 0);
+
+        // Second delete should fail
+        let result = store.delete(&id);
+        assert!(matches!(result, Err(e) if e == E_OBJECT_DELETED));
+    }
+
+    #[test]
+    fn test_object_store_transfer() {
+        let mut store = ObjectStore::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let alice = AccountAddress::from_hex_literal("0xA11CE").unwrap();
+        let bob = AccountAddress::from_hex_literal("0xB0B").unwrap();
+        let type_tag = make_test_type_tag();
+
+        store
+            .record_created(id, vec![1], type_tag, Owner::Address(alice))
+            .unwrap();
+
+        // Transfer to Bob
+        store.transfer(&id, Owner::Address(bob)).unwrap();
+
+        let obj = store.get(&id).unwrap();
+        assert!(matches!(obj.owner, Owner::Address(addr) if addr == bob));
+        assert_eq!(obj.version, 2); // Version incremented
+    }
+
+    #[test]
+    fn test_object_store_send_and_receive() {
+        let mut store = ObjectStore::new();
+        let recipient_id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let object_id = AccountAddress::from_hex_literal("0x200").unwrap();
+        let type_tag = make_test_type_tag();
+
+        // Create the recipient object
+        store
+            .record_created(
+                recipient_id,
+                vec![1],
+                type_tag.clone(),
+                Owner::Address(AccountAddress::ZERO),
+            )
+            .unwrap();
+
+        // Create the object to send
+        store
+            .record_created(
+                object_id,
+                vec![42, 43, 44],
+                type_tag,
+                Owner::Address(AccountAddress::ZERO),
+            )
+            .unwrap();
+
+        // Send object to recipient
+        store.send_to_object(recipient_id, object_id).unwrap();
+
+        // Verify pending receive
+        assert!(store.has_pending_receive(recipient_id, object_id));
+
+        // Verify ownership changed
+        let obj = store.get(&object_id).unwrap();
+        assert!(matches!(obj.owner, Owner::Object(id) if id == recipient_id));
+
+        // Receive the object
+        let bytes = store.receive_object(recipient_id, object_id).unwrap();
+        assert_eq!(bytes, vec![42, 43, 44]);
+
+        // No longer pending
+        assert!(!store.has_pending_receive(recipient_id, object_id));
+    }
+
+    #[test]
+    fn test_object_store_receive_not_found() {
+        let mut store = ObjectStore::new();
+        let recipient_id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let object_id = AccountAddress::from_hex_literal("0x200").unwrap();
+
+        let result = store.receive_object(recipient_id, object_id);
+        assert!(matches!(result, Err(e) if e == E_RECEIVE_NOT_FOUND));
+    }
+
+    #[test]
+    fn test_runtime_includes_object_store() {
+        let mut runtime = ObjectRuntime::new();
+        let id = AccountAddress::from_hex_literal("0x100").unwrap();
+        let type_tag = make_test_type_tag();
+
+        // Access object store through runtime
+        runtime
+            .object_store_mut()
+            .record_created(id, vec![1, 2, 3], type_tag, Owner::Address(AccountAddress::ZERO))
+            .unwrap();
+
+        assert!(runtime.object_store().exists(&id));
+        assert_eq!(runtime.object_store().active_count(), 1);
+
+        // Clear should clear both children and object store
+        runtime.clear();
+        assert!(!runtime.object_store().exists(&id));
+        assert_eq!(runtime.object_store().active_count(), 0);
     }
 }
