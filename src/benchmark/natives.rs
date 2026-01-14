@@ -49,7 +49,7 @@ use move_core_types::{
     runtime_value::{MoveStructLayout, MoveTypeLayout},
 };
 use move_vm_runtime::native_functions::{
-    make_table_from_iter, NativeFunction, NativeFunctionTable,
+    make_table_from_iter, NativeContext, NativeFunction, NativeFunctionTable,
 };
 use move_vm_types::{
     loaded_data::runtime_types::Type, natives::function::NativeResult, pop_arg, values::Value,
@@ -57,7 +57,7 @@ use move_vm_types::{
 use smallvec::smallvec;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::errors::E_NOT_SUPPORTED;
 
@@ -215,12 +215,85 @@ impl MockRandom {
     }
 }
 
+/// An event emitted during Move execution.
+///
+/// This captures the type information and serialized data of events
+/// emitted via `sui::event::emit`.
+#[derive(Debug, Clone)]
+pub struct EmittedEvent {
+    /// The fully-qualified type of the emitted event (e.g., "0x2::coin::CoinCreated<0x2::sui::SUI>")
+    pub type_tag: String,
+    /// BCS-serialized event data
+    pub data: Vec<u8>,
+    /// Sequence number within the transaction (0-indexed)
+    pub sequence: u64,
+}
+
+/// Thread-safe store for events emitted during Move execution.
+///
+/// Events are captured by the `event::emit` native function and can be
+/// queried after execution completes.
+#[derive(Debug, Default)]
+pub struct EventStore {
+    events: Mutex<Vec<EmittedEvent>>,
+    counter: AtomicU64,
+}
+
+impl EventStore {
+    pub fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Record an emitted event.
+    pub fn emit(&self, type_tag: String, data: Vec<u8>) {
+        let sequence = self.counter.fetch_add(1, Ordering::SeqCst);
+        let event = EmittedEvent {
+            type_tag,
+            data,
+            sequence,
+        };
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event);
+        }
+    }
+
+    /// Get all emitted events.
+    pub fn get_events(&self) -> Vec<EmittedEvent> {
+        self.events.lock().map(|e| e.clone()).unwrap_or_default()
+    }
+
+    /// Get events of a specific type.
+    pub fn get_events_by_type(&self, type_prefix: &str) -> Vec<EmittedEvent> {
+        self.get_events()
+            .into_iter()
+            .filter(|e| e.type_tag.starts_with(type_prefix))
+            .collect()
+    }
+
+    /// Get the number of emitted events.
+    pub fn count(&self) -> u64 {
+        self.counter.load(Ordering::SeqCst)
+    }
+
+    /// Clear all events (for reuse between transactions).
+    pub fn clear(&self) {
+        if let Ok(mut events) = self.events.lock() {
+            events.clear();
+        }
+        self.counter.store(0, Ordering::SeqCst);
+    }
+}
+
 /// Mock state for native function execution.
 ///
 /// This struct holds all mock state needed for the Local Move VM Sandbox:
 /// - Transaction context (sender, epoch, IDs)
 /// - Clock (advancing timestamps)
 /// - Random (deterministic randomness)
+/// - Events (captured event emissions)
 ///
 /// Note: Dynamic field storage is handled by ObjectRuntime (a VM extension).
 pub struct MockNativeState {
@@ -232,6 +305,8 @@ pub struct MockNativeState {
     pub clock: MockClock,
     /// Mock random for randomness-dependent code
     pub random: MockRandom,
+    /// Event store for capturing emitted events
+    pub events: EventStore,
 }
 
 impl Default for MockNativeState {
@@ -249,6 +324,7 @@ impl MockNativeState {
             ids_created: AtomicU64::new(0),
             clock: MockClock::new(),
             random: MockRandom::new(),
+            events: EventStore::new(),
         }
     }
 
@@ -261,6 +337,7 @@ impl MockNativeState {
             ids_created: AtomicU64::new(0),
             clock: MockClock::new(),
             random: MockRandom::with_seed(seed),
+            events: EventStore::new(),
         }
     }
 
@@ -284,6 +361,21 @@ impl MockNativeState {
     /// Get deterministic random bytes.
     pub fn random_bytes(&self, len: usize) -> Vec<u8> {
         self.random.next_bytes(len)
+    }
+
+    /// Get all emitted events.
+    pub fn get_events(&self) -> Vec<EmittedEvent> {
+        self.events.get_events()
+    }
+
+    /// Get events of a specific type.
+    pub fn get_events_by_type(&self, type_prefix: &str) -> Vec<EmittedEvent> {
+        self.events.get_events_by_type(type_prefix)
+    }
+
+    /// Clear all events (call between transactions).
+    pub fn clear_events(&self) {
+        self.events.clear()
     }
 }
 
@@ -606,38 +698,100 @@ fn build_sui_natives(
         make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 
-    // event natives
+    // event natives - now with recording!
+    let state_clone = state.clone();
     natives.push((
         "event",
         "emit",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |ctx, ty_args, mut args| {
+            // event::emit<T>(event: T)
+            // ty_args[0] is the event type T
+            // args[0] is the event value
+            if let Some(event_ty) = ty_args.first() {
+                // Get the event value and serialize it
+                if let Some(event_value) = args.pop_front() {
+                    // Try to get type tag for the event type
+                    let type_tag_str = match ctx.type_to_type_tag(event_ty) {
+                        Ok(tag) => format!("{}", tag),
+                        Err(_) => "unknown".to_string(),
+                    };
+
+                    // Serialize the event value to BCS
+                    // Note: We use typed_serialize which may fail for some complex types
+                    let event_bytes = match event_value.typed_serialize(&ctx.type_to_type_layout(event_ty).ok().flatten().unwrap_or(MoveTypeLayout::Bool)) {
+                        Some(bytes) => bytes,
+                        None => vec![], // Empty if serialization fails
+                    };
+
+                    // Record the event
+                    state_clone.events.emit(type_tag_str, event_bytes);
+                }
+            }
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "event",
         "emit_authenticated_impl",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |ctx, ty_args, mut args| {
+            // Similar to emit but for authenticated events
+            if let Some(event_ty) = ty_args.first() {
+                if let Some(event_value) = args.pop_front() {
+                    let type_tag_str = match ctx.type_to_type_tag(event_ty) {
+                        Ok(tag) => format!("{}", tag),
+                        Err(_) => "unknown".to_string(),
+                    };
+                    let event_bytes = match event_value.typed_serialize(&ctx.type_to_type_layout(event_ty).ok().flatten().unwrap_or(MoveTypeLayout::Bool)) {
+                        Some(bytes) => bytes,
+                        None => vec![],
+                    };
+                    state_clone.events.emit(type_tag_str, event_bytes);
+                }
+            }
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "event",
         "events_by_type",
-        make_native(|_ctx, _ty_args, _args| {
-            // Return empty - we don't track events
+        make_native(move |ctx, ty_args, _args| {
+            // Return events matching the requested type
+            let type_prefix = if let Some(ty) = ty_args.first() {
+                match ctx.type_to_type_tag(ty) {
+                    Ok(tag) => format!("{}", tag),
+                    Err(_) => String::new(),
+                }
+            } else {
+                String::new()
+            };
+
+            let events = state_clone.events.get_events_by_type(&type_prefix);
+            // Serialize events as a vector of BCS bytes
+            // For simplicity, we concatenate all event data
+            let mut result_bytes = Vec::new();
+            for event in events {
+                result_bytes.extend_from_slice(&event.data);
+            }
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::vector_u8(vec![])],
+                smallvec![Value::vector_u8(result_bytes)],
             ))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "event",
         "num_events",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let count = state_clone.events.count();
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::u64(0)],
+                smallvec![Value::u64(count)],
             ))
         }),
     ));
@@ -965,15 +1119,114 @@ fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Optio
     id_value.value_as::<AccountAddress>().ok()
 }
 
+/// Helper to get ObjectRuntime from extensions.
+/// Tries SharedObjectRuntime first (for PTB sessions), falls back to ObjectRuntime.
+fn get_object_runtime_ref<'a>(
+    ctx: &'a NativeContext,
+) -> Result<&'a crate::benchmark::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+    use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+
+    // Try SharedObjectRuntime first (used in PTB sessions for persistent state)
+    if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
+        let runtime: &ObjectRuntime = shared.local();
+        return Ok(runtime);
+    }
+
+    // Fall back to regular ObjectRuntime
+    ctx.extensions().get::<ObjectRuntime>()
+}
+
+/// Helper to get mutable ObjectRuntime from extensions.
+fn get_object_runtime_mut<'a>(
+    ctx: &'a mut NativeContext,
+) -> Result<&'a mut crate::benchmark::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+    use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+
+    // Try SharedObjectRuntime first
+    if ctx.extensions().get::<SharedObjectRuntime>().is_ok() {
+        let shared: &mut SharedObjectRuntime = ctx.extensions_mut().get_mut()?;
+        return Ok(shared.local_mut());
+    }
+
+    // Fall back to regular ObjectRuntime
+    ctx.extensions_mut().get_mut::<ObjectRuntime>()
+}
+
+/// Sync an added child to shared state (if using SharedObjectRuntime).
+fn sync_child_to_shared_state(
+    ctx: &mut NativeContext,
+    parent: AccountAddress,
+    child_id: AccountAddress,
+    child_tag: &TypeTag,
+    child_bytes: &[u8],
+) {
+    use crate::benchmark::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+        if let Ok(mut state) = shared.shared_state().lock() {
+            state.add_child(parent, child_id, child_tag.clone(), child_bytes.to_vec());
+        }
+    }
+}
+
+/// Remove a child from shared state (if using SharedObjectRuntime).
+fn remove_child_from_shared_state(
+    ctx: &mut NativeContext,
+    parent: AccountAddress,
+    child_id: AccountAddress,
+) {
+    use crate::benchmark::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+        if let Ok(mut state) = shared.shared_state().lock() {
+            state.remove_child(parent, child_id);
+        }
+    }
+}
+
+/// Check if a child exists in shared state (if using SharedObjectRuntime).
+fn check_shared_state_for_child(
+    ctx: &NativeContext,
+    parent: AccountAddress,
+    child_id: AccountAddress,
+) -> bool {
+    use crate::benchmark::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
+        if let Ok(state) = shared.shared_state().lock() {
+            return state.has_child(parent, child_id);
+        }
+    }
+    false
+}
+
+/// Count children for a parent in shared state (if using SharedObjectRuntime).
+fn count_shared_state_children(
+    ctx: &NativeContext,
+    parent: AccountAddress,
+) -> u64 {
+    use crate::benchmark::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
+        if let Ok(state) = shared.shared_state().lock() {
+            return state.count_children_for_parent(parent);
+        }
+    }
+    0
+}
+
 /// Add dynamic field natives that use the ObjectRuntime VM extension.
 ///
 /// These natives access the ObjectRuntime via context.extensions_mut().get_mut()
 /// which provides proper reference semantics for borrow operations.
+///
+/// For PTB execution with persistent state, register SharedObjectRuntime instead
+/// of ObjectRuntime. These natives will automatically use SharedObjectRuntime's
+/// local runtime when available.
 fn add_dynamic_field_natives(
     natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
     _state: Arc<MockNativeState>, // Keep signature for compatibility, but we use extensions now
 ) {
-    use crate::benchmark::object_runtime::ObjectRuntime;
     use sha2::{Digest, Sha256};
 
     // hash_type_and_key<K>(parent: address, k: K) -> address
@@ -1062,10 +1315,14 @@ fn add_dynamic_field_natives(
                 return Ok(NativeResult::err(InternalGas::new(0), 3));
             };
 
-            // Store in ObjectRuntime extension
-            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
-            match runtime.add_child_object(parent, child_id, child_value, child_tag) {
-                Ok(()) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![])),
+            // Store in ObjectRuntime extension (supports both ObjectRuntime and SharedObjectRuntime)
+            let runtime = get_object_runtime_mut(ctx)?;
+            match runtime.add_child_object(parent, child_id, child_value, child_tag.clone()) {
+                Ok(()) => {
+                    // Sync to shared state for persistence across VM sessions
+                    sync_child_to_shared_state(ctx, parent, child_id, &child_tag, &child_bytes);
+                    Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+                }
                 Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
             }
         }),
@@ -1098,7 +1355,7 @@ fn add_dynamic_field_natives(
                 }
             };
 
-            let runtime: &ObjectRuntime = ctx.extensions().get()?;
+            let runtime = get_object_runtime_ref(ctx)?;
             match runtime.borrow_child_object(parent, child_id, &child_tag) {
                 Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
                 Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
@@ -1132,7 +1389,7 @@ fn add_dynamic_field_natives(
                 }
             };
 
-            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+            let runtime = get_object_runtime_mut(ctx)?;
             match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                 Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
                 Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
@@ -1155,9 +1412,13 @@ fn add_dynamic_field_natives(
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
 
-            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
+            let runtime = get_object_runtime_mut(ctx)?;
             match runtime.remove_child_object(parent, child_id, &child_tag) {
-                Ok(value) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
+                Ok(value) => {
+                    // Sync removal to shared state
+                    remove_child_from_shared_state(ctx, parent, child_id);
+                    Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]))
+                }
                 Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
             }
         }),
@@ -1171,8 +1432,10 @@ fn add_dynamic_field_natives(
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
 
-            let runtime: &ObjectRuntime = ctx.extensions().get()?;
-            let exists = runtime.child_object_exists(parent, child_id);
+            let runtime = get_object_runtime_ref(ctx)?;
+            // Check local runtime first, then shared state
+            let exists = runtime.child_object_exists(parent, child_id)
+                || check_shared_state_for_child(ctx, parent, child_id);
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::bool(exists)],
@@ -1194,12 +1457,36 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            let runtime: &ObjectRuntime = ctx.extensions().get()?;
-            let exists = runtime.child_object_exists_with_type(parent, child_id, &child_tag);
+            let runtime = get_object_runtime_ref(ctx)?;
+            // Check local runtime first, then shared state (type checking happens only in local)
+            let exists = runtime.child_object_exists_with_type(parent, child_id, &child_tag)
+                || check_shared_state_for_child(ctx, parent, child_id);
 
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::bool(exists)],
+            ))
+        }),
+    ));
+
+    // field_info_count(parent: address) -> u64
+    // Returns the number of dynamic fields for a given parent object.
+    // This is a sandbox-specific extension to help with Table/Bag iteration.
+    natives.push((
+        "dynamic_field",
+        "field_info_count",
+        make_native(|ctx, _ty_args, mut args| {
+            let parent = pop_arg!(args, AccountAddress);
+
+            let runtime = get_object_runtime_ref(ctx)?;
+            let count = runtime.count_children_for_parent(parent);
+
+            // Also check shared state for additional children
+            let shared_count = count_shared_state_children(ctx, parent);
+
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::u64(count + shared_count)],
             ))
         }),
     ));

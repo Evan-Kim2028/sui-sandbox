@@ -76,6 +76,7 @@ use move_core_types::language_storage::TypeTag;
 use move_vm_runtime::native_extensions::NativeExtensionMarker;
 use move_vm_types::values::{GlobalValue, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
@@ -584,6 +585,183 @@ impl ObjectRuntime {
 
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
+    }
+
+    /// Get an iterator over all child object keys and their types.
+    /// Used to extract dynamic field state for TransactionEffects.
+    pub fn iter_children(&self) -> impl Iterator<Item = (&(AccountAddress, AccountAddress), &TypeTag)> {
+        self.children.iter().map(|(k, v)| (k, &v.type_tag))
+    }
+
+    /// Get all child keys (parent_id, child_id pairs).
+    pub fn child_keys(&self) -> Vec<(AccountAddress, AccountAddress)> {
+        self.children.keys().cloned().collect()
+    }
+
+    /// Count the number of children for a specific parent (dynamic fields count).
+    pub fn count_children_for_parent(&self, parent: AccountAddress) -> u64 {
+        self.children.keys()
+            .filter(|(p, _)| *p == parent)
+            .count() as u64
+    }
+
+    /// List all child IDs for a specific parent.
+    pub fn list_child_ids(&self, parent: AccountAddress) -> Vec<AccountAddress> {
+        self.children.keys()
+            .filter_map(|(p, c)| if *p == parent { Some(*c) } else { None })
+            .collect()
+    }
+}
+
+/// Inner state for SharedObjectRuntime that can be shared via Arc<Mutex>.
+/// This holds the actual dynamic field data that persists across VM sessions.
+#[derive(Default)]
+pub struct ObjectRuntimeState {
+    /// Map from (parent_id, child_id) -> (type_tag, serialized_bytes)
+    /// We store serialized bytes instead of GlobalValue because GlobalValue
+    /// cannot be safely shared across threads.
+    pub children: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
+    /// Set of children that existed before this PTB started (loaded from env)
+    pub preloaded_children: HashSet<(AccountAddress, AccountAddress)>,
+}
+
+impl ObjectRuntimeState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a child object to the shared state.
+    pub fn add_child(&mut self, parent: AccountAddress, child_id: AccountAddress, type_tag: TypeTag, bytes: Vec<u8>) {
+        self.children.insert((parent, child_id), (type_tag, bytes));
+    }
+
+    /// Check if a child exists.
+    pub fn has_child(&self, parent: AccountAddress, child_id: AccountAddress) -> bool {
+        self.children.contains_key(&(parent, child_id))
+    }
+
+    /// Get a child's bytes.
+    pub fn get_child(&self, parent: AccountAddress, child_id: AccountAddress) -> Option<&(TypeTag, Vec<u8>)> {
+        self.children.get(&(parent, child_id))
+    }
+
+    /// Remove a child and return its data.
+    pub fn remove_child(&mut self, parent: AccountAddress, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+        self.children.remove(&(parent, child_id))
+    }
+
+    /// Get all newly created children (not in preloaded set).
+    pub fn new_children(&self) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
+        self.children
+            .iter()
+            .filter(|(k, _)| !self.preloaded_children.contains(k))
+            .map(|(k, (t, b))| (*k, t.clone(), b.clone()))
+            .collect()
+    }
+
+    /// Get all children (both preloaded and new).
+    pub fn all_children(&self) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
+        self.children
+            .iter()
+            .map(|(k, (t, b))| (*k, t.clone(), b.clone()))
+            .collect()
+    }
+
+    /// Clear all state.
+    pub fn clear(&mut self) {
+        self.children.clear();
+        self.preloaded_children.clear();
+    }
+
+    /// Count the number of children for a specific parent.
+    pub fn count_children_for_parent(&self, parent: AccountAddress) -> u64 {
+        self.children.keys()
+            .filter(|(p, _)| *p == parent)
+            .count() as u64
+    }
+
+    /// List all child IDs for a specific parent.
+    pub fn list_child_ids(&self, parent: AccountAddress) -> Vec<AccountAddress> {
+        self.children.keys()
+            .filter_map(|(p, c)| if *p == parent { Some(*c) } else { None })
+            .collect()
+    }
+}
+
+/// A shareable ObjectRuntime that persists state across VM sessions.
+///
+/// This wraps ObjectRuntimeState in Arc<Mutex> and provides a VM extension
+/// that synchronizes with the shared state before and after each call.
+///
+/// ## Usage
+///
+/// ```ignore
+/// // Create shared state
+/// let shared_state = Arc::new(Mutex::new(ObjectRuntimeState::new()));
+///
+/// // For each VM call, create a SharedObjectRuntime extension
+/// let runtime = SharedObjectRuntime::new(shared_state.clone());
+/// extensions.add(runtime);
+///
+/// // After session.finish(), the shared_state will have been updated
+/// // with any new child objects created during execution.
+/// ```
+#[derive(Tid)]
+pub struct SharedObjectRuntime {
+    /// The shared state - this is cloned Arc so multiple runtimes can share
+    shared_state: Arc<Mutex<ObjectRuntimeState>>,
+    /// Local ObjectRuntime for this session - initialized from shared state
+    /// and synced back after execution
+    local: ObjectRuntime,
+}
+
+// Mark as a native extension
+impl NativeExtensionMarker<'_> for SharedObjectRuntime {}
+
+impl SharedObjectRuntime {
+    /// Create a new SharedObjectRuntime with the given shared state.
+    /// Loads any existing children from the shared state into the local runtime.
+    pub fn new(shared_state: Arc<Mutex<ObjectRuntimeState>>) -> Self {
+        let local = ObjectRuntime::new();
+        // Note: We don't load children here because GlobalValue requires struct values
+        // which we can't easily reconstruct from bytes. The native functions will
+        // check the shared state if the local runtime doesn't have the child.
+        Self {
+            shared_state,
+            local,
+        }
+    }
+
+    /// Get access to the shared state for external queries.
+    pub fn shared_state(&self) -> &Arc<Mutex<ObjectRuntimeState>> {
+        &self.shared_state
+    }
+
+    /// Get mutable access to the local runtime (for native function implementations).
+    pub fn local_mut(&mut self) -> &mut ObjectRuntime {
+        &mut self.local
+    }
+
+    /// Get reference to the local runtime.
+    pub fn local(&self) -> &ObjectRuntime {
+        &self.local
+    }
+
+    /// Check if a child exists (in local or shared state).
+    pub fn child_exists(&self, parent: AccountAddress, child_id: AccountAddress) -> bool {
+        if self.local.child_object_exists(parent, child_id) {
+            return true;
+        }
+        if let Ok(state) = self.shared_state.lock() {
+            return state.has_child(parent, child_id);
+        }
+        false
+    }
+}
+
+impl Default for SharedObjectRuntime {
+    fn default() -> Self {
+        Self::new(Arc::new(Mutex::new(ObjectRuntimeState::new())))
     }
 }
 
