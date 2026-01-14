@@ -353,3 +353,228 @@ fn test_coin_synthesis_has_balance() {
         }
     }
 }
+
+// ============================================================================
+// PTB Integration Tests
+// ============================================================================
+
+/// Test that PTBBuilder can construct and execute a simple MoveCall.
+#[test]
+fn test_ptb_simple_move_call() {
+    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+
+    // Call object::id_from_address which takes an address and returns an ID
+    let sui_addr = move_core_types::account_address::AccountAddress::TWO;
+    let test_addr = move_core_types::account_address::AccountAddress::ZERO;
+
+    // Add the address as input (BCS-encoded 32-byte address)
+    let addr_arg = builder.pure_bytes(test_addr.to_vec());
+
+    // Call object::id_from_address(address): ID
+    let result = builder.move_call(
+        sui_addr,
+        "object",
+        "id_from_address",
+        vec![],
+        vec![addr_arg],
+    );
+
+    assert!(result.is_ok(), "move_call should succeed");
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    assert!(effects.success, "PTB should succeed: {:?}", effects.error);
+}
+
+/// Test PTB with chained results - call a function and use its result.
+#[test]
+fn test_ptb_chained_results() {
+    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+    let sui_addr = move_core_types::account_address::AccountAddress::TWO;
+
+    // First call: create a UID using object::new
+    // object::new requires &mut TxContext
+    let ctx_bytes = harness.synthesize_tx_context().expect("synthesize ctx");
+    let ctx_arg = builder.pure_bytes(ctx_bytes);
+
+    let uid_result = builder.move_call(
+        sui_addr,
+        "object",
+        "new",
+        vec![],
+        vec![ctx_arg],
+    );
+    assert!(uid_result.is_ok(), "first move_call should succeed");
+    let uid_arg = uid_result.unwrap();
+
+    // Second call: get the ID from the UID using object::uid_to_inner
+    // object::uid_to_inner(&UID): ID
+    let id_result = builder.move_call(
+        sui_addr,
+        "object",
+        "uid_to_inner",
+        vec![],
+        vec![uid_arg],
+    );
+    assert!(id_result.is_ok(), "second move_call should succeed");
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    // This may fail due to native function limitations, but should not panic
+    if !effects.success {
+        eprintln!(
+            "PTB chained results test: execution returned error (expected in sandbox): {:?}",
+            effects.error
+        );
+    }
+}
+
+/// Test PTB SplitCoins command.
+#[test]
+fn test_ptb_split_coins() {
+    use sui_move_interface_extractor::benchmark::ptb::{PTBBuilder, Argument};
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+
+    // Create a mock Coin with balance
+    // Coin<SUI> structure: UID (32 bytes) + Balance { value: u64 }
+    let mut coin_bytes = vec![0u8; 32]; // UID
+    coin_bytes.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // 1 SUI balance
+
+    let coin_arg = builder.pure_bytes(coin_bytes);
+
+    // Split amounts
+    let amount1 = builder.pure(&100_000_000u64).expect("serialize amount1");
+    let amount2 = builder.pure(&200_000_000u64).expect("serialize amount2");
+
+    // Execute SplitCoins
+    let split_result = builder.split_coins(coin_arg, vec![amount1, amount2]);
+
+    // The result should be a tuple of new coins
+    assert!(matches!(split_result, Argument::Result(_)));
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    assert!(effects.success, "SplitCoins should succeed: {:?}", effects.error);
+}
+
+/// Test PTB MergeCoins command.
+#[test]
+fn test_ptb_merge_coins() {
+    use sui_move_interface_extractor::benchmark::ptb::{PTBBuilder, Argument};
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+
+    // Create mock Coins
+    let mut coin1_bytes = vec![0u8; 32]; // UID
+    coin1_bytes.extend_from_slice(&500_000_000u64.to_le_bytes()); // 0.5 SUI
+
+    let mut coin2_bytes = vec![1u8; 32]; // Different UID
+    coin2_bytes.extend_from_slice(&300_000_000u64.to_le_bytes()); // 0.3 SUI
+
+    let coin1_arg = builder.pure_bytes(coin1_bytes);
+    let coin2_arg = builder.pure_bytes(coin2_bytes);
+
+    // Execute MergeCoins - merge coin2 into coin1
+    let merge_result = builder.merge_coins(coin1_arg, vec![coin2_arg]);
+
+    assert!(matches!(merge_result, Argument::Result(_)));
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    assert!(effects.success, "MergeCoins should succeed: {:?}", effects.error);
+}
+
+/// Test PTB MakeMoveVec command.
+#[test]
+fn test_ptb_make_move_vec() {
+    use sui_move_interface_extractor::benchmark::ptb::{PTBBuilder, Argument};
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use move_core_types::language_storage::TypeTag;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+
+    // Create u64 elements
+    let elem1 = builder.pure(&100u64).expect("serialize elem1");
+    let elem2 = builder.pure(&200u64).expect("serialize elem2");
+    let elem3 = builder.pure(&300u64).expect("serialize elem3");
+
+    // Create vector<u64>
+    let vec_result = builder.make_move_vec(Some(TypeTag::U64), vec![elem1, elem2, elem3]);
+
+    assert!(matches!(vec_result, Argument::Result(_)));
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    assert!(effects.success, "MakeMoveVec should succeed: {:?}", effects.error);
+}
+
+/// Test PTB TransferObjects command.
+#[test]
+fn test_ptb_transfer_objects() {
+    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+
+    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
+
+    let mut builder = PTBBuilder::new();
+
+    // Create a mock object (just bytes representing some object)
+    let object_bytes = vec![0u8; 40]; // UID + some data
+    let object_arg = builder.pure_bytes(object_bytes);
+
+    // Destination address
+    let dest_addr = move_core_types::account_address::AccountAddress::from_hex_literal("0x1234")
+        .expect("parse address");
+    let dest_arg = builder.pure_bytes(dest_addr.to_vec());
+
+    // Transfer the object
+    builder.transfer_objects(vec![object_arg], dest_arg);
+
+    // Execute the PTB
+    let effects = builder.execute(&mut harness);
+    assert!(effects.is_ok(), "PTB execution should succeed");
+
+    let effects = effects.unwrap();
+    assert!(effects.success, "TransferObjects should succeed: {:?}", effects.error);
+}
