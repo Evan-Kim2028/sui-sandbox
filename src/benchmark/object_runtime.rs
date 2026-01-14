@@ -623,6 +623,9 @@ pub struct ObjectRuntimeState {
     pub children: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
     /// Set of children that existed before this PTB started (loaded from env)
     pub preloaded_children: HashSet<(AccountAddress, AccountAddress)>,
+    /// Pending receives: (recipient_object_id, sent_object_id) -> (type_tag, bytes)
+    /// Used for transfer::receive pattern where an object was sent to another object.
+    pub pending_receives: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
 }
 
 impl ObjectRuntimeState {
@@ -671,6 +674,45 @@ impl ObjectRuntimeState {
     pub fn clear(&mut self) {
         self.children.clear();
         self.preloaded_children.clear();
+        self.pending_receives.clear();
+    }
+
+    // ========== Pending Receives ==========
+
+    /// Add a pending receive for an object sent to another object.
+    /// This is used for transfer::receive pattern.
+    pub fn add_pending_receive(
+        &mut self,
+        recipient_id: AccountAddress,
+        sent_id: AccountAddress,
+        type_tag: TypeTag,
+        bytes: Vec<u8>,
+    ) {
+        self.pending_receives.insert((recipient_id, sent_id), (type_tag, bytes));
+    }
+
+    /// Try to receive an object that was sent to a recipient.
+    /// Returns the object bytes and type if found, removes from pending.
+    pub fn receive_pending(
+        &mut self,
+        recipient_id: AccountAddress,
+        sent_id: AccountAddress,
+    ) -> Option<(TypeTag, Vec<u8>)> {
+        self.pending_receives.remove(&(recipient_id, sent_id))
+    }
+
+    /// Check if an object is pending receive at a recipient.
+    pub fn has_pending_receive(&self, recipient_id: AccountAddress, sent_id: AccountAddress) -> bool {
+        self.pending_receives.contains_key(&(recipient_id, sent_id))
+    }
+
+    /// Get all pending receives for a specific recipient.
+    pub fn get_pending_receives_for(&self, recipient_id: AccountAddress) -> Vec<(AccountAddress, &TypeTag, &Vec<u8>)> {
+        self.pending_receives
+            .iter()
+            .filter(|((r, _), _)| *r == recipient_id)
+            .map(|((_, s), (t, b))| (*s, t, b))
+            .collect()
     }
 
     /// Count the number of children for a specific parent.

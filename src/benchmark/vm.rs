@@ -21,12 +21,16 @@
 //! validating that the LLM-generated code exercised the intended code paths.
 
 use anyhow::{anyhow, Result};
+use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::gas_algebra::{InternalGas, NumArgs, NumBytes};
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use move_core_types::resolver::{LinkageResolver, ModuleResolver};
+use move_core_types::vm_status::StatusCode;
 use move_vm_runtime::move_vm::MoveVM;
 use move_vm_runtime::native_extensions::NativeContextExtensions;
-use move_vm_types::gas::UnmeteredGasMeter;
+use move_vm_types::gas::{GasMeter, SimpleInstruction, UnmeteredGasMeter};
+use move_vm_types::views::{TypeView, ValueView};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
@@ -179,14 +183,18 @@ impl ExecutionTrace {
         Self::default()
     }
 
-    /// Check if a specific package was accessed during execution
-    #[allow(dead_code)]
+    /// Check if a specific package was accessed during execution.
+    ///
+    /// This is useful for verifying that target package code was actually executed
+    /// (not just framework calls). Used in trace analysis for benchmarking.
     pub fn accessed_package(&self, addr: &AccountAddress) -> bool {
         self.modules_accessed.iter().any(|id| id.address() == addr)
     }
 
-    /// Get all modules accessed from a specific package
-    #[allow(dead_code)]
+    /// Get all modules accessed from a specific package.
+    ///
+    /// Returns the subset of accessed modules that belong to the given package address.
+    /// Useful for detailed trace analysis during debugging.
     pub fn modules_from_package(&self, addr: &AccountAddress) -> Vec<&ModuleId> {
         self.modules_accessed
             .iter()
@@ -264,6 +272,557 @@ fn estimate_gas(
     }
 
     gas
+}
+
+/// A gas meter that tracks actual gas consumption with a budget.
+/// Returns OutOfGas error if budget is exceeded.
+pub struct MeteredGasMeter {
+    /// Total gas budget
+    budget: u64,
+    /// Gas consumed so far
+    consumed: u64,
+}
+
+impl MeteredGasMeter {
+    /// Create a new metered gas meter with the given budget.
+    pub fn new(budget: u64) -> Self {
+        Self {
+            budget,
+            consumed: 0,
+        }
+    }
+
+    /// Get the amount of gas consumed.
+    pub fn gas_consumed(&self) -> u64 {
+        self.consumed
+    }
+
+    /// Charge gas, returning OutOfGas if budget exceeded.
+    fn charge(&mut self, amount: u64) -> PartialVMResult<()> {
+        self.consumed = self.consumed.saturating_add(amount);
+        if self.consumed > self.budget {
+            Err(PartialVMError::new(StatusCode::OUT_OF_GAS))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl GasMeter for MeteredGasMeter {
+    fn charge_simple_instr(&mut self, instr: SimpleInstruction) -> PartialVMResult<()> {
+        let cost = match instr {
+            // Arithmetic operations - cheap
+            SimpleInstruction::Add
+            | SimpleInstruction::Sub
+            | SimpleInstruction::Mul
+            | SimpleInstruction::Div
+            | SimpleInstruction::Mod
+            | SimpleInstruction::BitOr
+            | SimpleInstruction::BitAnd
+            | SimpleInstruction::Xor
+            | SimpleInstruction::Shl
+            | SimpleInstruction::Shr
+            | SimpleInstruction::Or
+            | SimpleInstruction::And
+            | SimpleInstruction::Not
+            | SimpleInstruction::Lt
+            | SimpleInstruction::Gt
+            | SimpleInstruction::Le
+            | SimpleInstruction::Ge => 10,
+
+            // Control flow - very cheap
+            SimpleInstruction::Nop
+            | SimpleInstruction::Ret
+            | SimpleInstruction::BrTrue
+            | SimpleInstruction::BrFalse
+            | SimpleInstruction::Branch => 5,
+
+            // Load constants - varies by size
+            SimpleInstruction::LdU8 => 5,
+            SimpleInstruction::LdU16 => 5,
+            SimpleInstruction::LdU32 => 5,
+            SimpleInstruction::LdU64 => 8,
+            SimpleInstruction::LdU128 => 10,
+            SimpleInstruction::LdU256 => 15,
+            SimpleInstruction::LdTrue | SimpleInstruction::LdFalse => 5,
+
+            // Casts - cheap
+            SimpleInstruction::CastU8
+            | SimpleInstruction::CastU16
+            | SimpleInstruction::CastU32
+            | SimpleInstruction::CastU64
+            | SimpleInstruction::CastU128
+            | SimpleInstruction::CastU256 => 8,
+
+            // Reference operations
+            SimpleInstruction::FreezeRef => 5,
+            SimpleInstruction::MutBorrowLoc | SimpleInstruction::ImmBorrowLoc => 10,
+            SimpleInstruction::ImmBorrowField
+            | SimpleInstruction::MutBorrowField
+            | SimpleInstruction::ImmBorrowFieldGeneric
+            | SimpleInstruction::MutBorrowFieldGeneric => 20,
+
+            // Abort is free (execution will stop anyway)
+            SimpleInstruction::Abort => 0,
+        };
+        self.charge(cost)
+    }
+
+    fn charge_pop(&mut self, _popped_val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(5)
+    }
+
+    fn charge_call(
+        &mut self,
+        _module_id: &ModuleId,
+        _func_name: &str,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+        _num_locals: NumArgs,
+    ) -> PartialVMResult<()> {
+        let arg_count = args.len() as u64;
+        self.charge(gas_costs::FUNCTION_CALL_BASE + arg_count * 50)
+    }
+
+    fn charge_call_generic(
+        &mut self,
+        _module_id: &ModuleId,
+        _func_name: &str,
+        ty_args: impl ExactSizeIterator<Item = impl TypeView>,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+        _num_locals: NumArgs,
+    ) -> PartialVMResult<()> {
+        let ty_count = ty_args.len() as u64;
+        let arg_count = args.len() as u64;
+        self.charge(
+            gas_costs::FUNCTION_CALL_BASE
+                + ty_count * gas_costs::TYPE_ARG
+                + arg_count * 50,
+        )
+    }
+
+    fn charge_ld_const(&mut self, size: NumBytes) -> PartialVMResult<()> {
+        self.charge(size.into())
+    }
+
+    fn charge_ld_const_after_deserialization(
+        &mut self,
+        _val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        self.charge(20)
+    }
+
+    fn charge_copy_loc(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(20)
+    }
+
+    fn charge_move_loc(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(10)
+    }
+
+    fn charge_store_loc(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(10)
+    }
+
+    fn charge_pack(
+        &mut self,
+        _is_generic: bool,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        self.charge(50 + args.len() as u64 * 10)
+    }
+
+    fn charge_unpack(
+        &mut self,
+        _is_generic: bool,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        self.charge(50 + args.len() as u64 * 10)
+    }
+
+    fn charge_variant_switch(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(20)
+    }
+
+    fn charge_read_ref(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
+        self.charge(30)
+    }
+
+    fn charge_write_ref(
+        &mut self,
+        _new_val: impl ValueView,
+        _old_val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        self.charge(50)
+    }
+
+    fn charge_eq(&mut self, _lhs: impl ValueView, _rhs: impl ValueView) -> PartialVMResult<()> {
+        self.charge(30)
+    }
+
+    fn charge_neq(&mut self, _lhs: impl ValueView, _rhs: impl ValueView) -> PartialVMResult<()> {
+        self.charge(30)
+    }
+
+    fn charge_vec_pack<'a>(
+        &mut self,
+        _ty: impl TypeView + 'a,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        self.charge(100 + args.len() as u64 * 20)
+    }
+
+    fn charge_vec_len(&mut self, _ty: impl TypeView) -> PartialVMResult<()> {
+        self.charge(10)
+    }
+
+    fn charge_vec_borrow(
+        &mut self,
+        _is_mut: bool,
+        _ty: impl TypeView,
+        _is_success: bool,
+    ) -> PartialVMResult<()> {
+        self.charge(30)
+    }
+
+    fn charge_vec_push_back(
+        &mut self,
+        _ty: impl TypeView,
+        _val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        self.charge(50)
+    }
+
+    fn charge_vec_pop_back(
+        &mut self,
+        _ty: impl TypeView,
+        _val: Option<impl ValueView>,
+    ) -> PartialVMResult<()> {
+        self.charge(30)
+    }
+
+    fn charge_vec_unpack(
+        &mut self,
+        _ty: impl TypeView,
+        _expect_num_elements: NumArgs,
+        elems: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        self.charge(50 + elems.len() as u64 * 10)
+    }
+
+    fn charge_vec_swap(&mut self, _ty: impl TypeView) -> PartialVMResult<()> {
+        self.charge(40)
+    }
+
+    fn charge_native_function(
+        &mut self,
+        amount: InternalGas,
+        _ret_vals: Option<impl ExactSizeIterator<Item = impl ValueView>>,
+    ) -> PartialVMResult<()> {
+        // Native function cost passed in from the native impl
+        self.charge(amount.into())
+    }
+
+    fn charge_native_function_before_execution(
+        &mut self,
+        ty_args: impl ExactSizeIterator<Item = impl TypeView>,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        let ty_count = ty_args.len() as u64;
+        let arg_count = args.len() as u64;
+        self.charge(gas_costs::NATIVE_CALL + ty_count * 50 + arg_count * 30)
+    }
+
+    fn charge_drop_frame(
+        &mut self,
+        locals: impl Iterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        let count = locals.count() as u64;
+        self.charge(20 + count * 5)
+    }
+
+    fn remaining_gas(&self) -> InternalGas {
+        InternalGas::new(self.budget.saturating_sub(self.consumed))
+    }
+}
+
+/// Enum to hold either a metered or unmetered gas meter.
+pub enum GasMeterImpl {
+    Metered(MeteredGasMeter),
+    Unmetered(UnmeteredGasMeter),
+}
+
+impl GasMeterImpl {
+    /// Create from config - metered if budget is set, unmetered otherwise.
+    pub fn from_config(config: &SimulationConfig) -> Self {
+        match config.gas_budget {
+            Some(budget) => GasMeterImpl::Metered(MeteredGasMeter::new(budget)),
+            None => GasMeterImpl::Unmetered(UnmeteredGasMeter),
+        }
+    }
+
+    /// Get gas consumed (0 for unmetered).
+    pub fn gas_consumed(&self) -> u64 {
+        match self {
+            GasMeterImpl::Metered(m) => m.gas_consumed(),
+            GasMeterImpl::Unmetered(_) => 0,
+        }
+    }
+}
+
+impl GasMeter for GasMeterImpl {
+    fn charge_simple_instr(&mut self, instr: SimpleInstruction) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_simple_instr(instr),
+            GasMeterImpl::Unmetered(m) => m.charge_simple_instr(instr),
+        }
+    }
+
+    fn charge_pop(&mut self, popped_val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_pop(popped_val),
+            GasMeterImpl::Unmetered(m) => m.charge_pop(popped_val),
+        }
+    }
+
+    fn charge_call(
+        &mut self,
+        module_id: &ModuleId,
+        func_name: &str,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+        num_locals: NumArgs,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_call(module_id, func_name, args, num_locals),
+            GasMeterImpl::Unmetered(m) => m.charge_call(module_id, func_name, args, num_locals),
+        }
+    }
+
+    fn charge_call_generic(
+        &mut self,
+        module_id: &ModuleId,
+        func_name: &str,
+        ty_args: impl ExactSizeIterator<Item = impl TypeView>,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+        num_locals: NumArgs,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => {
+                m.charge_call_generic(module_id, func_name, ty_args, args, num_locals)
+            }
+            GasMeterImpl::Unmetered(m) => {
+                m.charge_call_generic(module_id, func_name, ty_args, args, num_locals)
+            }
+        }
+    }
+
+    fn charge_ld_const(&mut self, size: NumBytes) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_ld_const(size),
+            GasMeterImpl::Unmetered(m) => m.charge_ld_const(size),
+        }
+    }
+
+    fn charge_ld_const_after_deserialization(
+        &mut self,
+        val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_ld_const_after_deserialization(val),
+            GasMeterImpl::Unmetered(m) => m.charge_ld_const_after_deserialization(val),
+        }
+    }
+
+    fn charge_copy_loc(&mut self, val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_copy_loc(val),
+            GasMeterImpl::Unmetered(m) => m.charge_copy_loc(val),
+        }
+    }
+
+    fn charge_move_loc(&mut self, val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_move_loc(val),
+            GasMeterImpl::Unmetered(m) => m.charge_move_loc(val),
+        }
+    }
+
+    fn charge_store_loc(&mut self, val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_store_loc(val),
+            GasMeterImpl::Unmetered(m) => m.charge_store_loc(val),
+        }
+    }
+
+    fn charge_pack(
+        &mut self,
+        is_generic: bool,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_pack(is_generic, args),
+            GasMeterImpl::Unmetered(m) => m.charge_pack(is_generic, args),
+        }
+    }
+
+    fn charge_unpack(
+        &mut self,
+        is_generic: bool,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_unpack(is_generic, args),
+            GasMeterImpl::Unmetered(m) => m.charge_unpack(is_generic, args),
+        }
+    }
+
+    fn charge_variant_switch(&mut self, val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_variant_switch(val),
+            GasMeterImpl::Unmetered(m) => m.charge_variant_switch(val),
+        }
+    }
+
+    fn charge_read_ref(&mut self, val: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_read_ref(val),
+            GasMeterImpl::Unmetered(m) => m.charge_read_ref(val),
+        }
+    }
+
+    fn charge_write_ref(
+        &mut self,
+        new_val: impl ValueView,
+        old_val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_write_ref(new_val, old_val),
+            GasMeterImpl::Unmetered(m) => m.charge_write_ref(new_val, old_val),
+        }
+    }
+
+    fn charge_eq(&mut self, lhs: impl ValueView, rhs: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_eq(lhs, rhs),
+            GasMeterImpl::Unmetered(m) => m.charge_eq(lhs, rhs),
+        }
+    }
+
+    fn charge_neq(&mut self, lhs: impl ValueView, rhs: impl ValueView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_neq(lhs, rhs),
+            GasMeterImpl::Unmetered(m) => m.charge_neq(lhs, rhs),
+        }
+    }
+
+    fn charge_vec_pack<'a>(
+        &mut self,
+        ty: impl TypeView + 'a,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_pack(ty, args),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_pack(ty, args),
+        }
+    }
+
+    fn charge_vec_len(&mut self, ty: impl TypeView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_len(ty),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_len(ty),
+        }
+    }
+
+    fn charge_vec_borrow(
+        &mut self,
+        is_mut: bool,
+        ty: impl TypeView,
+        is_success: bool,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_borrow(is_mut, ty, is_success),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_borrow(is_mut, ty, is_success),
+        }
+    }
+
+    fn charge_vec_push_back(
+        &mut self,
+        ty: impl TypeView,
+        val: impl ValueView,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_push_back(ty, val),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_push_back(ty, val),
+        }
+    }
+
+    fn charge_vec_pop_back(
+        &mut self,
+        ty: impl TypeView,
+        val: Option<impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_pop_back(ty, val),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_pop_back(ty, val),
+        }
+    }
+
+    fn charge_vec_unpack(
+        &mut self,
+        ty: impl TypeView,
+        expect_num_elements: NumArgs,
+        elems: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_unpack(ty, expect_num_elements, elems),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_unpack(ty, expect_num_elements, elems),
+        }
+    }
+
+    fn charge_vec_swap(&mut self, ty: impl TypeView) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_vec_swap(ty),
+            GasMeterImpl::Unmetered(m) => m.charge_vec_swap(ty),
+        }
+    }
+
+    fn charge_native_function(
+        &mut self,
+        amount: InternalGas,
+        ret_vals: Option<impl ExactSizeIterator<Item = impl ValueView>>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_native_function(amount, ret_vals),
+            GasMeterImpl::Unmetered(m) => m.charge_native_function(amount, ret_vals),
+        }
+    }
+
+    fn charge_native_function_before_execution(
+        &mut self,
+        ty_args: impl ExactSizeIterator<Item = impl TypeView>,
+        args: impl ExactSizeIterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_native_function_before_execution(ty_args, args),
+            GasMeterImpl::Unmetered(m) => m.charge_native_function_before_execution(ty_args, args),
+        }
+    }
+
+    fn charge_drop_frame(
+        &mut self,
+        locals: impl Iterator<Item = impl ValueView>,
+    ) -> PartialVMResult<()> {
+        match self {
+            GasMeterImpl::Metered(m) => m.charge_drop_frame(locals),
+            GasMeterImpl::Unmetered(m) => m.charge_drop_frame(locals),
+        }
+    }
+
+    fn remaining_gas(&self) -> InternalGas {
+        match self {
+            GasMeterImpl::Metered(m) => m.remaining_gas(),
+            GasMeterImpl::Unmetered(m) => m.remaining_gas(),
+        }
+    }
 }
 
 /// A dynamic field entry that was created or modified during execution.
@@ -402,12 +961,11 @@ impl<'a> ModuleResolver for InMemoryStorage<'a> {
 pub struct VMHarness<'a> {
     vm: MoveVM,
     storage: InMemoryStorage<'a>,
-    #[allow(dead_code)]
+    /// Mock native state for Sui-specific natives (events, clock, etc.)
     native_state: Arc<MockNativeState>,
-    /// Shared execution trace
+    /// Shared execution trace for tracking module access
     trace: Arc<Mutex<ExecutionTrace>>,
-    /// Simulation configuration
-    #[allow(dead_code)]
+    /// Simulation configuration (gas settings, clock base, crypto mocks, etc.)
     config: SimulationConfig,
     /// Shared dynamic field state that persists across VM sessions.
     /// Used to track Table/Bag entries throughout PTB execution.
@@ -513,6 +1071,16 @@ impl<'a> VMHarness<'a> {
         }
     }
 
+    /// Preload pending receives from SimulationEnvironment.
+    /// Call this before executing a PTB to enable transfer::receive in Move code.
+    pub fn preload_pending_receives(&self, receives: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>) {
+        if let Ok(mut state) = self.shared_df_state.lock() {
+            for ((recipient, sent), type_tag, bytes) in receives {
+                state.add_pending_receive(recipient, sent, type_tag, bytes);
+            }
+        }
+    }
+
     /// Create VM extensions with a SharedObjectRuntime that syncs with our persistent state.
     /// This allows dynamic field operations to persist across multiple MoveCall executions.
     fn create_extensions(&self) -> NativeContextExtensions<'static> {
@@ -543,7 +1111,7 @@ impl<'a> VMHarness<'a> {
             loaded_ty_args.push(ty);
         }
 
-        let mut gas_meter = UnmeteredGasMeter;
+        let mut gas_meter = GasMeterImpl::from_config(&self.config);
 
         session
             .execute_entry_function(module, function_name, loaded_ty_args, args, &mut gas_meter)
@@ -592,7 +1160,7 @@ impl<'a> VMHarness<'a> {
             loaded_ty_args.push(ty);
         }
 
-        let mut gas_meter = UnmeteredGasMeter;
+        let mut gas_meter = GasMeterImpl::from_config(&self.config);
 
         let serialized_return = session
             .execute_function_bypass_visibility(
@@ -604,6 +1172,9 @@ impl<'a> VMHarness<'a> {
                 None,
             )
             .map_err(|e| anyhow!("execution failed: {:?}", e))?;
+
+        // Get actual gas consumed from the meter
+        let metered_gas = gas_meter.gas_consumed();
 
         let (result, _store) = session.finish();
         let _changes = result.map_err(|e| anyhow!("session finish failed: {:?}", e))?;
@@ -622,8 +1193,12 @@ impl<'a> VMHarness<'a> {
             .map(|(idx, bytes, _layout)| (idx, bytes))
             .collect();
 
-        // Estimate gas used
-        let gas_used = estimate_gas(&args, &ty_args, &return_values, &mutable_ref_outputs);
+        // Use metered gas if available, otherwise fall back to estimation
+        let gas_used = if metered_gas > 0 {
+            metered_gas
+        } else {
+            estimate_gas(&args, &ty_args, &return_values, &mutable_ref_outputs)
+        };
 
         Ok(ExecutionOutput {
             return_values,
@@ -806,7 +1381,7 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             loaded_ty_args.push(ty);
         }
 
-        let mut gas_meter = UnmeteredGasMeter;
+        let mut gas_meter = GasMeterImpl::from_config(self.harness.config());
 
         let serialized_return = session
             .execute_function_bypass_visibility(
@@ -818,6 +1393,9 @@ impl<'a, 'b> PTBSession<'a, 'b> {
                 None,
             )
             .map_err(|e| anyhow!("execution failed: {:?}", e))?;
+
+        // Get actual gas consumed
+        let metered_gas = gas_meter.gas_consumed();
 
         // Finish the session
         let (result, _store) = session.finish();
@@ -841,12 +1419,16 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             .map(|(idx, bytes, _layout)| (idx, bytes))
             .collect();
 
-        // Calculate output gas and combine with input gas
-        let output_gas: u64 = return_values.iter().map(|r| r.len() as u64 * gas_costs::OUTPUT_BYTE).sum::<u64>()
-            + mutable_ref_outputs.iter().map(|(_, bytes)| {
-                bytes.len() as u64 * gas_costs::OUTPUT_BYTE + gas_costs::OBJECT_MUTATE
-            }).sum::<u64>();
-        let gas_used = input_gas + output_gas;
+        // Calculate gas used - use metered gas if available, otherwise estimate
+        let gas_used: u64 = if metered_gas > 0 {
+            metered_gas
+        } else {
+            let output_gas = return_values.iter().map(|r| r.len() as u64 * gas_costs::OUTPUT_BYTE).sum::<u64>()
+                + mutable_ref_outputs.iter().map(|(_, bytes)| {
+                    bytes.len() as u64 * gas_costs::OUTPUT_BYTE + gas_costs::OBJECT_MUTATE
+                }).sum::<u64>();
+            input_gas + output_gas
+        };
 
         Ok(ExecutionOutput {
             return_values,

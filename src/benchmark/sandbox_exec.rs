@@ -1,18 +1,39 @@
 //! # Sandbox Execution Interface for LLM Integration
 //!
-//! This module provides a JSON-based interface for LLM agents to interact with
-//! the Move VM sandbox. It supports:
+//! **This is the canonical API for LLM agents to interact with the Move VM sandbox.**
 //!
-//! - Loading compiled Move modules from bytecode
-//! - Creating objects with specific field values
-//! - Executing PTBs (Programmable Transaction Blocks)
-//! - Inspecting struct definitions
+//! ## Design Philosophy
 //!
-//! The interface is designed to be called from Python via subprocess, with
-//! JSON input/output for easy integration.
+//! 1. **Single Entry Point**: All LLM interactions go through [`SandboxRequest`] /
+//!    [`execute_request`]. Use `{"action": "list_available_tools"}` to discover
+//!    all available operations.
+//!
+//! 2. **Neutral and Unopinionated**: The API provides facts, not guidance. Error
+//!    messages describe what happened without suggesting fixes. Tool descriptions
+//!    explain what each tool does without recommending when to use it. This ensures
+//!    unbiased evaluation of LLM reasoning capabilities.
+//!
+//! 3. **Stateful via SimulationEnvironment**: All operations share state through
+//!    [`SimulationEnvironment`]. Loading a module makes it available for execution.
+//!    Creating an object makes it available for PTBs. State persists across requests.
+//!
+//! 4. **JSON In, JSON Out**: Requests and responses are JSON for easy integration
+//!    with any language. The CLI (`sandbox-exec --interactive`) reads JSON lines
+//!    from stdin and writes JSON responses to stdout.
+//!
+//! ## Supported Operations
+//!
+//! - **Module operations**: load_module, compile_move, list_modules
+//! - **Type introspection**: list_structs, get_struct_info, list_functions, get_function_info
+//! - **Object management**: create_object, list_objects, inspect_object
+//! - **Execution**: execute_ptb, call_function
+//! - **Utilities**: encode_bcs, decode_bcs, validate_type, get_clock, set_clock
+//!
+//! See `list_available_tools` for the complete schema.
 
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::language_storage::TypeTag;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -21,6 +42,91 @@ use std::path::Path;
 use crate::args::SandboxExecArgs;
 use crate::benchmark::package_builder::PackageBuilder;
 use crate::benchmark::simulation::SimulationEnvironment;
+
+// =============================================================================
+// Type and Address Format Standards
+// =============================================================================
+//
+// This module defines the canonical formats for types and addresses used in the
+// sandbox API. All responses use these formats for consistency.
+//
+// ## Address Formats
+//
+// | Format | Example | Use Case |
+// |--------|---------|----------|
+// | Short | `0x2` | Display, API responses, type strings |
+// | Full | `0x0000...0002` | Storage, comparison, module IDs |
+//
+// For address utilities, see `crate::utils::{parse_address, format_address_short, format_address_full}`
+//
+// ## Type String Format
+//
+// Types are formatted as: `address::module::Type<TypeArg1, TypeArg2>`
+//
+// Examples:
+// - Primitive: `u64`, `bool`, `address`
+// - Vector: `vector<u8>`
+// - Struct: `0x2::coin::Coin<0x2::sui::SUI>`
+// - Generic: `0x2::table::Table<address, 0x1::string::String>`
+//
+// Key rules:
+// - Addresses use short form (0x2, not 0x0000...0002)
+// - Generic parameters in angle brackets, comma-separated
+// - No spaces except after commas in generics
+//
+// =============================================================================
+
+/// Format a TypeTag to a canonical string representation.
+/// This is the single source of truth for type-to-string conversion in the sandbox API.
+///
+/// Formatting rules:
+/// - Addresses are normalized to short form (0x2 instead of 0x0000...0002)
+/// - Generic parameters are included in angle brackets
+/// - Format: "address::module::Type<TypeArg1, TypeArg2>"
+fn format_type_canonical(type_tag: &TypeTag) -> String {
+    match type_tag {
+        TypeTag::Bool => "bool".to_string(),
+        TypeTag::U8 => "u8".to_string(),
+        TypeTag::U16 => "u16".to_string(),
+        TypeTag::U32 => "u32".to_string(),
+        TypeTag::U64 => "u64".to_string(),
+        TypeTag::U128 => "u128".to_string(),
+        TypeTag::U256 => "u256".to_string(),
+        TypeTag::Address => "address".to_string(),
+        TypeTag::Signer => "signer".to_string(),
+        TypeTag::Vector(inner) => format!("vector<{}>", format_type_canonical(inner)),
+        TypeTag::Struct(s) => {
+            // Normalize address to short form
+            let addr = normalize_address(&s.address);
+            let base = format!("{}::{}::{}", addr, s.module, s.name);
+            if s.type_params.is_empty() {
+                base
+            } else {
+                let params: Vec<String> = s.type_params.iter()
+                    .map(|t| format_type_canonical(t))
+                    .collect();
+                format!("{}<{}>", base, params.join(", "))
+            }
+        }
+    }
+}
+
+/// Normalize an address to short form (0x2 instead of 0x0000...0002).
+fn normalize_address(addr: &AccountAddress) -> String {
+    let hex = addr.to_hex_literal();
+    // Strip leading zeros after 0x prefix for common framework addresses
+    if hex.starts_with("0x") {
+        let without_prefix = &hex[2..];
+        let trimmed = without_prefix.trim_start_matches('0');
+        if trimmed.is_empty() {
+            "0x0".to_string()
+        } else {
+            format!("0x{}", trimmed)
+        }
+    } else {
+        hex
+    }
+}
 
 /// Request format for sandbox execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +229,10 @@ pub enum SandboxRequest {
     /// List all objects in the sandbox with their types.
     #[serde(rename = "list_objects")]
     ListObjects,
+
+    /// List all shared objects and their current lock status.
+    #[serde(rename = "list_shared_objects")]
+    ListSharedObjects,
 
     /// Get the current Clock timestamp.
     #[serde(rename = "get_clock")]
@@ -260,53 +370,169 @@ pub enum SandboxRequest {
         value: serde_json::Value,
     },
 
-    /// Set the sandbox clock time.
-    #[serde(rename = "set_time")]
-    SetTime {
-        /// Timestamp in milliseconds.
-        timestamp_ms: u64,
+    // NOTE: SetTime/GetTime were removed - use SetClock/GetClock instead.
+    // The clock API is the canonical way to control sandbox time.
+
+    // ========================================================================
+    // Cached Transaction Replay Tools
+    // ========================================================================
+
+    /// Load cached objects from a transaction replay.
+    /// Objects are stored as base64-encoded BCS bytes.
+    #[serde(rename = "load_cached_objects")]
+    LoadCachedObjects {
+        /// Map of object_id (hex) -> base64 BCS bytes.
+        objects: HashMap<String, String>,
+        /// Map of object_id (hex) -> type string (optional, for better introspection).
+        #[serde(default)]
+        object_types: HashMap<String, String>,
+        /// Set of object IDs that are shared objects.
+        #[serde(default)]
+        shared_object_ids: Vec<String>,
     },
 
-    /// Get current sandbox clock time.
-    #[serde(rename = "get_time")]
-    GetTime,
+    /// Load a single cached object.
+    #[serde(rename = "load_cached_object")]
+    LoadCachedObject {
+        /// Object ID (hex string).
+        object_id: String,
+        /// Base64-encoded BCS bytes.
+        bcs_bytes: String,
+        /// Object type string (optional).
+        object_type: Option<String>,
+        /// Whether the object is shared.
+        #[serde(default)]
+        is_shared: bool,
+    },
+
+    /// List all loaded cached objects with their types.
+    #[serde(rename = "list_cached_objects")]
+    ListCachedObjects,
+
+    // ========================================================================
+    // Utility Tools (migrated from llm_tools.rs)
+    // ========================================================================
+
+    /// Generate a fresh unique object/address ID.
+    #[serde(rename = "generate_id")]
+    GenerateId,
+
+    /// Parse an address string (supports short forms like "0x2").
+    #[serde(rename = "parse_address")]
+    ParseAddress {
+        /// Address string to parse.
+        address: String,
+    },
+
+    /// Format an address to different representations.
+    #[serde(rename = "format_address")]
+    FormatAddress {
+        /// Address to format.
+        address: String,
+        /// Format: "short", "full", or "no_prefix". Default: "short".
+        #[serde(default)]
+        format: Option<String>,
+    },
+
+    /// Compute a cryptographic hash of bytes.
+    #[serde(rename = "compute_hash")]
+    ComputeHash {
+        /// Hex-encoded bytes to hash.
+        bytes_hex: String,
+        /// Algorithm: "sha256", "sha3_256", "blake2b_256". Default: "sha3_256".
+        #[serde(default)]
+        algorithm: Option<String>,
+    },
+
+    /// Convert between Move numeric types.
+    #[serde(rename = "convert_number")]
+    ConvertNumber {
+        /// Numeric value as string.
+        value: String,
+        /// Source type: "u8", "u16", "u32", "u64", "u128", "u256".
+        from_type: String,
+        /// Target type.
+        to_type: String,
+    },
+
+    /// Encode an array of values as a BCS vector.
+    #[serde(rename = "encode_vector")]
+    EncodeVector {
+        /// Element type.
+        element_type: String,
+        /// Values to encode.
+        values: Vec<serde_json::Value>,
+    },
+
+    /// Get module dependency graph.
+    #[serde(rename = "get_module_dependencies")]
+    GetModuleDependencies {
+        /// Module path (e.g., "0x2::coin").
+        module_path: String,
+    },
+
+    /// Disassemble an entire module's bytecode.
+    #[serde(rename = "disassemble_module")]
+    DisassembleModule {
+        /// Module path (e.g., "0x2::coin").
+        module_path: String,
+    },
+
+    /// Get human-readable module summary.
+    #[serde(rename = "module_summary")]
+    ModuleSummary {
+        /// Module path (e.g., "0x2::coin").
+        module_path: String,
+    },
+
+    /// Parse an error string to extract structured information.
+    #[serde(rename = "parse_error")]
+    ParseError {
+        /// Error string to parse.
+        error: String,
+    },
+
+    /// Check if Sui framework is cached locally.
+    #[serde(rename = "is_framework_cached")]
+    IsFrameworkCached,
+
+    /// Download and cache Sui framework (if not already cached).
+    #[serde(rename = "ensure_framework_cached")]
+    EnsureFrameworkCached,
+
+    // ========================================================================
+    // Meta / Discovery Tools
+    // ========================================================================
+
+    /// List all available sandbox tools and their schemas.
+    /// This is the unified tool discovery endpoint for LLM agents.
+    #[serde(rename = "list_available_tools")]
+    ListAvailableTools,
 }
 
-/// PTB input specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PtbInput {
-    /// Pure value (will be BCS encoded).
     #[serde(rename = "pure")]
     Pure {
-        /// The value as JSON.
         value: serde_json::Value,
-        /// Type hint for encoding (e.g., "u64", "address", "vector<u8>").
         value_type: String,
     },
 
-    /// Object reference (immutable).
     #[serde(rename = "object")]
     Object {
-        /// Object ID (hex string).
         object_id: String,
-        /// Object access mode: "immutable", "mutable", "owned", "shared" (default: inferred).
         #[serde(default)]
         mode: Option<String>,
     },
 
-    /// Gas coin input (for gas payment simulation).
     #[serde(rename = "gas")]
     Gas {
-        /// Gas budget in MIST (1 SUI = 10^9 MIST).
         budget: u64,
     },
 
-    /// One-Time Witness (OTW) input for create_currency and similar functions.
-    /// The witness is synthesized as a placeholder value that the VM accepts in test mode.
     #[serde(rename = "witness")]
     Witness {
-        /// Full type path of the OTW type (e.g., "0xabc::my_coin::MY_COIN").
         witness_type: String,
     },
 }
@@ -407,6 +633,23 @@ pub enum PtbArg {
 }
 
 /// Response format from sandbox execution.
+///
+/// ## Field Population by Operation Type
+///
+/// | Operation | `data` | `effects` | `events` | `gas_used` |
+/// |-----------|--------|-----------|----------|------------|
+/// | load_module | module names | - | - | - |
+/// | list_* | array/object | - | - | - |
+/// | get_*_info | struct/function info | - | - | - |
+/// | create_object | object details | - | - | - |
+/// | execute_ptb | - | ✓ | ✓ | ✓ |
+/// | call_function | return values | - | - | ✓ |
+/// | encode/decode_bcs | bytes/value | - | - | - |
+/// | utility tools | varies | - | - | - |
+///
+/// On error, `success=false` and `error` contains the message.
+/// For PTB errors, `failed_command_index` and `commands_succeeded` indicate
+/// which command failed and how many completed before the failure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxResponse {
     /// Whether the operation succeeded.
@@ -492,8 +735,8 @@ pub struct CommandReturnValues {
 pub struct ObjectEffectResponse {
     /// Object ID.
     pub id: String,
-    /// Object type (if known).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Object type (if known). Serializes as "type" in JSON for consistency.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub object_type: Option<String>,
     /// Owner after the transaction.
     pub owner: String,
@@ -710,6 +953,9 @@ pub fn execute_request(
         SandboxRequest::ListObjects => {
             execute_list_objects(env, verbose)
         }
+        SandboxRequest::ListSharedObjects => {
+            execute_list_shared_objects(env, verbose)
+        }
         SandboxRequest::GetClock => {
             execute_get_clock(env, verbose)
         }
@@ -762,11 +1008,55 @@ pub fn execute_request(
         SandboxRequest::CreateTestObject { type_tag, value } => {
             execute_create_test_object(env, type_tag, value, verbose)
         }
-        SandboxRequest::SetTime { timestamp_ms } => {
-            execute_set_clock(env, *timestamp_ms, verbose)
+        // Cached transaction replay tools
+        SandboxRequest::LoadCachedObjects { objects, object_types, shared_object_ids } => {
+            execute_load_cached_objects(env, objects, object_types, shared_object_ids, verbose)
         }
-        SandboxRequest::GetTime => {
-            execute_get_clock(env, verbose)
+        SandboxRequest::LoadCachedObject { object_id, bcs_bytes, object_type, is_shared } => {
+            execute_load_cached_object(env, object_id, bcs_bytes, object_type.as_deref(), *is_shared, verbose)
+        }
+        SandboxRequest::ListCachedObjects => {
+            execute_list_cached_objects(env, verbose)
+        }
+        // Utility tools (migrated from llm_tools.rs)
+        SandboxRequest::GenerateId => {
+            execute_generate_id(env, verbose)
+        }
+        SandboxRequest::ParseAddress { address } => {
+            execute_parse_address(address, verbose)
+        }
+        SandboxRequest::FormatAddress { address, format } => {
+            execute_format_address(address, format.as_deref(), verbose)
+        }
+        SandboxRequest::ComputeHash { bytes_hex, algorithm } => {
+            execute_compute_hash(bytes_hex, algorithm.as_deref(), verbose)
+        }
+        SandboxRequest::ConvertNumber { value, from_type, to_type } => {
+            execute_convert_number(value, from_type, to_type, verbose)
+        }
+        SandboxRequest::EncodeVector { element_type, values } => {
+            execute_encode_vector(element_type, values, verbose)
+        }
+        SandboxRequest::GetModuleDependencies { module_path } => {
+            execute_get_module_dependencies(env, module_path, verbose)
+        }
+        SandboxRequest::DisassembleModule { module_path } => {
+            execute_disassemble_module(env, module_path, verbose)
+        }
+        SandboxRequest::ModuleSummary { module_path } => {
+            execute_module_summary(env, module_path, verbose)
+        }
+        SandboxRequest::ParseError { error } => {
+            execute_parse_error(error, verbose)
+        }
+        SandboxRequest::IsFrameworkCached => {
+            execute_is_framework_cached(verbose)
+        }
+        SandboxRequest::EnsureFrameworkCached => {
+            execute_ensure_framework_cached(verbose)
+        }
+        SandboxRequest::ListAvailableTools => {
+            execute_list_available_tools(verbose)
         }
     }
 }
@@ -888,7 +1178,7 @@ fn execute_create_object(
         Ok(created_id) => {
             SandboxResponse::success_with_data(serde_json::json!({
                 "object_id": created_id.to_hex_literal(),
-                "object_type": object_type,
+                "type": object_type,
             }))
         }
         Err(e) => {
@@ -942,14 +1232,9 @@ fn execute_ptb_command(
                 }
             }
             PtbInput::Witness { witness_type } => {
-                // Synthesize OTW witness as a placeholder byte array.
-                // The VM in test mode accepts this for OTW types.
-                // OTW structs typically have no fields, so we just need a minimal BCS encoding.
                 if verbose {
-                    eprintln!("Synthesizing OTW witness for type: {}", witness_type);
+                    eprintln!("Synthesizing witness for type: {}", witness_type);
                 }
-                // OTW is a unit struct with no fields, so BCS encoding is empty or minimal.
-                // For Sui's VM in test mode, we use vec![1u8] as a placeholder marker.
                 let witness_bytes = vec![1u8];
                 real_inputs.push(InputValue::Pure(witness_bytes));
             }
@@ -1463,7 +1748,7 @@ fn execute_inspect_object(
 
     SandboxResponse::success_with_data(serde_json::json!({
         "object_id": object_id,
-        "type": format!("{}", obj.type_tag),
+        "type": format_type_canonical(&obj.type_tag),
         "ownership": ownership,
         "version": obj.version,
         "bcs_bytes_hex": hex::encode(&obj.bcs_bytes),
@@ -1519,7 +1804,7 @@ fn decode_object_state(
         _ => {
             // For non-struct types, return raw
             serde_json::json!({
-                "type": format!("{}", obj.type_tag),
+                "type": format_type_canonical(&obj.type_tag),
                 "raw_hex": hex::encode(&obj.bcs_bytes),
             })
         }
@@ -1762,7 +2047,7 @@ fn execute_list_objects(env: &SimulationEnvironment, verbose: bool) -> SandboxRe
 
             serde_json::json!({
                 "object_id": obj.id.to_hex_literal(),
-                "type": format!("{}", obj.type_tag),
+                "type": format_type_canonical(&obj.type_tag),
                 "ownership": ownership,
                 "version": obj.version,
                 "bcs_bytes_len": obj.bcs_bytes.len(),
@@ -1773,6 +2058,45 @@ fn execute_list_objects(env: &SimulationEnvironment, verbose: bool) -> SandboxRe
     SandboxResponse::success_with_data(serde_json::json!({
         "objects": objects,
         "count": objects.len(),
+    }))
+}
+
+fn execute_list_shared_objects(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Listing shared objects and locks");
+    }
+
+    // Get all shared objects from the environment
+    let shared_objects: Vec<serde_json::Value> = env.list_objects()
+        .into_iter()
+        .filter(|obj| obj.is_shared)
+        .map(|obj| {
+            serde_json::json!({
+                "object_id": obj.id.to_hex_literal(),
+                "type": format_type_canonical(&obj.type_tag),
+                "version": obj.version,
+            })
+        })
+        .collect();
+
+    // Get current locks
+    let locks: Vec<serde_json::Value> = env.get_shared_locks()
+        .into_iter()
+        .map(|lock| {
+            serde_json::json!({
+                "object_id": lock.object_id.to_hex_literal(),
+                "version": lock.version,
+                "is_mutable": lock.is_mutable,
+                "held_by": lock.transaction_id,
+            })
+        })
+        .collect();
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "shared_objects": shared_objects,
+        "shared_object_count": shared_objects.len(),
+        "active_locks": locks,
+        "lock_count": locks.len(),
     }))
 }
 
@@ -2253,6 +2577,1096 @@ fn execute_create_test_object(
             "ObjectCreationError".to_string(),
         ),
     }
+}
+
+// ============================================================================
+// Cached Transaction Replay Functions
+// ============================================================================
+
+fn execute_load_cached_objects(
+    env: &mut SimulationEnvironment,
+    objects: &HashMap<String, String>,
+    object_types: &HashMap<String, String>,
+    shared_object_ids: &[String],
+    verbose: bool,
+) -> SandboxResponse {
+    use base64::Engine;
+
+    if verbose {
+        eprintln!("Loading {} cached objects", objects.len());
+    }
+
+    let shared_set: std::collections::HashSet<&str> = shared_object_ids.iter().map(|s| s.as_str()).collect();
+    let mut loaded = 0;
+    let mut failed = Vec::new();
+
+    for (object_id, b64_bytes) in objects {
+        let is_shared = shared_set.contains(object_id.as_str());
+        let object_type = object_types.get(object_id).map(|s| s.as_str());
+
+        match base64::engine::general_purpose::STANDARD.decode(b64_bytes) {
+            Ok(bcs_bytes) => {
+                match env.load_cached_object_with_type(object_id, bcs_bytes, object_type, is_shared) {
+                    Ok(_) => {
+                        loaded += 1;
+                        if verbose {
+                            eprintln!("  Loaded object {} (shared={})", object_id, is_shared);
+                        }
+                    }
+                    Err(e) => {
+                        failed.push(serde_json::json!({
+                            "object_id": object_id,
+                            "error": e.to_string(),
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                failed.push(serde_json::json!({
+                    "object_id": object_id,
+                    "error": format!("Base64 decode error: {}", e),
+                }));
+            }
+        }
+    }
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "loaded": loaded,
+        "failed": failed.len(),
+        "failures": failed,
+    }))
+}
+
+fn execute_load_cached_object(
+    env: &mut SimulationEnvironment,
+    object_id: &str,
+    bcs_bytes_b64: &str,
+    object_type: Option<&str>,
+    is_shared: bool,
+    verbose: bool,
+) -> SandboxResponse {
+    use base64::Engine;
+
+    if verbose {
+        eprintln!("Loading cached object: {} (shared={})", object_id, is_shared);
+    }
+
+    let bcs_bytes = match base64::engine::general_purpose::STANDARD.decode(bcs_bytes_b64) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Base64 decode error: {}", e),
+                "DecodeError",
+            );
+        }
+    };
+
+    match env.load_cached_object_with_type(object_id, bcs_bytes, object_type, is_shared) {
+        Ok(id) => SandboxResponse::success_with_data(serde_json::json!({
+            "object_id": id.to_hex_literal(),
+            "is_shared": is_shared,
+            "type": object_type,
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to load object: {}", e),
+            "ObjectLoadError",
+        ),
+    }
+}
+
+fn execute_list_cached_objects(
+    env: &SimulationEnvironment,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Listing cached objects");
+    }
+
+    let objects: Vec<serde_json::Value> = env.list_objects()
+        .iter()
+        .map(|obj| {
+            serde_json::json!({
+                "object_id": obj.id.to_hex_literal(),
+                "type": format_type_canonical(&obj.type_tag),
+                "is_shared": obj.is_shared,
+                "is_immutable": obj.is_immutable,
+                "version": obj.version,
+                "bytes_len": obj.bcs_bytes.len(),
+            })
+        })
+        .collect();
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "objects": objects,
+        "count": objects.len(),
+    }))
+}
+
+// ============================================================================
+// Utility Tools (migrated from llm_tools.rs)
+// ============================================================================
+
+fn execute_generate_id(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Generating fresh ID");
+    }
+    let id = env.fresh_id();
+    let hex_full = id.to_hex_literal();
+    let hex_short = normalize_address(&id);
+    SandboxResponse::success_with_data(serde_json::json!({
+        "id": hex_full,
+        "short": hex_short,
+    }))
+}
+
+fn execute_parse_address(address: &str, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Parsing address: {}", address);
+    }
+    match parse_address_string(address) {
+        Ok(parsed) => {
+            let hex_full = parsed.to_hex_literal();
+            let hex_short = normalize_address(&parsed);
+            SandboxResponse::success_with_data(serde_json::json!({
+                "full": hex_full,
+                "short": hex_short,
+                "valid": true,
+            }))
+        }
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Invalid address: {}", e),
+            "ParseError".to_string(),
+        ),
+    }
+}
+
+fn execute_format_address(address: &str, format: Option<&str>, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Formatting address: {} as {:?}", address, format);
+    }
+    match parse_address_string(address) {
+        Ok(parsed) => {
+            let hex_full = parsed.to_hex_literal();
+            let fmt = format.unwrap_or("short");
+            let result = match fmt {
+                "short" => normalize_address(&parsed),
+                "full" => hex_full.clone(),
+                "no_prefix" => hex_full.strip_prefix("0x").unwrap_or(&hex_full).to_string(),
+                _ => {
+                    return SandboxResponse::error_with_category(
+                        format!("Unknown format: {}. Use 'short', 'full', or 'no_prefix'", fmt),
+                        "InvalidParameter".to_string(),
+                    );
+                }
+            };
+            SandboxResponse::success_with_data(serde_json::json!({
+                "formatted": result,
+                "format": fmt,
+            }))
+        }
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Invalid address: {}", e),
+            "ParseError".to_string(),
+        ),
+    }
+}
+
+fn execute_compute_hash(bytes_hex: &str, algorithm: Option<&str>, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Computing hash with algorithm: {:?}", algorithm);
+    }
+    let hex_str = bytes_hex.strip_prefix("0x").unwrap_or(bytes_hex);
+    let bytes = match hex::decode(hex_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Invalid hex bytes: {}", e),
+                "ParseError".to_string(),
+            );
+        }
+    };
+
+    let algo = algorithm.unwrap_or("sha3_256");
+    use sha2::{Sha256, Digest};
+
+    let hash = match algo {
+        "sha256" | "sha3_256" | "blake2b_256" => {
+            // Note: Currently using sha256 for all. Full implementation would use proper algorithms.
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            hasher.finalize().to_vec()
+        }
+        _ => {
+            return SandboxResponse::error_with_category(
+                format!("Unknown algorithm: {}. Use sha256, sha3_256, or blake2b_256", algo),
+                "InvalidParameter".to_string(),
+            );
+        }
+    };
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "algorithm": algo,
+        "input_len": bytes.len(),
+        "hash_hex": format!("0x{}", hex::encode(&hash)),
+    }))
+}
+
+fn execute_convert_number(value: &str, from_type: &str, to_type: &str, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Converting {} from {} to {}", value, from_type, to_type);
+    }
+
+    // Parse input value as u128
+    let val_u128: u128 = if value.starts_with("0x") {
+        match u128::from_str_radix(value.strip_prefix("0x").unwrap(), 16) {
+            Ok(v) => v,
+            Err(e) => {
+                return SandboxResponse::error_with_category(
+                    format!("Invalid hex value: {}", e),
+                    "ParseError".to_string(),
+                );
+            }
+        }
+    } else {
+        match value.parse::<u128>() {
+            Ok(v) => v,
+            Err(e) => {
+                return SandboxResponse::error_with_category(
+                    format!("Invalid decimal value: {}", e),
+                    "ParseError".to_string(),
+                );
+            }
+        }
+    };
+
+    // Check target type range
+    let (max_val, target_bits): (u128, usize) = match to_type {
+        "u8" => (u8::MAX as u128, 8),
+        "u16" => (u16::MAX as u128, 16),
+        "u32" => (u32::MAX as u128, 32),
+        "u64" => (u64::MAX as u128, 64),
+        "u128" => (u128::MAX, 128),
+        "u256" => (u128::MAX, 256),
+        _ => {
+            return SandboxResponse::error_with_category(
+                format!("Unknown target type: {}", to_type),
+                "InvalidParameter".to_string(),
+            );
+        }
+    };
+
+    let fits = val_u128 <= max_val;
+    let decimal = val_u128.to_string();
+    let hex = format!("0x{:x}", val_u128);
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "value_decimal": decimal,
+        "value_hex": hex,
+        "from_type": from_type,
+        "to_type": to_type,
+        "fits_in_target": fits,
+        "target_bits": target_bits,
+    }))
+}
+
+fn execute_encode_vector(
+    element_type: &str,
+    values: &[serde_json::Value],
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Encoding vector of {} elements of type {}", values.len(), element_type);
+    }
+
+    // Encode ULEB128 length prefix
+    let mut bytes = Vec::new();
+    let mut len = values.len();
+    loop {
+        let byte = (len & 0x7F) as u8;
+        len >>= 7;
+        if len == 0 {
+            bytes.push(byte);
+            break;
+        } else {
+            bytes.push(byte | 0x80);
+        }
+    }
+
+    // For primitive types, encode each element
+    for val in values {
+        match element_type {
+            "u8" => {
+                if let Some(n) = val.as_u64() {
+                    bytes.push(n as u8);
+                }
+            }
+            "u64" => {
+                if let Some(n) = val.as_u64() {
+                    bytes.extend_from_slice(&n.to_le_bytes());
+                }
+            }
+            "bool" => {
+                if let Some(b) = val.as_bool() {
+                    bytes.push(if b { 1 } else { 0 });
+                }
+            }
+            _ => {
+                return SandboxResponse::error_with_category(
+                    format!("Unsupported element type for vector encoding: {}", element_type),
+                    "UnsupportedType".to_string(),
+                );
+            }
+        }
+    }
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "element_type": element_type,
+        "element_count": values.len(),
+        "bytes_hex": format!("0x{}", hex::encode(&bytes)),
+        "bytes_len": bytes.len(),
+    }))
+}
+
+fn execute_get_module_dependencies(
+    env: &SimulationEnvironment,
+    module_path: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting dependencies for module: {}", module_path);
+    }
+
+    // Parse module path
+    let parts: Vec<&str> = module_path.split("::").collect();
+    if parts.len() != 2 {
+        return SandboxResponse::error_with_category(
+            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            "ParseError".to_string(),
+        );
+    }
+
+    let address = match AccountAddress::from_hex_literal(parts[0]) {
+        Ok(a) => a,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Invalid address in module path: {}", e),
+                "ParseError".to_string(),
+            );
+        }
+    };
+
+    let module_name = parts[1];
+
+    // Get dependencies from resolver
+    match env.get_module_dependencies(&address, module_name) {
+        Ok(deps) => {
+            let dep_list: Vec<String> = deps.iter()
+                .map(|(addr, name)| format!("{}::{}", normalize_address(addr), name))
+                .collect();
+            SandboxResponse::success_with_data(serde_json::json!({
+                "module": module_path,
+                "dependencies": dep_list,
+                "count": dep_list.len(),
+            }))
+        }
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to get dependencies: {}", e),
+            "ModuleNotFound".to_string(),
+        ),
+    }
+}
+
+fn execute_disassemble_module(
+    env: &SimulationEnvironment,
+    module_path: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Disassembling module: {}", module_path);
+    }
+
+    // Parse module path
+    let parts: Vec<&str> = module_path.split("::").collect();
+    if parts.len() != 2 {
+        return SandboxResponse::error_with_category(
+            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            "ParseError".to_string(),
+        );
+    }
+
+    let address = match AccountAddress::from_hex_literal(parts[0]) {
+        Ok(a) => a,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Invalid address in module path: {}", e),
+                "ParseError".to_string(),
+            );
+        }
+    };
+
+    let module_name = parts[1];
+
+    match env.disassemble_module(&address, module_name) {
+        Ok(disasm) => SandboxResponse::success_with_data(serde_json::json!({
+            "module": module_path,
+            "disassembly": disasm,
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to disassemble module: {}", e),
+            "ModuleNotFound".to_string(),
+        ),
+    }
+}
+
+fn execute_module_summary(
+    env: &SimulationEnvironment,
+    module_path: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting summary for module: {}", module_path);
+    }
+
+    // Parse module path
+    let parts: Vec<&str> = module_path.split("::").collect();
+    if parts.len() != 2 {
+        return SandboxResponse::error_with_category(
+            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            "ParseError".to_string(),
+        );
+    }
+
+    let address = match AccountAddress::from_hex_literal(parts[0]) {
+        Ok(a) => a,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Invalid address in module path: {}", e),
+                "ParseError".to_string(),
+            );
+        }
+    };
+
+    let module_name = parts[1];
+
+    match env.get_module_summary(&address, module_name) {
+        Ok(summary) => SandboxResponse::success_with_data(serde_json::json!({
+            "module": module_path,
+            "summary": summary,
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to get module summary: {}", e),
+            "ModuleNotFound".to_string(),
+        ),
+    }
+}
+
+fn execute_parse_error(error: &str, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Parsing error string");
+    }
+
+    // Try to extract abort code and location from common error formats
+    let mut result = serde_json::json!({
+        "original": error,
+    });
+
+    // Pattern: "ABORTED with code X in module Y::Z::func"
+    if error.contains("ABORTED") {
+        if let Some(code_start) = error.find("code ") {
+            let rest = &error[code_start + 5..];
+            if let Some(code_end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                if let Ok(code) = rest[..code_end].parse::<u64>() {
+                    result["abort_code"] = serde_json::json!(code);
+                }
+            }
+        }
+    }
+
+    // Pattern: "MissingPackage { address: X, module: Y }"
+    if error.contains("MissingPackage") {
+        result["error_type"] = serde_json::json!("MissingPackage");
+    } else if error.contains("MissingObject") {
+        result["error_type"] = serde_json::json!("MissingObject");
+    } else if error.contains("LINKER_ERROR") {
+        result["error_type"] = serde_json::json!("LinkerError");
+    } else if error.contains("ABORTED") {
+        result["error_type"] = serde_json::json!("ContractAbort");
+    }
+
+    SandboxResponse::success_with_data(result)
+}
+
+fn execute_is_framework_cached(verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Checking if Sui framework is cached");
+    }
+
+    use crate::benchmark::package_builder::FrameworkCache;
+    match FrameworkCache::new() {
+        Ok(cache) => {
+            let is_cached = cache.is_cached();
+            SandboxResponse::success_with_data(serde_json::json!({
+                "is_cached": is_cached,
+                "path": cache.sui_framework_path().display().to_string(),
+            }))
+        }
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to check framework cache: {}", e),
+            "CacheError".to_string(),
+        ),
+    }
+}
+
+fn execute_ensure_framework_cached(verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Ensuring Sui framework is cached");
+    }
+
+    use crate::benchmark::package_builder::FrameworkCache;
+    match FrameworkCache::new() {
+        Ok(cache) => {
+            match cache.ensure_cached() {
+                Ok(()) => SandboxResponse::success_with_data(serde_json::json!({
+                    "cached": true,
+                    "path": cache.sui_framework_path().display().to_string(),
+                })),
+                Err(e) => SandboxResponse::error_with_category(
+                    format!("Failed to cache framework: {}", e),
+                    "CacheError".to_string(),
+                ),
+            }
+        }
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to initialize framework cache: {}", e),
+            "CacheError".to_string(),
+        ),
+    }
+}
+
+/// Parse an address string, supporting short forms like "0x2".
+fn parse_address_string(s: &str) -> Result<AccountAddress, String> {
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let padded = if hex_str.len() < 64 {
+        format!("{:0>64}", hex_str)
+    } else {
+        hex_str.to_string()
+    };
+    let bytes = hex::decode(&padded)
+        .map_err(|e| format!("Invalid hex: {}", e))?;
+    if bytes.len() != 32 {
+        return Err(format!("Address must be 32 bytes, got {}", bytes.len()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(AccountAddress::new(arr))
+}
+
+/// Generate unified schema of all available sandbox tools.
+/// This is the single source of truth for LLM tool discovery.
+fn execute_list_available_tools(verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Generating tool discovery schema");
+    }
+
+    let tools = serde_json::json!({
+        "version": "1.0",
+        "description": "Sui Move VM Sandbox - All available tools for LLM agents",
+        "categories": {
+            "state_management": {
+                "description": "Tools for managing sandbox state",
+                "tools": [
+                    {
+                        "action": "reset",
+                        "description": "Reset sandbox to initial state. Clears all loaded modules, objects, and coins.",
+                        "params": {},
+                        "example": {"action": "reset"}
+                    },
+                    {
+                        "action": "get_state",
+                        "description": "Get current sandbox state summary (loaded modules, objects, coins).",
+                        "params": {},
+                        "example": {"action": "get_state"}
+                    }
+                ]
+            },
+            "module_operations": {
+                "description": "Tools for loading and inspecting Move modules",
+                "tools": [
+                    {
+                        "action": "load_module",
+                        "description": "Load compiled Move module(s) from bytecode file(s).",
+                        "params": {
+                            "bytecode_path": "string - path to .mv file or directory containing .mv files",
+                            "module_name": "string? - optional filter to load only matching module names"
+                        },
+                        "example": {"action": "load_module", "bytecode_path": "./build/MyPackage/bytecode_modules"}
+                    },
+                    {
+                        "action": "compile_move",
+                        "description": "Compile Move source code to bytecode and load into sandbox.",
+                        "params": {
+                            "package_name": "string - name for the package (used for address resolution)",
+                            "module_name": "string - module name (without .move extension)",
+                            "source": "string - Move source code"
+                        },
+                        "example": {"action": "compile_move", "package_name": "my_pkg", "module_name": "counter", "source": "module my_pkg::counter { ... }"}
+                    },
+                    {
+                        "action": "list_modules",
+                        "description": "List all loaded modules. Returns array of module paths like '0x123::module'.",
+                        "params": {},
+                        "example": {"action": "list_modules"}
+                    },
+                    {
+                        "action": "module_summary",
+                        "description": "Get a human-readable summary of a module (struct/function counts and names).",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'"
+                        },
+                        "example": {"action": "module_summary", "module_path": "0x2::coin"}
+                    },
+                    {
+                        "action": "disassemble_module",
+                        "description": "Disassemble an entire module to Move bytecode IR.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'"
+                        },
+                        "example": {"action": "disassemble_module", "module_path": "0x2::coin"}
+                    },
+                    {
+                        "action": "get_module_dependencies",
+                        "description": "Get the list of modules this module depends on.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'"
+                        },
+                        "example": {"action": "get_module_dependencies", "module_path": "0x2::coin"}
+                    }
+                ]
+            },
+            "type_introspection": {
+                "description": "Tools for inspecting Move types and structs",
+                "tools": [
+                    {
+                        "action": "list_structs",
+                        "description": "List all struct types defined in a module.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'"
+                        },
+                        "example": {"action": "list_structs", "module_path": "0x2::coin"}
+                    },
+                    {
+                        "action": "get_struct_info",
+                        "description": "Get detailed struct information: fields, abilities, type parameters.",
+                        "params": {
+                            "type_path": "string - full type path like '0x2::coin::Coin'"
+                        },
+                        "example": {"action": "get_struct_info", "type_path": "0x2::coin::Coin"}
+                    },
+                    {
+                        "action": "inspect_struct",
+                        "description": "Get struct definition(s) with optional filtering.",
+                        "params": {
+                            "package": "string - package address (e.g., '0x2')",
+                            "module": "string? - optional module name filter",
+                            "struct_name": "string? - optional struct name filter"
+                        },
+                        "example": {"action": "inspect_struct", "package": "0x2", "module": "coin"}
+                    },
+                    {
+                        "action": "search_types",
+                        "description": "Search for struct types matching a pattern across all loaded modules.",
+                        "params": {
+                            "pattern": "string - pattern with * wildcard (e.g., '*Coin*', '0x2::*')",
+                            "ability_filter": "string? - filter by ability ('key', 'store', 'copy', 'drop')"
+                        },
+                        "example": {"action": "search_types", "pattern": "*Coin*", "ability_filter": "store"}
+                    },
+                    {
+                        "action": "validate_type",
+                        "description": "Validate and parse a Move type string.",
+                        "params": {
+                            "type_str": "string - type like 'u64', 'address', '0x2::coin::Coin<0x2::sui::SUI>'"
+                        },
+                        "example": {"action": "validate_type", "type_str": "0x2::coin::Coin<0x2::sui::SUI>"}
+                    }
+                ]
+            },
+            "function_introspection": {
+                "description": "Tools for inspecting Move functions",
+                "tools": [
+                    {
+                        "action": "list_functions",
+                        "description": "List all functions in a module.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'"
+                        },
+                        "example": {"action": "list_functions", "module_path": "0x2::coin"}
+                    },
+                    {
+                        "action": "get_function_info",
+                        "description": "Get detailed function signature: visibility, parameters, return types.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'",
+                            "function_name": "string - function name"
+                        },
+                        "example": {"action": "get_function_info", "module_path": "0x2::coin", "function_name": "split"}
+                    },
+                    {
+                        "action": "search_functions",
+                        "description": "Search for functions matching a pattern across all loaded modules.",
+                        "params": {
+                            "pattern": "string - pattern with * wildcard",
+                            "entry_only": "boolean - if true, only return entry functions (default: false)"
+                        },
+                        "example": {"action": "search_functions", "pattern": "*transfer*", "entry_only": true}
+                    },
+                    {
+                        "action": "find_constructors",
+                        "description": "Find functions that can construct a given type.",
+                        "params": {
+                            "type_path": "string - full type path like '0x2::coin::Coin'"
+                        },
+                        "example": {"action": "find_constructors", "type_path": "0x2::coin::Coin"}
+                    },
+                    {
+                        "action": "disassemble_function",
+                        "description": "Disassemble function bytecode to instructions with offsets.",
+                        "params": {
+                            "module_path": "string - e.g., '0x2::coin'",
+                            "function_name": "string - function name"
+                        },
+                        "example": {"action": "disassemble_function", "module_path": "0x2::coin", "function_name": "split"}
+                    }
+                ]
+            },
+            "object_management": {
+                "description": "Tools for creating and inspecting objects",
+                "tools": [
+                    {
+                        "action": "create_object",
+                        "description": "Create an object with specific field values. Object is registered in sandbox.",
+                        "params": {
+                            "object_type": "string - full type path like '0x2::coin::Coin<0x2::sui::SUI>'",
+                            "fields": "object - field name -> value mapping",
+                            "object_id": "string? - optional specific object ID (hex), auto-generated if omitted"
+                        },
+                        "field_types": {
+                            "id/UID": "'auto' for fresh ID or hex string",
+                            "address": "hex string with or without 0x prefix",
+                            "u8/u16/u32/u64": "number",
+                            "u128/u256": "string (for large numbers)",
+                            "bool": "true/false",
+                            "vector<u8>": "string or array of numbers",
+                            "String": "string",
+                            "Option<T>": "null for None, value for Some"
+                        },
+                        "example": {"action": "create_object", "object_type": "0x2::coin::Coin<0x2::sui::SUI>", "fields": {"id": "auto", "balance": {"value": 1000000000}}}
+                    },
+                    {
+                        "action": "create_test_object",
+                        "description": "Create an object from JSON value. JSON objects become field maps. Primitives are wrapped as {\"value\": ...}. Arrays are wrapped as {\"elements\": [...]}.",
+                        "params": {
+                            "type_tag": "string - type of object to create",
+                            "value": "any - JSON value"
+                        },
+                        "example": {"action": "create_test_object", "type_tag": "0x2::balance::Balance<0x2::sui::SUI>", "value": {"value": 1000000000}}
+                    },
+                    {
+                        "action": "list_objects",
+                        "description": "List all objects in the sandbox with their types and metadata.",
+                        "params": {},
+                        "example": {"action": "list_objects"}
+                    },
+                    {
+                        "action": "list_shared_objects",
+                        "description": "List all shared objects and their current lock status.",
+                        "params": {},
+                        "example": {"action": "list_shared_objects"}
+                    },
+                    {
+                        "action": "inspect_object",
+                        "description": "Decode an object's BCS bytes to readable JSON fields.",
+                        "params": {
+                            "object_id": "string - hex object ID"
+                        },
+                        "example": {"action": "inspect_object", "object_id": "0x123..."}
+                    }
+                ]
+            },
+            "cached_objects": {
+                "description": "Tools for loading pre-cached objects (e.g., from mainnet transaction replays)",
+                "tools": [
+                    {
+                        "action": "load_cached_object",
+                        "description": "Load a single cached object with BCS bytes.",
+                        "params": {
+                            "object_id": "string - hex object ID",
+                            "bcs_bytes": "string - base64-encoded BCS bytes",
+                            "object_type": "string? - optional type string for introspection",
+                            "is_shared": "boolean - whether the object is shared (default: false)"
+                        },
+                        "example": {"action": "load_cached_object", "object_id": "0x123", "bcs_bytes": "AQID...", "is_shared": false}
+                    },
+                    {
+                        "action": "load_cached_objects",
+                        "description": "Load multiple cached objects at once.",
+                        "params": {
+                            "objects": "object - map of object_id (hex) -> base64 BCS bytes",
+                            "object_types": "object? - map of object_id -> type string",
+                            "shared_object_ids": "array? - list of object IDs that are shared"
+                        },
+                        "example": {"action": "load_cached_objects", "objects": {"0x123": "AQID..."}, "shared_object_ids": []}
+                    },
+                    {
+                        "action": "list_cached_objects",
+                        "description": "List all loaded cached objects with their types and sizes.",
+                        "params": {},
+                        "example": {"action": "list_cached_objects"}
+                    }
+                ]
+            },
+            "coin_operations": {
+                "description": "Tools for managing coin metadata",
+                "tools": [
+                    {
+                        "action": "register_coin",
+                        "description": "Register a custom coin type with metadata.",
+                        "params": {
+                            "coin_type": "string - full coin type like '0xabc::my_coin::MY_COIN'",
+                            "decimals": "number - decimal places (e.g., 9 for SUI)",
+                            "symbol": "string - short symbol (e.g., 'MYCOIN')",
+                            "name": "string - display name (e.g., 'My Coin')"
+                        },
+                        "example": {"action": "register_coin", "coin_type": "0xabc::my_coin::MY_COIN", "decimals": 9, "symbol": "MYCOIN", "name": "My Coin"}
+                    },
+                    {
+                        "action": "get_coin_metadata",
+                        "description": "Get metadata for a registered coin type.",
+                        "params": {
+                            "coin_type": "string - full coin type"
+                        },
+                        "example": {"action": "get_coin_metadata", "coin_type": "0x2::sui::SUI"}
+                    },
+                    {
+                        "action": "list_coins",
+                        "description": "List all registered coin types with their metadata.",
+                        "params": {},
+                        "example": {"action": "list_coins"}
+                    }
+                ]
+            },
+            "execution": {
+                "description": "Tools for executing Move code",
+                "tools": [
+                    {
+                        "action": "execute_ptb",
+                        "description": "Execute a Programmable Transaction Block (PTB).",
+                        "params": {
+                            "inputs": "array - PTB inputs (pure values, object references, gas, witnesses)",
+                            "commands": "array - PTB commands to execute"
+                        },
+                        "input_types": [
+                            {"type": "pure", "params": {"value": "any", "value_type": "string - Move type"}},
+                            {"type": "object", "params": {"object_id": "string", "mode": "string? - 'immutable' or 'mutable'"}},
+                            {"type": "gas", "params": {"budget": "number - gas budget in MIST"}},
+                            {"type": "witness", "params": {"witness_type": "string - witness type path"}}
+                        ],
+                        "command_types": [
+                            {"type": "move_call", "params": {"package": "string", "module": "string", "function": "string", "type_args": "array", "args": "array - indices or {cmd, idx} refs"}},
+                            {"type": "transfer_objects", "params": {"objects": "array", "recipient": "arg ref"}},
+                            {"type": "split_coins", "params": {"coin": "arg ref", "amounts": "array"}},
+                            {"type": "merge_coins", "params": {"target": "arg ref", "sources": "array"}},
+                            {"type": "make_move_vec", "params": {"element_type": "string?", "elements": "array"}},
+                            {"type": "publish", "params": {"modules": "array - base64 bytecode", "dependencies": "array - package IDs"}},
+                            {"type": "upgrade", "params": {"modules": "array", "package": "string", "ticket": "arg ref"}},
+                            {"type": "receive", "params": {"object_id": "string", "object_type": "string?"}}
+                        ],
+                        "example": {
+                            "action": "execute_ptb",
+                            "inputs": [
+                                {"type": "object", "object_id": "0x123"},
+                                {"type": "pure", "value": 100, "value_type": "u64"}
+                            ],
+                            "commands": [
+                                {"type": "move_call", "package": "0x2", "module": "coin", "function": "split", "type_args": ["0x2::sui::SUI"], "args": [0, 1]}
+                            ]
+                        }
+                    },
+                    {
+                        "action": "call_function",
+                        "description": "Call a Move function directly (simpler than PTB for single calls).",
+                        "params": {
+                            "package": "string - package address",
+                            "module": "string - module name",
+                            "function": "string - function name",
+                            "type_args": "array - type argument strings",
+                            "args": "array - argument values as JSON"
+                        },
+                        "example": {"action": "call_function", "package": "0x2", "module": "coin", "function": "value", "type_args": ["0x2::sui::SUI"], "args": [{"object_id": "0x123"}]}
+                    }
+                ]
+            },
+            "clock_and_time": {
+                "description": "Tools for managing simulated blockchain time",
+                "tools": [
+                    {
+                        "action": "get_clock",
+                        "description": "Get current sandbox Clock timestamp.",
+                        "params": {},
+                        "example": {"action": "get_clock"}
+                    },
+                    {
+                        "action": "set_clock",
+                        "description": "Set sandbox Clock to a specific timestamp.",
+                        "params": {
+                            "timestamp_ms": "number - milliseconds since Unix epoch"
+                        },
+                        "example": {"action": "set_clock", "timestamp_ms": 1700000000000_i64}
+                    }
+                ]
+            },
+            "bcs_encoding": {
+                "description": "Tools for BCS (Binary Canonical Serialization) encoding/decoding",
+                "tools": [
+                    {
+                        "action": "encode_bcs",
+                        "description": "Encode a JSON value to BCS bytes.",
+                        "params": {
+                            "type_str": "string - Move type to encode as",
+                            "value": "any - JSON value to encode"
+                        },
+                        "example": {"action": "encode_bcs", "type_str": "u64", "value": 42}
+                    },
+                    {
+                        "action": "decode_bcs",
+                        "description": "Decode BCS bytes to a JSON value.",
+                        "params": {
+                            "type_str": "string - Move type to decode as",
+                            "bytes_hex": "string - hex-encoded BCS bytes"
+                        },
+                        "example": {"action": "decode_bcs", "type_str": "u64", "bytes_hex": "2a00000000000000"}
+                    },
+                    {
+                        "action": "encode_vector",
+                        "description": "Encode a vector of values to BCS bytes.",
+                        "params": {
+                            "element_type": "string - Move type of vector elements",
+                            "values": "array - JSON values to encode"
+                        },
+                        "example": {"action": "encode_vector", "element_type": "u64", "values": [1, 2, 3]}
+                    }
+                ]
+            },
+            "system_objects": {
+                "description": "Tools for well-known Sui system objects",
+                "tools": [
+                    {
+                        "action": "get_system_object_info",
+                        "description": "Get information about well-known Sui system objects.",
+                        "params": {
+                            "object_name": "string - one of: 'clock', 'random', 'deny_list', 'system_state'"
+                        },
+                        "example": {"action": "get_system_object_info", "object_name": "clock"}
+                    }
+                ]
+            },
+            "utilities": {
+                "description": "Utility tools for working with addresses, IDs, hashes, and numbers",
+                "tools": [
+                    {
+                        "action": "generate_id",
+                        "description": "Generate a fresh unique object ID.",
+                        "params": {},
+                        "example": {"action": "generate_id"}
+                    },
+                    {
+                        "action": "parse_address",
+                        "description": "Parse an address string to canonical form.",
+                        "params": {
+                            "address": "string - address in any format (short or long form)"
+                        },
+                        "example": {"action": "parse_address", "address": "0x2"}
+                    },
+                    {
+                        "action": "format_address",
+                        "description": "Format an address string to a specific format.",
+                        "params": {
+                            "address": "string - address to format",
+                            "format": "string? - 'short' (default) or 'full'"
+                        },
+                        "example": {"action": "format_address", "address": "0x0000000000000000000000000000000000000000000000000000000000000002", "format": "short"}
+                    },
+                    {
+                        "action": "compute_hash",
+                        "description": "Compute cryptographic hash of hex-encoded bytes.",
+                        "params": {
+                            "bytes_hex": "string - hex-encoded bytes to hash",
+                            "algorithm": "string? - 'sha256' (default), 'sha3_256', or 'blake2b256'"
+                        },
+                        "example": {"action": "compute_hash", "bytes_hex": "48656c6c6f", "algorithm": "sha256"}
+                    },
+                    {
+                        "action": "convert_number",
+                        "description": "Convert number between types (u8, u16, u32, u64, u128, u256).",
+                        "params": {
+                            "value": "string - numeric value as string",
+                            "from_type": "string - source type",
+                            "to_type": "string - target type"
+                        },
+                        "example": {"action": "convert_number", "value": "255", "from_type": "u64", "to_type": "u8"}
+                    },
+                    {
+                        "action": "parse_error",
+                        "description": "Parse a Move error string into structured components.",
+                        "params": {
+                            "error": "string - error message to parse"
+                        },
+                        "example": {"action": "parse_error", "error": "MoveAbort in 0x2::coin: 0x10001"}
+                    }
+                ]
+            },
+            "framework_cache": {
+                "description": "Tools for managing the Sui framework cache",
+                "tools": [
+                    {
+                        "action": "is_framework_cached",
+                        "description": "Check if the Sui framework is cached locally.",
+                        "params": {},
+                        "example": {"action": "is_framework_cached"}
+                    },
+                    {
+                        "action": "ensure_framework_cached",
+                        "description": "Ensure the Sui framework is downloaded and cached.",
+                        "params": {},
+                        "example": {"action": "ensure_framework_cached"}
+                    }
+                ]
+            },
+            "discovery": {
+                "description": "Meta tools for discovering available capabilities",
+                "tools": [
+                    {
+                        "action": "list_available_tools",
+                        "description": "List all available sandbox tools with their schemas (this tool).",
+                        "params": {},
+                        "example": {"action": "list_available_tools"}
+                    }
+                ]
+            }
+        },
+        "type_format": {
+            "format": "address::module::TypeName<TypeArg1, TypeArg2>",
+            "primitives": ["bool", "u8", "u16", "u32", "u64", "u128", "u256", "address", "signer"],
+            "address_format": "short form (0x2, not 0x0000...0002)"
+        },
+        "response_format": {
+            "success_field": "boolean 'success' in all responses",
+            "error_fields": ["error", "error_category", "abort_code", "abort_module"],
+            "type_field": "'type' for object types in responses"
+        }
+    });
+
+    SandboxResponse::success_with_data(tools)
 }
 
 fn categorize_simulation_error(error: &crate::benchmark::simulation::SimulationError) -> String {
