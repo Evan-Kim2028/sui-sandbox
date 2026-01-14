@@ -14,13 +14,17 @@
 //! ## Key Features
 //!
 //! - **Full PTB Support**: MoveCall, SplitCoins, MergeCoins, TransferObjects, Publish, Upgrade
+//! - **Dynamic Publishing**: Publish modules and call them within the SAME PTB - published
+//!   modules are pre-processed before execution and immediately available for subsequent commands
+//! - **Session Persistence**: Published modules persist across PTBs within the same session,
+//!   enabling iterative development workflows (publish once, call many times)
 //! - **Object Tracking**: Created, mutated, deleted objects tracked across commands
 //! - **Shared Object Locking**: Automatic lock acquisition/release for shared objects
 //! - **Dynamic Fields**: Tables, Bags, and dynamic field operations fully supported
 //! - **Return Value Capture**: Function return values available in transaction effects
 //! - **Gas Accounting**: Estimated gas usage with budget enforcement
 //! - **Epoch & Time**: Configurable epoch numbers and timestamps for TxContext
-//! - **Randomness**: Deterministic random number generation with configurable seeds
+//! - **Randomness**: Deterministic random number generation with configurable seeds (0x8 Random object)
 //! - **Lamport Clock**: Version tracking for shared object consensus simulation
 //! - **Structured Errors**: Errors designed for LLM consumption with actionable suggestions
 //!
@@ -156,6 +160,9 @@ pub const DEFAULT_GAS_PRICE: u64 = 1000;
 
 /// Clock object ID (0x6) - well-known system object
 pub const CLOCK_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000006";
+
+/// Random object ID (0x8) - well-known system object for on-chain randomness
+pub const RANDOM_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000008";
 
 /// Default Clock timestamp base (2024-01-01 00:00:00 UTC)
 pub const DEFAULT_CLOCK_BASE_MS: u64 = 1704067200000;
@@ -747,6 +754,9 @@ impl SimulationEnvironment {
         // Initialize the Clock object (0x6)
         env.initialize_clock()?;
 
+        // Initialize the Random object (0x8)
+        env.initialize_random()?;
+
         Ok(env)
     }
 
@@ -781,6 +791,59 @@ impl SimulationEnvironment {
         self.objects.insert(clock_id, clock_obj);
 
         Ok(())
+    }
+
+    /// Initialize the Random object at address 0x8.
+    /// The Random object is a shared system object for on-chain randomness.
+    /// In simulation, it produces deterministic values based on the configured seed.
+    fn initialize_random(&mut self) -> Result<()> {
+        let random_id = AccountAddress::from_hex_literal(RANDOM_OBJECT_ID)
+            .map_err(|e| anyhow!("Invalid random ID: {}", e))?;
+
+        // Random struct: { id: UID, inner: Versioned { id: UID, version: u64 } }
+        // Simplified: we just need a valid object with the UID
+        // The actual randomness is handled by the native function mocks
+        let mut random_bytes = Vec::with_capacity(48);
+        random_bytes.extend_from_slice(random_id.as_ref()); // UID (32 bytes)
+        // Inner Versioned struct: { id: UID, version: u64 }
+        // For simplicity, use same ID and version 1
+        random_bytes.extend_from_slice(random_id.as_ref()); // inner UID (32 bytes)
+        random_bytes.extend_from_slice(&1u64.to_le_bytes()); // version (8 bytes)
+
+        // Random type: 0x2::random::Random
+        let random_type = TypeTag::Struct(Box::new(StructTag {
+            address: AccountAddress::from_hex_literal("0x2").unwrap(),
+            module: Identifier::new("random").unwrap(),
+            name: Identifier::new("Random").unwrap(),
+            type_params: vec![],
+        }));
+
+        let random_obj = SimulatedObject {
+            id: random_id,
+            type_tag: random_type,
+            bcs_bytes: random_bytes,
+            is_shared: true,
+            is_immutable: false, // Random is shared, not immutable
+            version: 1,
+        };
+        self.objects.insert(random_id, random_obj);
+
+        Ok(())
+    }
+
+    /// Get the Random object for PTB execution.
+    /// Returns it as a shared object input.
+    pub fn get_random_object(&self) -> Result<crate::benchmark::ptb::ObjectInput> {
+        let random_id = AccountAddress::from_hex_literal(RANDOM_OBJECT_ID)
+            .map_err(|e| anyhow!("Invalid random ID: {}", e))?;
+
+        let random_obj = self.objects.get(&random_id)
+            .ok_or_else(|| anyhow!("Random object not found - this should not happen"))?;
+
+        Ok(crate::benchmark::ptb::ObjectInput::Shared {
+            id: random_id,
+            bytes: random_obj.bcs_bytes.clone(),
+        })
     }
 
     /// Update the Clock object's timestamp.
@@ -854,8 +917,9 @@ impl SimulationEnvironment {
         self.consensus_history.clear();
         self.consensus_sequence = 0;
 
-        // Re-initialize the Clock object
+        // Re-initialize system objects
         self.initialize_clock()?;
+        self.initialize_random()?;
 
         Ok(())
     }
@@ -874,7 +938,7 @@ impl SimulationEnvironment {
     }
 
     /// Generate a fresh object ID.
-    fn fresh_id(&mut self) -> AccountAddress {
+    pub fn fresh_id(&mut self) -> AccountAddress {
         let id = self.id_counter;
         self.id_counter += 1;
         let mut bytes = [0u8; 32];
@@ -1093,6 +1157,39 @@ impl SimulationEnvironment {
         Ok(id)
     }
 
+    /// Load a cached object with its exact ID, BCS bytes, and optional type information.
+    /// This is used to replay transactions when type information is available.
+    pub fn load_cached_object_with_type(
+        &mut self,
+        object_id: &str,
+        bcs_bytes: Vec<u8>,
+        type_str: Option<&str>,
+        is_shared: bool,
+    ) -> Result<AccountAddress> {
+        let id = AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow!("Invalid object ID '{}': {}", object_id, e))?;
+
+        // Parse type string if provided, otherwise use placeholder
+        let type_tag = if let Some(ts) = type_str {
+            Self::parse_type_string(ts).ok_or_else(|| {
+                anyhow!("Failed to parse type string '{}': invalid format (expected ADDRESS::MODULE::NAME or primitive type)", ts)
+            })?
+        } else {
+            TypeTag::Address
+        };
+
+        let obj = SimulatedObject {
+            id,
+            type_tag,
+            bcs_bytes,
+            is_shared,
+            is_immutable: false,
+            version: 1,
+        };
+        self.objects.insert(id, obj);
+        Ok(id)
+    }
+
     /// Load multiple cached objects from a map of object_id -> bcs_bytes_base64.
     pub fn load_cached_objects(
         &mut self,
@@ -1123,9 +1220,11 @@ impl SimulationEnvironment {
 
         // Parse type string into TypeTag if available
         let type_tag = if let Some(type_str) = &fetched.type_string {
-            Self::parse_type_string(type_str).unwrap_or(TypeTag::Address)
+            Self::parse_type_string(type_str).ok_or_else(|| {
+                anyhow!("Failed to parse type string '{}' for object {}: invalid format (expected ADDRESS::MODULE::NAME or primitive type)", type_str, object_id)
+            })?
         } else {
-            TypeTag::Address // Fallback placeholder
+            TypeTag::Address // Fallback placeholder when type is unknown
         };
 
         let obj = SimulatedObject {
@@ -1684,6 +1783,14 @@ impl SimulationEnvironment {
             .collect();
         harness.preload_dynamic_fields(preload_fields);
 
+        // Preload pending receives for transfer::receive in Move code.
+        // This makes objects sent to other objects available for receiving.
+        let preload_receives: Vec<_> = self.pending_receives
+            .iter()
+            .map(|((r, s), (b, t))| ((*r, *s), t.clone(), b.clone()))
+            .collect();
+        harness.preload_pending_receives(preload_receives);
+
         // Create PTB executor with pre-published and pre-upgraded package info
         // and the current sender address for ownership validation
         let mut executor = crate::benchmark::ptb::PTBExecutor::new_with_packages_and_sender(
@@ -1696,13 +1803,10 @@ impl SimulationEnvironment {
         // Set gas budget if specified
         executor.set_gas_budget(gas_budget);
 
-        // Add pending receives for the Receive command
-        // Check all pending receives and add them to the executor
-        for ((recipient_id, sent_id), (bytes, _type_tag)) in &self.pending_receives {
-            // For now, add all pending receives - the Receive command will validate
-            // that the correct recipient is being used
-            let _ = recipient_id; // recipient validation happens in Move code
-            executor.add_pending_receive(*sent_id, bytes.clone());
+        // Add pending receives for the PTB Receive command with type info
+        // (this is separate from Move-level transfer::receive)
+        for ((_recipient_id, sent_id), (bytes, type_tag)) in &self.pending_receives {
+            executor.add_pending_receive_with_type(*sent_id, bytes.clone(), type_tag.clone());
         }
 
         // Add inputs
@@ -3414,14 +3518,152 @@ impl SimulationEnvironment {
     }
 
     /// Create a test object with the given type and value.
-    /// For now, this is a placeholder - creating arbitrary objects from JSON
-    /// is complex and depends on the specific type's layout.
-    pub fn create_test_object(&mut self, _type_tag: &str, _value: serde_json::Value) -> Result<AccountAddress> {
-        // This is a simplified implementation - creating arbitrary typed objects
-        // from JSON requires understanding the type's field layout and BCS encoding.
-        // For now, we just create a fresh ID and acknowledge the request.
-        let object_id = self.fresh_id();
-        Ok(object_id)
+    /// This is a simplified API that converts JSON values to field maps and delegates
+    /// to create_object_from_json. Supports:
+    /// - JSON objects: used directly as field map
+    /// - JSON primitives (number, string, bool): wrapped as {"value": ...}
+    /// - JSON arrays: wrapped as {"elements": [...]}
+    pub fn create_test_object(&mut self, type_tag: &str, value: serde_json::Value) -> Result<AccountAddress> {
+        use std::collections::HashMap;
+
+        // Convert JSON value to a field map
+        let fields: HashMap<String, serde_json::Value> = match value {
+            serde_json::Value::Object(map) => {
+                // If the value is already an object, convert the map to HashMap
+                map.into_iter().collect()
+            }
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::String(_) => {
+                // Wrap primitives in a "value" field (common pattern for wrapper types)
+                let mut fields = HashMap::new();
+                fields.insert("value".to_string(), value);
+                fields
+            }
+            serde_json::Value::Array(arr) => {
+                // Wrap arrays in an "elements" field
+                let mut fields = HashMap::new();
+                fields.insert("elements".to_string(), serde_json::Value::Array(arr));
+                fields
+            }
+            serde_json::Value::Null => {
+                // Empty object
+                HashMap::new()
+            }
+        };
+
+        // Delegate to the full create_object_from_json
+        self.create_object_from_json(type_tag, &fields, None)
+    }
+
+    /// Get module dependencies.
+    /// Returns a list of (address, module_name) pairs that the module imports.
+    pub fn get_module_dependencies(
+        &self,
+        address: &AccountAddress,
+        module_name: &str,
+    ) -> Result<Vec<(AccountAddress, String)>> {
+        use move_binary_format::CompiledModule;
+
+        let module_id = move_core_types::language_storage::ModuleId::new(
+            *address,
+            move_core_types::identifier::Identifier::new(module_name)
+                .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
+        );
+
+        let module_bytes = self.resolver.get_module(&module_id)
+            .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
+
+        let module = CompiledModule::deserialize_with_defaults(&module_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
+
+        let deps: Vec<(AccountAddress, String)> = module.immediate_dependencies()
+            .into_iter()
+            .map(|dep| (*dep.address(), dep.name().to_string()))
+            .collect();
+
+        Ok(deps)
+    }
+
+    /// Disassemble an entire module to bytecode instructions.
+    pub fn disassemble_module(
+        &self,
+        address: &AccountAddress,
+        module_name: &str,
+    ) -> Result<String> {
+        use move_binary_format::CompiledModule;
+        use move_disassembler::disassembler::Disassembler;
+        use move_ir_types::location::Loc;
+        use move_command_line_common::files::FileHash;
+
+        let module_id = move_core_types::language_storage::ModuleId::new(
+            *address,
+            move_core_types::identifier::Identifier::new(module_name)
+                .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
+        );
+
+        let module_bytes = self.resolver.get_module(&module_id)
+            .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
+
+        let module = CompiledModule::deserialize_with_defaults(&module_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
+
+        let disasm = Disassembler::from_module(
+            &module,
+            Loc::new(FileHash::empty(), 0, 0),
+        ).map_err(|e| anyhow::anyhow!("Failed to create disassembler: {:?}", e))?;
+
+        Ok(disasm.disassemble().unwrap_or_else(|_| "Disassembly failed".to_string()))
+    }
+
+    /// Get a human-readable summary of a module.
+    pub fn get_module_summary(
+        &self,
+        address: &AccountAddress,
+        module_name: &str,
+    ) -> Result<String> {
+        use move_binary_format::CompiledModule;
+
+        let module_id = move_core_types::language_storage::ModuleId::new(
+            *address,
+            move_core_types::identifier::Identifier::new(module_name)
+                .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
+        );
+
+        let module_bytes = self.resolver.get_module(&module_id)
+            .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
+
+        let module = CompiledModule::deserialize_with_defaults(&module_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
+
+        let mut summary = String::new();
+        summary.push_str(&format!("Module: {}::{}\n", address.to_hex_literal(), module_name));
+        summary.push_str(&format!("Structs: {}\n", module.struct_defs().len()));
+        summary.push_str(&format!("Functions: {}\n", module.function_defs().len()));
+
+        // List struct names
+        if !module.struct_defs().is_empty() {
+            summary.push_str("\nStructs:\n");
+            for def in module.struct_defs() {
+                let handle = module.datatype_handle_at(def.struct_handle);
+                let name = module.identifier_at(handle.name);
+                summary.push_str(&format!("  - {}\n", name));
+            }
+        }
+
+        // List function names
+        if !module.function_defs().is_empty() {
+            summary.push_str("\nFunctions:\n");
+            for def in module.function_defs() {
+                let handle = module.function_handle_at(def.function);
+                let name = module.identifier_at(handle.name);
+                let vis = if def.is_entry { "entry " } else { "" };
+                summary.push_str(&format!("  - {}{}\n", vis, name));
+            }
+        }
+
+        Ok(summary)
     }
 }
 
