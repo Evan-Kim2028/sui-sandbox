@@ -1833,6 +1833,13 @@ impl PTBBuilder {
         Argument::Input(idx as u16)
     }
 
+    /// Add any object input (owned, shared, or immutable).
+    pub fn add_object_input(&mut self, obj: ObjectInput) -> Argument {
+        let idx = self.inputs.len();
+        self.inputs.push(InputValue::Object(obj));
+        Argument::Input(idx as u16)
+    }
+
     /// Add a MoveCall command and return the result argument.
     pub fn move_call(
         &mut self,
@@ -1910,6 +1917,12 @@ impl PTBBuilder {
     /// Get the inputs (for inspection).
     pub fn inputs(&self) -> &[InputValue] {
         &self.inputs
+    }
+
+    /// Consume the builder and return the inputs and commands.
+    /// This is useful for executing via SimulationEnvironment.execute_ptb().
+    pub fn into_parts(self) -> (Vec<InputValue>, Vec<Command>) {
+        (self.inputs, self.commands)
     }
 }
 

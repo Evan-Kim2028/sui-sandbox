@@ -705,7 +705,15 @@ impl SimulationEnvironment {
     /// Create a new simulation environment with the Sui framework loaded.
     pub fn new() -> Result<Self> {
         let resolver = LocalModuleResolver::with_sui_framework()?;
+        Self::with_resolver(resolver)
+    }
 
+    /// Create a new simulation environment with a pre-configured resolver.
+    ///
+    /// This allows reusing a resolver that already has modules loaded,
+    /// which is useful for benchmark scenarios where you want to test
+    /// multiple functions against the same package corpus.
+    pub fn with_resolver(resolver: LocalModuleResolver) -> Result<Self> {
         // Initialize coin registry with SUI
         let mut coin_registry = BTreeMap::new();
         coin_registry.insert(
@@ -828,6 +836,28 @@ impl SimulationEnvironment {
     pub fn with_mainnet_fetching(mut self) -> Self {
         self.fetcher = Some(crate::benchmark::tx_replay::TransactionFetcher::mainnet());
         self
+    }
+
+    /// Reset the environment state while preserving the loaded modules.
+    ///
+    /// This clears all objects, dynamic fields, and transaction state,
+    /// but keeps the resolver with all loaded packages. Useful for
+    /// running multiple benchmark iterations against the same package corpus.
+    pub fn reset_state(&mut self) -> Result<()> {
+        self.objects.clear();
+        self.id_counter = 0;
+        self.dynamic_fields.clear();
+        self.shared_locks.clear();
+        self.tx_counter = 0;
+        self.pending_receives.clear();
+        self.lamport_clock = 0;
+        self.consensus_history.clear();
+        self.consensus_sequence = 0;
+
+        // Re-initialize the Clock object
+        self.initialize_clock()?;
+
+        Ok(())
     }
 
     /// Set the transaction sender address for TxContext.

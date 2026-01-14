@@ -4,42 +4,23 @@
 //! "inhabited" - i.e., whether valid arguments can be synthesized and the function
 //! executed without aborting.
 //!
-//! ## Deprecation Notice
+//! ## Integration with SimulationEnvironment
 //!
-//! **For interactive sandbox/PTB simulation, use [`crate::benchmark::simulation::SimulationEnvironment`]
-//! instead.** The Tier A/B classification system in this module was designed for automated
-//! benchmark testing of Move bytecode, not for interactive sandbox execution.
-//!
-//! The `SimulationEnvironment` provides:
+//! This module uses [`crate::benchmark::simulation::SimulationEnvironment`] as the
+//! execution backend for Tier B testing. This provides:
 //! - Full PTB execution with proper object tracking
 //! - Shared object locking simulation
 //! - Dynamic field support (Tables, Bags)
 //! - Return value capture
 //! - Gas accounting
-//! - Detailed error messages suitable for LLM feedback
+//! - Consistent execution semantics with the rest of the sandbox
 //!
-//! ## When to Use This Module
-//!
-//! Use this module (`benchmark` CLI command) when you want to:
-//! - Automatically test if function types can be inhabited
-//! - Generate benchmark reports on type coverage
-//! - Test constructor chains and type synthesis
-//!
-//! ## When to Use SimulationEnvironment Instead
-//!
-//! Use `SimulationEnvironment` when you want to:
-//! - Execute PTBs interactively
-//! - Build and test specific transaction flows
-//! - Get detailed execution errors for debugging
-//! - Integrate with LLM-based code generation
-//!
-//! ## Tier A/B Classification (Legacy)
+//! ## Tier A/B Classification
 //!
 //! - **Tier A**: Arguments can be synthesized (type signatures understood)
 //! - **Tier B**: Function executes without abort (runtime semantics understood)
 //!
-//! These classifications are useful for benchmarking but don't capture the full
-//! richness of PTB execution errors that an LLM would need for debugging.
+//! For interactive sandbox/PTB simulation, use `SimulationEnvironment` directly.
 
 use anyhow::{anyhow, Context, Result};
 use move_binary_format::file_format::{CompiledModule, SignatureToken, Visibility};
@@ -59,8 +40,9 @@ use crate::benchmark::mm2::{
     ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, TypeModel,
     TypeSynthesizer,
 };
-use crate::benchmark::ptb::Argument;
+use crate::benchmark::ptb::{Argument, Command};
 use crate::benchmark::resolver::LocalModuleResolver;
+use crate::benchmark::simulation::SimulationEnvironment;
 use crate::benchmark::validator::Validator;
 use crate::benchmark::vm::VMHarness;
 use crate::bytecode::{compiled_module_name, module_self_address_hex};
@@ -416,6 +398,14 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
         graph_stats.types_with_producers, graph_stats.total_producers
     );
 
+    // Create SimulationEnvironment for Tier B execution (uses the same resolver)
+    let mut sim_env = SimulationEnvironment::with_resolver(resolver.clone())
+        .map_err(|e| anyhow!("Failed to create simulation environment: {}", e))?;
+
+    // Apply simulation config from CLI args
+    sim_env.set_config(args.simulation_config());
+    eprintln!("Initialized simulation environment for Tier B execution.");
+
     let output_file = File::create(&args.output)
         .with_context(|| format!("create output file {}", args.output.display()))?;
     let mut writer = BufWriter::new(output_file);
@@ -456,6 +446,7 @@ pub fn run_benchmark(args: &BenchmarkLocalArgs) -> Result<()> {
                 &constructor_map,
                 &mut constructor_graph,
                 &type_model,
+                &mut sim_env,
                 addr,
                 module,
                 &module_name,
@@ -476,6 +467,7 @@ fn attempt_function(
     constructor_map: &ConstructorMap,
     constructor_graph: &mut ConstructorGraph,
     type_model: &TypeModel,
+    sim_env: &mut SimulationEnvironment,
     package_addr: AccountAddress,
     module: &CompiledModule,
     module_name: &str,
@@ -905,6 +897,16 @@ fn attempt_function(
         return Ok(report);
     }
 
+    // Reset simulation environment state for this function test
+    // This clears objects and transaction state while preserving loaded modules
+    if let Err(e) = sim_env.reset_state() {
+        report.failure_stage = Some(FailureStage::B1);
+        report.failure_reason = Some(format!("failed to reset simulation environment: {e}"));
+        return Ok(report);
+    }
+
+    // Also create a VMHarness for legacy execution path (non-PTB)
+    // TODO: Remove this once all paths use SimulationEnvironment.execute_ptb()
     let mut harness = VMHarness::new(resolver, args.restricted_state).map_err(|e| {
         report.failure_stage = Some(FailureStage::B1);
         report.failure_reason = Some(format!("failed to create VM harness: {e}"));
@@ -919,8 +921,10 @@ fn attempt_function(
     let mut final_args = default_values.clone();
 
     // PTB execution path: convert constructor chain to PTB commands
+    // Uses SimulationEnvironment for consistent execution semantics
     if args.use_ptb && !constructor_chain.is_empty() {
-        match execute_constructor_chain_as_ptb(
+        match execute_constructor_chain_as_ptb_via_sim(
+            sim_env,
             &mut harness,
             &constructor_chain,
             &default_values,
@@ -1265,39 +1269,58 @@ fn attempt_function(
         }
     } // end else (legacy execution path)
 
-    // Execute function - use entry function path for entry functions, regular for public
-    let exec = if func_def.is_entry {
-        harness.execute_entry_function_with_synth(
-            &module.self_id(),
-            func_ident.as_ident_str(),
-            type_args.clone(),
-            final_args,
-            &synthesizable_params,
-        )
-    } else {
-        // For non-entry public functions, we need to inject synthesizable params manually
-        let mut augmented_args = final_args;
-        for synth_type in &synthesizable_params {
-            match *synth_type {
-                "TxContext" => {
-                    augmented_args.push(harness.synthesize_tx_context()?);
-                }
-                "Clock" => {
-                    augmented_args.push(harness.synthesize_clock()?);
-                }
-                _ => {}
-            }
-        }
-        harness.execute_function(
-            &module.self_id(),
+    // Execute function - PTB path uses SimulationEnvironment for consistency
+    let (exec, trace) = if args.use_ptb {
+        // Build PTB for final function execution
+        let exec_result = execute_final_function_as_ptb(
+            sim_env,
+            package_addr,
+            module_name,
             func_name,
             type_args.clone(),
-            augmented_args,
-        )
-    };
+            final_args.clone(),
+            &synthesizable_params,
+        );
 
-    // Get the execution trace to see which modules were accessed
-    let trace = harness.get_trace();
+        // SimulationEnvironment doesn't provide trace info, so use empty trace
+        let empty_trace = crate::benchmark::vm::ExecutionTrace::default();
+        (exec_result.map(|_| ()), empty_trace)
+    } else {
+        // Legacy path: use VMHarness directly
+        let exec = if func_def.is_entry {
+            harness.execute_entry_function_with_synth(
+                &module.self_id(),
+                func_ident.as_ident_str(),
+                type_args.clone(),
+                final_args,
+                &synthesizable_params,
+            )
+        } else {
+            // For non-entry public functions, we need to inject synthesizable params manually
+            let mut augmented_args = final_args;
+            for synth_type in &synthesizable_params {
+                match *synth_type {
+                    "TxContext" => {
+                        augmented_args.push(harness.synthesize_tx_context()?);
+                    }
+                    "Clock" => {
+                        augmented_args.push(harness.synthesize_clock()?);
+                    }
+                    _ => {}
+                }
+            }
+            harness.execute_function(
+                &module.self_id(),
+                func_name,
+                type_args.clone(),
+                augmented_args,
+            )
+        };
+
+        // Get the execution trace to see which modules were accessed
+        let trace = harness.get_trace();
+        (exec, trace)
+    };
 
     // Filter out framework modules (0x1, 0x2, 0x3) to get target package modules
     let target_modules: Vec<String> = trace
@@ -1480,15 +1503,13 @@ fn build_constructor_args_with_intermediates(
 
 /// Execute constructor chain as a PTB (Programmable Transaction Block).
 ///
-/// This converts the constructor chain entries into PTB commands and executes them
-/// with proper result chaining. The final values are returned for use as arguments
-/// to the target function.
+/// DEPRECATED: Use `execute_constructor_chain_as_ptb_via_sim` instead, which
+/// uses SimulationEnvironment for consistent execution semantics with the
+/// rest of the sandbox.
 ///
-/// Benefits of PTB execution:
-/// - More realistic simulation of real Sui transactions
-/// - Proper result chaining between commands
-/// - Better handling of multi-return functions
-/// - Foundation for future mainnet transaction replay
+/// This function is kept as a fallback for cases where VMHarness-based
+/// execution is specifically needed (e.g., for execution tracing).
+#[allow(dead_code)]
 fn execute_constructor_chain_as_ptb(
     harness: &mut VMHarness,
     constructor_chain: &[ConstructorChainEntry],
@@ -1745,6 +1766,341 @@ fn execute_constructor_chain_as_ptb(
     // constructed the objects, and the harness state reflects this.
 
     Ok(final_args)
+}
+
+/// Execute constructor chain as a PTB via SimulationEnvironment.
+///
+/// This is the preferred execution path as it uses the same execution
+/// semantics as the rest of the sandbox (object tracking, shared locks, etc.).
+fn execute_constructor_chain_as_ptb_via_sim(
+    sim_env: &mut SimulationEnvironment,
+    harness: &mut VMHarness,
+    constructor_chain: &[ConstructorChainEntry],
+    default_values: &[Vec<u8>],
+    validator: &Validator,
+) -> Result<Vec<Vec<u8>>, String> {
+    use crate::benchmark::ptb::PTBBuilder;
+
+    let mut builder = PTBBuilder::new();
+    let mut final_args = default_values.to_vec();
+
+    // Map from type key to PTB result argument (for chaining)
+    let mut type_to_result: std::collections::HashMap<String, Argument> =
+        std::collections::HashMap::new();
+
+    // First pass: add all default values as inputs
+    let mut _default_inputs: Vec<Argument> = Vec::new();
+    for bytes in default_values {
+        let arg = builder.pure_bytes(bytes.clone());
+        _default_inputs.push(arg);
+    }
+
+    // Second pass: convert constructor chain entries to PTB commands
+    for entry in constructor_chain {
+        match entry {
+            ConstructorChainEntry::MultiHopChain {
+                param_idx,
+                chain,
+                is_ref: _,
+                is_mut: _,
+            } => {
+                for step in &chain.steps {
+                    let ctor = &step.ctor_info;
+                    let args = build_ptb_constructor_args(
+                        &mut builder,
+                        ctor,
+                        validator,
+                        &type_to_result,
+                        harness,
+                    )
+                    .map_err(|e| format!("PTB arg build failed: {e}"))?;
+
+                    let type_args: Vec<TypeTag> =
+                        (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
+                    let result = builder
+                        .move_call(
+                            *ctor.module_id.address(),
+                            ctor.module_id.name().as_str(),
+                            &ctor.function_name,
+                            type_args,
+                            args,
+                        )
+                        .map_err(|e| format!("PTB move_call failed: {e}"))?;
+
+                    type_to_result.insert(step.type_key.clone(), result);
+                }
+
+                if let Some(target_key) = chain.target_type() {
+                    if type_to_result.contains_key(target_key) {
+                        final_args[*param_idx] = vec![];
+                    }
+                }
+            }
+
+            ConstructorChainEntry::ProducerChain {
+                param_idx: _,
+                chain,
+                target_return_idx: _,
+                is_ref: _,
+                is_mut: _,
+            } => {
+                for step in &chain.steps {
+                    let producer = &step.producer;
+                    let args = build_ptb_producer_args(
+                        &mut builder,
+                        producer,
+                        validator,
+                        &type_to_result,
+                        harness,
+                    )
+                    .map_err(|e| format!("PTB producer arg build failed: {e}"))?;
+
+                    let type_args: Vec<TypeTag> = (0..producer.type_param_count)
+                        .map(|_| TypeTag::U64)
+                        .collect();
+
+                    let module_id = ModuleId::new(
+                        producer.module_addr,
+                        Identifier::new(producer.module_name.clone())
+                            .map_err(|e| format!("invalid module name: {e}"))?,
+                    );
+
+                    let result = builder
+                        .move_call(
+                            *module_id.address(),
+                            module_id.name().as_str(),
+                            &producer.function_name,
+                            type_args,
+                            args,
+                        )
+                        .map_err(|e| format!("PTB producer move_call failed: {e}"))?;
+
+                    for (ret_idx, (_, produced_type)) in producer.produces.iter().enumerate() {
+                        let key = format!(
+                            "{}::{}::{}",
+                            produced_type.module_addr.to_hex_literal(),
+                            produced_type.module_name,
+                            produced_type.type_name
+                        );
+                        let nested = Argument::NestedResult(
+                            match result {
+                                Argument::Result(i) => i,
+                                _ => 0,
+                            },
+                            ret_idx as u16,
+                        );
+                        type_to_result.insert(key, nested);
+                    }
+                }
+            }
+
+            ConstructorChainEntry::Intermediate(ctor) => {
+                let args = build_ptb_constructor_args(
+                    &mut builder,
+                    ctor,
+                    validator,
+                    &type_to_result,
+                    harness,
+                )
+                .map_err(|e| format!("PTB intermediate arg build failed: {e}"))?;
+
+                let type_args: Vec<TypeTag> =
+                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
+                let result = builder
+                    .move_call(
+                        *ctor.module_id.address(),
+                        ctor.module_id.name().as_str(),
+                        &ctor.function_name,
+                        type_args,
+                        args,
+                    )
+                    .map_err(|e| format!("PTB intermediate move_call failed: {e}"))?;
+
+                let key = format!(
+                    "{}::{}::{}",
+                    ctor.returns.address.to_hex_literal(),
+                    ctor.returns.module,
+                    ctor.returns.name
+                );
+                type_to_result.insert(key, result);
+            }
+
+            ConstructorChainEntry::FinalParam { param_idx, ctor } => {
+                let args = build_ptb_constructor_args(
+                    &mut builder,
+                    ctor,
+                    validator,
+                    &type_to_result,
+                    harness,
+                )
+                .map_err(|e| format!("PTB final param arg build failed: {e}"))?;
+
+                let type_args: Vec<TypeTag> =
+                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
+                let result = builder
+                    .move_call(
+                        *ctor.module_id.address(),
+                        ctor.module_id.name().as_str(),
+                        &ctor.function_name,
+                        type_args,
+                        args,
+                    )
+                    .map_err(|e| format!("PTB final param move_call failed: {e}"))?;
+
+                let key = format!(
+                    "{}::{}::{}",
+                    ctor.returns.address.to_hex_literal(),
+                    ctor.returns.module,
+                    ctor.returns.name
+                );
+                type_to_result.insert(key.clone(), result);
+                final_args[*param_idx] = vec![];
+            }
+
+            ConstructorChainEntry::ConstructedRef {
+                param_idx,
+                ctor,
+                is_mut: _,
+            } => {
+                let args = build_ptb_constructor_args(
+                    &mut builder,
+                    ctor,
+                    validator,
+                    &type_to_result,
+                    harness,
+                )
+                .map_err(|e| format!("PTB constructed ref arg build failed: {e}"))?;
+
+                let type_args: Vec<TypeTag> =
+                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+
+                let result = builder
+                    .move_call(
+                        *ctor.module_id.address(),
+                        ctor.module_id.name().as_str(),
+                        &ctor.function_name,
+                        type_args,
+                        args,
+                    )
+                    .map_err(|e| format!("PTB constructed ref move_call failed: {e}"))?;
+
+                let key = format!(
+                    "{}::{}::{}",
+                    ctor.returns.address.to_hex_literal(),
+                    ctor.returns.module,
+                    ctor.returns.name
+                );
+                type_to_result.insert(key.clone(), result);
+                final_args[*param_idx] = vec![];
+            }
+
+            ConstructorChainEntry::Synthesized {
+                param_idx,
+                bytes,
+                type_desc: _,
+            } => {
+                final_args[*param_idx] = bytes.clone();
+            }
+        }
+    }
+
+    // Execute the PTB via SimulationEnvironment
+    let (inputs, commands) = builder.into_parts();
+    let result = sim_env.execute_ptb(inputs, commands);
+
+    if !result.success {
+        let error_msg = result.error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string());
+        return Err(format!("PTB execution failed: {}", error_msg));
+    }
+
+    // Extract return values from effects if available
+    if let Some(effects) = &result.effects {
+        // Return values are stored per-command; we need to map them back to final_args
+        // For now, we rely on the side effects having been applied to sim_env
+        // and return the final_args with their placeholders
+        // The constructed objects are now in sim_env.objects
+        let _ = effects;
+    }
+
+    Ok(final_args)
+}
+
+/// Execute the final target function as a PTB via SimulationEnvironment.
+///
+/// This ensures the final function call also goes through the same execution
+/// path as the constructor chains when --use-ptb is enabled.
+fn execute_final_function_as_ptb(
+    sim_env: &mut SimulationEnvironment,
+    package_addr: AccountAddress,
+    module_name: &str,
+    func_name: &str,
+    type_args: Vec<TypeTag>,
+    args: Vec<Vec<u8>>,
+    synthesizable_params: &[&str],
+) -> Result<()> {
+    use crate::benchmark::ptb::PTBBuilder;
+
+    let mut builder = PTBBuilder::new();
+
+    // Add regular arguments as pure inputs
+    let mut ptb_args: Vec<Argument> = Vec::new();
+    for arg_bytes in &args {
+        let arg = builder.pure_bytes(arg_bytes.clone());
+        ptb_args.push(arg);
+    }
+
+    // Add synthesizable params (TxContext, Clock) - these are handled specially by PTB executor
+    for synth_type in synthesizable_params {
+        match *synth_type {
+            "TxContext" => {
+                // TxContext is auto-injected by the PTB executor for entry functions
+                // For non-entry functions, we need to pass it explicitly
+                // The SimulationEnvironment handles this internally
+            }
+            "Clock" => {
+                // Get Clock object from SimulationEnvironment
+                if let Ok(clock_obj) = sim_env.get_clock_object() {
+                    let clock_arg = builder.add_object_input(clock_obj);
+                    ptb_args.push(clock_arg);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build MoveCall command
+    let module_ident = Identifier::new(module_name)?;
+    let func_ident = Identifier::new(func_name)?;
+
+    let command = Command::MoveCall {
+        package: package_addr,
+        module: module_ident,
+        function: func_ident,
+        type_args,
+        args: ptb_args,
+    };
+
+    // Execute via SimulationEnvironment
+    let (inputs, mut commands) = builder.into_parts();
+    commands.push(command);
+
+    let result = sim_env.execute_ptb(inputs, commands);
+
+    if result.success {
+        Ok(())
+    } else {
+        let error_msg = result.error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown error".to_string());
+        Err(anyhow!("Function execution failed: {}", error_msg))
+    }
 }
 
 /// Build PTB arguments for a constructor, using type_to_result for dependencies.
