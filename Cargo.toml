@@ -10,6 +10,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 sha2 = "0.10"
+ureq = { version = "2.9", features = ["json"] }
+rayon = "1.10"
 bcs = "0.1"
 smallvec = "1.11"
 
@@ -25,9 +27,22 @@ move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.6
 move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-trace-format" }
 move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-symbol-pool" }
 
+# Bytecode disassembly for LLM debugging
+move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-disassembler" }
+move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-bytecode-source-map" }
+move-ir-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-ir-types" }
+move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-command-line-common" }
+
 # MM2 (Move Model 2) for static type validation - builds semantic model from bytecode
 # Used for Phase 2 (TypeCheck) to validate types without VM execution
 move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-model-2" }
+
+# Package building and scaffolding
+move-package = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-package" }
+sui-move-build = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-move-build" }
+
+# PTB construction helpers
+sui-transaction-builder = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-transaction-builder" }
 
 # Align with MystenLabs Sui crate requirements.
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
@@ -45,6 +60,10 @@ move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainne
 # better_any allows non-'static lifetime in extension types
 # IMPORTANT: Must match the version used by move-vm-runtime (0.1)
 better_any = "0.1"
+hex = "0.4.3"
+dirs = "5.0"
+uuid = { version = "1.0", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
 # This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION
