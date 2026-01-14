@@ -25,16 +25,41 @@
 //! - types::is_one_time_witness - Real check (one bool field + UPPERCASE module name)
 //! - dynamic_field::* - Full support via ObjectRuntime VM extension (see object_runtime.rs)
 //!
-//! **Category C: Abort stubs (E_NOT_SUPPORTED = 1000)**
+//! **Category C: Permissive crypto mocks (return success values)**
+//! These return plausible success values to allow LLM code to execute.
+//! **IMPORTANT**: These do NOT perform real cryptographic verification!
+//!
+//! | Module | Function | Mock Return Value |
+//! |--------|----------|-------------------|
+//! | `bls12381` | `bls12381_min_pk_verify` | `true` (signature always valid) |
+//! | `bls12381` | `bls12381_min_sig_verify` | `true` (signature always valid) |
+//! | `ecdsa_k1` | `secp256k1_verify` | `true` (signature always valid) |
+//! | `ecdsa_k1` | `secp256k1_ecrecover` | `[0u8; 33]` (placeholder pubkey) |
+//! | `ecdsa_r1` | `secp256r1_verify` | `true` (signature always valid) |
+//! | `ecdsa_r1` | `secp256r1_ecrecover` | `[0u8; 33]` (placeholder pubkey) |
+//! | `ed25519` | `ed25519_verify` | `true` (signature always valid) |
+//! | `ecvrf` | `ecvrf_verify` | `true` (VRF proof always valid) |
+//! | `random` | `random_internal` | Deterministic bytes from seed (MockRandom) |
+//!
+//! This means:
+//! - Code that checks signatures will ALWAYS pass (false positives)
+//! - Code that uses randomness will get deterministic, predictable values
+//! - Use this for testing logic flow, NOT for security verification
+//!
+//! **Category D: Abort stubs (E_NOT_SUPPORTED = 1000)**
 //! These abort with error code 1000. If a function uses these natives, it will
 //! fail at stage B2 with "execution failed: ...MoveAbort...1000...".
 //!
-//! Unsupported natives (would produce false positives if mocked):
-//! - Crypto verification: bls12381::*, ecdsa_k1::*, ecdsa_r1::*, ed25519::*, groth16::*
-//! - Randomness: random::*
-//! - ZK: zklogin::*, poseidon::*
-//! - Config: config::*
-//! - Attestation: nitro_attestation::*
+//! | Module | Why Unsupported |
+//! |--------|-----------------|
+//! | `groth16::*` | ZK proof verification requires complex curve operations |
+//! | `zklogin::*` | zkLogin requires external verification infrastructure |
+//! | `poseidon::*` | Poseidon hash for ZK circuits not implemented |
+//! | `config::*` | System configuration requires on-chain state |
+//! | `nitro_attestation::*` | AWS Nitro attestation requires enclave access |
+//! | `funds_accumulator::*` | Accumulator operations require on-chain state |
+//!
+//! If you hit error code 1000, your code is calling one of these unsupported natives.
 //!
 //! ## Interpreting Failures
 //!
@@ -570,24 +595,134 @@ fn build_sui_natives(
         }),
     ));
 
-    // transfer natives - all no-op since we don't track ownership
+    // transfer natives - track ownership changes via ObjectRuntime
     // Native names must match the bytecode: freeze_object_impl, share_object_impl, etc.
+
+    // transfer_impl<T>(obj: T, recipient: address)
+    // Transfers ownership of an object to a recipient address
     natives.push((
         "transfer",
         "transfer_impl",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(|ctx, mut ty_args, mut args| {
+            use crate::benchmark::object_runtime::{ObjectRuntime, Owner};
+
+            // Pop arguments: recipient (address), obj (T)
+            // Note: args are in reverse order on the stack
+            let recipient = pop_arg!(args, AccountAddress);
+            let obj_value = args.pop_back().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+
+            // Try to extract object ID from the value
+            // In Sui, objects have an `id: UID` field where UID = { id: ID { bytes: address } }
+            // The first 32 bytes of a serialized object are typically the ID
+
+            // Get type layout first (before borrowing extensions mutably)
+            let layout = ty_args.pop().and_then(|obj_ty| {
+                ctx.type_to_type_layout(&obj_ty).ok().flatten()
+            });
+
+            if let Some(layout) = layout {
+                // Try to serialize the object to get its bytes and ID
+                if let Some(bytes) = obj_value.typed_serialize(&layout) {
+                    if bytes.len() >= 32 {
+                        let mut id_bytes = [0u8; 32];
+                        id_bytes.copy_from_slice(&bytes[0..32]);
+                        let object_id = AccountAddress::new(id_bytes);
+
+                        // Now we can borrow extensions mutably
+                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
+                            // Transfer ownership - ignore errors for objects we haven't tracked
+                            let _ = runtime.object_store_mut().transfer(&object_id, Owner::Address(recipient));
+                        }
+                    }
+                }
+            }
+
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
     ));
 
+    // freeze_object_impl<T>(obj: T)
+    // Makes an object immutable (frozen)
     natives.push((
         "transfer",
         "freeze_object_impl",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(|ctx, mut ty_args, mut args| {
+            use crate::benchmark::object_runtime::ObjectRuntime;
+
+            // Pop the object value
+            let obj_value = args.pop_back().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+
+            // Get type layout first (before borrowing extensions mutably)
+            let layout = ty_args.pop().and_then(|obj_ty| {
+                ctx.type_to_type_layout(&obj_ty).ok().flatten()
+            });
+
+            if let Some(layout) = layout {
+                if let Some(bytes) = obj_value.typed_serialize(&layout) {
+                    if bytes.len() >= 32 {
+                        let mut id_bytes = [0u8; 32];
+                        id_bytes.copy_from_slice(&bytes[0..32]);
+                        let object_id = AccountAddress::new(id_bytes);
+
+                        // Now we can borrow extensions mutably
+                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
+                            // Mark as immutable - ignore errors for objects we haven't tracked
+                            let _ = runtime.object_store_mut().mark_immutable(object_id);
+                        }
+                    }
+                }
+            }
+
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
     ));
 
+    // share_object_impl<T>(obj: T)
+    // Makes an object shared (accessible by anyone)
     natives.push((
         "transfer",
         "share_object_impl",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(|ctx, mut ty_args, mut args| {
+            use crate::benchmark::object_runtime::ObjectRuntime;
+
+            // Pop the object value
+            let obj_value = args.pop_back().ok_or_else(|| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+
+            // Get type layout first (before borrowing extensions mutably)
+            let layout = ty_args.pop().and_then(|obj_ty| {
+                ctx.type_to_type_layout(&obj_ty).ok().flatten()
+            });
+
+            if let Some(layout) = layout {
+                if let Some(bytes) = obj_value.typed_serialize(&layout) {
+                    if bytes.len() >= 32 {
+                        let mut id_bytes = [0u8; 32];
+                        id_bytes.copy_from_slice(&bytes[0..32]);
+                        let object_id = AccountAddress::new(id_bytes);
+
+                        // Now we can borrow extensions mutably
+                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
+                            // Mark as shared - ignore errors for objects we haven't tracked
+                            let _ = runtime.object_store_mut().mark_shared(object_id);
+                        }
+                    }
+                }
+            }
+
+            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+        }),
     ));
 
     // receive_impl<T>(parent: address, to_receive: Receiving<T>) -> T
@@ -597,9 +732,9 @@ fn build_sui_natives(
         "transfer",
         "receive_impl",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::ObjectRuntime;
+            use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
-            // Get the type we're receiving
+            // Get the type we're receiving (this is T, not Receiving<T>)
             let receive_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
@@ -614,81 +749,123 @@ fn build_sui_natives(
             })?;
             let parent = pop_arg!(args, AccountAddress);
 
-            // Get the layout to deserialize the Receiving struct
-            let receiving_layout = match ctx.type_to_type_layout(&receive_ty) {
-                Ok(Some(layout)) => layout,
-                _ => return Ok(NativeResult::err(InternalGas::new(0), 1)),
+            // Get type layout early (needed for deserialization)
+            let fallback_type_layout = match ctx.type_to_type_layout(&receive_ty) {
+                Ok(Some(layout)) => Some(layout),
+                _ => None,
             };
 
-            // Serialize the Receiving value to get the object ID
+            // Try to extract object ID from the Receiving value
             // Receiving<T> = { id: ID { bytes: address }, version: u64 }
-            // So bytes 0..32 are the ID
-            let receiving_bytes = match receiving_value.typed_serialize(&receiving_layout) {
-                Some(bytes) => bytes,
-                None => {
-                    // If we can't serialize, try to extract the ID directly
-                    // The Receiving struct's first field is the ID
-                    // Just return a placeholder object since we can't properly track receives
-                    // without full object storage integration
+            // Try to serialize and extract the address from the bytes
+            let object_id = match receiving_value.typed_serialize(&MoveTypeLayout::Address) {
+                // If it's just an address, use it directly
+                Some(bytes) if bytes.len() == 32 => {
+                    let mut id_bytes = [0u8; 32];
+                    id_bytes.copy_from_slice(&bytes);
+                    AccountAddress::new(id_bytes)
+                }
+                _ => {
+                    // For complex struct values, try to get any pending receive for this parent
+                    // This is a fallback for when we can't extract the ID directly
+                    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                        // Get the pending receives and try to receive one
+                        let result = {
+                            if let Ok(mut state) = shared.shared_state().lock() {
+                                let pending: Vec<AccountAddress> = state.get_pending_receives_for(parent)
+                                    .iter()
+                                    .map(|(id, _, _)| *id)
+                                    .collect();
+                                if let Some(first_id) = pending.first() {
+                                    state.receive_pending(parent, *first_id)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
 
-                    // For now, try to access the ObjectRuntime and use fallback
-                    if let Ok(runtime) = ctx
-                        .extensions_mut()
-                        .get_mut::<ObjectRuntime>()
-                    {
-                        // Try receiving from the parent with a placeholder object ID
-                        // This is a best-effort implementation
-                        let placeholder_id = parent; // Use parent as placeholder
-                        if let Ok(bytes) =
-                            runtime.object_store_mut().receive_object(parent, placeholder_id)
-                        {
-                            // Deserialize and return
-                            // For now, just construct a default value
-                            let _ = bytes;
+                        if let Some((_type_tag, obj_bytes)) = result {
+                            if let Some(type_layout) = &fallback_type_layout {
+                                match Value::simple_deserialize(&obj_bytes, type_layout) {
+                                    Some(value) => {
+                                        return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                                    }
+                                    None => {
+                                        return Ok(NativeResult::err(InternalGas::new(0), 3));
+                                    }
+                                }
+                            } else {
+                                return Ok(NativeResult::err(InternalGas::new(0), 2));
+                            }
                         }
                     }
                     return Ok(NativeResult::err(InternalGas::new(0), 1));
                 }
             };
 
-            // Extract the object ID from the Receiving struct
-            // ID is at bytes 0..32
-            if receiving_bytes.len() < 32 {
-                return Ok(NativeResult::err(InternalGas::new(0), 1));
-            }
+            // Get the type layout first (before we borrow extensions)
+            let type_layout = match ctx.type_to_type_layout(&receive_ty) {
+                Ok(Some(layout)) => layout,
+                _ => return Ok(NativeResult::err(InternalGas::new(0), 2)),
+            };
 
-            let mut object_id_bytes = [0u8; 32];
-            object_id_bytes.copy_from_slice(&receiving_bytes[0..32]);
-            let object_id = AccountAddress::new(object_id_bytes);
+            // First try SharedObjectRuntime's shared state (from SimulationEnvironment)
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                // Try shared state first
+                let recv_bytes_opt = {
+                    if let Ok(mut state) = shared.shared_state().lock() {
+                        state.receive_pending(parent, object_id)
+                    } else {
+                        None
+                    }
+                };
 
-            // Try to receive from ObjectRuntime
-            let runtime: &mut ObjectRuntime = ctx.extensions_mut().get_mut()?;
-
-            match runtime.object_store_mut().receive_object(parent, object_id) {
-                Ok(bytes) => {
-                    // We have the object bytes, but we need to return a Value
-                    // For now, we construct a simple struct value from the bytes
-
-                    // Get the type layout for deserialization
-                    let type_layout = match ctx.type_to_type_layout(&receive_ty) {
-                        Ok(Some(layout)) => layout,
-                        _ => return Ok(NativeResult::err(InternalGas::new(0), 2)),
-                    };
-
-                    // Try to deserialize the value
-                    match Value::simple_deserialize(&bytes, &type_layout) {
+                if let Some((_type_tag, recv_bytes)) = recv_bytes_opt {
+                    match Value::simple_deserialize(&recv_bytes, &type_layout) {
                         Some(value) => {
-                            Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]))
+                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
                         }
                         None => {
-                            // If deserialization fails, construct a minimal struct
-                            // with the bytes we have (best effort)
-                            Ok(NativeResult::err(InternalGas::new(0), 3))
+                            return Ok(NativeResult::err(InternalGas::new(0), 3));
                         }
                     }
                 }
-                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+
+                // Also try the local ObjectRuntime's ObjectStore
+                let runtime = shared.local_mut();
+                if let Ok(recv_bytes) = runtime.object_store_mut().receive_object(parent, object_id) {
+                    match Value::simple_deserialize(&recv_bytes, &type_layout) {
+                        Some(value) => {
+                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                        }
+                        None => {
+                            return Ok(NativeResult::err(InternalGas::new(0), 3));
+                        }
+                    }
+                }
             }
+
+            // Fallback to regular ObjectRuntime
+            if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
+                match runtime.object_store_mut().receive_object(parent, object_id) {
+                    Ok(recv_bytes) => {
+                        match Value::simple_deserialize(&recv_bytes, &type_layout) {
+                            Some(value) => {
+                                return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                            }
+                            None => {
+                                return Ok(NativeResult::err(InternalGas::new(0), 3));
+                            }
+                        }
+                    }
+                    Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                }
+            }
+
+            // Object not found in any pending receives
+            Ok(NativeResult::err(InternalGas::new(0), 4))
         }),
     ));
 
