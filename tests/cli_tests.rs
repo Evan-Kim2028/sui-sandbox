@@ -29,7 +29,8 @@ fn test_local_bytecode_extraction() {
     let content = std::fs::read_to_string(&output_path).unwrap();
     let json: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-    // Check package_id (canonicalized)
+    // Check package_id (canonicalized) - fixture uses 0xDEADBEEF but test passes explicit 0x1
+    // The output should match what we requested, not the module's address
     assert_eq!(json["package_id"], "0x1");
 
     // Check module name
