@@ -4,31 +4,43 @@
 
 This project provides:
 1. A **Rust CLI** for parsing Sui Move `.mv` bytecode into deterministic JSON interfaces
-2. A **Local Bytecode Sandbox** for testing type inhabitation without deploying to any network
+2. A **SimulationEnvironment** - A comprehensive Move VM sandbox for offline execution
 3. A **Python benchmark harness** to evaluate LLM capability on Move type understanding
+4. **Transaction replay** from Sui mainnet for validation testing
 
 ```mermaid
 graph LR
     A[Sui Bytecode] --> B[Rust Extractor]
     B --> C[JSON Interface]
     C --> D[LLM Agent]
-    D --> E[Helper Package]
-    E --> F[Local Bytecode Sandbox]
-    F --> G[Type Inhabitation Score]
+    D --> E[PTB Commands]
+    E --> F[SimulationEnvironment]
+    F --> G[Execution Results]
+
+    H[Mainnet TX] --> I[tx-replay]
+    I --> F
 ```
 
-## Core Concept: Local Bytecode Sandbox
+## Core Concept: SimulationEnvironment
 
-The **Local Bytecode Sandbox** is a deterministic, offline Move VM environment that enables:
+The **SimulationEnvironment** is the central execution backend that powers all sandbox operations:
 
-- **Loading external package bytecode** directly from `.mv` files (no mainnet deployment)
-- **Compiling LLM-generated helper packages** against real bytecode interfaces
-- **Executing and validating type inhabitation** through actual VM execution
-- **Zero gas, tokens, or network access** required
+- **Deterministic PTB Execution**: Execute Programmable Transaction Blocks offline with full object tracking
+- **Transaction Replay**: Fetch and replay real mainnet transactions locally
+- **Self-Healing Evaluation**: Automatically recover from missing packages/objects
+- **LLM Sandbox Interface**: JSON protocol for AI agent interaction
+- **Zero gas, tokens, or network access** required for execution
 
-This measures whether an LLM truly understands Move types well enough to construct valid values and execute functions—without the complexity of on-chain testing.
+### CLI Commands
 
-See [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for detailed architecture.
+| Command | Description |
+|---------|-------------|
+| `benchmark-local` | Tier A/B type inhabitation testing |
+| `tx-replay` | Fetch and replay mainnet transactions |
+| `ptb-eval` | Evaluate PTBs with self-healing |
+| `sandbox-exec` | Interactive sandbox execution (JSON protocol) |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how these components integrate.
 
 ## Quick Links
 
@@ -44,9 +56,12 @@ See [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for detaile
 ## 🔥 Primary Features
 
 1. **Bytecode Interface Extractor (Rust)**: High-performance CLI to extract canonical JSON interfaces from compiled `.mv` modules.
-2. **No-Chain Validator (`benchmark-local`)**: Portable, deterministic validation of Type Inhabitation using a local Move VM—no RPC or gas required.
-3. **LLM Benchmark Harness (Python)**: Comprehensive E2E pipeline to evaluate AI understanding of Move code via autonomous transaction planning.
-4. **Dockerized API (A2A)**: Production-ready Agent-to-Agent interface for running large-scale evaluations with detailed analytics.
+2. **SimulationEnvironment**: Comprehensive Move VM sandbox with PTB execution, object tracking, and state management.
+3. **Transaction Replay (`tx-replay`)**: Fetch real Sui mainnet transactions and replay them locally for validation.
+4. **PTB Evaluation (`ptb-eval`)**: Self-healing evaluation that auto-recovers from missing packages/objects.
+5. **LLM Sandbox (`sandbox-exec`)**: JSON-based interface for AI agents to interact with the Move VM.
+6. **LLM Benchmark Harness (Python)**: Comprehensive E2E pipeline to evaluate AI understanding of Move code via autonomous transaction planning.
+7. **Dockerized API (A2A)**: Production-ready Agent-to-Agent interface for running large-scale evaluations with detailed analytics.
 
 ---
 
@@ -115,6 +130,69 @@ uv run python scripts/e2e_one_package.py \
 ```
 
 See [benchmark/DATASETS.md](benchmark/DATASETS.md) for all available datasets.
+
+---
+
+## 🛠️ CLI Commands
+
+The Rust CLI provides four main commands for different use cases:
+
+### `benchmark-local` - Type Inhabitation Testing
+
+Test whether function types can be inhabited (synthesized and executed):
+
+```bash
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus /path/to/bytecode \
+  --output results.jsonl \
+  --use-ptb  # Use PTB execution via SimulationEnvironment
+```
+
+### `tx-replay` - Transaction Replay
+
+Fetch and replay mainnet transactions locally:
+
+```bash
+# Download recent transactions to cache
+./target/release/sui_move_interface_extractor tx-replay \
+  --recent 100 \
+  --cache-dir .tx-cache \
+  --download-only
+
+# Replay from cache with parallel execution
+./target/release/sui_move_interface_extractor tx-replay \
+  --cache-dir .tx-cache \
+  --from-cache \
+  --parallel \
+  --framework-only  # Only replay framework transactions
+```
+
+### `ptb-eval` - PTB Evaluation with Self-Healing
+
+Evaluate cached transactions with automatic error recovery:
+
+```bash
+./target/release/sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache \
+  --max-retries 3 \
+  --enable-fetching \  # Fetch missing packages from mainnet
+  --show-healing       # Show self-healing actions taken
+```
+
+### `sandbox-exec` - Interactive Sandbox
+
+JSON-based interface for LLM agents:
+
+```bash
+# Interactive mode (JSON lines on stdin/stdout)
+./target/release/sui_move_interface_extractor sandbox-exec --interactive
+
+# Single request from file
+echo '{"action": "list_modules"}' | \
+  ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
+```
+
+See [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) for complete command reference.
 
 ---
 
@@ -278,8 +356,9 @@ See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for production setup in
 
 | Document | Description |
 |----------|-------------|
-| [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) | Local Bytecode Sandbox architecture |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | SimulationEnvironment and system architecture |
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | All CLI commands and flags |
+| [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) | Local Bytecode Sandbox internals |
 | [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | Scoring rules and research methodology |
 | [docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) | Tier A/B validation specification |
 | [benchmark/DATASETS.md](benchmark/DATASETS.md) | Dataset creation and usage |
@@ -288,6 +367,7 @@ See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for production setup in
 
 | Document | Description |
 |----------|-------------|
+| [docs/design/local-move-vm-sandbox.md](docs/design/local-move-vm-sandbox.md) | VM sandbox design and implementation status |
 | [benchmark/docs/ARCHITECTURE.md](benchmark/docs/ARCHITECTURE.md) | Python harness architecture |
 | [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) | Implementation decisions |
 | [docs/A2A_PROTOCOL.md](docs/A2A_PROTOCOL.md) | A2A protocol integration |

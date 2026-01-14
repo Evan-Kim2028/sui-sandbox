@@ -5,11 +5,15 @@
 The **Local Bytecode Sandbox** is a deterministic, offline Move VM environment that enables testing type inhabitation without deploying to mainnet, testnet, or any Sui network. It provides a controlled execution context where:
 
 1. **External package bytecode** can be loaded and executed locally
-2. **LLM-generated helper packages** can be compiled and tested against real bytecode
-3. **Type inhabitation** can be verified through actual VM execution
-4. **No gas, tokens, or network access** is required
+2. **Programmable Transaction Blocks (PTBs)** can be executed with full object tracking
+3. **Transaction replay** enables validating against real mainnet transactions
+4. **LLM-generated helper packages** can be compiled and tested against real bytecode
+5. **Type inhabitation** can be verified through actual VM execution
+6. **No gas, tokens, or network access** is required
 
-This is the core infrastructure that powers the `benchmark-local` command and the E2E type inhabitation evaluation pipeline.
+This is the core infrastructure that powers the `benchmark-local`, `tx-replay`, `ptb-eval`, and `sandbox-exec` commands.
+
+> **Architecture Reference**: For the full system architecture including all CLI commands and data flows, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What Problem Does It Solve?
 
@@ -38,6 +42,8 @@ The Local Bytecode Sandbox eliminates all of these requirements by:
 
 ## Architecture
 
+The sandbox has a layered architecture with **SimulationEnvironment** as the central orchestrator:
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Local Bytecode Sandbox                               │
@@ -59,17 +65,32 @@ The Local Bytecode Sandbox eliminates all of these requirements by:
 │                                  │                                         │
 │                                  ▼                                         │
 │                    ┌─────────────────────────────┐                         │
-│                    │        Move VM              │                         │
-│                    │   (move-vm-runtime)         │                         │
+│                    │   SimulationEnvironment     │ ◄── Central orchestrator│
+│                    │  • Object Store             │     for PTB execution   │
+│                    │  • State Management         │                         │
+│                    │  • Clock/Random Mocking     │                         │
+│                    └─────────────┬───────────────┘                         │
+│                                  │                                         │
+│                                  ▼                                         │
+│                    ┌─────────────────────────────┐                         │
+│                    │       PTBExecutor           │ ◄── Programmable TX     │
+│                    │  • MoveCall, SplitCoins     │     Block execution     │
+│                    │  • TransferObjects, etc.    │                         │
+│                    └─────────────┬───────────────┘                         │
+│                                  │                                         │
+│                                  ▼                                         │
+│                    ┌─────────────────────────────┐                         │
+│                    │        VMHarness            │                         │
+│                    │   (Move VM + natives)       │                         │
 │                    └─────────────┬───────────────┘                         │
 │                                  │                                         │
 │           ┌──────────────────────┼──────────────────────┐                  │
 │           │                      │                      │                  │
 │           ▼                      ▼                      ▼                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐ │
-│  │ Native Mocks    │  │ ObjectRuntime   │  │ Execution Trace             │ │
-│  │ (tx_context,    │  │ (dynamic fields │  │ (which modules were loaded) │ │
-│  │  transfer, etc) │  │  via VM ext.)   │  │                             │ │
+│  │ Native Functions│  │ ObjectRuntime   │  │ Execution Trace             │ │
+│  │ (permissive     │  │ (dynamic fields │  │ (which modules were loaded) │ │
+│  │  crypto mocks)  │  │  via VM ext.)   │  │                             │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────────────┘ │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -77,7 +98,51 @@ The Local Bytecode Sandbox eliminates all of these requirements by:
 
 ## Key Components
 
-### 1. LocalModuleResolver (`src/benchmark/resolver.rs`)
+### 1. SimulationEnvironment (`src/benchmark/simulation.rs`)
+
+The **central orchestrator** for all sandbox operations. It manages:
+
+- **Object Store**: Tracks all simulated objects with types, BCS bytes, and ownership
+- **Package Registry**: Uses LocalModuleResolver for module resolution
+- **State Management**: Clock, Random, and transaction counter for deterministic execution
+- **PTB Routing**: Delegates to PTBExecutor for Programmable Transaction Block execution
+
+```rust
+// Create environment
+let mut env = SimulationEnvironment::new()?;
+let mut env = SimulationEnvironment::with_resolver(resolver)?;
+
+// Deploy packages
+env.deploy_package(modules)?;
+
+// Execute PTB
+let result = env.execute_ptb(inputs, commands)?;
+
+// Reset state between tests (keeps loaded modules)
+env.reset_state()?;
+```
+
+### 2. PTBExecutor (`src/benchmark/ptb.rs`)
+
+Executes Programmable Transaction Blocks with full command support:
+
+| Command | Description |
+|---------|-------------|
+| `MoveCall` | Call a Move function with type args and arguments |
+| `SplitCoins` | Split a coin into multiple coins |
+| `MergeCoins` | Merge multiple coins into one |
+| `TransferObjects` | Transfer objects to a recipient |
+| `MakeMoveVec` | Create a vector from elements |
+| `Publish` | Publish new package modules |
+| `Upgrade` | Upgrade existing package |
+| `Receive` | Receive objects from pending transfers |
+
+The executor tracks:
+- **Result chaining**: `Argument::Result(n)` references previous command outputs
+- **Mutable references**: Updates propagate through command chain
+- **Object lifecycle**: Created, mutated, deleted, wrapped, unwrapped objects
+
+### 3. LocalModuleResolver (`src/benchmark/resolver.rs`)
 
 Loads and indexes bytecode from multiple sources:
 - **Sui Framework**: Bundled at compile time (0x1 move-stdlib, 0x2 sui-framework, 0x3 sui-system)
@@ -85,18 +150,19 @@ Loads and indexes bytecode from multiple sources:
 - **Helper Packages**: Compiled from LLM-generated Move source
 
 ```rust
-pub struct LocalModuleResolver {
-    modules: HashMap<ModuleId, Vec<u8>>,
-}
+let mut resolver = LocalModuleResolver::with_sui_framework()?;
+resolver.load_from_dir(&bytecode_path)?;
+resolver.add_package_modules(modules)?;
 ```
 
-### 2. VMHarness (`src/benchmark/vm.rs`)
+### 4. VMHarness (`src/benchmark/vm.rs`)
 
-Orchestrates Move VM execution with:
+Low-level Move VM wrapper that handles:
 - Module loading from the resolver
 - Native function registration
 - VM extension support (for ObjectRuntime)
 - Execution trace capture
+- Gas metering
 
 ```rust
 pub struct VMHarness<'a> {
@@ -106,25 +172,29 @@ pub struct VMHarness<'a> {
 }
 ```
 
-### 3. Native Function Mocks (`src/benchmark/natives.rs`)
+### 5. Native Functions (`src/benchmark/natives.rs`)
 
-Implements Sui framework native functions in four categories:
+Implements Sui framework native functions with **permissive mocks** for testing:
 
 | Category | Behavior | Examples |
 |----------|----------|----------|
 | **Real** | Actual implementation | `vector::*`, `bcs::*`, `hash::sha2_256` |
 | **Mock** | Return placeholder values | `tx_context::sender` → `0x0` |
+| **Permissive Crypto** | Always succeed | `ed25519::verify` → `true` |
+| **Mock Clock** | Configurable timestamp | `clock::timestamp_ms` → config value |
+| **Mock Random** | Deterministic from seed | `random::*` → seeded values |
 | **VM Extension** | Full impl via ObjectRuntime | `dynamic_field::*` |
-| **Unsupported** | Abort with error 1000 | `ed25519::verify`, `random::*` |
 
-### 4. ObjectRuntime (`src/benchmark/object_runtime.rs`)
+> **Note**: Crypto mocks are permissive by default (signatures always verify). Use `--strict-crypto` flag to disable this for production validation.
+
+### 6. ObjectRuntime (`src/benchmark/object_runtime.rs`)
 
 VM extension that enables dynamic field operations:
 - Stores objects in a HashMap keyed by (parent, child_id)
 - Wraps values in `GlobalValue` for proper reference semantics
 - Supports add, borrow, borrow_mut, remove, and has operations
 
-### 5. Execution Trace (`src/benchmark/vm.rs`)
+### 7. Execution Trace (`src/benchmark/vm.rs`)
 
 Records which modules are loaded during execution:
 ```rust
@@ -172,7 +242,18 @@ enum ConstructorChainEntry {
 
 ## Usage
 
-### CLI: `benchmark-local`
+### CLI Commands
+
+The sandbox powers four CLI commands:
+
+| Command | Description |
+|---------|-------------|
+| `benchmark-local` | Tier A/B type inhabitation testing |
+| `tx-replay` | Fetch and replay mainnet transactions |
+| `ptb-eval` | Evaluate PTBs with self-healing |
+| `sandbox-exec` | Interactive sandbox for LLM agents |
+
+### `benchmark-local` - Type Inhabitation Testing
 
 ```bash
 # Tier A only (fast)
@@ -181,11 +262,53 @@ sui_move_interface_extractor benchmark-local \
   --output results.jsonl \
   --tier-a-only
 
-# Full Tier A + B validation
+# Full Tier A + B validation via SimulationEnvironment
 sui_move_interface_extractor benchmark-local \
   --target-corpus /path/to/bytecode \
   --output results.jsonl \
-  --restricted-state
+  --use-ptb  # Use PTB execution path
+```
+
+### `tx-replay` - Transaction Replay
+
+Fetch and replay real mainnet transactions locally:
+
+```bash
+# Download recent transactions
+sui_move_interface_extractor tx-replay \
+  --recent 100 \
+  --cache-dir .tx-cache \
+  --download-only
+
+# Replay from cache
+sui_move_interface_extractor tx-replay \
+  --cache-dir .tx-cache \
+  --from-cache \
+  --parallel
+```
+
+### `ptb-eval` - Self-Healing Evaluation
+
+Evaluate cached transactions with automatic error recovery:
+
+```bash
+sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache \
+  --max-retries 3 \
+  --enable-fetching  # Fetch missing packages from mainnet
+```
+
+### `sandbox-exec` - LLM Agent Interface
+
+JSON-based interface for AI agents:
+
+```bash
+# Interactive mode
+sui_move_interface_extractor sandbox-exec --interactive
+
+# Example request
+echo '{"action": "execute_ptb", "inputs": [...], "commands": [...]}' | \
+  sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
 ### E2E Pipeline (with LLM)
@@ -198,6 +321,8 @@ python scripts/e2e_one_package.py \
   --model google/gemini-2.0-flash-001 \
   --out-dir results/
 ```
+
+See [CLI_REFERENCE.md](CLI_REFERENCE.md) for complete command documentation.
 
 ## Tradeoffs and Limitations
 
@@ -221,14 +346,21 @@ python scripts/e2e_one_package.py \
 | Object persistence | Per-session only | Objects don't survive between calls |
 | `event::emit` | No-op | Events not captured |
 
+### What's Configurable
+
+| Feature | Default | Flag | Notes |
+|---------|---------|------|-------|
+| Crypto verification | Permissive (always pass) | `--strict-crypto` | Disable for production validation |
+| Clock timestamp | Configurable base | Config | Set via `SimulationConfig.clock_base_ms` |
+| Random seed | Configurable | Config | Set via `SimulationConfig.random_seed` |
+
 ### What's Unsupported
 
 | Feature | Behavior | Why |
 |---------|----------|-----|
-| Crypto verification | Aborts (1000) | Requires real signatures |
-| Randomness | Aborts (1000) | Non-deterministic |
-| Shared objects | Not supported | Requires consensus model |
-| Multi-TX sequences | Not supported | No persistent state |
+| Shared object locking | Simplified | No full consensus model (partial support in PTBExecutor) |
+| Epochs/checkpoints | Not modeled | Would require chain state |
+| Object versioning | Not tracked | Simplified object store |
 
 ## Interpreting Results
 
@@ -311,18 +443,39 @@ Don't trust that code executed correctly—verify it by tracing module loads. If
 
 ## Files
 
+### Core Sandbox
+
 | File | Purpose |
 |------|---------|
+| `src/benchmark/simulation.rs` | **SimulationEnvironment** - Central orchestrator |
+| `src/benchmark/ptb.rs` | **PTBExecutor** - Programmable Transaction Block execution |
 | `src/benchmark/vm.rs` | VMHarness, InMemoryStorage, ExecutionTrace |
-| `src/benchmark/natives.rs` | Native function implementations |
+| `src/benchmark/natives.rs` | Native function implementations (permissive mocks) |
 | `src/benchmark/object_runtime.rs` | Dynamic field VM extension |
-| `src/benchmark/resolver.rs` | Module loading and resolution |
-| `src/benchmark/runner.rs` | Benchmark orchestration |
+| `src/benchmark/resolver.rs` | LocalModuleResolver - Module loading and resolution |
+
+### CLI Commands
+
+| File | Purpose |
+|------|---------|
+| `src/benchmark/runner.rs` | `benchmark-local` - Benchmark orchestration |
+| `src/benchmark/tx_replay.rs` | `tx-replay` - Transaction fetching and replay |
+| `src/benchmark/ptb_eval.rs` | `ptb-eval` - Self-healing PTB evaluation |
+| `src/benchmark/sandbox_exec.rs` | `sandbox-exec` - LLM sandbox interface |
+
+### Supporting Infrastructure
+
+| File | Purpose |
+|------|---------|
 | `src/benchmark/constructor_map.rs` | Constructor discovery and chaining |
 | `src/benchmark/validator.rs` | Type layout resolution |
+| `src/benchmark/llm_tools.rs` | LLM tool definitions for sandbox-exec |
+| `src/benchmark/package_builder.rs` | Move package compilation |
+| `src/benchmark/mm2/` | Type model and validation |
 
 ## See Also
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Full system architecture and data flows
+- [CLI_REFERENCE.md](CLI_REFERENCE.md) - Complete CLI command reference
 - [NO_CHAIN_TYPE_INHABITATION_SPEC.md](NO_CHAIN_TYPE_INHABITATION_SPEC.md) - Technical specification
-- [TYPE_INHABITATION_EVALUATION.md](TYPE_INHABITATION_EVALUATION.md) - Evaluation framework details
 - [METHODOLOGY.md](METHODOLOGY.md) - Scoring and research methodology

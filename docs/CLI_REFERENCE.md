@@ -1,5 +1,39 @@
 # Sui Move Interface Extractor: CLI Reference
 
+This document provides a comprehensive reference for all CLI commands and options.
+
+## Command Overview
+
+| Command | Description |
+|---------|-------------|
+| `benchmark-local` | Type inhabitation testing with Tier A/B validation |
+| `tx-replay` | Fetch and replay mainnet transactions locally |
+| `ptb-eval` | Evaluate PTBs with self-healing error recovery |
+| `sandbox-exec` | Interactive sandbox execution (JSON protocol for LLM agents) |
+| *(default)* | Bytecode extraction and corpus validation |
+
+---
+
+## Quick Reference
+
+```bash
+# Type inhabitation benchmark
+sui_move_interface_extractor benchmark-local --target-corpus ./bytecode --output results.jsonl
+
+# Replay mainnet transactions
+sui_move_interface_extractor tx-replay --recent 100 --cache-dir .tx-cache --download-only
+
+# Self-healing PTB evaluation
+sui_move_interface_extractor ptb-eval --cache-dir .tx-cache --enable-fetching
+
+# Interactive sandbox for LLM
+sui_move_interface_extractor sandbox-exec --interactive
+```
+
+---
+
+## Corpus Validation (Default Mode)
+
 This runbook documents the intended workflow for running scans/validation and keeping results reproducible as the `sui-packages` dataset evolves.
 
 ## Before you run
@@ -340,3 +374,292 @@ See `src/bytecode.rs` for the deserialization logic:
 - `build_bytecode_module_json()`: Extracts struct/function tables
 - `build_bytecode_interface_value_from_compiled_modules()`: Builds complete package interface
 - `signature_token_to_json()`: Converts Move types to canonical JSON
+
+---
+
+## Transaction Replay (`tx-replay`)
+
+Fetch real Sui mainnet transactions and replay them locally using the SimulationEnvironment.
+
+### Usage
+
+```bash
+# Download recent transactions to cache
+sui_move_interface_extractor tx-replay \
+  --recent 100 \
+  --cache-dir .tx-cache \
+  --download-only
+
+# Replay from cache
+sui_move_interface_extractor tx-replay \
+  --cache-dir .tx-cache \
+  --from-cache \
+  --parallel
+
+# Replay single transaction
+sui_move_interface_extractor tx-replay \
+  --digest <TX_DIGEST> \
+  --verbose
+
+# Filter to framework-only transactions
+sui_move_interface_extractor tx-replay \
+  --cache-dir .tx-cache \
+  --from-cache \
+  --framework-only
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--digest <DIGEST>` | Single transaction digest to replay | - |
+| `--recent <N>` | Fetch N recent transactions | - |
+| `--cache-dir <PATH>` | Directory for cached transactions | - |
+| `--download-only` | Download to cache without replaying | `false` |
+| `--from-cache` | Replay from cache instead of RPC | `false` |
+| `--parallel` | Use parallel replay with rayon | `false` |
+| `--threads <N>` | Number of parallel threads | CPU count |
+| `--framework-only` | Only replay framework transactions (0x1, 0x2, 0x3) | `false` |
+| `--rpc-url <URL>` | Custom RPC endpoint | Mainnet |
+| `--testnet` | Use testnet instead of mainnet | `false` |
+| `--verbose` | Show detailed output | `false` |
+| `--validate` | Compare local vs on-chain effects | `false` |
+| `--replay` | Full replay with package fetching | `false` |
+
+### Workflow
+
+1. **Download Phase**: Fetch transactions from RPC and cache as JSON
+2. **Replay Phase**: Load cached transactions and execute via SimulationEnvironment
+3. **Validation Phase**: Compare local execution effects with on-chain effects
+
+### Output
+
+Parallel replay shows summary statistics:
+```
+PARALLEL REPLAY RESULTS
+========================================
+Total transactions: 100
+Successful: 95 (95.0%)
+Status match: 92 (92.0%)
+Time: 1234 ms (81.2 tx/s)
+```
+
+---
+
+## PTB Evaluation (`ptb-eval`)
+
+Evaluate cached transactions with self-healing error recovery. When execution fails, the evaluator attempts to diagnose and fix the issue automatically.
+
+### Usage
+
+```bash
+# Basic evaluation
+sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache
+
+# With self-healing and mainnet fetching
+sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache \
+  --max-retries 3 \
+  --enable-fetching \
+  --show-healing
+
+# Filter by transaction type
+sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache \
+  --framework-only \
+  --limit 50
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--cache-dir <PATH>` | Directory containing cached transactions | `.tx-cache` |
+| `--output <PATH>` | Output file for results (JSONL) | - |
+| `--max-retries <N>` | Maximum self-healing retry attempts | 3 |
+| `--enable-fetching` | Fetch missing packages from mainnet | `false` |
+| `--framework-only` | Only evaluate framework transactions | `false` |
+| `--third-party-only` | Only evaluate non-framework transactions | `false` |
+| `--limit <N>` | Limit evaluation to N transactions | - |
+| `--verbose` | Show detailed error information | `false` |
+| `--show-healing` | Show self-healing actions taken | `false` |
+
+### Self-Healing Actions
+
+When a transaction fails, the evaluator attempts:
+
+| Error | Healing Action |
+|-------|----------------|
+| Missing package | Deploy package from mainnet |
+| Missing object | Create object with inferred type |
+| Type mismatch | Re-resolve types and retry |
+
+### Output Schema
+
+```json
+{
+  "digest": "...",
+  "status": "success",
+  "retry_count": 1,
+  "healing_actions": ["DeployPackage(0x...)"],
+  "error_category": null
+}
+```
+
+---
+
+## Sandbox Execution (`sandbox-exec`)
+
+Interactive sandbox for LLM agents using a JSON protocol over stdin/stdout.
+
+### Usage
+
+```bash
+# Interactive mode (JSON lines)
+sui_move_interface_extractor sandbox-exec --interactive
+
+# Single request
+echo '{"action": "list_modules"}' | \
+  sui_move_interface_extractor sandbox-exec --input - --output -
+
+# With state persistence
+sui_move_interface_extractor sandbox-exec \
+  --interactive \
+  --state-file sandbox.state \
+  --enable-fetching
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--input <PATH>` | Input file (or `-` for stdin) | `-` |
+| `--output <PATH>` | Output file (or `-` for stdout) | `-` |
+| `--interactive` | JSON lines mode (continuous) | `false` |
+| `--enable-fetching` | Fetch packages from mainnet on demand | `false` |
+| `--bytecode-dir <PATH>` | Directory for compiled modules | - |
+| `--state-file <PATH>` | Persist state between calls | - |
+| `--verbose` | Show execution details to stderr | `false` |
+
+### JSON Protocol
+
+#### Request Format
+
+```json
+{"action": "<action_name>", ...params}
+```
+
+#### Available Actions
+
+**Module Introspection:**
+- `list_modules` - List all loaded modules
+- `list_functions` - List functions in a module
+- `list_structs` - List structs in a module
+- `get_function_info` - Get detailed function signature
+- `get_struct_info` - Get struct definition
+
+**Type Operations:**
+- `validate_type` - Check if a type is valid
+- `encode_bcs` - Encode value to BCS bytes
+- `decode_bcs` - Decode BCS bytes to value
+- `search_types` - Search for types by pattern
+- `search_functions` - Search for functions by pattern
+
+**Execution:**
+- `execute_ptb` - Execute Programmable Transaction Block
+- `call_function` - Call a single function
+- `create_object` - Create an object with given fields
+
+**Package Management:**
+- `load_module` - Load bytecode module
+- `compile_move` - Compile Move source code
+- `deploy_package` - Deploy a package
+
+**State:**
+- `get_state` - Get current sandbox state
+- `reset_state` - Reset to initial state
+
+#### Example Session
+
+```json
+// Request: List modules
+{"action": "list_modules"}
+
+// Response
+{"success": true, "modules": ["0x1::string", "0x2::coin", ...]}
+
+// Request: Execute PTB
+{
+  "action": "execute_ptb",
+  "inputs": [{"Pure": [1, 0, 0, 0, 0, 0, 0, 0]}],
+  "commands": [{
+    "MoveCall": {
+      "package": "0x2",
+      "module": "coin",
+      "function": "value",
+      "type_args": ["0x2::sui::SUI"],
+      "args": [{"Input": 0}]
+    }
+  }]
+}
+
+// Response
+{
+  "success": true,
+  "effects": {
+    "created": [],
+    "mutated": [],
+    "return_values": [[...]]
+  }
+}
+```
+
+### Integration with Python
+
+```python
+import subprocess
+import json
+
+def call_sandbox(request):
+    result = subprocess.run(
+        ["sui_move_interface_extractor", "sandbox-exec", "--input", "-", "--output", "-"],
+        input=json.dumps(request),
+        capture_output=True,
+        text=True
+    )
+    return json.loads(result.stdout)
+
+# Example usage
+response = call_sandbox({"action": "list_modules"})
+print(response["modules"])
+```
+
+---
+
+## SimulationEnvironment Configuration
+
+The SimulationEnvironment can be configured via CLI flags on `benchmark-local`:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--use-ptb` | Use PTB execution (recommended) | `false` |
+| `--strict-crypto` | Disable permissive crypto mocks | `false` |
+| `--clock-base-ms <MS>` | Base timestamp for mock clock | 2024-01-01 |
+| `--random-seed <HEX>` | Seed for deterministic random | zeros |
+
+### Execution Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| Default | Direct VM execution | Fast iteration |
+| `--use-ptb` | PTB via SimulationEnvironment | Production benchmarks |
+| `--restricted-state` | Pre-populated mock objects | Common Sui patterns |
+
+---
+
+## See Also
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture overview
+- [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) - Sandbox internals
+- [BENCHMARK_GUIDE.md](BENCHMARK_GUIDE.md) - Benchmark execution guide

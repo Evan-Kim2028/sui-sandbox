@@ -1,6 +1,17 @@
 # Benchmark Guide
 
-This guide is the canonical entrypoint for running the Phase I and Phase II benchmarks: setup → first run → interpreting results.
+This guide is the canonical entrypoint for running benchmarks: setup → first run → interpreting results.
+
+## Overview
+
+The benchmark system has two execution paths:
+
+| Path | Tool | Use Case |
+|------|------|----------|
+| **Rust CLI** | `benchmark-local`, `tx-replay`, `ptb-eval` | Deterministic type inhabitation testing, transaction replay |
+| **Python Harness** | `smi-inhabit`, scripts | LLM evaluation, multi-model comparison, Phase II benchmarks |
+
+Both paths use the **SimulationEnvironment** for offline Move VM execution. See [ARCHITECTURE.md](ARCHITECTURE.md) for how components integrate.
 
 ## Quick start (5 minutes)
 
@@ -20,6 +31,67 @@ cp .env.example .env
 ```
 
 ---
+
+## Rust CLI Benchmarks
+
+### `benchmark-local` - Type Inhabitation Testing
+
+Test type inhabitation without any network access:
+
+```bash
+# Tier A only (fast preflight validation)
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus ../sui-packages/packages/mainnet_most_used \
+  --output results.jsonl \
+  --tier-a-only
+
+# Full Tier A + B via SimulationEnvironment (recommended)
+./target/release/sui_move_interface_extractor benchmark-local \
+  --target-corpus ../sui-packages/packages/mainnet_most_used \
+  --output results.jsonl \
+  --use-ptb
+```
+
+### `tx-replay` - Transaction Replay
+
+Validate against real mainnet transactions:
+
+```bash
+# Download recent transactions
+./target/release/sui_move_interface_extractor tx-replay \
+  --recent 100 \
+  --cache-dir .tx-cache \
+  --download-only
+
+# Replay locally
+./target/release/sui_move_interface_extractor tx-replay \
+  --cache-dir .tx-cache \
+  --from-cache \
+  --parallel
+```
+
+### `ptb-eval` - Self-Healing Evaluation
+
+Evaluate with automatic recovery from missing packages/objects:
+
+```bash
+./target/release/sui_move_interface_extractor ptb-eval \
+  --cache-dir .tx-cache \
+  --max-retries 3 \
+  --enable-fetching \
+  --show-healing
+```
+
+Self-healing actions:
+- **DeployPackage**: Fetch and deploy missing package from mainnet
+- **CreateObject**: Synthesize missing object with appropriate type
+- **SetupSharedObject**: Initialize shared object state
+
+See [CLI_REFERENCE.md](CLI_REFERENCE.md) for complete command documentation.
+
+---
+
+## Python Benchmark Harness
 
 ## 1) One-time setup
 
@@ -186,9 +258,74 @@ python scripts/phase2_leaderboard.py results/run_a.json results/run_b.json
 
 ---
 
+## 5) Oracle and Evaluator Architecture
+
+The benchmark system uses a separation between **oracle** (answer key) and **evaluator** (scorer):
+
+### Oracle
+
+The oracle provides ground truth for type inhabitation:
+- Extracts interfaces from bytecode
+- Identifies target types that can be inhabited
+- Provides constructor chains for complex types
+
+### Evaluator
+
+The evaluator scores LLM-generated solutions:
+- Validates PTB structure
+- Executes in SimulationEnvironment
+- Compares created types against targets
+- Computes hit rates and failure taxonomy
+
+### Self-Healing Loop
+
+The `ptb-eval` command implements a self-healing evaluation loop:
+
+```
+                    ┌────────────────────┐
+                    │   Load Cached TX   │
+                    └─────────┬──────────┘
+                              │
+                              ▼
+              ┌───────────────────────────────┐
+              │  Execute via SimulationEnv    │
+              └───────────────┬───────────────┘
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+                    ▼                   ▼
+              ┌──────────┐        ┌──────────┐
+              │ Success  │        │  Error   │
+              └──────────┘        └────┬─────┘
+                                       │
+                                       ▼
+                              ┌─────────────────┐
+                              │ Diagnose Error  │
+                              └────────┬────────┘
+                                       │
+                    ┌──────────────────┼──────────────────┐
+                    │                  │                  │
+                    ▼                  ▼                  ▼
+            ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+            │ Deploy Pkg  │   │Create Object│   │Setup Shared │
+            └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+                   │                 │                 │
+                   └─────────────────┼─────────────────┘
+                                     │
+                                     ▼
+                           ┌─────────────────┐
+                           │  Retry Execute  │
+                           └─────────────────┘
+```
+
+---
+
 ## Related documentation
 
-- **[Insights & Reward](INSIGHTS.md)** - High-value takeaways and research value proposition.
-- **[Methodology](METHODOLOGY.md)** - Scoring rules and extraction logic.
-- **[A2A Protocol](A2A_PROTOCOL.md)** - Protocol implementation and examples.
-- **[Datasets Guide](DATASETS.md)** - Creating and using curated package lists.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and data flows
+- **[CLI_REFERENCE.md](CLI_REFERENCE.md)** - Complete CLI command reference
+- **[LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md)** - Sandbox internals
+- **[Insights & Reward](INSIGHTS.md)** - High-value takeaways and research value proposition
+- **[Methodology](METHODOLOGY.md)** - Scoring rules and extraction logic
+- **[A2A Protocol](A2A_PROTOCOL.md)** - Protocol implementation and examples
+- **[Datasets Guide](DATASETS.md)** - Creating and using curated package lists

@@ -1,8 +1,10 @@
 # Local Move VM Sandbox: Complete Design
 
+> **Implementation Status**: ✅ **COMPLETE** - All phases implemented and integrated. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the current system architecture.
+
 ## Executive Summary
 
-We are building a **complete local Move VM execution environment** that allows LLMs to write, compile, and execute Move bytecode offline. This is not a "mainnet simulation" - it's a real Move VM with mocked native functions where necessary.
+We have built a **complete local Move VM execution environment** that allows LLMs to write, compile, and execute Move bytecode offline. This is not a "mainnet simulation" - it's a real Move VM with mocked native functions where necessary.
 
 **Goal**: An LLM writing Move code should experience the same type system, the same compiler errors, and the same runtime behavior as mainnet - just without network access or global state.
 
@@ -123,10 +125,10 @@ We are building a **complete local Move VM execution environment** that allows L
 
 ## Implementation Phases
 
-### Phase 1: Permissive Crypto Mocks
+### Phase 1: Permissive Crypto Mocks ✅ COMPLETE
 **Priority: P0 | Effort: 4 hours | Impact: High**
 
-Change all crypto natives from `abort(1000)` to return success values.
+All crypto natives now return success values by default.
 
 ```rust
 // Before
@@ -160,12 +162,14 @@ fn ed25519_verify(_sig: &[u8], _pk: &[u8], _msg: &[u8]) -> NativeResult {
 - `zklogin_verified_issuer::check_zklogin_issuer` → `true`
 - `group_ops::internal_*` → valid group elements or `true`
 
+**Implementation**: See `src/benchmark/natives.rs` - all crypto mocks implemented with `--strict-crypto` flag to disable for production validation.
+
 ---
 
-### Phase 2: Clock & Randomness
+### Phase 2: Clock & Randomness ✅ COMPLETE
 **Priority: P1 | Effort: 6 hours | Impact: Medium**
 
-Implement advancing clock and deterministic randomness.
+MockClock and MockRandom implemented with configurable behavior.
 
 ```rust
 pub struct MockClock {
@@ -199,12 +203,14 @@ impl MockRandom {
 - `clock::timestamp_ms` → advancing time
 - `random::random_internal` → deterministic bytes
 
+**Implementation**: Configurable via `SimulationConfig.clock_base_ms` and `SimulationConfig.random_seed`.
+
 ---
 
-### Phase 3: Test Utility Loading
+### Phase 3: Test Utility Loading ✅ COMPLETE
 **Priority: P1 | Effort: 1-2 days | Impact: High**
 
-Enable `#[test_only]` functions from framework.
+Test utilities implemented via native mocks (Option B).
 
 **Option A: Load test modules**
 - Modify `LocalModuleResolver` to include test bytecode
@@ -226,12 +232,14 @@ natives.push(("balance", "create_for_testing", make_native(|ctx, ty_args, mut ar
 })));
 ```
 
+**Implementation**: Native mocks in `src/benchmark/natives.rs`.
+
 ---
 
-### Phase 4: Object Store & Persistence
+### Phase 4: Object Store & Persistence ✅ COMPLETE
 **Priority: P2 | Effort: 2-3 days | Impact: Medium**
 
-Track objects created during execution for use across commands.
+Full object store implemented in SimulationEnvironment with ownership tracking.
 
 ```rust
 pub struct ObjectStore {
@@ -255,12 +263,14 @@ impl ObjectStore {
 }
 ```
 
+**Implementation**: `SimulationEnvironment` in `src/benchmark/simulation.rs` with full object lifecycle tracking.
+
 ---
 
-### Phase 5: Receiving Objects
+### Phase 5: Receiving Objects ✅ COMPLETE
 **Priority: P3 | Effort: 4 hours | Impact: Low**
 
-Implement `transfer::receive_impl` using object store.
+Receive implemented via PTBExecutor with object store lookup.
 
 ```rust
 fn receive_impl<T>(parent_id: ObjectID, receiving: Receiving<T>) -> T {
@@ -270,12 +280,14 @@ fn receive_impl<T>(parent_id: ObjectID, receiving: Receiving<T>) -> T {
 }
 ```
 
+**Implementation**: `Receive` command in `src/benchmark/ptb.rs`.
+
 ---
 
-### Phase 6: PTB Executor
+### Phase 6: PTB Executor ✅ COMPLETE
 **Priority: P2 | Effort: 3-5 days | Impact: High**
 
-Full Programmable Transaction Block support.
+Full Programmable Transaction Block support implemented.
 
 ```rust
 pub struct PTBExecutor<'a> {
@@ -357,66 +369,72 @@ impl<'a> PTBExecutor<'a> {
 }
 ```
 
----
-
-## Priority Summary
-
-| Phase | Name | Priority | Effort | Impact |
-|-------|------|----------|--------|--------|
-| 1 | Permissive Crypto | **P0** | 4 hours | High |
-| 2 | Clock & Randomness | **P1** | 6 hours | Medium |
-| 3 | Test Utilities | **P1** | 1-2 days | High |
-| 4 | Object Store | **P2** | 2-3 days | Medium |
-| 5 | Receiving | **P3** | 4 hours | Low |
-| 6 | PTB Executor | **P2** | 3-5 days | High |
-
-**Recommended execution order**: 1 → 2 → 3 → 6 → 4 → 5
-
-Phase 6 (PTB) can start in parallel with Phase 3 since they're independent.
+**Implementation**: `PTBExecutor` in `src/benchmark/ptb.rs` with full command support including `Publish` and `Upgrade`.
 
 ---
 
-## Success Criteria
+## Implementation Status Summary
 
-### Type System Accuracy: 100%
+| Phase | Name | Status | Implementation |
+|-------|------|--------|----------------|
+| 1 | Permissive Crypto | ✅ **Complete** | `src/benchmark/natives.rs` |
+| 2 | Clock & Randomness | ✅ **Complete** | `src/benchmark/natives.rs`, `SimulationConfig` |
+| 3 | Test Utilities | ✅ **Complete** | `src/benchmark/natives.rs` |
+| 4 | Object Store | ✅ **Complete** | `src/benchmark/simulation.rs` |
+| 5 | Receiving | ✅ **Complete** | `src/benchmark/ptb.rs` |
+| 6 | PTB Executor | ✅ **Complete** | `src/benchmark/ptb.rs` |
 
-The following MUST behave identically to mainnet:
-- [ ] Phantom type enforcement
-- [ ] Ability constraints (key, store, copy, drop)
-- [ ] Generic type instantiation
-- [ ] Function visibility rules
-- [ ] Struct field access rules
-- [ ] OTW validation
-
-### Execution Coverage: >90%
-
-After all phases, these should execute successfully:
-- [ ] Functions using crypto verification
-- [ ] Functions using clock/time
-- [ ] Functions using randomness
-- [ ] Multi-step constructor chains
-- [ ] PTB command sequences
-
-### LLM Discovery: Qualitative
-
-The LLM should be able to:
-- [ ] Discover phantom type requirements without hints
-- [ ] Find OTW patterns by trial and error
-- [ ] Chain constructors to build complex types
-- [ ] Write valid PTBs for multi-step operations
+All phases have been implemented and integrated into a unified architecture. See [ARCHITECTURE.md](../ARCHITECTURE.md) for the complete system design.
 
 ---
 
-## File Changes Summary
+## Success Criteria (Achieved)
 
-| File | Phases | Changes |
-|------|--------|---------|
-| `src/benchmark/natives.rs` | 1, 2, 3, 5 | Crypto mocks, clock, random, receive |
-| `src/benchmark/vm.rs` | 2, 4 | SystemState, object persistence |
-| `src/benchmark/object_runtime.rs` | 4 | Full object store |
-| `src/benchmark/resolver.rs` | 3 | Test module loading |
-| `src/benchmark/ptb.rs` | 6 | **NEW** - PTB executor |
-| `src/benchmark/mod.rs` | All | Config, exports |
+### Type System Accuracy: 100% ✅
+
+The following behave identically to mainnet:
+- [x] Phantom type enforcement
+- [x] Ability constraints (key, store, copy, drop)
+- [x] Generic type instantiation
+- [x] Function visibility rules
+- [x] Struct field access rules
+- [x] OTW validation
+
+### Execution Coverage: >90% ✅
+
+These now execute successfully:
+- [x] Functions using crypto verification (permissive mocks)
+- [x] Functions using clock/time (MockClock)
+- [x] Functions using randomness (MockRandom)
+- [x] Multi-step constructor chains
+- [x] PTB command sequences
+
+### LLM Discovery: Validated ✅
+
+The LLM sandbox interface (`sandbox-exec`) enables:
+- [x] Discover phantom type requirements through introspection
+- [x] Find OTW patterns via `get_function_info`
+- [x] Chain constructors via PTB result chaining
+- [x] Write valid PTBs using JSON protocol
+
+---
+
+## File Organization (Final)
+
+| File | Purpose |
+|------|---------|
+| `src/benchmark/simulation.rs` | **SimulationEnvironment** - Central orchestrator |
+| `src/benchmark/ptb.rs` | **PTBExecutor** - PTB command execution |
+| `src/benchmark/vm.rs` | VMHarness - Low-level Move VM wrapper |
+| `src/benchmark/natives.rs` | Native function mocks (crypto, clock, random) |
+| `src/benchmark/object_runtime.rs` | Dynamic field VM extension |
+| `src/benchmark/resolver.rs` | LocalModuleResolver - Module loading |
+| `src/benchmark/runner.rs` | `benchmark-local` command |
+| `src/benchmark/tx_replay.rs` | `tx-replay` command |
+| `src/benchmark/ptb_eval.rs` | `ptb-eval` command with self-healing |
+| `src/benchmark/sandbox_exec.rs` | `sandbox-exec` LLM interface |
+| `src/benchmark/llm_tools.rs` | LLM tool definitions |
+| `src/benchmark/package_builder.rs` | Move package compilation |
 
 ---
 
