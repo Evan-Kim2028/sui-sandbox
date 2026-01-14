@@ -48,6 +48,30 @@ use std::collections::{HashMap, HashSet};
 use crate::benchmark::natives::EmittedEvent;
 use crate::benchmark::vm::{gas_costs, VMHarness};
 
+/// Format a TypeTag for display in error messages.
+fn format_type_tag(type_tag: &TypeTag) -> String {
+    match type_tag {
+        TypeTag::Bool => "bool".to_string(),
+        TypeTag::U8 => "u8".to_string(),
+        TypeTag::U16 => "u16".to_string(),
+        TypeTag::U32 => "u32".to_string(),
+        TypeTag::U64 => "u64".to_string(),
+        TypeTag::U128 => "u128".to_string(),
+        TypeTag::U256 => "u256".to_string(),
+        TypeTag::Address => "address".to_string(),
+        TypeTag::Signer => "signer".to_string(),
+        TypeTag::Vector(inner) => format!("vector<{}>", format_type_tag(inner)),
+        TypeTag::Struct(s) => {
+            let mut result = format!("{}::{}::{}", s.address.to_hex_literal(), s.module, s.name);
+            if !s.type_params.is_empty() {
+                let params: Vec<String> = s.type_params.iter().map(format_type_tag).collect();
+                result.push_str(&format!("<{}>", params.join(", ")));
+            }
+            result
+        }
+    }
+}
+
 /// Unique identifier for objects in the PTB context.
 pub type ObjectID = AccountAddress;
 
@@ -451,7 +475,8 @@ pub struct PTBExecutor<'a, 'b> {
 
     /// Pending receives: objects transferred from previous transactions.
     /// Used by the Receive command for transaction chaining.
-    pending_receives: HashMap<ObjectID, Vec<u8>>,
+    /// Stores (bytes, optional type) for type validation.
+    pending_receives: HashMap<ObjectID, (Vec<u8>, Option<TypeTag>)>,
 
     /// Transaction sender address
     sender: AccountAddress,
@@ -1525,23 +1550,38 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         expected_type: Option<&TypeTag>,
     ) -> Result<CommandResult> {
         // Check if we have this object in our pending receives
-        let object_bytes = self.pending_receives
+        let (object_bytes, stored_type) = self.pending_receives
             .remove(object_id)
             .ok_or_else(|| anyhow!(
                 "Object {} not found in pending receives. It must be transferred to this transaction first.",
                 object_id.to_hex_literal()
             ))?;
 
+        // Validate type if both expected and stored types are available
+        if let (Some(expected), Some(stored)) = (expected_type, &stored_type) {
+            if expected != stored {
+                return Err(anyhow!(
+                    "Type mismatch for received object {}: expected {}, but object has type {}",
+                    object_id.to_hex_literal(),
+                    format_type_tag(expected),
+                    format_type_tag(stored)
+                ));
+            }
+        }
+
+        // Use stored type if expected type is not provided
+        let actual_type = expected_type.cloned().or(stored_type);
+
         // Track that this object was received (unwrapped from pending state)
         // Store in created_objects so it can be referenced in subsequent commands
-        self.created_objects.insert(*object_id, (object_bytes.clone(), expected_type.cloned()));
+        self.created_objects.insert(*object_id, (object_bytes.clone(), actual_type.clone()));
         self.object_owners.insert(*object_id, Owner::Address(self.sender));
         // Received objects are transferable by the sender
         self.transferable_objects.insert(*object_id);
         self.object_changes.push(ObjectChange::Unwrapped {
             id: *object_id,
             owner: Owner::Address(self.sender),
-            object_type: expected_type.cloned(),
+            object_type: actual_type,
         });
 
         // Estimate gas: native call + unwrap operation
@@ -1556,7 +1596,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Add an object to the pending receives queue.
     /// Call this before executing a PTB that will use Receive commands.
     pub fn add_pending_receive(&mut self, object_id: ObjectID, object_bytes: Vec<u8>) {
-        self.pending_receives.insert(object_id, object_bytes);
+        self.pending_receives.insert(object_id, (object_bytes, None));
+    }
+
+    /// Add an object to the pending receives queue with type information.
+    /// This enables type validation when the object is received.
+    pub fn add_pending_receive_with_type(&mut self, object_id: ObjectID, object_bytes: Vec<u8>, type_tag: TypeTag) {
+        self.pending_receives.insert(object_id, (object_bytes, Some(type_tag)));
     }
 
     /// Execute all commands in the PTB.
