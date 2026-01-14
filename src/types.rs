@@ -190,8 +190,12 @@ pub struct CorpusRow {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CorpusSummary {
+/// Core statistics from a corpus analysis run.
+///
+/// This struct contains the shared statistical fields used by both
+/// `CorpusSummary` (full output with file paths) and `SubmissionSummary` (nested stats).
+#[derive(Debug, Clone, Serialize)]
+pub struct CorpusStats {
     pub total: usize,
     pub local_ok: usize,
     pub local_vs_bcs_module_match: usize,
@@ -208,10 +212,23 @@ pub struct CorpusSummary {
     pub interface_mismatch_packages: usize,
     pub interface_mismatches_total: usize,
     pub problems: usize,
+}
+
+/// Full corpus summary including statistics and output file paths.
+#[derive(Debug, Serialize)]
+pub struct CorpusSummary {
+    /// Core statistics (flattened into the JSON output)
+    #[serde(flatten)]
+    pub stats: CorpusStats,
+    /// Path to the detailed report JSONL file
     pub report_jsonl: String,
+    /// Path to the index JSONL file
     pub index_jsonl: String,
+    /// Path to the problems JSONL file
     pub problems_jsonl: String,
+    /// Path to the sample IDs file (if sampling was used)
     pub sample_ids: Option<String>,
+    /// Path to the run metadata JSON file
     pub run_metadata_json: String,
 }
 
@@ -250,22 +267,7 @@ pub struct SubmissionSummary {
     pub stats: CorpusSummaryStats,
 }
 
-#[derive(Debug, Serialize)]
-pub struct CorpusSummaryStats {
-    pub total: usize,
-    pub local_ok: usize,
-    pub local_vs_bcs_module_match: usize,
-    pub local_bytes_check_enabled: bool,
-    pub local_bytes_ok: usize,
-    pub local_bytes_mismatch_packages: usize,
-    pub local_bytes_mismatches_total: usize,
-    pub rpc_enabled: bool,
-    pub rpc_ok: usize,
-    pub rpc_module_match: usize,
-    pub rpc_exposed_function_count_match: usize,
-    pub interface_compare_enabled: bool,
-    pub interface_ok: usize,
-    pub interface_mismatch_packages: usize,
-    pub interface_mismatches_total: usize,
-    pub problems: usize,
-}
+/// Alias for CorpusStats for backwards compatibility.
+///
+/// Used in `SubmissionSummary` to nest the statistics under a `stats` field.
+pub type CorpusSummaryStats = CorpusStats;

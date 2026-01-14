@@ -235,8 +235,10 @@ pub struct BenchmarkLocalArgs {
     #[arg(long, default_value_t = true)]
     pub use_mm2: bool,
 
-    /// Disable MM2-based type checking (use legacy bytecode analysis).
-    /// DEPRECATED: The legacy analyzer will be removed in a future version.
+    /// **DEPRECATED**: Disable MM2-based type checking (use legacy bytecode analysis).
+    ///
+    /// The legacy analyzer will be removed in v0.6.0. Migrate to MM2 (the default).
+    #[deprecated(since = "0.5.0", note = "Legacy bytecode analyzer will be removed in v0.6.0")]
     #[arg(long, default_value_t = false)]
     pub no_mm2: bool,
 
@@ -255,8 +257,10 @@ pub struct BenchmarkLocalArgs {
     #[arg(long, default_value_t = true)]
     pub phase_errors: bool,
 
-    /// Disable phase-based error taxonomy (use legacy A1-A5/B1-B2 stages).
-    /// DEPRECATED: Legacy error stages will be removed in a future version.
+    /// **DEPRECATED**: Disable phase-based error taxonomy (use legacy A1-A5/B1-B2 stages).
+    ///
+    /// Legacy error stages will be removed in v0.6.0. Migrate to phase-based errors (the default).
+    #[deprecated(since = "0.5.0", note = "Legacy A1-A5/B1-B2 error stages will be removed in v0.6.0")]
     #[arg(long, default_value_t = false)]
     pub no_phase_errors: bool,
 
@@ -275,9 +279,19 @@ pub struct BenchmarkLocalArgs {
 
     /// Use PTB (Programmable Transaction Block) execution mode for constructor chains.
     /// This executes multi-step constructor chains as PTB commands with proper result chaining.
-    /// May improve execution of complex multi-hop construction patterns.
-    #[arg(long, default_value_t = false)]
+    /// PTB mode uses SimulationEnvironment which is the canonical execution path.
+    /// Enabled by default. Use --no-ptb for legacy VMHarness execution (provides tracing).
+    #[arg(long, default_value_t = true)]
     pub use_ptb: bool,
+
+    /// **DEPRECATED**: Disable PTB execution mode (use legacy VMHarness path).
+    ///
+    /// The legacy VMHarness path provides execution tracing but has inconsistent semantics.
+    /// Only use for debugging or when execution tracing is required.
+    /// Will be removed in v0.6.0 once SimulationEnvironment supports tracing.
+    #[deprecated(since = "0.5.0", note = "Legacy VMHarness path will be removed in v0.6.0")]
+    #[arg(long, default_value_t = false)]
+    pub no_ptb: bool,
 
     // === Simulation Config Options ===
     /// Disable permissive crypto mocks (crypto operations may fail).
@@ -305,6 +319,11 @@ impl BenchmarkLocalArgs {
     /// Get effective phase_errors setting (respects --no-phase-errors override).
     pub fn effective_phase_errors(&self) -> bool {
         self.phase_errors && !self.no_phase_errors
+    }
+
+    /// Get effective PTB setting (respects --no-ptb override).
+    pub fn effective_use_ptb(&self) -> bool {
+        self.use_ptb && !self.no_ptb
     }
 
     /// Build a SimulationConfig from the CLI arguments.

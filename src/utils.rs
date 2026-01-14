@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use move_core_types::account_address::AccountAddress;
 use serde_json::Value;
 use std::fs::{self, File};
 use std::future::Future;
@@ -10,6 +11,70 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{GitHeadMetadata, GitMetadata};
 use sha2::Digest;
+
+// =============================================================================
+// Address Utilities
+// =============================================================================
+// Canonical address formatting functions. Use these instead of module-specific
+// implementations for consistent address representation across the codebase.
+
+/// Parse an address string (short or long form) into an AccountAddress.
+///
+/// Accepts formats: "0x2", "0x0000...0002", "2"
+pub fn parse_address(addr: &str) -> Result<AccountAddress> {
+    let s = addr.trim();
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+
+    if hex_str.is_empty() {
+        return Err(anyhow!("empty address"));
+    }
+
+    if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid hex address: {}", addr));
+    }
+
+    // Pad to 64 hex chars (32 bytes)
+    let padded = format!("{:0>64}", hex_str);
+    if padded.len() > 64 {
+        return Err(anyhow!("address too long: {}", addr));
+    }
+
+    AccountAddress::from_hex_literal(&format!("0x{}", padded))
+        .map_err(|e| anyhow!("invalid address '{}': {:?}", addr, e))
+}
+
+/// Format an address to short form (0x2 instead of 0x0000...0002).
+///
+/// This is the preferred format for display to users and in API responses.
+pub fn format_address_short(addr: &AccountAddress) -> String {
+    let hex = addr.to_hex_literal();
+    // Strip leading zeros after 0x prefix
+    if hex.starts_with("0x") {
+        let without_prefix = &hex[2..];
+        let trimmed = without_prefix.trim_start_matches('0');
+        if trimmed.is_empty() {
+            "0x0".to_string()
+        } else {
+            format!("0x{}", trimmed)
+        }
+    } else {
+        hex
+    }
+}
+
+/// Format an address to full 64-character form (0x0000...0002).
+///
+/// This is the canonical form for storage and comparison.
+pub fn format_address_full(addr: &AccountAddress) -> String {
+    format!("0x{}", hex::encode(addr.as_ref()))
+}
+
+/// Check if an address is a framework address (0x1, 0x2, 0x3).
+pub fn is_framework_address(addr: &AccountAddress) -> bool {
+    let bytes = addr.as_ref();
+    // Check if all bytes except the last are zero
+    bytes[..31].iter().all(|&b| b == 0) && bytes[31] <= 3 && bytes[31] >= 1
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct BytesInfo {
@@ -260,5 +325,55 @@ mod tests {
         // "a":1 comes before "b":2
         // Inside list, objects also sorted: "x":1 before "y":2
         assert_eq!(s, r#"{"a":1,"b":2,"c":[{"x":1,"y":2},3]}"#);
+    }
+
+    #[test]
+    fn test_parse_address() {
+        // Short form
+        let addr = parse_address("0x2").unwrap();
+        assert_eq!(format_address_short(&addr), "0x2");
+
+        // Without prefix
+        let addr = parse_address("2").unwrap();
+        assert_eq!(format_address_short(&addr), "0x2");
+
+        // Full form
+        let full = "0x0000000000000000000000000000000000000000000000000000000000000002";
+        let addr = parse_address(full).unwrap();
+        assert_eq!(format_address_short(&addr), "0x2");
+        assert_eq!(format_address_full(&addr), full);
+
+        // Error cases
+        assert!(parse_address("").is_err());
+        assert!(parse_address("0x").is_err());
+        assert!(parse_address("0xgg").is_err());
+    }
+
+    #[test]
+    fn test_format_address_short() {
+        let addr = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+        ).unwrap();
+        assert_eq!(format_address_short(&addr), "0x2");
+
+        let addr = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ).unwrap();
+        assert_eq!(format_address_short(&addr), "0x0");
+    }
+
+    #[test]
+    fn test_is_framework_address() {
+        let addr1 = parse_address("0x1").unwrap();
+        let addr2 = parse_address("0x2").unwrap();
+        let addr3 = parse_address("0x3").unwrap();
+        let addr4 = parse_address("0x4").unwrap();
+        let user = parse_address("0xabc123").unwrap();
+
+        assert!(is_framework_address(&addr1));
+        assert!(is_framework_address(&addr2));
+        assert!(is_framework_address(&addr3));
+        assert!(!is_framework_address(&addr4));
+        assert!(!is_framework_address(&user));
     }
 }

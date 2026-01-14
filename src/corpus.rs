@@ -21,7 +21,7 @@ use crate::comparator::{
 };
 use crate::rpc::build_interface_value_for_package;
 use crate::types::{
-    CorpusIndexRow, CorpusRow, CorpusSummary, CorpusSummaryStats, LocalBytecodeCounts,
+    CorpusIndexRow, CorpusRow, CorpusStats, CorpusSummary, LocalBytecodeCounts,
     ModuleSetDiff, RunMetadata, SubmissionSummary,
 };
 use crate::utils::{
@@ -638,24 +638,29 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
         }
     }
 
+    // Create shared stats for both CorpusSummary and SubmissionSummary
+    let stats = CorpusStats {
+        total,
+        local_ok,
+        local_vs_bcs_module_match: bcs_module_match,
+        local_bytes_check_enabled: args.corpus_local_bytes_check,
+        local_bytes_ok,
+        local_bytes_mismatch_packages,
+        local_bytes_mismatches_total,
+        rpc_enabled: args.corpus_rpc_compare,
+        rpc_ok,
+        rpc_module_match,
+        rpc_exposed_function_count_match,
+        interface_compare_enabled: args.corpus_interface_compare,
+        interface_ok,
+        interface_mismatch_packages,
+        interface_mismatches_total,
+        problems,
+    };
+
     {
         let summary = CorpusSummary {
-            total,
-            local_ok,
-            local_vs_bcs_module_match: bcs_module_match,
-            local_bytes_check_enabled: args.corpus_local_bytes_check,
-            local_bytes_ok,
-            local_bytes_mismatch_packages,
-            local_bytes_mismatches_total,
-            rpc_enabled: args.corpus_rpc_compare,
-            rpc_ok,
-            rpc_module_match,
-            rpc_exposed_function_count_match,
-            interface_compare_enabled: args.corpus_interface_compare,
-            interface_ok,
-            interface_mismatch_packages,
-            interface_mismatches_total,
-            problems,
+            stats: stats.clone(),
             report_jsonl: report_path.display().to_string(),
             index_jsonl: index_path.display().to_string(),
             problems_jsonl: problems_path.display().to_string(),
@@ -710,24 +715,7 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
                     .as_deref()
                     .unwrap_or_else(|| Path::new(".")),
             ),
-            stats: CorpusSummaryStats {
-                total,
-                local_ok,
-                local_vs_bcs_module_match: bcs_module_match,
-                local_bytes_check_enabled: args.corpus_local_bytes_check,
-                local_bytes_ok,
-                local_bytes_mismatch_packages,
-                local_bytes_mismatches_total,
-                rpc_enabled: args.corpus_rpc_compare,
-                rpc_ok,
-                rpc_module_match,
-                rpc_exposed_function_count_match,
-                interface_compare_enabled: args.corpus_interface_compare,
-                interface_ok,
-                interface_mismatch_packages,
-                interface_mismatches_total,
-                problems,
-            },
+            stats: stats.clone(),
         };
 
         let mut v = serde_json::to_value(summary).context("serialize submission summary")?;
