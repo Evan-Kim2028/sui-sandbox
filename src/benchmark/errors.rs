@@ -355,6 +355,7 @@ impl ErrorCode {
             ErrorCode::ReturnTypeMismatch => ErrorSource::LlmError,
         }
     }
+
 }
 
 impl fmt::Display for ErrorCode {
@@ -419,10 +420,19 @@ pub struct Failure {
     pub code: ErrorCode,
     /// Human-readable error message with context
     pub message: String,
-    /// Whether this is an expected sandbox limitation (not an LLM failure)
-    /// **Deprecated**: Use `error_source` instead
+    /// Whether this is an expected sandbox limitation (not an LLM failure).
+    ///
+    /// **Note**: This is a derived field for backwards compatibility. It is `true` when
+    /// `error_source` is `InfrastructureLimitation` or `TargetPackageLimitation`.
+    /// For new code, prefer checking `error_source.counts_against_llm()` directly.
+    #[serde(skip_serializing_if = "is_false")]
     pub is_expected_limitation: bool,
-    /// Attribution for where this error originated
+    /// Attribution for where this error originated.
+    ///
+    /// This is the canonical field for error attribution:
+    /// - `LlmError`: LLM generated incorrect code (should penalize model)
+    /// - `InfrastructureLimitation`: Sandbox can't simulate this (don't penalize)
+    /// - `TargetPackageLimitation`: Package has no valid entry points (don't penalize)
     #[serde(default)]
     pub error_source: ErrorSource,
     /// Optional additional context (e.g., which type failed, which function)
@@ -1141,6 +1151,8 @@ pub enum NativeCategory {
     SafeMock,
     /// Full support via ObjectRuntime VM extension
     VmExtension,
+    /// Permissive mocks that return success values (crypto verification returns true, etc.)
+    PermissiveMock,
     /// Aborts with E_NOT_SUPPORTED - cannot be simulated
     Unsupported,
 }
@@ -1225,27 +1237,28 @@ pub fn native_support_info() -> Vec<NativeModuleInfo> {
             category: NativeCategory::VmExtension,
             description: "Dynamic field operations (full support via ObjectRuntime)",
         },
-        // Category C: Unsupported (abort with E_NOT_SUPPORTED)
+        // Category C: Permissive crypto mocks (return success values)
         NativeModuleInfo {
             module: "0x2::bls12381",
-            category: NativeCategory::Unsupported,
-            description: "BLS12-381 signature verification",
+            category: NativeCategory::PermissiveMock,
+            description: "BLS12-381 signature verification (returns true)",
         },
         NativeModuleInfo {
             module: "0x2::ecdsa_k1",
-            category: NativeCategory::Unsupported,
-            description: "ECDSA secp256k1 signature verification",
+            category: NativeCategory::PermissiveMock,
+            description: "ECDSA secp256k1 signature verification (returns true)",
         },
         NativeModuleInfo {
             module: "0x2::ecdsa_r1",
-            category: NativeCategory::Unsupported,
-            description: "ECDSA secp256r1 signature verification",
+            category: NativeCategory::PermissiveMock,
+            description: "ECDSA secp256r1 signature verification (returns true)",
         },
         NativeModuleInfo {
             module: "0x2::ed25519",
-            category: NativeCategory::Unsupported,
-            description: "Ed25519 signature verification",
+            category: NativeCategory::PermissiveMock,
+            description: "Ed25519 signature verification (returns true)",
         },
+        // Category D: Unsupported (abort with E_NOT_SUPPORTED)
         NativeModuleInfo {
             module: "0x2::groth16",
             category: NativeCategory::Unsupported,
@@ -1263,8 +1276,13 @@ pub fn native_support_info() -> Vec<NativeModuleInfo> {
         },
         NativeModuleInfo {
             module: "0x2::random",
-            category: NativeCategory::Unsupported,
-            description: "On-chain randomness",
+            category: NativeCategory::PermissiveMock,
+            description: "On-chain randomness (deterministic mock)",
+        },
+        NativeModuleInfo {
+            module: "0x2::ecvrf",
+            category: NativeCategory::PermissiveMock,
+            description: "Verifiable random function (returns true)",
         },
         NativeModuleInfo {
             module: "0x2::config",
@@ -1301,6 +1319,15 @@ pub fn unsupported_native_error_message() -> String {
 /// Check if an error message indicates an unsupported native function.
 pub fn is_unsupported_native_error(error: &str) -> bool {
     error.contains(&E_NOT_SUPPORTED.to_string()) && error.contains("MoveAbort")
+}
+
+// =============================================================================
+// Helper functions for serde
+// =============================================================================
+
+/// Helper for skip_serializing_if
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 // =============================================================================
