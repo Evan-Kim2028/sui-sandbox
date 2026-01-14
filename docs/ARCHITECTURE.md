@@ -2,6 +2,37 @@
 
 This document describes the architecture of the sui-move-interface-extractor project, focusing on how the components integrate to provide a comprehensive Move VM sandbox environment.
 
+## Design Philosophy
+
+### Single API Surface
+
+All LLM interactions go through **`SandboxRequest`** in `sandbox_exec.rs`. This is the canonical interface:
+
+- **One entry point**: `execute_request(SandboxRequest)` handles all operations
+- **One schema**: `{"action": "list_available_tools"}` returns complete tool documentation
+- **One state**: All operations share `SimulationEnvironment` state
+
+The legacy `ToolCall`/`LlmToolkit` in `llm_tools.rs` is deprecated and should not be used for new integrations.
+
+### Neutral and Unopinionated
+
+The sandbox API is intentionally neutral to enable unbiased LLM evaluation:
+
+- **No recovery hints**: Errors describe what happened, not how to fix it
+- **No usage suggestions**: Tool descriptions explain capabilities, not strategies
+- **No tips or guidance**: LLMs must reason about solutions independently
+
+This ensures experiments measure actual LLM reasoning, not instruction-following.
+
+### Stateful Execution
+
+All operations share state through `SimulationEnvironment`:
+
+- Loading a module makes it available for all subsequent operations
+- Creating an object makes it usable in PTB execution
+- State persists across requests within a session
+- Use `reset` to clear state between independent tests
+
 ## System Overview
 
 ```
@@ -320,7 +351,8 @@ enum SimulationError {
 ```
 src/
 ├── benchmark/
-│   ├── simulation.rs      # SimulationEnvironment
+│   ├── simulation.rs      # SimulationEnvironment - central state manager
+│   ├── sandbox_exec.rs    # SandboxRequest API - canonical LLM interface
 │   ├── ptb.rs             # PTBExecutor, PTBBuilder
 │   ├── vm.rs              # VMHarness
 │   ├── natives.rs         # Native function mocks
@@ -328,8 +360,7 @@ src/
 │   ├── runner.rs          # Benchmark runner (Tier A/B)
 │   ├── tx_replay.rs       # Transaction fetching/replay
 │   ├── ptb_eval.rs        # Self-healing evaluation
-│   ├── sandbox_exec.rs    # LLM sandbox interface
-│   ├── llm_tools.rs       # LLM tool definitions
+│   ├── llm_tools.rs       # LEGACY: ToolCall/LlmToolkit (use sandbox_exec.rs)
 │   ├── package_builder.rs # Move compilation
 │   └── mm2/               # Type model and validation
 ├── args.rs                # CLI argument parsing

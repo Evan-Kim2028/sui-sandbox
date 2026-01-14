@@ -196,6 +196,55 @@ See [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) for complete command referenc
 
 ---
 
+## 🏗️ Simulation Architecture
+
+The simulation stack uses the **real Move VM** (`move-vm-runtime`) with a layered architecture for offline execution:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    SimulationEnvironment                        │
+│  (Central orchestrator - object store, state, PTB routing)     │
+├─────────────────────────────────────────────────────────────────┤
+│                       PTBExecutor                               │
+│  (MoveCall, SplitCoins, MergeCoins, Transfer, Publish, etc.)   │
+├─────────────────────────────────────────────────────────────────┤
+│                        VMHarness                                │
+│  (VM wrapper, native registration, gas metering)               │
+├─────────────────────────────────────────────────────────────────┤
+│                 move_vm_runtime::MoveVM                         │  ← REAL VM
+│  (Actual bytecode execution, type checking, abilities)         │
+├─────────────────────────────────────────────────────────────────┤
+│   ObjectRuntime (VM Extension)    │    Native Functions         │
+│   • Dynamic fields (full)         │    • Real: vector, bcs, hash│
+│   • Object store                  │    • Mock: crypto, clock    │
+│   • Reference semantics           │    • Permissive by default  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### What's Real vs. Mocked
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Move VM** | ✅ Real | Actual `move-vm-runtime` bytecode execution |
+| **Type System** | ✅ Real | Phantoms, abilities, generics fully enforced |
+| **BCS Serialization** | ✅ Real | From move-stdlib |
+| **Dynamic Fields** | ✅ Full | Via ObjectRuntime VM extension |
+| **PTB Commands** | ✅ Full | All 8 command types supported |
+| **Crypto Verification** | ⚠️ Mock | Returns `true` (permissive by default) |
+| **Clock/Random** | ⚠️ Mock | Deterministic, configurable |
+| **Gas Metering** | ⚠️ Estimated | Flat cost model, not per-instruction |
+| **Ownership** | ⚠️ Tracked | Transfers logged but not enforced |
+
+### Fidelity Assessment
+
+**~95% accurate for type inhabitation testing** - the intended use case. The real Move VM ensures type checking, abilities, and struct layouts are correct. Mocked natives allow code to execute without real signatures or on-chain state.
+
+**Not suitable for**: Production security validation, cryptographic correctness, or gas budget estimation.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete system design and [docs/LOCAL_BYTECODE_SANDBOX.md](docs/LOCAL_BYTECODE_SANDBOX.md) for implementation details.
+
+---
+
 ## 🧪 Case Study: Liquid Staking Package
 
 The **Liquid Staking package** (`0x059f94b85c07eb74d2847f8255d8cc0a67c9a8dcc039eabf9f8b9e23a0de2700`) is a complex Move package that serves as an excellent benchmark for LLM capabilities. It has no trivial entry points—requiring the agent to understand and chain multiple constructors.
