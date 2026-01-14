@@ -37,8 +37,8 @@ use crate::benchmark::bytecode_analyzer::{self, StaticFunctionCall};
 use crate::benchmark::constructor_map::{ConstructorInfo, ConstructorMap, ParamKind};
 use crate::benchmark::errors::{is_unsupported_native_error, unsupported_native_error_message};
 use crate::benchmark::mm2::{
-    ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, TypeModel,
-    TypeSynthesizer,
+    ConstructorGraph, ExecutionChain, ParamRequirement, Producer, ProducerChain, ReturnTypeArg,
+    TypeModel, TypeSynthesizer,
 };
 use crate::benchmark::ptb::{Argument, Command};
 use crate::benchmark::resolver::LocalModuleResolver;
@@ -218,6 +218,141 @@ fn token_to_type_tag_simple(token: &SignatureToken, module: &CompiledModule) -> 
         }
         _ => None,
     }
+}
+
+/// Resolve type arguments from a ConstructorInfo to concrete TypeTags.
+///
+/// Uses the return type's type_params if available, otherwise falls back to U64.
+/// This provides proper generic instantiation instead of always using U64.
+fn resolve_constructor_type_args(ctor: &ConstructorInfo) -> Vec<TypeTag> {
+    // If the return type has concrete type arguments, use them
+    if !ctor.returns.type_params.is_empty() {
+        ctor.returns.type_params.clone()
+    } else if ctor.type_params > 0 {
+        // No concrete types available, fallback to U64
+        (0..ctor.type_params).map(|_| TypeTag::U64).collect()
+    } else {
+        vec![]
+    }
+}
+
+/// Resolve type arguments from a Producer's ReturnTypeArg to concrete TypeTags.
+///
+/// This handles the Producer's `ProducedType.type_args` which can be:
+/// - `TypeParam(idx)` - Reference to function's type parameter (fallback to U64)
+/// - `Concrete(str)` - A concrete type string (parse it)
+fn resolve_producer_type_args(producer: &Producer, target_return_idx: usize) -> Vec<TypeTag> {
+    // Find the produced type for the target return index
+    if let Some((_, produced_type)) = producer.produces.iter().find(|(idx, _)| *idx == target_return_idx) {
+        produced_type
+            .type_args
+            .iter()
+            .map(|arg| match arg {
+                ReturnTypeArg::TypeParam(_) => TypeTag::U64, // Unresolved type param
+                ReturnTypeArg::Concrete(type_str) => {
+                    parse_type_string_to_tag(type_str).unwrap_or(TypeTag::U64)
+                }
+            })
+            .collect()
+    } else if producer.type_param_count > 0 {
+        // Fallback: use U64 for each type parameter
+        (0..producer.type_param_count).map(|_| TypeTag::U64).collect()
+    } else {
+        vec![]
+    }
+}
+
+/// Parse a type string like "0x2::sui::SUI" into a TypeTag.
+fn parse_type_string_to_tag(type_str: &str) -> Option<TypeTag> {
+    let trimmed = type_str.trim();
+
+    // Handle primitives
+    match trimmed {
+        "bool" => return Some(TypeTag::Bool),
+        "u8" => return Some(TypeTag::U8),
+        "u16" => return Some(TypeTag::U16),
+        "u32" => return Some(TypeTag::U32),
+        "u64" => return Some(TypeTag::U64),
+        "u128" => return Some(TypeTag::U128),
+        "u256" => return Some(TypeTag::U256),
+        "address" => return Some(TypeTag::Address),
+        "signer" => return Some(TypeTag::Signer),
+        _ => {}
+    }
+
+    // Handle vector types
+    if trimmed.starts_with("vector<") && trimmed.ends_with('>') {
+        let inner = &trimmed[7..trimmed.len() - 1];
+        return parse_type_string_to_tag(inner).map(|t| TypeTag::Vector(Box::new(t)));
+    }
+
+    // Handle struct types: 0xADDR::module::Name or 0xADDR::module::Name<T1, T2>
+    let (base, type_args_str) = if let Some(angle_pos) = trimmed.find('<') {
+        let base = &trimmed[..angle_pos];
+        let args = &trimmed[angle_pos + 1..trimmed.len() - 1];
+        (base, Some(args))
+    } else {
+        (trimmed, None)
+    };
+
+    let parts: Vec<&str> = base.split("::").collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
+    let module = Identifier::new(parts[1]).ok()?;
+    let name = Identifier::new(parts[2]).ok()?;
+
+    let type_params = if let Some(args_str) = type_args_str {
+        parse_type_args_from_string(args_str)
+    } else {
+        vec![]
+    };
+
+    Some(TypeTag::Struct(Box::new(
+        move_core_types::language_storage::StructTag {
+            address,
+            module,
+            name,
+            type_params,
+        },
+    )))
+}
+
+/// Parse comma-separated type arguments, handling nested generics.
+fn parse_type_args_from_string(args_str: &str) -> Vec<TypeTag> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+
+    for ch in args_str.chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '>' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                if let Some(tag) = parse_type_string_to_tag(current.trim()) {
+                    args.push(tag);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if !current.is_empty() {
+        if let Some(tag) = parse_type_string_to_tag(current.trim()) {
+            args.push(tag);
+        }
+    }
+
+    args
 }
 
 /// Result status of a type inhabitation attempt.
@@ -639,12 +774,23 @@ fn attempt_function(
 
                 // Last resort: Try direct type synthesis via MM2
                 // This creates valid BCS bytes without executing any function
+                // Pass type arguments if available for proper generic resolution
                 let mut synthesizer = TypeSynthesizer::new(type_model);
-                if let Ok(result) = synthesizer.synthesize_struct(
-                    &struct_tag.address,
-                    struct_tag.module.as_str(),
-                    struct_tag.name.as_str(),
-                ) {
+                let synth_result = if struct_tag.type_params.is_empty() {
+                    synthesizer.synthesize_struct(
+                        &struct_tag.address,
+                        struct_tag.module.as_str(),
+                        struct_tag.name.as_str(),
+                    )
+                } else {
+                    synthesizer.synthesize_struct_with_type_tags(
+                        &struct_tag.address,
+                        struct_tag.module.as_str(),
+                        struct_tag.name.as_str(),
+                        &struct_tag.type_params,
+                    )
+                };
+                if let Ok(result) = synth_result {
                     let mut_str = if is_mut { "&mut " } else { "&" };
                     constructor_chain.push(ConstructorChainEntry::Synthesized {
                         param_idx,
@@ -848,12 +994,23 @@ fn attempt_function(
                     }
 
                     // Last resort: Try direct type synthesis via MM2
+                    // Pass type arguments if available for proper generic resolution
                     let mut synthesizer = TypeSynthesizer::new(type_model);
-                    if let Ok(result) = synthesizer.synthesize_struct(
-                        &struct_tag.address,
-                        struct_tag.module.as_str(),
-                        struct_tag.name.as_str(),
-                    ) {
+                    let synth_result = if struct_tag.type_params.is_empty() {
+                        synthesizer.synthesize_struct(
+                            &struct_tag.address,
+                            struct_tag.module.as_str(),
+                            struct_tag.name.as_str(),
+                        )
+                    } else {
+                        synthesizer.synthesize_struct_with_type_tags(
+                            &struct_tag.address,
+                            struct_tag.module.as_str(),
+                            struct_tag.name.as_str(),
+                            &struct_tag.type_params,
+                        )
+                    };
+                    if let Ok(result) = synth_result {
                         constructor_chain.push(ConstructorChainEntry::Synthesized {
                             param_idx,
                             bytes: result.bytes,
@@ -977,7 +1134,7 @@ fn attempt_function(
                         }
                     };
 
-                    let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                    let type_args = resolve_constructor_type_args(&ctor);
 
                     // Execute this step's constructor
                     let returns = match harness.execute_function_with_return(
@@ -1060,9 +1217,7 @@ fn attempt_function(
                         }
                     };
 
-                    let type_args: Vec<_> = (0..producer.type_param_count)
-                        .map(|_| TypeTag::U64)
-                        .collect();
+                    let type_args = resolve_producer_type_args(producer, step.target_return_idx);
 
                     let module_id = ModuleId::new(
                         producer.module_addr,
@@ -1192,7 +1347,7 @@ fn attempt_function(
                         }
                     };
 
-                    let type_args: Vec<_> = (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                    let type_args = resolve_constructor_type_args(&ctor);
 
                     (type_args, args)
                 };
@@ -1564,8 +1719,7 @@ fn execute_constructor_chain_as_ptb(
                     )
                     .map_err(|e| format!("PTB arg build failed: {e}"))?;
 
-                    let type_args: Vec<TypeTag> =
-                        (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                    let type_args = resolve_constructor_type_args(&ctor);
 
                     // Add MoveCall command
                     let result = builder
@@ -1611,9 +1765,7 @@ fn execute_constructor_chain_as_ptb(
                     )
                     .map_err(|e| format!("PTB producer arg build failed: {e}"))?;
 
-                    let type_args: Vec<TypeTag> = (0..producer.type_param_count)
-                        .map(|_| TypeTag::U64)
-                        .collect();
+                    let type_args = resolve_producer_type_args(producer, step.target_return_idx);
 
                     let module_id = ModuleId::new(
                         producer.module_addr,
@@ -1660,8 +1812,7 @@ fn execute_constructor_chain_as_ptb(
                     build_ptb_constructor_args(&mut builder, ctor, validator, &type_to_result, harness)
                         .map_err(|e| format!("PTB intermediate arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -1687,8 +1838,7 @@ fn execute_constructor_chain_as_ptb(
                     build_ptb_constructor_args(&mut builder, ctor, validator, &type_to_result, harness)
                         .map_err(|e| format!("PTB final param arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -1721,8 +1871,7 @@ fn execute_constructor_chain_as_ptb(
                     build_ptb_constructor_args(&mut builder, ctor, validator, &type_to_result, harness)
                         .map_err(|e| format!("PTB constructed ref arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -1824,8 +1973,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                     )
                     .map_err(|e| format!("PTB arg build failed: {e}"))?;
 
-                    let type_args: Vec<TypeTag> =
-                        (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                    let type_args = resolve_constructor_type_args(&ctor);
 
                     let result = builder
                         .move_call(
@@ -1865,9 +2013,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                     )
                     .map_err(|e| format!("PTB producer arg build failed: {e}"))?;
 
-                    let type_args: Vec<TypeTag> = (0..producer.type_param_count)
-                        .map(|_| TypeTag::U64)
-                        .collect();
+                    let type_args = resolve_producer_type_args(producer, step.target_return_idx);
 
                     let module_id = ModuleId::new(
                         producer.module_addr,
@@ -1914,8 +2060,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB intermediate arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -1946,8 +2091,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB final param arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -1983,8 +2127,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB constructed ref arg build failed: {e}"))?;
 
-                let type_args: Vec<TypeTag> =
-                    (0..ctor.type_params).map(|_| TypeTag::U64).collect();
+                let type_args = resolve_constructor_type_args(&ctor);
 
                 let result = builder
                     .move_call(
@@ -2382,4 +2525,171 @@ fn build_producer_args_with_intermediates(
     }
 
     Ok(args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use move_core_types::language_storage::StructTag;
+
+    #[test]
+    fn test_parse_type_string_to_tag_primitives() {
+        assert_eq!(parse_type_string_to_tag("bool"), Some(TypeTag::Bool));
+        assert_eq!(parse_type_string_to_tag("u8"), Some(TypeTag::U8));
+        assert_eq!(parse_type_string_to_tag("u64"), Some(TypeTag::U64));
+        assert_eq!(parse_type_string_to_tag("u128"), Some(TypeTag::U128));
+        assert_eq!(parse_type_string_to_tag("u256"), Some(TypeTag::U256));
+        assert_eq!(parse_type_string_to_tag("address"), Some(TypeTag::Address));
+    }
+
+    #[test]
+    fn test_parse_type_string_to_tag_vectors() {
+        assert_eq!(
+            parse_type_string_to_tag("vector<u8>"),
+            Some(TypeTag::Vector(Box::new(TypeTag::U8)))
+        );
+        assert_eq!(
+            parse_type_string_to_tag("vector<address>"),
+            Some(TypeTag::Vector(Box::new(TypeTag::Address)))
+        );
+        // Nested vector
+        assert_eq!(
+            parse_type_string_to_tag("vector<vector<u64>>"),
+            Some(TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(
+                TypeTag::U64
+            )))))
+        );
+    }
+
+    #[test]
+    fn test_parse_type_string_to_tag_structs() {
+        let tag = parse_type_string_to_tag("0x2::sui::SUI").unwrap();
+        if let TypeTag::Struct(s) = tag {
+            assert_eq!(s.address, AccountAddress::from_hex_literal("0x2").unwrap());
+            assert_eq!(s.module.as_str(), "sui");
+            assert_eq!(s.name.as_str(), "SUI");
+            assert!(s.type_params.is_empty());
+        } else {
+            panic!("Expected Struct tag");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_string_to_tag_generic_struct() {
+        let tag = parse_type_string_to_tag("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
+        if let TypeTag::Struct(s) = tag {
+            assert_eq!(s.address, AccountAddress::from_hex_literal("0x2").unwrap());
+            assert_eq!(s.module.as_str(), "coin");
+            assert_eq!(s.name.as_str(), "Coin");
+            assert_eq!(s.type_params.len(), 1);
+
+            // Check the type argument
+            if let TypeTag::Struct(inner) = &s.type_params[0] {
+                assert_eq!(inner.module.as_str(), "sui");
+                assert_eq!(inner.name.as_str(), "SUI");
+            } else {
+                panic!("Expected inner Struct tag");
+            }
+        } else {
+            panic!("Expected Struct tag");
+        }
+    }
+
+    #[test]
+    fn test_parse_type_args_from_string() {
+        // Simple types
+        let args = parse_type_args_from_string("u64, bool");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], TypeTag::U64);
+        assert_eq!(args[1], TypeTag::Bool);
+
+        // Nested generics (should handle depth correctly)
+        let args = parse_type_args_from_string("0x2::coin::Coin<0x2::sui::SUI>, u64");
+        assert_eq!(args.len(), 2);
+        if let TypeTag::Struct(s) = &args[0] {
+            assert_eq!(s.name.as_str(), "Coin");
+        } else {
+            panic!("Expected Struct");
+        }
+        assert_eq!(args[1], TypeTag::U64);
+    }
+
+    #[test]
+    fn test_resolve_constructor_type_args_from_returns() {
+        // Create a constructor with concrete return type params
+        let sui_type = TypeTag::Struct(Box::new(StructTag {
+            address: AccountAddress::from_hex_literal("0x2").unwrap(),
+            module: Identifier::new("sui").unwrap(),
+            name: Identifier::new("SUI").unwrap(),
+            type_params: vec![],
+        }));
+
+        let ctor = ConstructorInfo {
+            module_id: ModuleId::new(
+                AccountAddress::from_hex_literal("0x2").unwrap(),
+                Identifier::new("coin").unwrap(),
+            ),
+            function_name: "new".to_string(),
+            type_params: 1,
+            params: vec![],
+            returns: StructTag {
+                address: AccountAddress::from_hex_literal("0x2").unwrap(),
+                module: Identifier::new("coin").unwrap(),
+                name: Identifier::new("Coin").unwrap(),
+                type_params: vec![sui_type.clone()],
+            },
+        };
+
+        let type_args = resolve_constructor_type_args(&ctor);
+        assert_eq!(type_args.len(), 1);
+        assert_eq!(type_args[0], sui_type);
+    }
+
+    #[test]
+    fn test_resolve_constructor_type_args_fallback() {
+        // Constructor with type params but no concrete return types
+        let ctor = ConstructorInfo {
+            module_id: ModuleId::new(
+                AccountAddress::from_hex_literal("0x2").unwrap(),
+                Identifier::new("test").unwrap(),
+            ),
+            function_name: "new".to_string(),
+            type_params: 2, // Has 2 type params
+            params: vec![],
+            returns: StructTag {
+                address: AccountAddress::from_hex_literal("0x2").unwrap(),
+                module: Identifier::new("test").unwrap(),
+                name: Identifier::new("TestObj").unwrap(),
+                type_params: vec![], // But no concrete type params in return
+            },
+        };
+
+        let type_args = resolve_constructor_type_args(&ctor);
+        assert_eq!(type_args.len(), 2);
+        assert_eq!(type_args[0], TypeTag::U64); // Fallback
+        assert_eq!(type_args[1], TypeTag::U64);
+    }
+
+    #[test]
+    fn test_resolve_constructor_type_args_none() {
+        // Constructor with no type params
+        let ctor = ConstructorInfo {
+            module_id: ModuleId::new(
+                AccountAddress::from_hex_literal("0x2").unwrap(),
+                Identifier::new("test").unwrap(),
+            ),
+            function_name: "new".to_string(),
+            type_params: 0,
+            params: vec![],
+            returns: StructTag {
+                address: AccountAddress::from_hex_literal("0x2").unwrap(),
+                module: Identifier::new("test").unwrap(),
+                name: Identifier::new("TestObj").unwrap(),
+                type_params: vec![],
+            },
+        };
+
+        let type_args = resolve_constructor_type_args(&ctor);
+        assert!(type_args.is_empty());
+    }
 }

@@ -37,6 +37,6 @@ pub use constructor_graph::{
     ConstructorGraph, ExecutionChain, ExecutionStep, ParamRequirement, Producer, ProducerChain,
     ProducerStep, MAX_CHAIN_DEPTH,
 };
-pub use model::TypeModel;
+pub use model::{ReturnTypeArg, TypeModel};
 pub use type_synthesizer::{SynthesisResult, TypeSynthesizer};
 pub use type_validator::TypeValidator;

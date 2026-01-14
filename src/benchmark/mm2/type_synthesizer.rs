@@ -22,6 +22,7 @@
 use crate::benchmark::mm2::model::TypeModel;
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
+use move_core_types::language_storage::TypeTag;
 use std::collections::HashSet;
 
 /// Well-known Sui framework addresses (without 0x prefix since that's how AccountAddress formats)
@@ -120,6 +121,44 @@ impl TypeContext {
     pub fn is_empty(&self) -> bool {
         self.type_args.is_empty()
     }
+
+    /// Create a TypeContext from a slice of TypeTags.
+    /// Converts each TypeTag to its string representation.
+    pub fn from_type_tags(type_tags: &[TypeTag]) -> Self {
+        let args: Vec<String> = type_tags.iter().map(Self::type_tag_to_string).collect();
+        Self { type_args: args }
+    }
+
+    /// Convert a TypeTag to its canonical string representation.
+    pub fn type_tag_to_string(tag: &TypeTag) -> String {
+        match tag {
+            TypeTag::Bool => "bool".to_string(),
+            TypeTag::U8 => "u8".to_string(),
+            TypeTag::U16 => "u16".to_string(),
+            TypeTag::U32 => "u32".to_string(),
+            TypeTag::U64 => "u64".to_string(),
+            TypeTag::U128 => "u128".to_string(),
+            TypeTag::U256 => "u256".to_string(),
+            TypeTag::Address => "address".to_string(),
+            TypeTag::Signer => "signer".to_string(),
+            TypeTag::Vector(inner) => format!("vector<{}>", Self::type_tag_to_string(inner)),
+            TypeTag::Struct(s) => {
+                let base = format!(
+                    "{}::{}::{}",
+                    s.address.to_hex_literal(),
+                    s.module,
+                    s.name
+                );
+                if s.type_params.is_empty() {
+                    base
+                } else {
+                    let params: Vec<String> =
+                        s.type_params.iter().map(Self::type_tag_to_string).collect();
+                    format!("{}<{}>", base, params.join(", "))
+                }
+            }
+        }
+    }
 }
 
 impl<'a> TypeSynthesizer<'a> {
@@ -148,6 +187,42 @@ impl<'a> TypeSynthesizer<'a> {
         struct_name: &str,
     ) -> Result<SynthesisResult> {
         self.synthesize_struct_with_depth(module_addr, module_name, struct_name, 0)
+    }
+
+    /// Synthesize BCS bytes for a struct type with explicit type arguments.
+    ///
+    /// # Arguments
+    /// * `module_addr` - Module address containing the struct
+    /// * `module_name` - Module name
+    /// * `struct_name` - Struct name
+    /// * `type_args` - Concrete type arguments (e.g., ["0x2::sui::SUI"] for Coin<SUI>)
+    ///
+    /// # Returns
+    /// SynthesisResult containing the BCS bytes and metadata
+    pub fn synthesize_struct_with_type_args(
+        &mut self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        struct_name: &str,
+        type_args: &[String],
+    ) -> Result<SynthesisResult> {
+        let context = TypeContext::with_args(type_args.to_vec());
+        self.synthesize_struct_with_depth_and_context(module_addr, module_name, struct_name, 0, &context)
+    }
+
+    /// Synthesize BCS bytes for a struct type with TypeTag-based type arguments.
+    ///
+    /// This is a convenience method that converts TypeTags to their string representation
+    /// for use in synthesis. Useful when you have concrete type arguments from StructTag.
+    pub fn synthesize_struct_with_type_tags(
+        &mut self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        struct_name: &str,
+        type_tags: &[TypeTag],
+    ) -> Result<SynthesisResult> {
+        let context = TypeContext::from_type_tags(type_tags);
+        self.synthesize_struct_with_depth_and_context(module_addr, module_name, struct_name, 0, &context)
     }
 
     fn synthesize_struct_with_depth(
