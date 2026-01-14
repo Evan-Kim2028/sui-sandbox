@@ -56,7 +56,7 @@ pub struct TypeSynthesizer<'a> {
 }
 
 /// Result of type synthesis
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SynthesisResult {
     /// The synthesized BCS bytes
     pub bytes: Vec<u8>,
@@ -64,6 +64,62 @@ pub struct SynthesisResult {
     pub is_stub: bool,
     /// Description of what was synthesized
     pub description: String,
+    /// Resolved type arguments if this was a generic type (defaults to empty)
+    #[allow(dead_code)]
+    pub type_args: Vec<String>,
+}
+
+impl SynthesisResult {
+    /// Create a new SynthesisResult with no type arguments.
+    pub fn new(bytes: Vec<u8>, is_stub: bool, description: impl Into<String>) -> Self {
+        Self {
+            bytes,
+            is_stub,
+            description: description.into(),
+            type_args: Vec::new(),
+        }
+    }
+
+    /// Create a new SynthesisResult with type arguments.
+    pub fn with_type_args(bytes: Vec<u8>, is_stub: bool, description: impl Into<String>, type_args: Vec<String>) -> Self {
+        Self {
+            bytes,
+            is_stub,
+            description: description.into(),
+            type_args,
+        }
+    }
+}
+
+/// Context for synthesizing types with generic parameters.
+/// Maps type parameter indices (T0, T1, etc.) to concrete type strings.
+#[derive(Debug, Clone, Default)]
+pub struct TypeContext {
+    /// Type arguments: index -> concrete type string
+    type_args: Vec<String>,
+}
+
+impl TypeContext {
+    /// Create a new empty type context.
+    pub fn new() -> Self {
+        Self { type_args: Vec::new() }
+    }
+
+    /// Create a type context with the given type arguments.
+    pub fn with_args(args: Vec<String>) -> Self {
+        Self { type_args: args }
+    }
+
+    /// Get the concrete type for a type parameter index.
+    /// Returns None if the index is out of bounds.
+    pub fn resolve(&self, index: usize) -> Option<&str> {
+        self.type_args.get(index).map(|s| s.as_str())
+    }
+
+    /// Check if this context has any type arguments.
+    pub fn is_empty(&self) -> bool {
+        self.type_args.is_empty()
+    }
 }
 
 impl<'a> TypeSynthesizer<'a> {
@@ -156,109 +212,71 @@ impl<'a> TypeSynthesizer<'a> {
         // Remove from in-progress
         self.in_progress.remove(&type_key);
 
-        Ok(SynthesisResult {
-            bytes,
-            is_stub,
-            description: format!("synthesized {}::{}", module_name, struct_name),
-        })
+        Ok(SynthesisResult::new(bytes, is_stub, format!("synthesized {}::{}", module_name, struct_name)))
     }
 
     /// Synthesize a value for a type string (from MM2's formatted type output).
     pub fn synthesize_type_str(&mut self, type_str: &str, depth: usize) -> Result<SynthesisResult> {
+        self.synthesize_type_str_with_context(type_str, depth, &TypeContext::new())
+    }
+
+    /// Synthesize a value for a type string with generic type context.
+    ///
+    /// The context maps type parameter indices (T0, T1, etc.) to concrete types,
+    /// enabling proper generic type synthesis.
+    pub fn synthesize_type_str_with_context(
+        &mut self,
+        type_str: &str,
+        depth: usize,
+        context: &TypeContext,
+    ) -> Result<SynthesisResult> {
         let type_str = type_str.trim();
 
         // Handle primitives
         match type_str {
-            "bool" => {
-                return Ok(SynthesisResult {
-                    bytes: vec![0], // false
-                    is_stub: false,
-                    description: "bool(false)".to_string(),
-                });
-            }
-            "u8" => {
-                return Ok(SynthesisResult {
-                    bytes: vec![0],
-                    is_stub: false,
-                    description: "u8(0)".to_string(),
-                })
-            }
-            "u16" => {
-                return Ok(SynthesisResult {
-                    bytes: 0u16.to_le_bytes().to_vec(),
-                    is_stub: false,
-                    description: "u16(0)".to_string(),
-                })
-            }
-            "u32" => {
-                return Ok(SynthesisResult {
-                    bytes: 0u32.to_le_bytes().to_vec(),
-                    is_stub: false,
-                    description: "u32(0)".to_string(),
-                })
-            }
-            "u64" => {
-                return Ok(SynthesisResult {
-                    bytes: 0u64.to_le_bytes().to_vec(),
-                    is_stub: false,
-                    description: "u64(0)".to_string(),
-                })
-            }
-            "u128" => {
-                return Ok(SynthesisResult {
-                    bytes: 0u128.to_le_bytes().to_vec(),
-                    is_stub: false,
-                    description: "u128(0)".to_string(),
-                })
-            }
-            "u256" => {
-                return Ok(SynthesisResult {
-                    bytes: [0u8; 32].to_vec(),
-                    is_stub: false,
-                    description: "u256(0)".to_string(),
-                })
-            }
-            "address" => {
-                return Ok(SynthesisResult {
-                    bytes: [0u8; 32].to_vec(),
-                    is_stub: false,
-                    description: "address(0x0)".to_string(),
-                })
-            }
+            "bool" => return Ok(SynthesisResult::new(vec![0], false, "bool(false)")),
+            "u8" => return Ok(SynthesisResult::new(vec![0], false, "u8(0)")),
+            "u16" => return Ok(SynthesisResult::new(0u16.to_le_bytes().to_vec(), false, "u16(0)")),
+            "u32" => return Ok(SynthesisResult::new(0u32.to_le_bytes().to_vec(), false, "u32(0)")),
+            "u64" => return Ok(SynthesisResult::new(0u64.to_le_bytes().to_vec(), false, "u64(0)")),
+            "u128" => return Ok(SynthesisResult::new(0u128.to_le_bytes().to_vec(), false, "u128(0)")),
+            "u256" => return Ok(SynthesisResult::new([0u8; 32].to_vec(), false, "u256(0)")),
+            "address" => return Ok(SynthesisResult::new([0u8; 32].to_vec(), false, "address(0x0)")),
             _ => {}
         }
 
         // Handle vectors
         if type_str.starts_with("vector<") {
             // Empty vector - BCS encodes as length prefix 0
-            return Ok(SynthesisResult {
-                bytes: vec![0],
-                is_stub: false,
-                description: format!("empty {}", type_str),
-            });
+            return Ok(SynthesisResult::new(vec![0], false, format!("empty {}", type_str)));
         }
 
         // Handle Option<T> - synthesize as None
         if type_str.contains("option::Option<") || type_str.contains("::Option<") {
-            return Ok(SynthesisResult {
-                bytes: vec![0], // BCS encoding of None (empty vector)
-                is_stub: false,
-                description: "Option::None".to_string(),
-            });
+            return Ok(SynthesisResult::new(vec![0], false, "Option::None"));
         }
 
         // Handle struct types (format: "0xaddr::module::Name" or "0xaddr::module::Name<T>")
         if type_str.contains("::") {
-            return self.synthesize_struct_from_type_str(type_str, depth);
+            return self.synthesize_struct_from_type_str_with_context(type_str, depth, context);
         }
 
-        // Handle type parameters (T0, T1, etc.) - default to u64
+        // Handle type parameters (T0, T1, etc.) - resolve using context or default to u64
         if type_str.starts_with('T') && type_str.len() <= 3 {
-            return Ok(SynthesisResult {
-                bytes: 0u64.to_le_bytes().to_vec(),
-                is_stub: true,
-                description: format!("type_param {} as u64", type_str),
-            });
+            // Try to parse the index (T0 -> 0, T1 -> 1, etc.)
+            if let Ok(idx) = type_str[1..].parse::<usize>() {
+                // Check if we have a concrete type in the context
+                if let Some(concrete_type) = context.resolve(idx) {
+                    // Recursively synthesize the concrete type
+                    return self.synthesize_type_str_with_context(concrete_type, depth + 1, context);
+                }
+            }
+            // Default: synthesize as u64 (common default for numeric generics)
+            return Ok(SynthesisResult::new(
+                0u64.to_le_bytes().to_vec(),
+                true,
+                format!("type_param {} as u64 (unresolved)", type_str),
+            ));
         }
 
         Err(anyhow!("cannot synthesize type: {}", type_str))
@@ -270,12 +288,27 @@ impl<'a> TypeSynthesizer<'a> {
         type_str: &str,
         depth: usize,
     ) -> Result<SynthesisResult> {
-        // Parse "0xaddr::module::Name" or "0xaddr::module::Name<T>"
-        // Strip any type arguments for now (we'll handle generics separately)
-        let base_type = if let Some(idx) = type_str.find('<') {
-            &type_str[..idx]
+        self.synthesize_struct_from_type_str_with_context(type_str, depth, &TypeContext::new())
+    }
+
+    /// Parse a type string with generic type arguments and synthesize the struct.
+    ///
+    /// This function extracts type arguments from strings like "0x2::coin::Coin<0x2::sui::SUI>"
+    /// and uses them to resolve type parameters in the struct's fields.
+    fn synthesize_struct_from_type_str_with_context(
+        &mut self,
+        type_str: &str,
+        depth: usize,
+        parent_context: &TypeContext,
+    ) -> Result<SynthesisResult> {
+        // Parse "0xaddr::module::Name" or "0xaddr::module::Name<T0, T1>"
+        let (base_type, type_args) = if let Some(angle_pos) = type_str.find('<') {
+            let base = &type_str[..angle_pos];
+            let args_str = &type_str[angle_pos + 1..type_str.len() - 1]; // Remove < and >
+            let args = Self::parse_type_args(args_str, parent_context);
+            (base, args)
         } else {
-            type_str
+            (type_str, Vec::new())
         };
 
         let parts: Vec<&str> = base_type.split("::").collect();
@@ -291,7 +324,128 @@ impl<'a> TypeSynthesizer<'a> {
         let module_addr = AccountAddress::from_hex_literal(addr_str)
             .map_err(|e| anyhow!("invalid address {}: {}", addr_str, e))?;
 
-        self.synthesize_struct_with_depth(&module_addr, module_name, struct_name, depth)
+        // Create context with the parsed type arguments
+        let context = TypeContext::with_args(type_args.clone());
+
+        // Synthesize with the context
+        let mut result = self.synthesize_struct_with_depth_and_context(
+            &module_addr,
+            module_name,
+            struct_name,
+            depth,
+            &context,
+        )?;
+
+        // Record the resolved type arguments
+        result.type_args = type_args;
+        Ok(result)
+    }
+
+    /// Parse comma-separated type arguments, respecting nested angle brackets.
+    fn parse_type_args(args_str: &str, parent_context: &TypeContext) -> Vec<String> {
+        let mut args = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+
+        for ch in args_str.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    let trimmed = current.trim().to_string();
+                    // Resolve type parameters from parent context
+                    let resolved = Self::resolve_type_arg(&trimmed, parent_context);
+                    args.push(resolved);
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        // Don't forget the last argument
+        if !current.is_empty() {
+            let trimmed = current.trim().to_string();
+            let resolved = Self::resolve_type_arg(&trimmed, parent_context);
+            args.push(resolved);
+        }
+
+        args
+    }
+
+    /// Resolve a type argument using the parent context if it's a type parameter.
+    fn resolve_type_arg(type_arg: &str, parent_context: &TypeContext) -> String {
+        let trimmed = type_arg.trim();
+        // If it's a type parameter (T0, T1, etc.), resolve from context
+        if trimmed.starts_with('T') && trimmed.len() <= 3 {
+            if let Ok(idx) = trimmed[1..].parse::<usize>() {
+                if let Some(concrete) = parent_context.resolve(idx) {
+                    return concrete.to_string();
+                }
+            }
+        }
+        trimmed.to_string()
+    }
+
+    /// Synthesize struct with depth tracking and type context.
+    fn synthesize_struct_with_depth_and_context(
+        &mut self,
+        module_addr: &AccountAddress,
+        module_name: &str,
+        struct_name: &str,
+        depth: usize,
+        context: &TypeContext,
+    ) -> Result<SynthesisResult> {
+        if depth > self.max_depth {
+            return Err(anyhow!(
+                "synthesis depth {} exceeded max {} for {}::{}",
+                depth,
+                self.max_depth,
+                module_name,
+                struct_name
+            ));
+        }
+
+        // Format address without 0x prefix for comparison
+        let addr = format!("{}", module_addr);
+
+        // Check for framework types first
+        if let Some(result) = self.synthesize_framework_type(&addr, module_name, struct_name)? {
+            return Ok(result);
+        }
+
+        // Check for cycle
+        let type_key = format!("{}::{}::{}", addr, module_name, struct_name);
+        if self.in_progress.contains(&type_key) {
+            return Err(anyhow!("cycle detected while synthesizing {}", type_key));
+        }
+        self.in_progress.insert(type_key.clone());
+
+        // Look up struct in MM2 model
+        let struct_info = self
+            .model
+            .get_struct(module_addr, module_name, struct_name)
+            .ok_or_else(|| anyhow!("struct not found: {}::{}::{}", module_addr.to_hex_literal(), module_name, struct_name))?;
+
+        // Synthesize each field using the type context
+        let mut bytes = Vec::new();
+        let mut is_stub = false;
+
+        for field in &struct_info.fields {
+            let field_result = self.synthesize_type_str_with_context(&field.type_str, depth + 1, context)?;
+            bytes.extend(field_result.bytes);
+            is_stub = is_stub || field_result.is_stub;
+        }
+
+        // Remove from in-progress
+        self.in_progress.remove(&type_key);
+
+        Ok(SynthesisResult::new(bytes, is_stub, format!("synthesized {}::{}", module_name, struct_name)))
     }
 
     /// Special handling for Sui framework types.
@@ -312,7 +466,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: [0u8; 32].to_vec(), // ID { bytes: address }
                         is_stub: true,
-                        description: "UID(synthetic)".to_string(),
+                        description: "UID(synthetic)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // object::ID - just an address
@@ -320,7 +474,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: [0u8; 32].to_vec(),
                         is_stub: true,
-                        description: "ID(synthetic)".to_string(),
+                        description: "ID(synthetic)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // balance::Balance<T> - just a u64 value
@@ -328,7 +482,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: 0u64.to_le_bytes().to_vec(),
                         is_stub: true,
-                        description: "Balance(0)".to_string(),
+                        description: "Balance(0)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // balance::Supply<T> - just a u64 value
@@ -336,7 +490,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: 0u64.to_le_bytes().to_vec(),
                         is_stub: true,
-                        description: "Supply(0)".to_string(),
+                        description: "Supply(0)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // bag::Bag - UID + size
@@ -347,7 +501,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Bag(empty)".to_string(),
+                        description: "Bag(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // table::Table<K, V> - UID + size
@@ -358,7 +512,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Table(empty)".to_string(),
+                        description: "Table(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // vec_map::VecMap<K, V> - just a vector of entries (empty)
@@ -366,7 +520,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty vector
                         is_stub: true,
-                        description: "VecMap(empty)".to_string(),
+                        description: "VecMap(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // vec_set::VecSet<T> - just a vector (empty)
@@ -374,7 +528,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty vector
                         is_stub: true,
-                        description: "VecSet(empty)".to_string(),
+                        description: "VecSet(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // coin::Coin<T> - id + balance
@@ -387,7 +541,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Coin(1_SUI)".to_string(),
+                        description: "Coin(1_SUI)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // coin::TreasuryCap<T> - id + total_supply
@@ -400,7 +554,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TreasuryCap(1000_SUI_supply)".to_string(),
+                        description: "TreasuryCap(1000_SUI_supply)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // clock::Clock - id + timestamp_ms
@@ -411,7 +565,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Clock(0)".to_string(),
+                        description: "Clock(0)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // tx_context::TxContext - complex but well-known structure
@@ -426,7 +580,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TxContext(synthetic)".to_string(),
+                        description: "TxContext(synthetic)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // string::String - just a vector<u8>
@@ -434,7 +588,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty string
                         is_stub: false,
-                        description: "String(empty)".to_string(),
+                        description: "String(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // url::Url - wrapper around String
@@ -442,7 +596,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty URL (empty string)
                         is_stub: true,
-                        description: "Url(empty)".to_string(),
+                        description: "Url(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 _ => {}
@@ -457,7 +611,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0],
                         is_stub: false,
-                        description: "Option::None".to_string(),
+                        description: "Option::None".to_string(), type_args: Vec::new(),
                     }));
                 }
                 // string::String - vector<u8>
@@ -465,7 +619,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0],
                         is_stub: false,
-                        description: "String(empty)".to_string(),
+                        description: "String(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
                 _ => {}
@@ -493,6 +647,7 @@ impl<'a> TypeSynthesizer<'a> {
                             "SuiSystemState(synthetic, {} validators assumed)",
                             DEFAULT_VALIDATOR_COUNT
                         ),
+                        type_args: Vec::new(),
                     }));
                 }
 
@@ -513,7 +668,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "StakedSui(synthetic)".to_string(),
+                        description: "StakedSui(synthetic)".to_string(), type_args: Vec::new(),
                     }));
                 }
 
@@ -526,7 +681,7 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "FungibleStakedSui(synthetic)".to_string(),
+                        description: "FungibleStakedSui(synthetic)".to_string(), type_args: Vec::new(),
                     }));
                 }
 
@@ -592,6 +747,7 @@ impl<'a> TypeSynthesizer<'a> {
             bytes,
             is_stub: true,
             description: format!("ValidatorSet({} validators)", DEFAULT_VALIDATOR_COUNT),
+            type_args: Vec::new(),
         })
     }
 
@@ -755,7 +911,7 @@ impl<'a> TypeSynthesizer<'a> {
         Ok(SynthesisResult {
             bytes,
             is_stub: true,
-            description: "StakingPool(synthetic)".to_string(),
+            description: "StakingPool(synthetic)".to_string(), type_args: Vec::new(),
         })
     }
 
@@ -929,5 +1085,102 @@ mod tests {
         // StakedSui: UID (32) + pool_id (32) + activation_epoch (8) + principal (8) = 80 bytes
         assert_eq!(result.bytes.len(), 80, "StakedSui should be 80 bytes");
         assert!(result.is_stub, "Should be marked as stub");
+    }
+
+    #[test]
+    fn test_type_context_resolution() {
+        // Test the TypeContext for resolving type parameters
+        let ctx = TypeContext::with_args(vec![
+            "0x2::sui::SUI".to_string(),
+            "0x2::coin::Coin<0x2::sui::SUI>".to_string(),
+        ]);
+
+        assert!(!ctx.is_empty());
+        assert_eq!(ctx.resolve(0), Some("0x2::sui::SUI"));
+        assert_eq!(ctx.resolve(1), Some("0x2::coin::Coin<0x2::sui::SUI>"));
+        assert_eq!(ctx.resolve(2), None); // Out of bounds
+    }
+
+    #[test]
+    fn test_type_arg_parsing() {
+        // Test parsing type arguments from a type string
+        let ctx = TypeContext::new();
+
+        // Simple type args
+        let args = TypeSynthesizer::parse_type_args("0x2::sui::SUI", &ctx);
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0], "0x2::sui::SUI");
+
+        // Multiple type args
+        let args = TypeSynthesizer::parse_type_args("0x2::sui::SUI, u64", &ctx);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "0x2::sui::SUI");
+        assert_eq!(args[1], "u64");
+
+        // Nested type args (respects angle brackets)
+        let args = TypeSynthesizer::parse_type_args("0x2::coin::Coin<0x2::sui::SUI>, u64", &ctx);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "0x2::coin::Coin<0x2::sui::SUI>");
+        assert_eq!(args[1], "u64");
+    }
+
+    #[test]
+    fn test_type_param_resolution_in_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Create a context that resolves T0 to a concrete type
+        let ctx = TypeContext::with_args(vec!["u64".to_string()]);
+
+        // Test that T0 resolves correctly
+        let result = synthesizer.synthesize_type_str_with_context("T0", 0, &ctx);
+        assert!(result.is_ok(), "T0 should resolve to u64");
+        let result = result.unwrap();
+        assert_eq!(result.bytes.len(), 8, "u64 is 8 bytes");
+        assert!(!result.is_stub, "Resolved type should not be stub");
+    }
+
+    #[test]
+    fn test_generic_type_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Test synthesizing a generic type with concrete type args
+        // Balance<T> is just a u64 value
+        let result = synthesizer.synthesize_type_str("0x2::balance::Balance<0x2::sui::SUI>", 0);
+        assert!(result.is_ok(), "Balance<SUI> synthesis should succeed");
+        let result = result.unwrap();
+        assert_eq!(result.bytes.len(), 8, "Balance is u64 (8 bytes)");
+        assert!(result.is_stub, "Balance is a framework stub");
+    }
+
+    #[test]
+    fn test_coin_with_type_args() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Test synthesizing Coin<SUI>
+        let result = synthesizer.synthesize_type_str("0x2::coin::Coin<0x2::sui::SUI>", 0);
+        assert!(result.is_ok(), "Coin<SUI> synthesis should succeed");
+        let result = result.unwrap();
+        // Coin is UID (32) + Balance<T> (8) = 40 bytes
+        assert_eq!(result.bytes.len(), 40, "Coin should be 40 bytes");
+        assert!(result.is_stub, "Coin is a framework stub");
+        assert_eq!(result.type_args, vec!["0x2::sui::SUI".to_string()]);
+    }
+
+    #[test]
+    fn test_nested_generic_type_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Test that nested generics are parsed correctly
+        let args = TypeSynthesizer::parse_type_args(
+            "0x2::coin::Coin<0x2::sui::SUI>, 0x2::balance::Balance<0x2::usdc::USDC>",
+            &TypeContext::new(),
+        );
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "0x2::coin::Coin<0x2::sui::SUI>");
+        assert_eq!(args[1], "0x2::balance::Balance<0x2::usdc::USDC>");
     }
 }
