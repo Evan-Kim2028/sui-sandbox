@@ -1,12 +1,27 @@
 //! # LLM Tools for State Synthesis
 //!
-//! This module provides tools that an LLM can use to:
-//! 1. Introspect module definitions (structs, functions)
-//! 2. Synthesize valid Move objects
-//! 3. Understand error context
+//! **⚠️ DEPRECATED**: This module contains legacy APIs. For new integrations, use
+//! [`crate::benchmark::sandbox_exec::SandboxRequest`] which provides:
+//! - Single unified API via `execute_request()`
+//! - Complete tool discovery via `{"action": "list_available_tools"}`
+//! - Shared state through `SimulationEnvironment`
 //!
-//! These tools enable an LLM to reason about and fix failing transactions
-//! by discovering what types exist and creating the missing state.
+//! The [`ToolCall`] enum and [`LlmToolkit`] struct are kept for backwards
+//! compatibility but should not be used in new code.
+//!
+//! ## What to use instead
+//!
+//! | Legacy (this module) | Use instead (sandbox_exec) |
+//! |---------------------|---------------------------|
+//! | `LlmToolkit::execute(ToolCall::ListModules)` | `{"action": "list_modules"}` |
+//! | `LlmToolkit::execute(ToolCall::GetStructInfo{..})` | `{"action": "get_struct_info", ...}` |
+//! | `LlmToolkit::tool_schema()` | `{"action": "list_available_tools"}` |
+//!
+//! ## Still useful from this module
+//!
+//! - [`StructInfo`], [`FieldInfo`], [`FunctionInfo`] - Response types
+//! - [`ModuleIntrospector`] - Used internally by sandbox_exec
+//! - [`ObjectSynthesizer`] - BCS encoding utilities
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -660,8 +675,14 @@ impl ObjectSynthesizer {
             }
             _ if type_str.contains("::vec_map::VecMap") => {
                 // VecMap<K,V> is { contents: vector<Entry<K,V>> }
-                // For now, serialize as empty vector
-                encode_uleb128(0, out);
+                // This requires explicit key-value pairs to serialize properly.
+                // Return an error with guidance on how to provide the data.
+                return Err(anyhow!(
+                    "VecMap type {} requires explicit entries. \
+                     Provide as JSON array of {{\"key\": ..., \"value\": ...}} objects, \
+                     or use an empty array [] for an empty VecMap.",
+                    type_str
+                ));
             }
             _ => {
                 // For unknown struct types, we need more context
@@ -1002,36 +1023,16 @@ fn type_json_to_string(ty: &serde_json::Value) -> String {
 }
 
 // ============================================================================
-// LLM Toolkit - Unified Interface
+// LLM Toolkit - DEPRECATED (use sandbox_exec::SandboxRequest instead)
 // ============================================================================
 
-/// A unified toolkit for LLM interaction with the Move sandbox.
+/// **DEPRECATED**: Use [`crate::benchmark::sandbox_exec::SandboxRequest`] instead.
 ///
-/// This struct provides a JSON-based API that an LLM can use to:
-/// 1. Discover module types (structs, functions)
-/// 2. Create objects to satisfy transaction dependencies
-/// 3. Understand and debug execution errors
-/// 4. Build Move packages from source
+/// This struct is kept for backwards compatibility. New code should use
+/// the `sandbox-exec` CLI or `execute_request()` function directly.
 ///
-/// ## Example LLM Workflow
-///
-/// 1. Transaction fails with "missing object" error
-/// 2. LLM calls `list_modules()` to find available packages
-/// 3. LLM calls `get_struct_info()` to understand the required type
-/// 4. LLM calls `create_object()` to synthesize the missing object
-/// 5. Transaction retried successfully
-///
-/// ## Package Building Workflow
-///
-/// 1. LLM calls `compile_source()` with Move code
-/// 2. If compilation fails, errors are returned for fixing
-/// 3. LLM iterates until compilation succeeds
-/// 4. Compiled bytecode can be deployed to sandbox
-///
-/// ## Logging
-///
-/// All tool calls, compiled packages, and synthesized objects are logged
-/// for later analysis. Logs are stored at `~/.sui-llm-logs/` by default.
+/// See module-level documentation for migration guide.
+#[deprecated(since = "0.5.0", note = "Use sandbox_exec::SandboxRequest instead")]
 pub struct LlmToolkit {
     pub introspector: ModuleIntrospector,
     pub synthesizer: ObjectSynthesizer,
@@ -1055,7 +1056,11 @@ impl Drop for LlmToolkit {
     }
 }
 
-/// Tool call request from LLM (JSON-deserializable)
+/// **DEPRECATED**: Use [`crate::benchmark::sandbox_exec::SandboxRequest`] instead.
+///
+/// Tool call request from LLM (JSON-deserializable).
+/// This enum is kept for backwards compatibility.
+#[deprecated(since = "0.5.0", note = "Use sandbox_exec::SandboxRequest instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool", content = "params")]
 pub enum ToolCall {
@@ -1776,8 +1781,10 @@ impl LlmToolkit {
         }
     }
 
+    /// **DEPRECATED**: Use `{"action": "list_available_tools"}` via sandbox_exec instead.
+    ///
     /// Generate a JSON schema description of all available tools.
-    /// This can be provided to an LLM to teach it how to use the toolkit.
+    #[deprecated(since = "0.5.0", note = "Use sandbox_exec list_available_tools action instead")]
     pub fn tool_schema() -> serde_json::Value {
         serde_json::json!({
             "tools": [

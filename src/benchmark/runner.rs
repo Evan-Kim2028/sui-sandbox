@@ -905,8 +905,9 @@ fn attempt_function(
         return Ok(report);
     }
 
-    // Also create a VMHarness for legacy execution path (non-PTB)
-    // TODO: Remove this once all paths use SimulationEnvironment.execute_ptb()
+    // Create VMHarness for legacy execution path (--no-ptb flag) or tracing
+    // The legacy path is kept for debugging/tracing since SimulationEnvironment
+    // doesn't currently provide execution trace information.
     let mut harness = VMHarness::new(resolver, args.restricted_state).map_err(|e| {
         report.failure_stage = Some(FailureStage::B1);
         report.failure_reason = Some(format!("failed to create VM harness: {e}"));
@@ -920,9 +921,12 @@ fn attempt_function(
     // constructed_intermediates stores results from intermediate constructors (keyed by return type)
     let mut final_args = default_values.clone();
 
+    // Determine execution mode: PTB (default) or legacy VMHarness
+    let use_ptb_mode = args.effective_use_ptb();
+
     // PTB execution path: convert constructor chain to PTB commands
     // Uses SimulationEnvironment for consistent execution semantics
-    if args.use_ptb && !constructor_chain.is_empty() {
+    if use_ptb_mode && !constructor_chain.is_empty() {
         match execute_constructor_chain_as_ptb_via_sim(
             sim_env,
             &mut harness,
@@ -1270,7 +1274,7 @@ fn attempt_function(
     } // end else (legacy execution path)
 
     // Execute function - PTB path uses SimulationEnvironment for consistency
-    let (exec, trace) = if args.use_ptb {
+    let (exec, trace) = if use_ptb_mode {
         // Build PTB for final function execution
         let exec_result = execute_final_function_as_ptb(
             sim_env,
@@ -1503,12 +1507,17 @@ fn build_constructor_args_with_intermediates(
 
 /// Execute constructor chain as a PTB (Programmable Transaction Block).
 ///
-/// DEPRECATED: Use `execute_constructor_chain_as_ptb_via_sim` instead, which
+/// **DEPRECATED**: Use `execute_constructor_chain_as_ptb_via_sim` instead, which
 /// uses SimulationEnvironment for consistent execution semantics with the
 /// rest of the sandbox.
 ///
 /// This function is kept as a fallback for cases where VMHarness-based
 /// execution is specifically needed (e.g., for execution tracing).
+/// Will be removed in v0.6.0 once SimulationEnvironment supports tracing.
+#[deprecated(
+    since = "0.5.0",
+    note = "Use execute_constructor_chain_as_ptb_via_sim instead. Will be removed in v0.6.0."
+)]
 #[allow(dead_code)]
 fn execute_constructor_chain_as_ptb(
     harness: &mut VMHarness,

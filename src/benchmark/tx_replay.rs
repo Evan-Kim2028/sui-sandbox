@@ -859,6 +859,39 @@ impl TransactionFetcher {
         Ok(objects)
     }
 
+    /// Fetch all input objects for a transaction with type information.
+    /// Returns a map from object ID to (bytes, type_string).
+    pub fn fetch_transaction_inputs_with_types(
+        &self,
+        tx: &FetchedTransaction,
+    ) -> Result<std::collections::HashMap<String, (Vec<u8>, Option<String>)>> {
+        let mut objects = std::collections::HashMap::new();
+
+        for input in &tx.inputs {
+            match input {
+                TransactionInput::Object { object_id, .. }
+                | TransactionInput::SharedObject { object_id, .. }
+                | TransactionInput::ImmutableObject { object_id, .. }
+                | TransactionInput::Receiving { object_id, .. } => {
+                    // Use full fetch to get both bytes and type
+                    match self.fetch_object_full(object_id) {
+                        Ok(fetched) => {
+                            objects.insert(object_id.clone(), (fetched.bcs_bytes, fetched.type_string));
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to fetch object {}: {}", object_id, e);
+                        }
+                    }
+                }
+                TransactionInput::Pure { .. } => {
+                    // Pure values don't need fetching
+                }
+            }
+        }
+
+        Ok(objects)
+    }
+
     /// Fetch package bytecode modules from the RPC.
     /// Returns a vector of (module_name, module_bytes) pairs.
     pub fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
@@ -1016,6 +1049,9 @@ pub struct CachedTransaction {
     pub packages: std::collections::HashMap<String, Vec<(String, String)>>,
     /// Input object data (object_id -> bytes_base64)
     pub objects: std::collections::HashMap<String, String>,
+    /// Object type information (object_id -> type_string)
+    #[serde(default)]
+    pub object_types: std::collections::HashMap<String, String>,
     /// Cache timestamp
     pub cached_at: u64,
 }
@@ -1027,6 +1063,7 @@ impl CachedTransaction {
             transaction: tx,
             packages: std::collections::HashMap::new(),
             objects: std::collections::HashMap::new(),
+            object_types: std::collections::HashMap::new(),
             cached_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -1050,6 +1087,15 @@ impl CachedTransaction {
     pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
         use base64::Engine;
         self.objects.insert(object_id, base64::engine::general_purpose::STANDARD.encode(&bytes));
+    }
+
+    /// Add object data with type information to the cache.
+    pub fn add_object_with_type(&mut self, object_id: String, bytes: Vec<u8>, object_type: Option<String>) {
+        use base64::Engine;
+        self.objects.insert(object_id.clone(), base64::engine::general_purpose::STANDARD.encode(&bytes));
+        if let Some(type_str) = object_type {
+            self.object_types.insert(object_id, type_str);
+        }
     }
 
     /// Get decoded package modules.
@@ -1384,11 +1430,35 @@ pub fn download_transactions(
                     }
                 }
 
-                // Fetch objects if requested
+                // Fetch objects if requested (with type info)
                 if fetch_objects {
-                    if let Ok(objects) = fetcher.fetch_transaction_inputs(&cached.transaction) {
-                        for (obj_id, bytes) in objects {
-                            cached.add_object(obj_id, bytes);
+                    if let Ok(objects) = fetcher.fetch_transaction_inputs_with_types(&cached.transaction) {
+                        for (obj_id, (bytes, type_str)) in objects {
+                            cached.add_object_with_type(obj_id, bytes, type_str);
+                        }
+                    }
+                }
+
+                // Fetch packages referenced in type arguments (coin types, etc.)
+                // This runs after objects are fetched so we can also check object_types
+                if fetch_packages {
+                    let type_arg_packages = extract_type_argument_packages(&cached);
+                    if !type_arg_packages.is_empty() {
+                        if verbose {
+                            eprint!(" (+{} type pkgs)", type_arg_packages.len());
+                            std::io::stderr().flush().ok();
+                        }
+
+                        for pkg_addr in type_arg_packages {
+                            let pkg_hex = format!("0x{}", pkg_addr.to_hex());
+                            match fetcher.fetch_package_modules(&pkg_hex) {
+                                Ok(modules) => {
+                                    cached.add_package(pkg_hex, modules);
+                                }
+                                Err(_e) => {
+                                    // Type package not found - might be a deleted/old package
+                                }
+                            }
                         }
                     }
                 }
@@ -1464,6 +1534,85 @@ fn find_missing_dependencies(cached: &CachedTransaction) -> Vec<AccountAddress> 
                         missing.insert(addr);
                     }
                 }
+            }
+        }
+    }
+
+    missing.into_iter().collect()
+}
+
+/// Extract package addresses from type arguments in transaction commands.
+///
+/// Type arguments like `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC`
+/// contain package addresses that need to be fetched for complete type resolution.
+fn extract_type_argument_packages(cached: &CachedTransaction) -> Vec<AccountAddress> {
+    use std::collections::BTreeSet;
+
+    // Framework addresses we always have bundled
+    let framework_addrs: BTreeSet<AccountAddress> = [
+        AccountAddress::from_hex_literal("0x1").unwrap(),
+        AccountAddress::from_hex_literal("0x2").unwrap(),
+        AccountAddress::from_hex_literal("0x3").unwrap(),
+    ]
+    .into_iter()
+    .collect();
+
+    // Build set of loaded package addresses
+    let mut loaded_addrs: BTreeSet<AccountAddress> = BTreeSet::new();
+    for pkg_id in cached.packages.keys() {
+        if let Ok(addr) = AccountAddress::from_hex_literal(pkg_id) {
+            loaded_addrs.insert(addr);
+        }
+    }
+
+    let mut missing = BTreeSet::new();
+
+    // Helper to extract hex addresses from a type string
+    let extract_addrs = |type_str: &str| -> Vec<AccountAddress> {
+        let mut addrs = Vec::new();
+        let mut i = 0;
+        let chars: Vec<char> = type_str.chars().collect();
+
+        while i < chars.len() {
+            // Look for "0x" prefix
+            if i + 1 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
+                // Found potential hex address, collect hex chars
+                let start = i;
+                i += 2; // Skip "0x"
+                while i < chars.len() && chars[i].is_ascii_hexdigit() {
+                    i += 1;
+                }
+
+                // Extract the address string
+                let addr_str: String = chars[start..i].iter().collect();
+                if let Ok(addr) = AccountAddress::from_hex_literal(&addr_str) {
+                    addrs.push(addr);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        addrs
+    };
+
+    // Extract from command type arguments
+    for cmd in &cached.transaction.commands {
+        if let PtbCommand::MoveCall { type_arguments, .. } = cmd {
+            for type_arg in type_arguments {
+                for addr in extract_addrs(type_arg) {
+                    if !framework_addrs.contains(&addr) && !loaded_addrs.contains(&addr) {
+                        missing.insert(addr);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also extract from cached object types
+    for type_str in cached.object_types.values() {
+        for addr in extract_addrs(type_str) {
+            if !framework_addrs.contains(&addr) && !loaded_addrs.contains(&addr) {
+                missing.insert(addr);
             }
         }
     }

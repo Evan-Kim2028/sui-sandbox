@@ -10,15 +10,37 @@
 //! - Executing code in an embedded Move VM with synthetic state
 //! - Validating that types can be successfully inhabited
 //!
+//! ## LLM Integration
+//!
+//! For LLM agent integration, use [`sandbox_exec::SandboxRequest`] as the canonical API:
+//!
+//! - **Entry point**: `execute_request(SandboxRequest)` handles all operations
+//! - **Discovery**: `{"action": "list_available_tools"}` returns complete tool documentation
+//! - **State**: All operations share [`simulation::SimulationEnvironment`] state
+//!
 //! ## Key Components
 //!
-//! - [`vm`]: VMHarness orchestrating Move VM execution
-//! - [`natives`]: Native function implementations (real, mocked, and unsupported)
-//! - [`object_runtime`]: VM extension for dynamic field operations
-//! - [`resolver`]: Module loading from bytecode files
-//! - [`runner`]: Benchmark orchestration and constructor chaining
-//! - [`constructor_map`]: Constructor discovery for type synthesis
-//! - [`validator`]: Type layout resolution and BCS validation
+//! | Module | Purpose |
+//! |--------|---------|
+//! | [`sandbox_exec`] | **Canonical LLM API** - JSON-based tool interface |
+//! | [`simulation`] | Core execution environment with state management |
+//! | [`ptb`] | Programmable Transaction Block construction & execution |
+//! | [`vm`] | VMHarness orchestrating Move VM execution |
+//! | [`natives`] | Native function implementations (real, mocked, unsupported) |
+//! | [`object_runtime`] | VM extension for dynamic field operations |
+//! | [`resolver`] | Module loading from bytecode files |
+//! | [`errors`] | Error taxonomy with E101-E502 codes |
+//! | [`mm2`] | Move Model 2 integration for static validation |
+//!
+//! ## Deprecated Modules
+//!
+//! | Module | Replacement |
+//! |--------|-------------|
+//! | [`llm_tools`] | Use [`sandbox_exec::SandboxRequest`] instead |
+//!
+//! The `llm_tools` module contains legacy `ToolCall`/`LlmToolkit` APIs that are
+//! deprecated but kept for backwards compatibility. New integrations should use
+//! `sandbox_exec` exclusively.
 //!
 //! ## Two-Tier Evaluation
 //!
@@ -28,7 +50,7 @@
 //! A Tier B hit indicates successful type inhabitation—the code understood the types
 //! well enough to construct valid values.
 //!
-//! See `docs/LOCAL_BYTECODE_SANDBOX.md` for detailed architecture documentation.
+//! See `docs/ARCHITECTURE.md` for detailed architecture documentation.
 
 pub mod bytecode_analyzer;
 pub mod constructor_map;
@@ -36,7 +58,6 @@ pub mod errors;
 pub mod mm2;
 pub mod natives;
 pub mod object_runtime;
-pub mod object_store;
 pub mod phases;
 pub mod ptb;
 pub mod ptb_eval;
