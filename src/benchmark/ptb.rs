@@ -1907,9 +1907,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 self.gas_used += output.gas_used;
 
                 if output.return_values.is_empty() {
-                    return Ok(CommandResult::Empty);
+                    Ok(CommandResult::Empty)
                 } else {
-                    return Ok(CommandResult::Values(output.return_values));
+                    Ok(CommandResult::Values(output.return_values))
                 }
             }
             Err(e) => {
@@ -1951,7 +1951,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         }
                     }
                 }
-                return Err(e);
+                Err(e)
             }
         }
     }
@@ -1987,8 +1987,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     let existing_type = self
                         .mutated_objects
                         .get(object_id)
-                        .map(|(_, t)| t.clone())
-                        .flatten();
+                        .and_then(|(_, t)| t.clone());
 
                     // Record the mutation with updated bytes
                     self.mutated_objects

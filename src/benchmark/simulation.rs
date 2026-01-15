@@ -1769,9 +1769,11 @@ impl SimulationEnvironment {
         }
 
         // Build VM config with correct sender and timestamp
-        let mut config = crate::benchmark::vm::SimulationConfig::default();
-        config.sender_address = self.sender.into();
-        config.tx_timestamp_ms = self.timestamp_ms;
+        let mut config = crate::benchmark::vm::SimulationConfig {
+            sender_address: self.sender.into(),
+            tx_timestamp_ms: self.timestamp_ms,
+            ..Default::default()
+        };
         // Use the timestamp for clock as well
         if let Some(ts) = self.timestamp_ms {
             config.clock_base_ms = ts;
@@ -2692,7 +2694,7 @@ impl SimulationEnvironment {
         // Look for patterns like "expected type: X" or "as X"
         if let Some(start) = error.find("expected ") {
             let rest = &error[start + 9..];
-            if let Some(end) = rest.find(|c: char| c == ',' || c == ')' || c == '\n') {
+            if let Some(end) = rest.find([',', ')', '\n']) {
                 return Some(rest[..end].trim().to_string());
             }
         }
@@ -2961,7 +2963,7 @@ impl SimulationEnvironment {
                         if let Ok(module_entries) = std::fs::read_dir(&bytecode_dir) {
                             for module_entry in module_entries.flatten() {
                                 let module_path = module_entry.path();
-                                if module_path.extension().map_or(false, |e| e == "mv") {
+                                if module_path.extension().is_some_and(|e| e == "mv") {
                                     modules.push(module_path);
                                 }
                             }
@@ -3040,7 +3042,7 @@ impl SimulationEnvironment {
         // Encode remaining fields in order
         // Note: This is a simplified encoding that handles common cases
         // A full implementation would need type information to properly order fields
-        for (_name, value) in fields {
+        for value in fields.values() {
             match value {
                 serde_json::Value::Number(n) => {
                     if let Some(v) = n.as_u64() {

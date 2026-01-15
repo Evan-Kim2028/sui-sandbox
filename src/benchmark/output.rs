@@ -33,6 +33,7 @@ pub enum OutputFormat {
 
 impl OutputFormat {
     /// Parse format from string (case-insensitive).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "json" => Some(Self::Json),
@@ -148,7 +149,7 @@ impl OutputFormatter {
             OutputFormat::Json => {
                 // For JSON, collect into array
                 let items: Vec<serde_json::Value> = values
-                    .map(|v| serde_json::to_value(v))
+                    .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()?;
                 let pretty = self.pretty.unwrap_or(true);
                 if pretty {
@@ -167,7 +168,7 @@ impl OutputFormatter {
             OutputFormat::Csv => {
                 // For CSV, header + rows
                 let items: Vec<serde_json::Value> = values
-                    .map(|v| serde_json::to_value(v))
+                    .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()?;
                 if let Some(first) = items.first() {
                     // Header from first item
@@ -235,7 +236,7 @@ fn json_to_csv_line(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Object(map) => map
             .values()
-            .map(|v| json_value_to_csv_field(v))
+            .map(json_value_to_csv_field)
             .collect::<Vec<_>>()
             .join(","),
         _ => json_value_to_csv_field(value),
@@ -251,7 +252,7 @@ fn json_value_to_csv_field(value: &serde_json::Value) -> String {
         serde_json::Value::String(s) => escape_csv_field(s),
         serde_json::Value::Array(arr) => {
             // For arrays, join with semicolons
-            let items: Vec<String> = arr.iter().map(|v| json_value_to_csv_field(v)).collect();
+            let items: Vec<String> = arr.iter().map(json_value_to_csv_field).collect();
             escape_csv_field(&items.join(";"))
         }
         serde_json::Value::Object(_) => {

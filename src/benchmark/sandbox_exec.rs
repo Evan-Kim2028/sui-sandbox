@@ -1136,7 +1136,7 @@ fn execute_load_module(
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let file_path = entry.path();
-                    if file_path.extension().map_or(false, |e| e == "mv") {
+                    if file_path.extension().is_some_and(|e| e == "mv") {
                         let name = file_path
                             .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
@@ -1342,8 +1342,7 @@ fn execute_ptb_command(
                     }
                 };
 
-                let converted_args: Vec<Argument> =
-                    args.iter().map(|a| convert_ptb_arg(a)).collect();
+                let converted_args: Vec<Argument> = args.iter().map(convert_ptb_arg).collect();
 
                 real_commands.push(RealPtbCommand::MoveCall {
                     package: pkg_addr,
@@ -2281,7 +2280,7 @@ fn build_effects_response(
             .enumerate()
             .map(|(i, vals)| CommandReturnValues {
                 command_index: i,
-                values: vals.iter().map(|v| hex::encode(v)).collect(),
+                values: vals.iter().map(hex::encode).collect(),
                 count: vals.len(),
             })
             .collect();

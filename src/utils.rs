@@ -49,8 +49,7 @@ pub fn parse_address(addr: &str) -> Result<AccountAddress> {
 pub fn format_address_short(addr: &AccountAddress) -> String {
     let hex = addr.to_hex_literal();
     // Strip leading zeros after 0x prefix
-    if hex.starts_with("0x") {
-        let without_prefix = &hex[2..];
+    if let Some(without_prefix) = hex.strip_prefix("0x") {
         let trimmed = without_prefix.trim_start_matches('0');
         if trimmed.is_empty() {
             "0x0".to_string()

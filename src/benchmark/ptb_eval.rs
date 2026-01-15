@@ -229,7 +229,7 @@ fn evaluate_transaction(
     let mut retry_count = 0;
 
     // Load cached packages into the environment
-    for (pkg_id, _) in &cached.packages {
+    for pkg_id in cached.packages.keys() {
         if let Some(modules) = cached.get_package_modules(pkg_id) {
             if let Err(e) = env.deploy_package(modules) {
                 if verbose {

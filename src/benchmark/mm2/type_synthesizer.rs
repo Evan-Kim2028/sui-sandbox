@@ -394,6 +394,7 @@ impl<'a> TypeSynthesizer<'a> {
     }
 
     /// Parse a type string and synthesize the struct.
+    #[allow(dead_code)]
     fn synthesize_struct_from_type_str(
         &mut self,
         type_str: &str,
@@ -702,8 +703,7 @@ impl<'a> TypeSynthesizer<'a> {
                 }
                 // priority_queue::PriorityQueue<T> - UID + entries (empty vector)
                 ("priority_queue", "PriorityQueue") => {
-                    let mut bytes = Vec::new();
-                    bytes.push(0); // entries: vector<Entry<T>> - empty
+                    let bytes = vec![0]; // entries: vector<Entry<T>> - empty
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,

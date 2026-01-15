@@ -197,7 +197,7 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
             // Run parallel replay
             eprintln!(
                 "Running parallel replay with {} threads...",
-                args.threads.unwrap_or_else(|| rayon::current_num_threads())
+                args.threads.unwrap_or_else(rayon::current_num_threads)
             );
 
             let result = replay_parallel(&cached_txs, &resolver, args.threads)?;
@@ -572,7 +572,7 @@ fn run_tx_replay_with_cached_transactions(
         if args.replay {
             // Load cached packages
             if !cached.packages.is_empty() {
-                for (pkg_id, _modules) in &cached.packages {
+                for pkg_id in cached.packages.keys() {
                     if let Some(modules) = cached.get_package_modules(pkg_id) {
                         let non_empty: Vec<(String, Vec<u8>)> =
                             modules.into_iter().filter(|(_, b)| !b.is_empty()).collect();

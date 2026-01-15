@@ -1140,7 +1140,7 @@ fn attempt_function(
                             }
                         };
 
-                        let type_args = resolve_constructor_type_args(&ctor);
+                        let type_args = resolve_constructor_type_args(ctor);
 
                         // Execute this step's constructor
                         let returns = match harness.execute_function_with_return(
@@ -1353,7 +1353,7 @@ fn attempt_function(
                             }
                         };
 
-                        let type_args = resolve_constructor_type_args(&ctor);
+                        let type_args = resolve_constructor_type_args(ctor);
 
                         (type_args, args)
                     };
@@ -1725,7 +1725,7 @@ fn execute_constructor_chain_as_ptb(
                     )
                     .map_err(|e| format!("PTB arg build failed: {e}"))?;
 
-                    let type_args = resolve_constructor_type_args(&ctor);
+                    let type_args = resolve_constructor_type_args(ctor);
 
                     // Add MoveCall command
                     let result = builder
@@ -1823,7 +1823,7 @@ fn execute_constructor_chain_as_ptb(
                 )
                 .map_err(|e| format!("PTB intermediate arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -1854,7 +1854,7 @@ fn execute_constructor_chain_as_ptb(
                 )
                 .map_err(|e| format!("PTB final param arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -1892,7 +1892,7 @@ fn execute_constructor_chain_as_ptb(
                 )
                 .map_err(|e| format!("PTB constructed ref arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -1994,7 +1994,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                     )
                     .map_err(|e| format!("PTB arg build failed: {e}"))?;
 
-                    let type_args = resolve_constructor_type_args(&ctor);
+                    let type_args = resolve_constructor_type_args(ctor);
 
                     let result = builder
                         .move_call(
@@ -2081,7 +2081,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB intermediate arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -2112,7 +2112,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB final param arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -2148,7 +2148,7 @@ fn execute_constructor_chain_as_ptb_via_sim(
                 )
                 .map_err(|e| format!("PTB constructed ref arg build failed: {e}"))?;
 
-                let type_args = resolve_constructor_type_args(&ctor);
+                let type_args = resolve_constructor_type_args(ctor);
 
                 let result = builder
                     .move_call(
@@ -2325,7 +2325,7 @@ fn build_ptb_constructor_args(
                     struct_tag.name
                 );
                 if let Some(result_arg) = type_to_result.get(&key) {
-                    args.push(result_arg.clone());
+                    args.push(*result_arg);
                 } else {
                     return Err(anyhow!("struct {} not found in PTB results", key));
                 }
@@ -2408,7 +2408,7 @@ fn build_ptb_producer_args(
             } => {
                 let key = format!("{}::{}::{}", module_addr, module_name, type_name);
                 if let Some(result_arg) = type_to_result.get(&key) {
-                    args.push(result_arg.clone());
+                    args.push(*result_arg);
                 } else {
                     return Err(anyhow!("type {} not found in PTB results", key));
                 }
@@ -2433,7 +2433,7 @@ fn build_ptb_producer_args(
                 } => {
                     let key = format!("{}::{}::{}", module_addr, module_name, type_name);
                     if let Some(result_arg) = type_to_result.get(&key) {
-                        args.push(result_arg.clone());
+                        args.push(*result_arg);
                     } else {
                         return Err(anyhow!("ref type {} not found in PTB results", key));
                     }

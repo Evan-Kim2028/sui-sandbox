@@ -900,15 +900,14 @@ fn build_sui_natives(
 
                     // Serialize the event value to BCS
                     // Note: We use typed_serialize which may fail for some complex types
-                    let event_bytes = match event_value.typed_serialize(
-                        &ctx.type_to_type_layout(event_ty)
-                            .ok()
-                            .flatten()
-                            .unwrap_or(MoveTypeLayout::Bool),
-                    ) {
-                        Some(bytes) => bytes,
-                        None => vec![], // Empty if serialization fails
-                    };
+                    let event_bytes: Vec<u8> = event_value
+                        .typed_serialize(
+                            &ctx.type_to_type_layout(event_ty)
+                                .ok()
+                                .flatten()
+                                .unwrap_or(MoveTypeLayout::Bool),
+                        )
+                        .unwrap_or_default();
 
                     // Record the event
                     state_clone.events.emit(type_tag_str, event_bytes);
@@ -930,15 +929,14 @@ fn build_sui_natives(
                         Ok(tag) => format!("{}", tag),
                         Err(_) => "unknown".to_string(),
                     };
-                    let event_bytes = match event_value.typed_serialize(
-                        &ctx.type_to_type_layout(event_ty)
-                            .ok()
-                            .flatten()
-                            .unwrap_or(MoveTypeLayout::Bool),
-                    ) {
-                        Some(bytes) => bytes,
-                        None => vec![],
-                    };
+                    let event_bytes: Vec<u8> = event_value
+                        .typed_serialize(
+                            &ctx.type_to_type_layout(event_ty)
+                                .ok()
+                                .flatten()
+                                .unwrap_or(MoveTypeLayout::Bool),
+                        )
+                        .unwrap_or_default();
                     state_clone.events.emit(type_tag_str, event_bytes);
                 }
             }

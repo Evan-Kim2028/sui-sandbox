@@ -471,7 +471,7 @@ pub fn generate_struct_module(
     source.push_str("    }\n\n");
 
     // Add a constructor
-    source.push_str(&format!(r#"    public fun new("#));
+    source.push_str(r#"    public fun new("#);
 
     let params: Vec<String> = fields
         .iter()

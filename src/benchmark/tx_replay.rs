@@ -390,11 +390,10 @@ impl EffectsComparison {
         let total_points = 4.0;
 
         // Compare status
-        let status_match = match (&on_chain.status, local_success) {
-            (TransactionStatus::Success, true) => true,
-            (TransactionStatus::Failure { .. }, false) => true,
-            _ => false,
-        };
+        let status_match = matches!(
+            (&on_chain.status, local_success),
+            (TransactionStatus::Success, true) | (TransactionStatus::Failure { .. }, false)
+        );
         if status_match {
             match_points += 1.0;
         } else {
@@ -1284,7 +1283,7 @@ fn build_address_aliases(
 
     let mut aliases = std::collections::HashMap::new();
 
-    for (pkg_id, _) in &cached.packages {
+    for pkg_id in cached.packages.keys() {
         if let Some(modules) = cached.get_package_modules(pkg_id) {
             // Get the target address (on-chain package ID)
             let target_addr = match AccountAddress::from_hex_literal(pkg_id) {
@@ -1355,7 +1354,7 @@ pub fn replay_parallel(
             let address_aliases = build_address_aliases(cached);
 
             // Load cached packages into the resolver
-            for (pkg_id, _modules) in &cached.packages {
+            for pkg_id in cached.packages.keys() {
                 if let Some(modules) = cached.get_package_modules(pkg_id) {
                     // Don't use target address aliasing - we'll rewrite the transaction instead
                     let _ = local_resolver.add_package_modules(modules);
@@ -1707,7 +1706,7 @@ fn find_missing_dependencies(cached: &CachedTransaction) -> Vec<AccountAddress> 
     // Find all dependencies by parsing modules
     let mut missing = BTreeSet::new();
 
-    for (_pkg_id, _modules) in &cached.packages {
+    for _pkg_id in cached.packages.keys() {
         if let Some(module_bytes_list) = cached.get_package_modules(_pkg_id) {
             for (_name, bytes) in module_bytes_list {
                 if bytes.is_empty() {
@@ -2179,8 +2178,7 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 n.to_le_bytes().to_vec()
                             } else if let Some(s) = v.as_str() {
                                 // Could be an address or other hex value
-                                if s.starts_with("0x") {
-                                    let hex_str = &s[2..];
+                                if let Some(hex_str) = s.strip_prefix("0x") {
                                     hex::decode(hex_str).unwrap_or_else(|_| s.as_bytes().to_vec())
                                 } else if let Ok(n) = s.parse::<u64>() {
                                     n.to_le_bytes().to_vec()
@@ -2229,7 +2227,7 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                             mutable,
                         });
                     }
-                    Some("immOrOwnedObject") | _ => {
+                    _ => {
                         let version = input
                             .get("version")
                             .and_then(|v| v.as_str().or_else(|| v.as_u64().map(|_| "")))
@@ -2517,7 +2515,7 @@ impl FetchedTransaction {
                         .collect();
 
                     // Convert arguments
-                    let args: Vec<Argument> = arguments.iter().map(|a| convert_arg(a)).collect();
+                    let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
 
                     commands.push(Command::MoveCall {
                         package: package_addr,
@@ -2530,8 +2528,7 @@ impl FetchedTransaction {
 
                 PtbCommand::SplitCoins { coin, amounts } => {
                     let coin_arg = convert_arg(coin);
-                    let amount_args: Vec<Argument> =
-                        amounts.iter().map(|a| convert_arg(a)).collect();
+                    let amount_args: Vec<Argument> = amounts.iter().map(&convert_arg).collect();
                     commands.push(Command::SplitCoins {
                         coin: coin_arg,
                         amounts: amount_args,
@@ -2543,8 +2540,7 @@ impl FetchedTransaction {
                     sources,
                 } => {
                     let dest_arg = convert_arg(destination);
-                    let source_args: Vec<Argument> =
-                        sources.iter().map(|a| convert_arg(a)).collect();
+                    let source_args: Vec<Argument> = sources.iter().map(&convert_arg).collect();
                     commands.push(Command::MergeCoins {
                         destination: dest_arg,
                         sources: source_args,
@@ -2552,7 +2548,7 @@ impl FetchedTransaction {
                 }
 
                 PtbCommand::TransferObjects { objects, address } => {
-                    let obj_args: Vec<Argument> = objects.iter().map(|a| convert_arg(a)).collect();
+                    let obj_args: Vec<Argument> = objects.iter().map(&convert_arg).collect();
                     let addr_arg = convert_arg(address);
                     commands.push(Command::TransferObjects {
                         objects: obj_args,
@@ -2562,8 +2558,7 @@ impl FetchedTransaction {
 
                 PtbCommand::MakeMoveVec { type_arg, elements } => {
                     let type_tag = type_arg.as_ref().and_then(|s| parse_type_tag(s).ok());
-                    let elem_args: Vec<Argument> =
-                        elements.iter().map(|a| convert_arg(a)).collect();
+                    let elem_args: Vec<Argument> = elements.iter().map(&convert_arg).collect();
                     commands.push(Command::MakeMoveVec {
                         type_tag,
                         elements: elem_args,
@@ -2741,7 +2736,7 @@ impl FetchedTransaction {
                         .map(|t| rewrite_type_tag(t, address_aliases))
                         .collect();
 
-                    let args: Vec<Argument> = arguments.iter().map(|a| convert_arg(a)).collect();
+                    let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
 
                     commands.push(Command::MoveCall {
                         package: rewritten_package,
@@ -2755,7 +2750,7 @@ impl FetchedTransaction {
                 PtbCommand::SplitCoins { coin, amounts } => {
                     commands.push(Command::SplitCoins {
                         coin: convert_arg(coin),
-                        amounts: amounts.iter().map(|a| convert_arg(a)).collect(),
+                        amounts: amounts.iter().map(&convert_arg).collect(),
                     });
                 }
 
@@ -2765,13 +2760,13 @@ impl FetchedTransaction {
                 } => {
                     commands.push(Command::MergeCoins {
                         destination: convert_arg(destination),
-                        sources: sources.iter().map(|a| convert_arg(a)).collect(),
+                        sources: sources.iter().map(&convert_arg).collect(),
                     });
                 }
 
                 PtbCommand::TransferObjects { objects, address } => {
                     commands.push(Command::TransferObjects {
-                        objects: objects.iter().map(|a| convert_arg(a)).collect(),
+                        objects: objects.iter().map(&convert_arg).collect(),
                         address: convert_arg(address),
                     });
                 }
@@ -2783,7 +2778,7 @@ impl FetchedTransaction {
                         .map(|t| rewrite_type_tag(t, address_aliases));
                     commands.push(Command::MakeMoveVec {
                         type_tag,
-                        elements: elements.iter().map(|a| convert_arg(a)).collect(),
+                        elements: elements.iter().map(&convert_arg).collect(),
                     });
                 }
 

@@ -331,16 +331,19 @@ pub struct BenchmarkLocalArgs {
 
 impl BenchmarkLocalArgs {
     /// Get effective MM2 setting (respects --no-mm2 override).
+    #[allow(deprecated)]
     pub fn effective_use_mm2(&self) -> bool {
         self.use_mm2 && !self.no_mm2
     }
 
     /// Get effective phase_errors setting (respects --no-phase-errors override).
+    #[allow(deprecated)]
     pub fn effective_phase_errors(&self) -> bool {
         self.phase_errors && !self.no_phase_errors
     }
 
     /// Get effective PTB setting (respects --no-ptb override).
+    #[allow(deprecated)]
     pub fn effective_use_ptb(&self) -> bool {
         self.use_ptb && !self.no_ptb
     }
