@@ -248,7 +248,10 @@ pub struct BenchmarkLocalArgs {
     /// **DEPRECATED**: Disable MM2-based type checking (use legacy bytecode analysis).
     ///
     /// The legacy analyzer will be removed in v0.6.0. Migrate to MM2 (the default).
-    #[deprecated(since = "0.5.0", note = "Legacy bytecode analyzer will be removed in v0.6.0")]
+    #[deprecated(
+        since = "0.5.0",
+        note = "Legacy bytecode analyzer will be removed in v0.6.0"
+    )]
     #[arg(long, default_value_t = false)]
     pub no_mm2: bool,
 
@@ -270,7 +273,10 @@ pub struct BenchmarkLocalArgs {
     /// **DEPRECATED**: Disable phase-based error taxonomy (use legacy A1-A5/B1-B2 stages).
     ///
     /// Legacy error stages will be removed in v0.6.0. Migrate to phase-based errors (the default).
-    #[deprecated(since = "0.5.0", note = "Legacy A1-A5/B1-B2 error stages will be removed in v0.6.0")]
+    #[deprecated(
+        since = "0.5.0",
+        note = "Legacy A1-A5/B1-B2 error stages will be removed in v0.6.0"
+    )]
     #[arg(long, default_value_t = false)]
     pub no_phase_errors: bool,
 
@@ -299,7 +305,10 @@ pub struct BenchmarkLocalArgs {
     /// The legacy VMHarness path provides execution tracing but has inconsistent semantics.
     /// Only use for debugging or when execution tracing is required.
     /// Will be removed in v0.6.0 once SimulationEnvironment supports tracing.
-    #[deprecated(since = "0.5.0", note = "Legacy VMHarness path will be removed in v0.6.0")]
+    #[deprecated(
+        since = "0.5.0",
+        note = "Legacy VMHarness path will be removed in v0.6.0"
+    )]
     #[arg(long, default_value_t = false)]
     pub no_ptb: bool,
 
@@ -580,10 +589,16 @@ impl Args {
         // Check corpus mode conflicts
         if self.corpus_module_names_only {
             if self.corpus_rpc_compare {
-                return Err("--corpus-module-names-only is not compatible with --corpus-rpc-compare".to_string());
+                return Err(
+                    "--corpus-module-names-only is not compatible with --corpus-rpc-compare"
+                        .to_string(),
+                );
             }
             if self.corpus_interface_compare {
-                return Err("--corpus-module-names-only is not compatible with --corpus-interface-compare".to_string());
+                return Err(
+                    "--corpus-module-names-only is not compatible with --corpus-interface-compare"
+                        .to_string(),
+                );
             }
         }
 
@@ -638,7 +653,9 @@ impl PtbEvalArgs {
     pub fn validate(&self) -> Result<(), String> {
         // --framework-only and --third-party-only are mutually exclusive
         if self.framework_only && self.third_party_only {
-            return Err("--framework-only and --third-party-only are mutually exclusive".to_string());
+            return Err(
+                "--framework-only and --third-party-only are mutually exclusive".to_string(),
+            );
         }
 
         Ok(())

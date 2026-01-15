@@ -451,7 +451,8 @@ impl StorageLogger {
 
     /// Log an object synthesis
     pub fn log_object_synthesis(&mut self, log: &ObjectSynthesisLog) -> Result<()> {
-        let objects_file = self.log_dir
+        let objects_file = self
+            .log_dir
             .join("objects")
             .join(format!("{}_objects.jsonl", self.session_id));
 
@@ -468,7 +469,8 @@ impl StorageLogger {
 
     /// Log an execution attempt
     pub fn log_execution(&mut self, log: &ExecutionLog) -> Result<()> {
-        let exec_file = self.log_dir
+        let exec_file = self
+            .log_dir
             .join("executions")
             .join(format!("{}_exec.jsonl", self.session_id));
 
@@ -485,7 +487,8 @@ impl StorageLogger {
 
     /// Log a detailed execution trace (PTB-level)
     pub fn log_execution_trace(&mut self, log: &ExecutionTraceLog) -> Result<()> {
-        let trace_file = self.log_dir
+        let trace_file = self
+            .log_dir
             .join("executions")
             .join(format!("{}_traces.jsonl", self.session_id));
 
@@ -502,7 +505,8 @@ impl StorageLogger {
 
     /// Log an object lifecycle event
     pub fn log_object_lifecycle(&mut self, log: &ObjectLifecycleLog) -> Result<()> {
-        let lifecycle_file = self.log_dir
+        let lifecycle_file = self
+            .log_dir
             .join("objects")
             .join(format!("{}_lifecycle.jsonl", self.session_id));
 
@@ -519,7 +523,8 @@ impl StorageLogger {
 
     /// Log a gas profile
     pub fn log_gas_profile(&mut self, profile: &GasProfileLog, transaction_id: &str) -> Result<()> {
-        let gas_file = self.log_dir
+        let gas_file = self
+            .log_dir
             .join("executions")
             .join(format!("{}_gas.jsonl", self.session_id));
 
@@ -579,7 +584,8 @@ impl StorageLogger {
     /// Ensure session writer is open
     fn ensure_session_writer(&mut self) -> Result<()> {
         if self.session_writer.is_none() {
-            let session_file = self.log_dir
+            let session_file = self
+                .log_dir
                 .join("sessions")
                 .join(format!("{}.jsonl", self.session_id));
 
@@ -603,7 +609,13 @@ impl Default for StorageLogger {
 /// Sanitize a string for use as a filename
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -636,8 +648,10 @@ pub fn analyze_packages(logger: &StorageLogger) -> Result<PackageStats> {
     let mut successful = 0;
     let mut failed = 0;
     let mut total_source_len = 0;
-    let mut error_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut model_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut error_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut model_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for pkg_dir in &packages {
         if let Ok(log) = logger.load_package_log(pkg_dir) {
@@ -649,7 +663,8 @@ pub fn analyze_packages(logger: &StorageLogger) -> Result<PackageStats> {
             } else {
                 failed += 1;
                 // Extract first line of error as pattern
-                let error_pattern = log.diagnostics
+                let error_pattern = log
+                    .diagnostics
                     .lines()
                     .next()
                     .map(|s| s.trim().to_string())
@@ -676,7 +691,11 @@ pub fn analyze_packages(logger: &StorageLogger) -> Result<PackageStats> {
         successful,
         failed,
         common_errors,
-        avg_source_len: if total > 0 { total_source_len / total } else { 0 },
+        avg_source_len: if total > 0 {
+            total_source_len / total
+        } else {
+            0
+        },
         models,
     })
 }
@@ -698,7 +717,8 @@ pub struct SessionStats {
 
 /// Load and analyze a session log
 pub fn analyze_session(logger: &StorageLogger, session_id: &str) -> Result<SessionStats> {
-    let session_file = logger.log_dir()
+    let session_file = logger
+        .log_dir()
         .join("sessions")
         .join(format!("{}.jsonl", session_id));
 
@@ -711,7 +731,8 @@ pub fn analyze_session(logger: &StorageLogger, session_id: &str) -> Result<Sessi
     let mut successful_calls = 0;
     let mut failed_calls = 0;
     let mut total_duration = 0u64;
-    let mut tool_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut tool_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for line in content.lines() {
         if let Ok(log) = serde_json::from_str::<ToolCallLog>(line) {
@@ -736,7 +757,11 @@ pub fn analyze_session(logger: &StorageLogger, session_id: &str) -> Result<Sessi
         successful_calls,
         failed_calls,
         tool_distribution,
-        avg_duration_ms: if total_calls > 0 { total_duration as f64 / total_calls as f64 } else { 0.0 },
+        avg_duration_ms: if total_calls > 0 {
+            total_duration as f64 / total_calls as f64
+        } else {
+            0.0
+        },
     })
 }
 
@@ -810,7 +835,9 @@ mod tests {
 
         logger.log_tool_call(&log).unwrap();
 
-        let session_file = temp_dir.join("sessions").join(format!("{}.jsonl", logger.session_id()));
+        let session_file = temp_dir
+            .join("sessions")
+            .join(format!("{}.jsonl", logger.session_id()));
         assert!(session_file.exists());
 
         // Cleanup

@@ -432,9 +432,7 @@ impl EffectsComparison {
         } else {
             notes.push(format!(
                 "Mutated count mismatch: on-chain={}, local={} (diff={})",
-                on_chain_mutated,
-                local_mutated,
-                mutated_diff
+                on_chain_mutated, local_mutated, mutated_diff
             ));
         }
 
@@ -540,7 +538,10 @@ impl TransactionFetcher {
         if let Some(error) = response.get("error") {
             return Err(anyhow!(
                 "RPC error: {}",
-                error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
             ));
         }
 
@@ -648,7 +649,10 @@ impl TransactionFetcher {
         if let Some(error) = response.get("error") {
             return Err(anyhow!(
                 "RPC error: {}",
-                error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
             ));
         }
 
@@ -685,9 +689,7 @@ impl TransactionFetcher {
 
         // Get ownership info
         let owner = data.get("owner");
-        let is_shared = owner
-            .and_then(|o| o.get("Shared"))
-            .is_some();
+        let is_shared = owner.and_then(|o| o.get("Shared")).is_some();
         let is_immutable = owner
             .and_then(|o| o.as_str())
             .map(|s| s == "Immutable")
@@ -737,7 +739,10 @@ impl TransactionFetcher {
         if let Some(error) = response.get("error") {
             return Err(anyhow!(
                 "RPC error: {}",
-                error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
             ));
         }
 
@@ -784,7 +789,9 @@ impl TransactionFetcher {
 
         for input in &tx.inputs {
             match input {
-                TransactionInput::Object { object_id, version, .. } => {
+                TransactionInput::Object {
+                    object_id, version, ..
+                } => {
                     // Try to fetch at specific version first, fall back to current
                     let bytes = if *version > 0 {
                         self.fetch_object_at_version(object_id, *version)
@@ -802,9 +809,14 @@ impl TransactionFetcher {
                         }
                     }
                 }
-                TransactionInput::SharedObject { object_id, initial_shared_version, .. } => {
+                TransactionInput::SharedObject {
+                    object_id,
+                    initial_shared_version,
+                    ..
+                } => {
                     // For shared objects, try to get at initial version or current
-                    let bytes = self.fetch_object_at_version(object_id, *initial_shared_version)
+                    let bytes = self
+                        .fetch_object_at_version(object_id, *initial_shared_version)
                         .or_else(|_| self.fetch_object_bcs(object_id));
 
                     match bytes {
@@ -812,11 +824,16 @@ impl TransactionFetcher {
                             objects.insert(object_id.clone(), b);
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to fetch shared object {}: {}", object_id, e);
+                            eprintln!(
+                                "Warning: Failed to fetch shared object {}: {}",
+                                object_id, e
+                            );
                         }
                     }
                 }
-                TransactionInput::ImmutableObject { object_id, version, .. } => {
+                TransactionInput::ImmutableObject {
+                    object_id, version, ..
+                } => {
                     let bytes = if *version > 0 {
                         self.fetch_object_at_version(object_id, *version)
                             .or_else(|_| self.fetch_object_bcs(object_id))
@@ -829,11 +846,16 @@ impl TransactionFetcher {
                             objects.insert(object_id.clone(), b);
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to fetch immutable object {}: {}", object_id, e);
+                            eprintln!(
+                                "Warning: Failed to fetch immutable object {}: {}",
+                                object_id, e
+                            );
                         }
                     }
                 }
-                TransactionInput::Receiving { object_id, version, .. } => {
+                TransactionInput::Receiving {
+                    object_id, version, ..
+                } => {
                     let bytes = if *version > 0 {
                         self.fetch_object_at_version(object_id, *version)
                             .or_else(|_| self.fetch_object_bcs(object_id))
@@ -846,7 +868,10 @@ impl TransactionFetcher {
                             objects.insert(object_id.clone(), b);
                         }
                         Err(e) => {
-                            eprintln!("Warning: Failed to fetch receiving object {}: {}", object_id, e);
+                            eprintln!(
+                                "Warning: Failed to fetch receiving object {}: {}",
+                                object_id, e
+                            );
                         }
                     }
                 }
@@ -876,7 +901,10 @@ impl TransactionFetcher {
                     // Use full fetch to get both bytes and type
                     match self.fetch_object_full(object_id) {
                         Ok(fetched) => {
-                            objects.insert(object_id.clone(), (fetched.bcs_bytes, fetched.type_string));
+                            objects.insert(
+                                object_id.clone(),
+                                (fetched.bcs_bytes, fetched.type_string),
+                            );
                         }
                         Err(e) => {
                             eprintln!("Warning: Failed to fetch object {}: {}", object_id, e);
@@ -918,7 +946,10 @@ impl TransactionFetcher {
         if let Some(error) = response.get("error") {
             return Err(anyhow!(
                 "RPC error: {}",
-                error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
             ));
         }
 
@@ -942,7 +973,11 @@ impl TransactionFetcher {
             .unwrap_or("");
 
         if obj_type != "package" {
-            return Err(anyhow!("Object {} is not a package (type: {})", package_id, obj_type));
+            return Err(anyhow!(
+                "Object {} is not a package (type: {})",
+                package_id,
+                obj_type
+            ));
         }
 
         // Get BCS module map - this is the primary source for bytecode
@@ -956,7 +991,8 @@ impl TransactionFetcher {
                 use base64::Engine;
                 for (name, bytes_b64) in module_map {
                     if let Some(b64_str) = bytes_b64.as_str() {
-                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str) {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str)
+                        {
                             modules.push((name.clone(), bytes));
                         }
                     }
@@ -1007,16 +1043,20 @@ impl TransactionFetcher {
         let mut packages = std::collections::HashMap::new();
 
         // Skip framework packages (0x1, 0x2, 0x3) - we have those bundled
-        let framework_prefixes = ["0x0000000000000000000000000000000000000000000000000000000000000001",
-                                   "0x0000000000000000000000000000000000000000000000000000000000000002",
-                                   "0x0000000000000000000000000000000000000000000000000000000000000003",
-                                   "0x1", "0x2", "0x3"];
+        let framework_prefixes = [
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "0x0000000000000000000000000000000000000000000000000000000000000003",
+            "0x1",
+            "0x2",
+            "0x3",
+        ];
 
         for pkg_id in package_ids {
             // Check if it's a framework package
-            let is_framework = framework_prefixes.iter().any(|prefix| {
-                pkg_id == *prefix || pkg_id.to_lowercase() == prefix.to_lowercase()
-            });
+            let is_framework = framework_prefixes
+                .iter()
+                .any(|prefix| pkg_id == *prefix || pkg_id.to_lowercase() == prefix.to_lowercase());
 
             if is_framework {
                 continue;
@@ -1077,7 +1117,10 @@ impl CachedTransaction {
         let encoded: Vec<(String, String)> = modules
             .into_iter()
             .map(|(name, bytes)| {
-                (name, base64::engine::general_purpose::STANDARD.encode(&bytes))
+                (
+                    name,
+                    base64::engine::general_purpose::STANDARD.encode(&bytes),
+                )
             })
             .collect();
         self.packages.insert(package_id, encoded);
@@ -1086,13 +1129,24 @@ impl CachedTransaction {
     /// Add object data to the cache.
     pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
         use base64::Engine;
-        self.objects.insert(object_id, base64::engine::general_purpose::STANDARD.encode(&bytes));
+        self.objects.insert(
+            object_id,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
     }
 
     /// Add object data with type information to the cache.
-    pub fn add_object_with_type(&mut self, object_id: String, bytes: Vec<u8>, object_type: Option<String>) {
+    pub fn add_object_with_type(
+        &mut self,
+        object_id: String,
+        bytes: Vec<u8>,
+        object_type: Option<String>,
+    ) {
         use base64::Engine;
-        self.objects.insert(object_id.clone(), base64::engine::general_purpose::STANDARD.encode(&bytes));
+        self.objects.insert(
+            object_id.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
         if let Some(type_str) = object_type {
             self.object_types.insert(object_id, type_str);
         }
@@ -1117,9 +1171,9 @@ impl CachedTransaction {
     /// Get decoded object bytes.
     pub fn get_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
         use base64::Engine;
-        self.objects.get(object_id).and_then(|b64| {
-            base64::engine::general_purpose::STANDARD.decode(b64).ok()
-        })
+        self.objects
+            .get(object_id)
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
     }
 
     /// Convert to PTB commands using cached object data.
@@ -1223,7 +1277,9 @@ pub struct ParallelReplayResult {
 
 /// Build address alias map by examining the bytecode self-addresses.
 /// Returns a map: on-chain package ID -> bytecode self-address
-fn build_address_aliases(cached: &CachedTransaction) -> std::collections::HashMap<AccountAddress, AccountAddress> {
+fn build_address_aliases(
+    cached: &CachedTransaction,
+) -> std::collections::HashMap<AccountAddress, AccountAddress> {
     use move_binary_format::file_format::CompiledModule;
 
     let mut aliases = std::collections::HashMap::new();
@@ -1256,7 +1312,9 @@ fn build_address_aliases(cached: &CachedTransaction) -> std::collections::HashMa
 }
 
 /// Public wrapper for testing - builds address aliases for a cached transaction.
-pub fn build_address_aliases_for_test(cached: &CachedTransaction) -> std::collections::HashMap<AccountAddress, AccountAddress> {
+pub fn build_address_aliases_for_test(
+    cached: &CachedTransaction,
+) -> std::collections::HashMap<AccountAddress, AccountAddress> {
     build_address_aliases(cached)
 }
 
@@ -1307,12 +1365,21 @@ pub fn replay_parallel(
             // Create harness and replay with address rewriting
             match VMHarness::new(&local_resolver, false) {
                 Ok(mut harness) => {
-                    match cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+                    match cached.transaction.replay_with_objects_and_aliases(
+                        &mut harness,
+                        &cached.objects,
+                        &address_aliases,
+                    ) {
                         Ok(result) => {
                             if result.local_success {
                                 successful.fetch_add(1, Ordering::Relaxed);
                             }
-                            if result.comparison.as_ref().map(|c| c.status_match).unwrap_or(false) {
+                            if result
+                                .comparison
+                                .as_ref()
+                                .map(|c| c.status_match)
+                                .unwrap_or(false)
+                            {
                                 status_matched.fetch_add(1, Ordering::Relaxed);
                             }
                             result
@@ -1458,10 +1525,12 @@ pub fn download_single_transaction(
     cache.save(&cached)?;
 
     if verbose {
-        eprintln!(" ok ({} cmds, {} pkgs, {} objs)",
+        eprintln!(
+            " ok ({} cmds, {} pkgs, {} objs)",
             cached.transaction.commands.len(),
             cached.packages.len(),
-            cached.objects.len());
+            cached.objects.len()
+        );
     }
 
     Ok(true)
@@ -1491,13 +1560,23 @@ pub fn download_transactions(
         // Skip if already cached
         if cache.has(&digest.0) {
             if verbose {
-                eprintln!("  [{}/{}] {} - cached", i + 1, digests.len(), &digest.0[..12]);
+                eprintln!(
+                    "  [{}/{}] {} - cached",
+                    i + 1,
+                    digests.len(),
+                    &digest.0[..12]
+                );
             }
             continue;
         }
 
         if verbose {
-            eprint!("  [{}/{}] {} - fetching...", i + 1, digests.len(), &digest.0[..12]);
+            eprint!(
+                "  [{}/{}] {} - fetching...",
+                i + 1,
+                digests.len(),
+                &digest.0[..12]
+            );
             std::io::stderr().flush().ok();
         }
 
@@ -1542,7 +1621,9 @@ pub fn download_transactions(
 
                 // Fetch objects if requested (with type info)
                 if fetch_objects {
-                    if let Ok(objects) = fetcher.fetch_transaction_inputs_with_types(&cached.transaction) {
+                    if let Ok(objects) =
+                        fetcher.fetch_transaction_inputs_with_types(&cached.transaction)
+                    {
                         for (obj_id, (bytes, type_str)) in objects {
                             cached.add_object_with_type(obj_id, bytes, type_str);
                         }
@@ -1581,7 +1662,11 @@ pub fn download_transactions(
                 } else {
                     new_count += 1;
                     if verbose {
-                        eprintln!(" ok ({} cmds, {} pkgs)", cached.transaction.commands.len(), cached.packages.len());
+                        eprintln!(
+                            " ok ({} cmds, {} pkgs)",
+                            cached.transaction.commands.len(),
+                            cached.packages.len()
+                        );
                     }
                 }
             }
@@ -1599,8 +1684,8 @@ pub fn download_transactions(
 /// Find missing package dependencies from the cached transaction's packages.
 /// Returns a list of package addresses that are referenced but not present.
 fn find_missing_dependencies(cached: &CachedTransaction) -> Vec<AccountAddress> {
-    use std::collections::BTreeSet;
     use move_binary_format::file_format::CompiledModule;
+    use std::collections::BTreeSet;
 
     // Framework addresses we always have bundled
     let framework_addrs: BTreeSet<AccountAddress> = [
@@ -1731,7 +1816,10 @@ fn extract_type_argument_packages(cached: &CachedTransaction) -> Vec<AccountAddr
 }
 
 /// Parse a transaction response from the RPC.
-fn parse_transaction_response(digest: &str, result: &serde_json::Value) -> Result<FetchedTransaction> {
+fn parse_transaction_response(
+    digest: &str,
+    result: &serde_json::Value,
+) -> Result<FetchedTransaction> {
     let transaction = result
         .get("transaction")
         .ok_or_else(|| anyhow!("No transaction in result"))?;
@@ -1814,7 +1902,9 @@ fn parse_transaction_response(digest: &str, result: &serde_json::Value) -> Resul
 /// Parse PTB commands from JSON.
 fn parse_ptb_commands(commands: Option<&serde_json::Value>) -> Result<Vec<PtbCommand>> {
     let commands = match commands {
-        Some(c) => c.as_array().ok_or_else(|| anyhow!("Commands not an array"))?,
+        Some(c) => c
+            .as_array()
+            .ok_or_else(|| anyhow!("Commands not an array"))?,
         None => return Ok(vec![]),
     };
 
@@ -1916,11 +2006,15 @@ fn parse_single_argument(arg: Option<&serde_json::Value>) -> Result<PtbArgument>
 /// Parse PTB arguments from JSON array.
 fn parse_ptb_arguments(args: Option<&serde_json::Value>) -> Result<Vec<PtbArgument>> {
     let args = match args {
-        Some(a) => a.as_array().ok_or_else(|| anyhow!("Arguments not an array"))?,
+        Some(a) => a
+            .as_array()
+            .ok_or_else(|| anyhow!("Arguments not an array"))?,
         None => return Ok(vec![]),
     };
 
-    args.iter().map(|a| parse_single_argument(Some(a))).collect()
+    args.iter()
+        .map(|a| parse_single_argument(Some(a)))
+        .collect()
 }
 
 /// Parse PTB inputs from JSON.
@@ -1949,7 +2043,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 n as u8
                             } else if let Some(s) = v.as_str() {
                                 s.parse().unwrap_or(0)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             vec![n]
                         }
                         Some("u16") => {
@@ -1957,7 +2053,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 n as u16
                             } else if let Some(s) = v.as_str() {
                                 s.parse().unwrap_or(0)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             n.to_le_bytes().to_vec()
                         }
                         Some("u32") => {
@@ -1965,7 +2063,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 n as u32
                             } else if let Some(s) = v.as_str() {
                                 s.parse().unwrap_or(0)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             n.to_le_bytes().to_vec()
                         }
                         Some("u64") => {
@@ -1973,7 +2073,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 n
                             } else if let Some(s) = v.as_str() {
                                 s.parse().unwrap_or(0)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             n.to_le_bytes().to_vec()
                         }
                         Some("u128") => {
@@ -1981,7 +2083,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 s.parse().unwrap_or(0)
                             } else if let Some(n) = v.as_u64() {
                                 n as u128
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             n.to_le_bytes().to_vec()
                         }
                         Some("u256") => {
@@ -2005,7 +2109,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                 b
                             } else if let Some(s) = v.as_str() {
                                 s == "true"
-                            } else { false };
+                            } else {
+                                false
+                            };
                             vec![if b { 1 } else { 0 }]
                         }
                         Some("address") => {
@@ -2021,7 +2127,8 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                             // Vector of bytes - could be array or hex string
                             if let Some(arr) = v.as_array() {
                                 // BCS vector: length prefix + elements
-                                let bytes: Vec<u8> = arr.iter()
+                                let bytes: Vec<u8> = arr
+                                    .iter()
                                     .filter_map(|x| x.as_u64().map(|n| n as u8))
                                     .collect();
                                 let mut result = Vec::new();
@@ -2035,7 +2142,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                         byte |= 0x80;
                                     }
                                     result.push(byte);
-                                    if len_val == 0 { break; }
+                                    if len_val == 0 {
+                                        break;
+                                    }
                                 }
                                 result.extend(bytes);
                                 result
@@ -2054,7 +2163,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                                         byte |= 0x80;
                                     }
                                     result.push(byte);
-                                    if len_val == 0 { break; }
+                                    if len_val == 0 {
+                                        break;
+                                    }
                                 }
                                 result.extend(bytes);
                                 result
@@ -2079,7 +2190,9 @@ fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<Transactio
                             } else if let Some(b) = v.as_bool() {
                                 vec![if b { 1 } else { 0 }]
                             } else if let Some(arr) = v.as_array() {
-                                arr.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect()
+                                arr.iter()
+                                    .filter_map(|x| x.as_u64().map(|n| n as u8))
+                                    .collect()
                             } else {
                                 vec![]
                             }
@@ -2235,7 +2348,10 @@ impl FetchedTransaction {
     }
 
     /// Convert this transaction to PTB commands using cached object data.
-    pub fn to_ptb_commands_with_objects(&self, cached_objects: &std::collections::HashMap<String, String>) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    pub fn to_ptb_commands_with_objects(
+        &self,
+        cached_objects: &std::collections::HashMap<String, String>,
+    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
         const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
         self.to_ptb_commands_internal(DEFAULT_GAS_BALANCE, cached_objects)
     }
@@ -2248,16 +2364,27 @@ impl FetchedTransaction {
         address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
     ) -> Result<(Vec<InputValue>, Vec<Command>)> {
         const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
-        self.to_ptb_commands_internal_with_aliases(DEFAULT_GAS_BALANCE, cached_objects, address_aliases)
+        self.to_ptb_commands_internal_with_aliases(
+            DEFAULT_GAS_BALANCE,
+            cached_objects,
+            address_aliases,
+        )
     }
 
     /// Convert this transaction to PTB commands, providing a gas coin with specified balance.
-    pub fn to_ptb_commands_with_gas_budget(&self, gas_balance: u64) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    pub fn to_ptb_commands_with_gas_budget(
+        &self,
+        gas_balance: u64,
+    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
         self.to_ptb_commands_internal(gas_balance, &std::collections::HashMap::new())
     }
 
     /// Internal method that converts to PTB commands with gas balance and optional cached objects.
-    fn to_ptb_commands_internal(&self, gas_balance: u64, cached_objects: &std::collections::HashMap<String, String>) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    fn to_ptb_commands_internal(
+        &self,
+        gas_balance: u64,
+        cached_objects: &std::collections::HashMap<String, String>,
+    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
         use base64::Engine;
         let mut inputs = Vec::new();
         let mut commands = Vec::new();
@@ -2273,7 +2400,10 @@ impl FetchedTransaction {
         // Check if any command uses GasCoin
         let uses_gas_coin = self.commands.iter().any(|cmd| match cmd {
             PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
-            PtbCommand::MergeCoins { destination, sources } => {
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
                 matches!(destination, PtbArgument::GasCoin)
                     || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
             }
@@ -2306,8 +2436,8 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Pure(bytes.clone()));
                 }
                 TransactionInput::Object { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
                     inputs.push(InputValue::Object(ObjectInput::Owned {
                         id,
@@ -2316,8 +2446,8 @@ impl FetchedTransaction {
                     }));
                 }
                 TransactionInput::SharedObject { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
                     inputs.push(InputValue::Object(ObjectInput::Shared {
                         id,
@@ -2326,8 +2456,8 @@ impl FetchedTransaction {
                     }));
                 }
                 TransactionInput::ImmutableObject { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
                     // Use ImmRef for immutable objects (e.g., packages, Clock)
                     inputs.push(InputValue::Object(ObjectInput::ImmRef {
@@ -2337,8 +2467,8 @@ impl FetchedTransaction {
                     }));
                 }
                 TransactionInput::Receiving { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
                     // Receiving objects are treated as owned for replay purposes
                     inputs.push(InputValue::Object(ObjectInput::Owned {
@@ -2355,9 +2485,10 @@ impl FetchedTransaction {
             match arg {
                 PtbArgument::Input { index } => Argument::Input(index + input_offset),
                 PtbArgument::Result { index } => Argument::Result(*index),
-                PtbArgument::NestedResult { index, result_index } => {
-                    Argument::NestedResult(*index, *result_index)
-                }
+                PtbArgument::NestedResult {
+                    index,
+                    result_index,
+                } => Argument::NestedResult(*index, *result_index),
                 PtbArgument::GasCoin => Argument::Input(0), // GasCoin is always input 0 (prepended)
             }
         };
@@ -2386,10 +2517,7 @@ impl FetchedTransaction {
                         .collect();
 
                     // Convert arguments
-                    let args: Vec<Argument> = arguments
-                        .iter()
-                        .map(|a| convert_arg(a))
-                        .collect();
+                    let args: Vec<Argument> = arguments.iter().map(|a| convert_arg(a)).collect();
 
                     commands.push(Command::MoveCall {
                         package: package_addr,
@@ -2424,8 +2552,7 @@ impl FetchedTransaction {
                 }
 
                 PtbCommand::TransferObjects { objects, address } => {
-                    let obj_args: Vec<Argument> =
-                        objects.iter().map(|a| convert_arg(a)).collect();
+                    let obj_args: Vec<Argument> = objects.iter().map(|a| convert_arg(a)).collect();
                     let addr_arg = convert_arg(address);
                     commands.push(Command::TransferObjects {
                         objects: obj_args,
@@ -2485,7 +2612,9 @@ impl FetchedTransaction {
                 TypeTag::Struct(s) => {
                     let mut s = *s;
                     s.address = aliases.get(&s.address).copied().unwrap_or(s.address);
-                    s.type_params = s.type_params.into_iter()
+                    s.type_params = s
+                        .type_params
+                        .into_iter()
                         .map(|t| rewrite_type_tag(t, aliases))
                         .collect();
                     TypeTag::Struct(Box::new(s))
@@ -2500,7 +2629,10 @@ impl FetchedTransaction {
         // Check if any command uses GasCoin
         let uses_gas_coin = self.commands.iter().any(|cmd| match cmd {
             PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
-            PtbCommand::MergeCoins { destination, sources } => {
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
                 matches!(destination, PtbArgument::GasCoin)
                     || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
             }
@@ -2529,28 +2661,44 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Pure(bytes.clone()));
                 }
                 TransactionInput::Object { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
+                    inputs.push(InputValue::Object(ObjectInput::Owned {
+                        id,
+                        bytes,
+                        type_tag: None,
+                    }));
                 }
                 TransactionInput::SharedObject { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Shared { id, bytes, type_tag: None }));
+                    inputs.push(InputValue::Object(ObjectInput::Shared {
+                        id,
+                        bytes,
+                        type_tag: None,
+                    }));
                 }
                 TransactionInput::ImmutableObject { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::ImmRef { id, bytes, type_tag: None }));
+                    inputs.push(InputValue::Object(ObjectInput::ImmRef {
+                        id,
+                        bytes,
+                        type_tag: None,
+                    }));
                 }
                 TransactionInput::Receiving { object_id, .. } => {
-                    let id = AccountAddress::from_hex_literal(object_id)
-                        .unwrap_or(AccountAddress::ZERO);
+                    let id =
+                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
+                    inputs.push(InputValue::Object(ObjectInput::Owned {
+                        id,
+                        bytes,
+                        type_tag: None,
+                    }));
                 }
             }
         }
@@ -2559,9 +2707,10 @@ impl FetchedTransaction {
             match arg {
                 PtbArgument::Input { index } => Argument::Input(index + input_offset),
                 PtbArgument::Result { index } => Argument::Result(*index),
-                PtbArgument::NestedResult { index, result_index } => {
-                    Argument::NestedResult(*index, *result_index)
-                }
+                PtbArgument::NestedResult {
+                    index,
+                    result_index,
+                } => Argument::NestedResult(*index, *result_index),
                 PtbArgument::GasCoin => Argument::Input(0),
             }
         };
@@ -2592,10 +2741,7 @@ impl FetchedTransaction {
                         .map(|t| rewrite_type_tag(t, address_aliases))
                         .collect();
 
-                    let args: Vec<Argument> = arguments
-                        .iter()
-                        .map(|a| convert_arg(a))
-                        .collect();
+                    let args: Vec<Argument> = arguments.iter().map(|a| convert_arg(a)).collect();
 
                     commands.push(Command::MoveCall {
                         package: rewritten_package,
@@ -2613,7 +2759,10 @@ impl FetchedTransaction {
                     });
                 }
 
-                PtbCommand::MergeCoins { destination, sources } => {
+                PtbCommand::MergeCoins {
+                    destination,
+                    sources,
+                } => {
                     commands.push(Command::MergeCoins {
                         destination: convert_arg(destination),
                         sources: sources.iter().map(|a| convert_arg(a)).collect(),
@@ -2628,7 +2777,8 @@ impl FetchedTransaction {
                 }
 
                 PtbCommand::MakeMoveVec { type_arg, elements } => {
-                    let type_tag = type_arg.as_ref()
+                    let type_tag = type_arg
+                        .as_ref()
                         .and_then(|s| parse_type_tag(s).ok())
                         .map(|t| rewrite_type_tag(t, address_aliases));
                     commands.push(Command::MakeMoveVec {
@@ -2655,8 +2805,16 @@ impl FetchedTransaction {
     }
 
     /// Replay this transaction using cached object data.
-    pub fn replay_with_objects(&self, harness: &mut VMHarness, cached_objects: &std::collections::HashMap<String, String>) -> Result<ReplayResult> {
-        self.replay_with_objects_and_aliases(harness, cached_objects, &std::collections::HashMap::new())
+    pub fn replay_with_objects(
+        &self,
+        harness: &mut VMHarness,
+        cached_objects: &std::collections::HashMap<String, String>,
+    ) -> Result<ReplayResult> {
+        self.replay_with_objects_and_aliases(
+            harness,
+            cached_objects,
+            &std::collections::HashMap::new(),
+        )
     }
 
     /// Replay this transaction using cached object data and address aliases.
@@ -2669,7 +2827,8 @@ impl FetchedTransaction {
     ) -> Result<ReplayResult> {
         use crate::benchmark::ptb::PTBExecutor;
 
-        let (inputs, commands) = self.to_ptb_commands_with_objects_and_aliases(cached_objects, address_aliases)?;
+        let (inputs, commands) =
+            self.to_ptb_commands_with_objects_and_aliases(cached_objects, address_aliases)?;
         let commands_count = commands.len();
 
         // Execute using PTBExecutor
@@ -2722,14 +2881,16 @@ impl FetchedTransaction {
             "0x0000000000000000000000000000000000000000000000000000000000000001",
             "0x0000000000000000000000000000000000000000000000000000000000000002",
             "0x0000000000000000000000000000000000000000000000000000000000000003",
-            "0x1", "0x2", "0x3",
+            "0x1",
+            "0x2",
+            "0x3",
         ];
 
         for cmd in &self.commands {
             if let PtbCommand::MoveCall { package, .. } = cmd {
-                let is_framework = framework_addrs.iter().any(|addr| {
-                    package == *addr || package.to_lowercase() == addr.to_lowercase()
-                });
+                let is_framework = framework_addrs
+                    .iter()
+                    .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
                 if !is_framework {
                     return false;
                 }
@@ -2744,15 +2905,17 @@ impl FetchedTransaction {
             "0x0000000000000000000000000000000000000000000000000000000000000001",
             "0x0000000000000000000000000000000000000000000000000000000000000002",
             "0x0000000000000000000000000000000000000000000000000000000000000003",
-            "0x1", "0x2", "0x3",
+            "0x1",
+            "0x2",
+            "0x3",
         ];
 
         let mut packages = std::collections::BTreeSet::new();
         for cmd in &self.commands {
             if let PtbCommand::MoveCall { package, .. } = cmd {
-                let is_framework = framework_addrs.iter().any(|addr| {
-                    package == *addr || package.to_lowercase() == addr.to_lowercase()
-                });
+                let is_framework = framework_addrs
+                    .iter()
+                    .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
                 if !is_framework {
                     packages.insert(package.clone());
                 }

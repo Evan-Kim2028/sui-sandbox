@@ -589,7 +589,9 @@ impl ObjectRuntime {
 
     /// Get an iterator over all child object keys and their types.
     /// Used to extract dynamic field state for TransactionEffects.
-    pub fn iter_children(&self) -> impl Iterator<Item = (&(AccountAddress, AccountAddress), &TypeTag)> {
+    pub fn iter_children(
+        &self,
+    ) -> impl Iterator<Item = (&(AccountAddress, AccountAddress), &TypeTag)> {
         self.children.iter().map(|(k, v)| (k, &v.type_tag))
     }
 
@@ -600,14 +602,13 @@ impl ObjectRuntime {
 
     /// Count the number of children for a specific parent (dynamic fields count).
     pub fn count_children_for_parent(&self, parent: AccountAddress) -> u64 {
-        self.children.keys()
-            .filter(|(p, _)| *p == parent)
-            .count() as u64
+        self.children.keys().filter(|(p, _)| *p == parent).count() as u64
     }
 
     /// List all child IDs for a specific parent.
     pub fn list_child_ids(&self, parent: AccountAddress) -> Vec<AccountAddress> {
-        self.children.keys()
+        self.children
+            .keys()
             .filter_map(|(p, c)| if *p == parent { Some(*c) } else { None })
             .collect()
     }
@@ -634,7 +635,13 @@ impl ObjectRuntimeState {
     }
 
     /// Add a child object to the shared state.
-    pub fn add_child(&mut self, parent: AccountAddress, child_id: AccountAddress, type_tag: TypeTag, bytes: Vec<u8>) {
+    pub fn add_child(
+        &mut self,
+        parent: AccountAddress,
+        child_id: AccountAddress,
+        type_tag: TypeTag,
+        bytes: Vec<u8>,
+    ) {
         self.children.insert((parent, child_id), (type_tag, bytes));
     }
 
@@ -644,12 +651,20 @@ impl ObjectRuntimeState {
     }
 
     /// Get a child's bytes.
-    pub fn get_child(&self, parent: AccountAddress, child_id: AccountAddress) -> Option<&(TypeTag, Vec<u8>)> {
+    pub fn get_child(
+        &self,
+        parent: AccountAddress,
+        child_id: AccountAddress,
+    ) -> Option<&(TypeTag, Vec<u8>)> {
         self.children.get(&(parent, child_id))
     }
 
     /// Remove a child and return its data.
-    pub fn remove_child(&mut self, parent: AccountAddress, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+    pub fn remove_child(
+        &mut self,
+        parent: AccountAddress,
+        child_id: AccountAddress,
+    ) -> Option<(TypeTag, Vec<u8>)> {
         self.children.remove(&(parent, child_id))
     }
 
@@ -688,7 +703,8 @@ impl ObjectRuntimeState {
         type_tag: TypeTag,
         bytes: Vec<u8>,
     ) {
-        self.pending_receives.insert((recipient_id, sent_id), (type_tag, bytes));
+        self.pending_receives
+            .insert((recipient_id, sent_id), (type_tag, bytes));
     }
 
     /// Try to receive an object that was sent to a recipient.
@@ -702,12 +718,19 @@ impl ObjectRuntimeState {
     }
 
     /// Check if an object is pending receive at a recipient.
-    pub fn has_pending_receive(&self, recipient_id: AccountAddress, sent_id: AccountAddress) -> bool {
+    pub fn has_pending_receive(
+        &self,
+        recipient_id: AccountAddress,
+        sent_id: AccountAddress,
+    ) -> bool {
         self.pending_receives.contains_key(&(recipient_id, sent_id))
     }
 
     /// Get all pending receives for a specific recipient.
-    pub fn get_pending_receives_for(&self, recipient_id: AccountAddress) -> Vec<(AccountAddress, &TypeTag, &Vec<u8>)> {
+    pub fn get_pending_receives_for(
+        &self,
+        recipient_id: AccountAddress,
+    ) -> Vec<(AccountAddress, &TypeTag, &Vec<u8>)> {
         self.pending_receives
             .iter()
             .filter(|((r, _), _)| *r == recipient_id)
@@ -717,14 +740,13 @@ impl ObjectRuntimeState {
 
     /// Count the number of children for a specific parent.
     pub fn count_children_for_parent(&self, parent: AccountAddress) -> u64 {
-        self.children.keys()
-            .filter(|(p, _)| *p == parent)
-            .count() as u64
+        self.children.keys().filter(|(p, _)| *p == parent).count() as u64
     }
 
     /// List all child IDs for a specific parent.
     pub fn list_child_ids(&self, parent: AccountAddress) -> Vec<AccountAddress> {
-        self.children.keys()
+        self.children
+            .keys()
             .filter_map(|(p, c)| if *p == parent { Some(*c) } else { None })
             .collect()
     }
@@ -945,12 +967,7 @@ mod tests {
 
         // Create as owned
         store
-            .record_created(
-                id,
-                vec![1],
-                type_tag,
-                Owner::Address(AccountAddress::ZERO),
-            )
+            .record_created(id, vec![1], type_tag, Owner::Address(AccountAddress::ZERO))
             .unwrap();
         assert!(!store.is_shared(&id));
 
@@ -971,7 +988,12 @@ mod tests {
         let type_tag = make_test_type_tag();
 
         store
-            .record_created(id, vec![1, 2, 3], type_tag, Owner::Address(AccountAddress::ZERO))
+            .record_created(
+                id,
+                vec![1, 2, 3],
+                type_tag,
+                Owner::Address(AccountAddress::ZERO),
+            )
             .unwrap();
         assert!(store.exists(&id));
         assert_eq!(store.active_count(), 1);
@@ -1073,7 +1095,12 @@ mod tests {
         // Access object store through runtime
         runtime
             .object_store_mut()
-            .record_created(id, vec![1, 2, 3], type_tag, Owner::Address(AccountAddress::ZERO))
+            .record_created(
+                id,
+                vec![1, 2, 3],
+                type_tag,
+                Owner::Address(AccountAddress::ZERO),
+            )
             .unwrap();
 
         assert!(runtime.object_store().exists(&id));

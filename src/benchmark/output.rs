@@ -124,9 +124,7 @@ impl OutputFormatter {
                     Ok(serde_json::to_string(value)?)
                 }
             }
-            OutputFormat::JsonLines => {
-                Ok(serde_json::to_string(value)?)
-            }
+            OutputFormat::JsonLines => Ok(serde_json::to_string(value)?),
             OutputFormat::Csv => {
                 // For CSV, serialize to JSON first then convert
                 let json = serde_json::to_value(value)?;
@@ -223,12 +221,11 @@ impl OutputFormatter {
 /// Convert JSON value to CSV header (comma-separated field names).
 fn json_to_csv_header(value: &serde_json::Value) -> String {
     match value {
-        serde_json::Value::Object(map) => {
-            map.keys()
-                .map(|k| escape_csv_field(k))
-                .collect::<Vec<_>>()
-                .join(",")
-        }
+        serde_json::Value::Object(map) => map
+            .keys()
+            .map(|k| escape_csv_field(k))
+            .collect::<Vec<_>>()
+            .join(","),
         _ => String::new(),
     }
 }
@@ -236,12 +233,11 @@ fn json_to_csv_header(value: &serde_json::Value) -> String {
 /// Convert JSON value to a single CSV line.
 fn json_to_csv_line(value: &serde_json::Value) -> String {
     match value {
-        serde_json::Value::Object(map) => {
-            map.values()
-                .map(|v| json_value_to_csv_field(v))
-                .collect::<Vec<_>>()
-                .join(",")
-        }
+        serde_json::Value::Object(map) => map
+            .values()
+            .map(|v| json_value_to_csv_field(v))
+            .collect::<Vec<_>>()
+            .join(","),
         _ => json_value_to_csv_field(value),
     }
 }
@@ -286,10 +282,7 @@ fn json_to_human(value: &serde_json::Value, indent: usize) -> String {
             if arr.is_empty() {
                 format!("{}(empty list)", prefix)
             } else {
-                let items: Vec<String> = arr
-                    .iter()
-                    .map(|v| json_to_human(v, indent + 1))
-                    .collect();
+                let items: Vec<String> = arr.iter().map(|v| json_to_human(v, indent + 1)).collect();
                 format!("{}\n{}", prefix, items.join("\n"))
             }
         }
@@ -332,7 +325,10 @@ mod tests {
     fn test_output_format_from_str() {
         assert_eq!(OutputFormat::from_str("json"), Some(OutputFormat::Json));
         assert_eq!(OutputFormat::from_str("JSON"), Some(OutputFormat::Json));
-        assert_eq!(OutputFormat::from_str("jsonl"), Some(OutputFormat::JsonLines));
+        assert_eq!(
+            OutputFormat::from_str("jsonl"),
+            Some(OutputFormat::JsonLines)
+        );
         assert_eq!(OutputFormat::from_str("csv"), Some(OutputFormat::Csv));
         assert_eq!(OutputFormat::from_str("human"), Some(OutputFormat::Human));
         assert_eq!(OutputFormat::from_str("invalid"), None);

@@ -181,11 +181,7 @@ mod boundary_value_tests {
 
         let layout = MoveTypeLayout::U256;
 
-        let values = [
-            U256::zero(),
-            U256::one(),
-            U256::max_value(),
-        ];
+        let values = [U256::zero(), U256::one(), U256::max_value()];
 
         for val in values {
             let move_val = MoveValue::U256(val);

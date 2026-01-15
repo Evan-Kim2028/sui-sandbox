@@ -187,7 +187,10 @@ mod mock_random_tests {
         let bytes1 = random1.next_bytes(32);
         let bytes2 = random2.next_bytes(32);
 
-        assert_ne!(bytes1, bytes2, "different seeds should produce different output");
+        assert_ne!(
+            bytes1, bytes2,
+            "different seeds should produce different output"
+        );
     }
 
     #[test]

@@ -53,11 +53,8 @@ mod validate_target_tests {
             })
             .expect("test_module should exist");
 
-        let result = validator.validate_target(
-            *module.self_id().address(),
-            "test_module",
-            "simple_func",
-        );
+        let result =
+            validator.validate_target(*module.self_id().address(), "test_module", "simple_func");
 
         assert!(result.is_ok(), "should validate existing public function");
     }
@@ -90,8 +87,7 @@ mod validate_target_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name =
-            sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
 
         let result = validator.validate_target(
             *module.self_id().address(),
@@ -112,11 +108,7 @@ mod validate_target_tests {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.validate_target(
-            AccountAddress::ZERO,
-            "any_module",
-            "any_function",
-        );
+        let result = validator.validate_target(AccountAddress::ZERO, "any_module", "any_function");
 
         assert!(result.is_err(), "should fail with empty resolver");
     }
@@ -127,8 +119,7 @@ mod validate_target_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name =
-            sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
 
         // Empty function name should fail during Identifier creation
         let result = validator.validate_target(
@@ -738,8 +729,7 @@ mod error_message_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name =
-            sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
 
         let result = validator.validate_target(
             *module.self_id().address(),

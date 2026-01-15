@@ -16,8 +16,8 @@ use move_core_types::language_storage::{ModuleId, TypeTag};
 
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
 use sui_move_interface_extractor::benchmark::vm::{
-    ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig, VMHarness,
-    gas_costs,
+    gas_costs, ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig,
+    VMHarness,
 };
 
 // =============================================================================
@@ -65,9 +65,18 @@ mod simulation_config_tests {
     fn test_strict_config() {
         let config = SimulationConfig::strict();
 
-        assert!(!config.mock_crypto_pass, "strict should disable crypto mocking");
-        assert!(!config.permissive_ownership, "strict should disable permissive ownership");
-        assert!(config.enforce_immutability, "strict should enforce immutability");
+        assert!(
+            !config.mock_crypto_pass,
+            "strict should disable crypto mocking"
+        );
+        assert!(
+            !config.permissive_ownership,
+            "strict should disable permissive ownership"
+        );
+        assert!(
+            config.enforce_immutability,
+            "strict should enforce immutability"
+        );
         assert!(config.gas_budget.is_some(), "strict should have gas budget");
         assert_eq!(config.gas_budget.unwrap(), 50_000_000_000);
     }
@@ -231,8 +240,12 @@ mod execution_trace_tests {
     fn test_trace_modules_from_package_filtered() {
         let mut trace = ExecutionTrace::new();
         trace.modules_accessed.insert(make_module_id("0x2", "coin"));
-        trace.modules_accessed.insert(make_module_id("0x2", "balance"));
-        trace.modules_accessed.insert(make_module_id("0x1", "vector"));
+        trace
+            .modules_accessed
+            .insert(make_module_id("0x2", "balance"));
+        trace
+            .modules_accessed
+            .insert(make_module_id("0x1", "vector"));
 
         let addr2 = AccountAddress::from_hex_literal("0x2").unwrap();
         let modules = trace.modules_from_package(&addr2);
@@ -247,9 +260,15 @@ mod execution_trace_tests {
     fn test_trace_multiple_modules_same_package() {
         let mut trace = ExecutionTrace::new();
         trace.modules_accessed.insert(make_module_id("0x2", "coin"));
-        trace.modules_accessed.insert(make_module_id("0x2", "balance"));
-        trace.modules_accessed.insert(make_module_id("0x2", "object"));
-        trace.modules_accessed.insert(make_module_id("0x2", "transfer"));
+        trace
+            .modules_accessed
+            .insert(make_module_id("0x2", "balance"));
+        trace
+            .modules_accessed
+            .insert(make_module_id("0x2", "object"));
+        trace
+            .modules_accessed
+            .insert(make_module_id("0x2", "transfer"));
 
         let addr = AccountAddress::from_hex_literal("0x2").unwrap();
         assert!(trace.accessed_package(&addr));
@@ -487,7 +506,11 @@ mod vm_harness_execution_tests {
             vec![42u64.to_le_bytes().to_vec()],
         );
 
-        assert!(result.is_ok(), "simple_func should execute: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "simple_func should execute: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -555,12 +578,8 @@ mod vm_harness_execution_tests {
         let module = resolver.iter_modules().next().expect("should have module");
         let module_id = module.self_id();
 
-        let result = harness.execute_function(
-            &module_id,
-            "function_that_does_not_exist",
-            vec![],
-            vec![],
-        );
+        let result =
+            harness.execute_function(&module_id, "function_that_does_not_exist", vec![], vec![]);
 
         assert!(result.is_err(), "nonexistent function should fail");
     }
@@ -624,7 +643,10 @@ mod vm_harness_trace_tests {
         let harness = VMHarness::new(&resolver, true).expect("harness should create");
 
         let trace = harness.get_trace();
-        assert!(trace.modules_accessed.is_empty(), "initial trace should be empty");
+        assert!(
+            trace.modules_accessed.is_empty(),
+            "initial trace should be empty"
+        );
     }
 
     #[test]
@@ -650,7 +672,10 @@ mod vm_harness_trace_tests {
         );
 
         let trace = harness.get_trace();
-        assert!(!trace.modules_accessed.is_empty(), "trace should record module access");
+        assert!(
+            !trace.modules_accessed.is_empty(),
+            "trace should record module access"
+        );
     }
 
     #[test]
@@ -677,7 +702,10 @@ mod vm_harness_trace_tests {
 
         harness.clear_trace();
 
-        assert!(harness.get_trace().modules_accessed.is_empty(), "trace should be cleared");
+        assert!(
+            harness.get_trace().modules_accessed.is_empty(),
+            "trace should be cleared"
+        );
     }
 }
 
@@ -794,7 +822,10 @@ mod vm_harness_synthesize_tests {
 
         let bytes = result.unwrap();
         // TxContext has: sender (32) + tx_hash (1 + 32) + epoch (8) + timestamp (8) + ids_created (8) = 89 bytes
-        assert!(bytes.len() >= 80, "TxContext bytes should be at least 80 bytes");
+        assert!(
+            bytes.len() >= 80,
+            "TxContext bytes should be at least 80 bytes"
+        );
     }
 
     #[test]

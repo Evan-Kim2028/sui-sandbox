@@ -42,7 +42,7 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{ModuleId, TypeTag, StructTag};
+use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use std::collections::{HashMap, HashSet};
 
 use crate::benchmark::natives::EmittedEvent;
@@ -269,7 +269,10 @@ fn extract_arguments(cmd: &Command) -> Vec<Argument> {
             args.extend(amounts.iter().copied());
             args
         }
-        Command::MergeCoins { destination, sources } => {
+        Command::MergeCoins {
+            destination,
+            sources,
+        } => {
             let mut args = vec![*destination];
             args.extend(sources.iter().copied());
             args
@@ -476,7 +479,10 @@ pub enum ObjectOrigin {
     /// Object was received from a previous transaction.
     Received,
     /// Object was split from another coin.
-    Split { source_id: ObjectID, command_index: usize },
+    Split {
+        source_id: ObjectID,
+        command_index: usize,
+    },
 }
 
 /// Current state of an object.
@@ -575,40 +581,63 @@ impl ObjectLifecycleTracker {
     }
 
     /// Register an object from a transaction input.
-    pub fn register_input(&mut self, object_id: ObjectID, input_index: u16, type_tag: Option<TypeTag>) {
-        self.objects.insert(object_id, ObjectProvenance {
+    pub fn register_input(
+        &mut self,
+        object_id: ObjectID,
+        input_index: u16,
+        type_tag: Option<TypeTag>,
+    ) {
+        self.objects.insert(
             object_id,
-            origin: ObjectOrigin::Input { input_index },
-            state: ObjectState::Available,
-            history: Vec::new(),
-            type_tag,
-        });
+            ObjectProvenance {
+                object_id,
+                origin: ObjectOrigin::Input { input_index },
+                state: ObjectState::Available,
+                history: Vec::new(),
+                type_tag,
+            },
+        );
     }
 
     /// Register a newly created object.
-    pub fn register_created(&mut self, object_id: ObjectID, command_index: usize, type_tag: Option<TypeTag>) {
-        self.objects.insert(object_id, ObjectProvenance {
+    pub fn register_created(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+        type_tag: Option<TypeTag>,
+    ) {
+        self.objects.insert(
             object_id,
-            origin: ObjectOrigin::Created { command_index },
-            state: ObjectState::Available,
-            history: Vec::new(),
-            type_tag,
-        });
+            ObjectProvenance {
+                object_id,
+                origin: ObjectOrigin::Created { command_index },
+                state: ObjectState::Available,
+                history: Vec::new(),
+                type_tag,
+            },
+        );
     }
 
     /// Register a received object.
     pub fn register_received(&mut self, object_id: ObjectID, type_tag: Option<TypeTag>) {
-        self.objects.insert(object_id, ObjectProvenance {
+        self.objects.insert(
             object_id,
-            origin: ObjectOrigin::Received,
-            state: ObjectState::Available,
-            history: Vec::new(),
-            type_tag,
-        });
+            ObjectProvenance {
+                object_id,
+                origin: ObjectOrigin::Received,
+                state: ObjectState::Available,
+                history: Vec::new(),
+                type_tag,
+            },
+        );
     }
 
     /// Record a read operation on an object.
-    pub fn record_read(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+    pub fn record_read(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+    ) -> Result<(), LifecycleError> {
         self.check_available(object_id, command_index)?;
         if let Some(prov) = self.objects.get_mut(&object_id) {
             prov.history.push(ObjectOperation {
@@ -620,7 +649,11 @@ impl ObjectLifecycleTracker {
     }
 
     /// Record a mutation on an object.
-    pub fn record_mutate(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+    pub fn record_mutate(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+    ) -> Result<(), LifecycleError> {
         self.check_available(object_id, command_index)?;
         if let Some(prov) = self.objects.get_mut(&object_id) {
             prov.history.push(ObjectOperation {
@@ -632,7 +665,11 @@ impl ObjectLifecycleTracker {
     }
 
     /// Record consumption of an object (passed by value).
-    pub fn record_consume(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+    pub fn record_consume(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+    ) -> Result<(), LifecycleError> {
         self.check_available(object_id, command_index)?;
         if let Some(prov) = self.objects.get_mut(&object_id) {
             prov.state = ObjectState::Consumed;
@@ -645,7 +682,12 @@ impl ObjectLifecycleTracker {
     }
 
     /// Record a transfer of an object.
-    pub fn record_transfer(&mut self, object_id: ObjectID, command_index: usize, to: AccountAddress) -> Result<(), LifecycleError> {
+    pub fn record_transfer(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+        to: AccountAddress,
+    ) -> Result<(), LifecycleError> {
         self.check_available(object_id, command_index)?;
         if let Some(prov) = self.objects.get_mut(&object_id) {
             prov.state = ObjectState::Transferred;
@@ -658,7 +700,11 @@ impl ObjectLifecycleTracker {
     }
 
     /// Record deletion of an object.
-    pub fn record_delete(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+    pub fn record_delete(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+    ) -> Result<(), LifecycleError> {
         self.check_available(object_id, command_index)?;
         if let Some(prov) = self.objects.get_mut(&object_id) {
             prov.state = ObjectState::Deleted;
@@ -671,13 +717,20 @@ impl ObjectLifecycleTracker {
     }
 
     /// Check if an object is available for use.
-    fn check_available(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+    fn check_available(
+        &mut self,
+        object_id: ObjectID,
+        command_index: usize,
+    ) -> Result<(), LifecycleError> {
         match self.objects.get(&object_id) {
             None => {
                 let err = LifecycleError {
                     object_id,
                     command_index,
-                    message: format!("Object {} not found in transaction", object_id.to_hex_literal()),
+                    message: format!(
+                        "Object {} not found in transaction",
+                        object_id.to_hex_literal()
+                    ),
                     kind: LifecycleErrorKind::ObjectNotFound,
                 };
                 self.errors.push(err.clone());
@@ -742,7 +795,7 @@ impl ObjectLifecycleTracker {
                     Err(err)
                 }
                 ObjectState::Frozen => Ok(()), // Frozen objects can still be read
-            }
+            },
         }
     }
 
@@ -971,10 +1024,26 @@ impl PTBExecutionTrace {
             successful_commands: self.commands.iter().filter(|c| c.success).count(),
             failed_commands: self.commands.iter().filter(|c| !c.success).count(),
             total_gas_used: self.total_gas_used,
-            move_calls: self.commands.iter().filter(|c| c.command_type == "MoveCall").count(),
-            transfers: self.commands.iter().filter(|c| c.command_type == "TransferObjects").count(),
-            splits: self.commands.iter().filter(|c| c.command_type == "SplitCoins").count(),
-            merges: self.commands.iter().filter(|c| c.command_type == "MergeCoins").count(),
+            move_calls: self
+                .commands
+                .iter()
+                .filter(|c| c.command_type == "MoveCall")
+                .count(),
+            transfers: self
+                .commands
+                .iter()
+                .filter(|c| c.command_type == "TransferObjects")
+                .count(),
+            splits: self
+                .commands
+                .iter()
+                .filter(|c| c.command_type == "SplitCoins")
+                .count(),
+            merges: self
+                .commands
+                .iter()
+                .filter(|c| c.command_type == "MergeCoins")
+                .count(),
         }
     }
 }
@@ -1014,16 +1083,32 @@ pub enum InputValue {
 #[derive(Debug, Clone)]
 pub enum ObjectInput {
     /// Object passed by immutable reference
-    ImmRef { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
+    ImmRef {
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: Option<TypeTag>,
+    },
 
     /// Object passed by mutable reference
-    MutRef { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
+    MutRef {
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: Option<TypeTag>,
+    },
 
     /// Object passed by value (ownership transferred)
-    Owned { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
+    Owned {
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: Option<TypeTag>,
+    },
 
     /// Shared object
-    Shared { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
+    Shared {
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: Option<TypeTag>,
+    },
 }
 
 impl ObjectInput {
@@ -1087,7 +1172,9 @@ impl CommandResult {
                 Err(anyhow!("command returned no values"))
             }
             CommandResult::Values(vs) => Ok(vs[0].clone()),
-            CommandResult::Created(_) => Err(anyhow!("command returned created objects, not values")),
+            CommandResult::Created(_) => {
+                Err(anyhow!("command returned created objects, not values"))
+            }
         }
     }
 
@@ -1099,7 +1186,9 @@ impl CommandResult {
                 .get(index)
                 .cloned()
                 .ok_or_else(|| anyhow!("result index {} out of bounds (len={})", index, vs.len())),
-            CommandResult::Created(_) => Err(anyhow!("command returned created objects, not values")),
+            CommandResult::Created(_) => {
+                Err(anyhow!("command returned created objects, not values"))
+            }
         }
     }
 
@@ -1437,7 +1526,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Create a PTB executor with pre-published package info.
     /// Used by SimulationEnvironment to pass package/UpgradeCap IDs.
-    pub fn new_with_published(vm: &'a mut VMHarness<'b>, pre_published: Vec<(ObjectID, ObjectID)>) -> Self {
+    pub fn new_with_published(
+        vm: &'a mut VMHarness<'b>,
+        pre_published: Vec<(ObjectID, ObjectID)>,
+    ) -> Self {
         Self::new_with_packages(vm, pre_published, Vec::new())
     }
 
@@ -1595,7 +1687,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     }
 
     /// Mark an object as unwrapped (extracted from another object).
-    pub fn mark_unwrapped(&mut self, object_id: ObjectID, owner: Owner, object_type: Option<TypeTag>) {
+    pub fn mark_unwrapped(
+        &mut self,
+        object_id: ObjectID,
+        owner: Owner,
+        object_type: Option<TypeTag>,
+    ) {
         // Remove from wrapped if it was there
         self.wrapped_objects.remove(&object_id);
         self.object_changes.push(ObjectChange::Unwrapped {
@@ -1645,17 +1742,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Update an input's bytes in place (used by MergeCoins).
     fn update_input_bytes(&mut self, index: u16, new_bytes: Vec<u8>) -> Result<()> {
-        let input = self.inputs.get_mut(index as usize)
+        let input = self
+            .inputs
+            .get_mut(index as usize)
             .ok_or_else(|| anyhow!("input index {} out of bounds", index))?;
         match input {
-            InputValue::Object(obj) => {
-                match obj {
-                    ObjectInput::Owned { bytes, .. } => *bytes = new_bytes,
-                    ObjectInput::Shared { bytes, .. } => *bytes = new_bytes,
-                    ObjectInput::ImmRef { bytes, .. } => *bytes = new_bytes,
-                    ObjectInput::MutRef { bytes, .. } => *bytes = new_bytes,
-                }
-            }
+            InputValue::Object(obj) => match obj {
+                ObjectInput::Owned { bytes, .. } => *bytes = new_bytes,
+                ObjectInput::Shared { bytes, .. } => *bytes = new_bytes,
+                ObjectInput::ImmRef { bytes, .. } => *bytes = new_bytes,
+                ObjectInput::MutRef { bytes, .. } => *bytes = new_bytes,
+            },
             InputValue::Pure(bytes) => *bytes = new_bytes,
         }
         Ok(())
@@ -1688,17 +1785,16 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 input.to_bcs()
             }
             Argument::Result(cmd_idx) => {
-                let result = self
-                    .results
-                    .get(*cmd_idx as usize)
-                    .ok_or_else(|| anyhow!(
+                let result =
+                    self.results.get(*cmd_idx as usize).ok_or_else(|| {
+                        anyhow!(
                         "Result({}): command index {} out of bounds (only {} commands executed)",
                         cmd_idx, cmd_idx, self.results.len()
-                    ))?;
-                result.primary_value().map_err(|e| anyhow!(
-                    "Result({}): {}",
-                    cmd_idx, e
-                ))
+                    )
+                    })?;
+                result
+                    .primary_value()
+                    .map_err(|e| anyhow!("Result({}): {}", cmd_idx, e))
             }
             Argument::NestedResult(cmd_idx, val_idx) => {
                 let result = self
@@ -1708,10 +1804,16 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         "NestedResult({}, {}): command index {} out of bounds (only {} commands executed)",
                         cmd_idx, val_idx, cmd_idx, self.results.len()
                     ))?;
-                result.get(*val_idx as usize).map_err(|e| anyhow!(
-                    "NestedResult({}, {}): {}. Command {} returned {} value(s).",
-                    cmd_idx, val_idx, e, cmd_idx, result.len()
-                ))
+                result.get(*val_idx as usize).map_err(|e| {
+                    anyhow!(
+                        "NestedResult({}, {}): {}. Command {} returned {} value(s).",
+                        cmd_idx,
+                        val_idx,
+                        e,
+                        cmd_idx,
+                        result.len()
+                    )
+                })
             }
         }
     }
@@ -1755,9 +1857,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 ticket,
             } => self.execute_upgrade(modules, package, ticket),
 
-            Command::Receive { object_id, object_type } => {
-                self.execute_receive(&object_id, object_type.as_ref())
-            }
+            Command::Receive {
+                object_id,
+                object_type,
+            } => self.execute_receive(&object_id, object_type.as_ref()),
         }
     }
 
@@ -1779,8 +1882,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         // Track which arguments map to which object IDs and their original Argument reference.
         // We need the Argument to update input bytes for subsequent commands.
-        let arg_to_info: Vec<(Argument, Option<ObjectID>)> = args.iter()
-            .map(|arg| (*arg, self.get_object_id_and_type_from_arg(arg).map(|(id, _)| id)))
+        let arg_to_info: Vec<(Argument, Option<ObjectID>)> = args
+            .iter()
+            .map(|arg| {
+                (
+                    *arg,
+                    self.get_object_id_and_type_from_arg(arg).map(|(id, _)| id),
+                )
+            })
             .collect();
 
         // First attempt: execute as-is
@@ -1806,7 +1915,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             Err(e) => {
                 // Check if this is an argument count mismatch - might need TxContext
                 let err_msg = e.to_string();
-                if err_msg.contains("argument length mismatch") || err_msg.contains("NUMBER_OF_ARGUMENTS_MISMATCH") {
+                if err_msg.contains("argument length mismatch")
+                    || err_msg.contains("NUMBER_OF_ARGUMENTS_MISMATCH")
+                {
                     // Try again with TxContext appended
                     let tx_context_bytes = self.vm.synthesize_tx_context()?;
                     resolved_args.push(tx_context_bytes);
@@ -1819,7 +1930,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     ) {
                         Ok(output) => {
                             // Track mutations from mutable reference outputs
-                            self.apply_mutable_ref_outputs(&arg_to_info, &output.mutable_ref_outputs)?;
+                            self.apply_mutable_ref_outputs(
+                                &arg_to_info,
+                                &output.mutable_ref_outputs,
+                            )?;
 
                             // Accumulate gas
                             self.gas_used += output.gas_used;
@@ -1870,12 +1984,15 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     self.check_mutation_allowed(object_id)?;
 
                     // Get the type from the existing tracking if available
-                    let existing_type = self.mutated_objects.get(object_id)
+                    let existing_type = self
+                        .mutated_objects
+                        .get(object_id)
                         .map(|(_, t)| t.clone())
                         .flatten();
 
                     // Record the mutation with updated bytes
-                    self.mutated_objects.insert(*object_id, (new_bytes.clone(), existing_type));
+                    self.mutated_objects
+                        .insert(*object_id, (new_bytes.clone(), existing_type));
                 }
 
                 // CRITICAL: Update the stored value in place so subsequent commands
@@ -1953,7 +2070,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Try to get the coin type from the input argument
-        let coin_type = self.get_object_id_and_type_from_arg(&coin)
+        let coin_type = self
+            .get_object_id_and_type_from_arg(&coin)
             .and_then(|(_, t)| t)
             .or_else(|| {
                 // Default to Coin<SUI> if type not known
@@ -1989,7 +2107,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         updated_coin_bytes[32..40].copy_from_slice(&new_balance.to_le_bytes());
 
         if let Some((obj_id, _)) = self.get_object_id_and_type_from_arg(&coin) {
-            self.mutated_objects.insert(obj_id, (updated_coin_bytes.clone(), coin_type.clone()));
+            self.mutated_objects
+                .insert(obj_id, (updated_coin_bytes.clone(), coin_type.clone()));
         }
 
         // Also update the input in place so subsequent commands see the new balance
@@ -2002,7 +2121,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.gas_used += gas_costs::NATIVE_CALL
             + gas_costs::OBJECT_MUTATE  // original coin mutated
             + num_new_coins * gas_costs::OBJECT_CREATE  // new coins created
-            + num_new_coins * 40 * gas_costs::STORAGE_BYTE;  // storage for new coins
+            + num_new_coins * 40 * gas_costs::STORAGE_BYTE; // storage for new coins
 
         Ok(CommandResult::Values(new_coins))
     }
@@ -2054,12 +2173,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Get coin type for tracking
-        let coin_type = self.get_object_id_and_type_from_arg(&destination)
+        let coin_type = self
+            .get_object_id_and_type_from_arg(&destination)
             .and_then(|(_, t)| t);
 
         // Mark destination as mutated with the new bytes
         if let Some((dest_id, _)) = self.get_object_id_and_type_from_arg(&destination) {
-            self.mutated_objects.insert(dest_id, (new_dest_bytes.clone(), coin_type.clone()));
+            self.mutated_objects
+                .insert(dest_id, (new_dest_bytes.clone(), coin_type.clone()));
         }
 
         // Sources are destroyed (track as deleted)
@@ -2084,7 +2205,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let num_sources = sources.len() as u64;
         self.gas_used += gas_costs::NATIVE_CALL
             + gas_costs::OBJECT_MUTATE  // destination coin mutated
-            + num_sources * gas_costs::OBJECT_DELETE;  // source coins deleted
+            + num_sources * gas_costs::OBJECT_DELETE; // source coins deleted
 
         // MergeCoins returns empty (no return value in Sui PTB semantics)
         Ok(CommandResult::Empty)
@@ -2143,7 +2264,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                             ));
                         }
                         // ImmRef and MutRef are not transferable (borrowed, not owned)
-                        if matches!(input, InputValue::Object(ObjectInput::ImmRef { .. } | ObjectInput::MutRef { .. })) {
+                        if matches!(
+                            input,
+                            InputValue::Object(
+                                ObjectInput::ImmRef { .. } | ObjectInput::MutRef { .. }
+                            )
+                        ) {
                             return Err(anyhow!(
                                 "cannot transfer borrowed object {}: only owned objects can be transferred",
                                 obj_id.to_hex_literal()
@@ -2187,8 +2313,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         // Estimate gas: native call + object mutation per transferred object
         let num_objects = objects.len() as u64;
-        self.gas_used += gas_costs::NATIVE_CALL
-            + num_objects * gas_costs::OBJECT_MUTATE;  // ownership change counts as mutation
+        self.gas_used += gas_costs::NATIVE_CALL + num_objects * gas_costs::OBJECT_MUTATE; // ownership change counts as mutation
 
         // TransferObjects has no return value
         Ok(CommandResult::Empty)
@@ -2227,7 +2352,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     }
 
     /// Try to extract an object ID and its type from an Argument.
-    fn get_object_id_and_type_from_arg(&self, arg: &Argument) -> Option<(ObjectID, Option<TypeTag>)> {
+    fn get_object_id_and_type_from_arg(
+        &self,
+        arg: &Argument,
+    ) -> Option<(ObjectID, Option<TypeTag>)> {
         match arg {
             Argument::Input(idx) => {
                 if let Some(InputValue::Object(obj)) = self.inputs.get(*idx as usize) {
@@ -2253,7 +2381,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         if bytes.len() >= 32 {
                             if let Ok(id) = AccountAddress::from_bytes(&bytes[..32]) {
                                 // Look up type from created_objects
-                                let obj_type = self.created_objects.get(&id).and_then(|(_, t)| t.clone());
+                                let obj_type =
+                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone());
                                 Some((id, obj_type))
                             } else {
                                 None
@@ -2276,11 +2405,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     } else {
                         None
                     }
-                } else if let Some(CommandResult::Values(vs)) = self.results.get(*cmd_idx as usize) {
+                } else if let Some(CommandResult::Values(vs)) = self.results.get(*cmd_idx as usize)
+                {
                     if let Some(bytes) = vs.get(*val_idx as usize) {
                         if bytes.len() >= 32 {
                             if let Ok(id) = AccountAddress::from_bytes(&bytes[..32]) {
-                                let obj_type = self.created_objects.get(&id).and_then(|(_, t)| t.clone());
+                                let obj_type =
+                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone());
                                 Some((id, obj_type))
                             } else {
                                 None
@@ -2330,7 +2461,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         return Err(anyhow!(
                             "MakeMoveVec: element {} has {} bytes but element 0 has {} bytes. \
                              All elements must have the same type.",
-                            i, elem.len(), first_len
+                            i,
+                            elem.len(),
+                            first_len
                         ));
                     }
                 }
@@ -2363,8 +2496,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Estimate gas: native call + input bytes + output bytes
-        self.gas_used += gas_costs::NATIVE_CALL
-            + (vec_bytes.len() as u64) * gas_costs::OUTPUT_BYTE;
+        self.gas_used += gas_costs::NATIVE_CALL + (vec_bytes.len() as u64) * gas_costs::OUTPUT_BYTE;
 
         // Note: type_tag is used by the VM for type checking at the Move level.
         // In our simulation, we trust the caller provides the correct type.
@@ -2401,15 +2533,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             }));
 
             // Mark the UpgradeCap as created with its type
-            self.created_objects.insert(upgrade_cap_id, (Vec::new(), Some(upgrade_cap_type)));
+            self.created_objects
+                .insert(upgrade_cap_id, (Vec::new(), Some(upgrade_cap_type)));
             // Created objects are transferable by the sender
             self.transferable_objects.insert(upgrade_cap_id);
-            self.object_owners.insert(upgrade_cap_id, Owner::Address(self.sender));
+            self.object_owners
+                .insert(upgrade_cap_id, Owner::Address(self.sender));
 
             // Estimate gas: publishing is expensive - base cost + per-module cost
             // Note: actual gas is computed when modules are loaded in pre_publish_modules
             self.gas_used += gas_costs::NATIVE_CALL * 10  // publish overhead
-                + gas_costs::OBJECT_CREATE * 2;  // package object + UpgradeCap
+                + gas_costs::OBJECT_CREATE * 2; // package object + UpgradeCap
 
             // Return [package_id, upgrade_cap_id]
             Ok(CommandResult::Created(vec![package_id, upgrade_cap_id]))
@@ -2451,10 +2585,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             }));
 
             // Mark the UpgradeReceipt as created with its type
-            self.created_objects.insert(receipt_id, (Vec::new(), Some(upgrade_receipt_type)));
+            self.created_objects
+                .insert(receipt_id, (Vec::new(), Some(upgrade_receipt_type)));
             // Created objects are transferable by the sender
             self.transferable_objects.insert(receipt_id);
-            self.object_owners.insert(receipt_id, Owner::Address(self.sender));
+            self.object_owners
+                .insert(receipt_id, Owner::Address(self.sender));
 
             // The ticket would normally be consumed here
             // In simulation, we don't strictly validate it
@@ -2462,7 +2598,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             // Estimate gas: upgrade is expensive similar to publish
             self.gas_used += gas_costs::NATIVE_CALL * 10  // upgrade overhead
                 + gas_costs::OBJECT_CREATE * 2  // new package object + UpgradeReceipt
-                + gas_costs::OBJECT_DELETE;  // ticket consumed
+                + gas_costs::OBJECT_DELETE; // ticket consumed
 
             // Return [new_package_id, upgrade_receipt_id]
             Ok(CommandResult::Created(vec![new_package_id, receipt_id]))
@@ -2508,8 +2644,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         // Track that this object was received (unwrapped from pending state)
         // Store in created_objects so it can be referenced in subsequent commands
-        self.created_objects.insert(*object_id, (object_bytes.clone(), actual_type.clone()));
-        self.object_owners.insert(*object_id, Owner::Address(self.sender));
+        self.created_objects
+            .insert(*object_id, (object_bytes.clone(), actual_type.clone()));
+        self.object_owners
+            .insert(*object_id, Owner::Address(self.sender));
         // Received objects are transferable by the sender
         self.transferable_objects.insert(*object_id);
         // Track for clearing from SimulationEnvironment's pending_receives
@@ -2532,13 +2670,20 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Add an object to the pending receives queue.
     /// Call this before executing a PTB that will use Receive commands.
     pub fn add_pending_receive(&mut self, object_id: ObjectID, object_bytes: Vec<u8>) {
-        self.pending_receives.insert(object_id, (object_bytes, None));
+        self.pending_receives
+            .insert(object_id, (object_bytes, None));
     }
 
     /// Add an object to the pending receives queue with type information.
     /// This enables type validation when the object is received.
-    pub fn add_pending_receive_with_type(&mut self, object_id: ObjectID, object_bytes: Vec<u8>, type_tag: TypeTag) {
-        self.pending_receives.insert(object_id, (object_bytes, Some(type_tag)));
+    pub fn add_pending_receive_with_type(
+        &mut self,
+        object_id: ObjectID,
+        object_bytes: Vec<u8>,
+        type_tag: TypeTag,
+    ) {
+        self.pending_receives
+            .insert(object_id, (object_bytes, Some(type_tag)));
     }
 
     /// Execute all commands in the PTB.
@@ -2548,8 +2693,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Validate PTB causality before execution
         let validation = validate_ptb(&commands, self.inputs.len());
         if !validation.valid {
-            let error_msgs: Vec<String> = validation.errors.iter().map(|e| e.message.clone()).collect();
-            self.execution_trace.add_failure(0, "validation", "PTB validation".to_string(), error_msgs.join("; "));
+            let error_msgs: Vec<String> = validation
+                .errors
+                .iter()
+                .map(|e| e.message.clone())
+                .collect();
+            self.execution_trace.add_failure(
+                0,
+                "validation",
+                "PTB validation".to_string(),
+                error_msgs.join("; "),
+            );
             return Ok(TransactionEffects::failure_at(
                 format!("PTB validation failed: {}", error_msgs.join("; ")),
                 0,
@@ -2562,7 +2716,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         if self.enable_lifecycle_tracking {
             for (idx, input) in self.inputs.iter().enumerate() {
                 if let InputValue::Object(obj_input) = input {
-                    self.lifecycle_tracker.register_input(*obj_input.id(), idx as u16, None);
+                    self.lifecycle_tracker
+                        .register_input(*obj_input.id(), idx as u16, None);
                 }
             }
         }
@@ -2576,7 +2731,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             let cmd_type = Self::command_type_name(&cmd);
 
             // Extract function call info for MoveCall commands
-            let func_info = if let Command::MoveCall { package, module, function, type_args, args } = &cmd {
+            let func_info = if let Command::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } = &cmd
+            {
                 Some(FunctionCallInfo {
                     module: format!("{}::{}", package.to_hex_literal(), module),
                     function: function.to_string(),
@@ -2612,7 +2774,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                             format!("{} (out of gas)", cmd_description),
                             gas_err.to_string(),
                         );
-                        self.execution_trace.complete(false, Some(start_time.elapsed().as_millis() as u64));
+                        self.execution_trace
+                            .complete(false, Some(start_time.elapsed().as_millis() as u64));
                         return Ok(TransactionEffects::failure_at(
                             gas_err.to_string(),
                             index,
@@ -2622,8 +2785,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                 }
                 Err(e) => {
-                    self.execution_trace.add_failure(index, &cmd_type, cmd_description.clone(), e.to_string());
-                    self.execution_trace.complete(false, Some(start_time.elapsed().as_millis() as u64));
+                    self.execution_trace.add_failure(
+                        index,
+                        &cmd_type,
+                        cmd_description.clone(),
+                        e.to_string(),
+                    );
+                    self.execution_trace
+                        .complete(false, Some(start_time.elapsed().as_millis() as u64));
                     return Ok(TransactionEffects::failure_at(
                         e.to_string(),
                         index,
@@ -2635,7 +2804,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Complete trace with success
-        self.execution_trace.complete(true, Some(start_time.elapsed().as_millis() as u64));
+        self.execution_trace
+            .complete(true, Some(start_time.elapsed().as_millis() as u64));
         if self.enable_lifecycle_tracking {
             self.execution_trace.object_summary = Some(self.lifecycle_tracker.summary());
         }
@@ -2660,11 +2830,24 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Generate a human-readable description of a command.
     fn describe_command(cmd: &Command) -> String {
         match cmd {
-            Command::MoveCall { package, module, function, type_args, args } => {
+            Command::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } => {
                 let type_args_str = if type_args.is_empty() {
                     String::new()
                 } else {
-                    format!("<{}>", type_args.iter().map(|t| format!("{}", t)).collect::<Vec<_>>().join(", "))
+                    format!(
+                        "<{}>",
+                        type_args
+                            .iter()
+                            .map(|t| format!("{}", t))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
                 format!(
                     "MoveCall {}::{}::{}{} ({} args)",
@@ -2678,25 +2861,53 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             Command::SplitCoins { coin, amounts } => {
                 format!("SplitCoins (coin: {:?}, {} amounts)", coin, amounts.len())
             }
-            Command::MergeCoins { destination, sources } => {
-                format!("MergeCoins (dest: {:?}, {} sources)", destination, sources.len())
+            Command::MergeCoins {
+                destination,
+                sources,
+            } => {
+                format!(
+                    "MergeCoins (dest: {:?}, {} sources)",
+                    destination,
+                    sources.len()
+                )
             }
             Command::TransferObjects { objects, address } => {
-                format!("TransferObjects ({} objects to {:?})", objects.len(), address)
+                format!(
+                    "TransferObjects ({} objects to {:?})",
+                    objects.len(),
+                    address
+                )
             }
             Command::MakeMoveVec { type_tag, elements } => {
-                let type_str = type_tag.as_ref().map(|t| format!("{}", t)).unwrap_or_else(|| "unknown".to_string());
+                let type_str = type_tag
+                    .as_ref()
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "unknown".to_string());
                 format!("MakeMoveVec<{}> ({} elements)", type_str, elements.len())
             }
             Command::Publish { modules, dep_ids } => {
-                format!("Publish ({} modules, {} deps)", modules.len(), dep_ids.len())
+                format!(
+                    "Publish ({} modules, {} deps)",
+                    modules.len(),
+                    dep_ids.len()
+                )
             }
             Command::Upgrade { package, .. } => {
                 format!("Upgrade (package {})", package.to_hex_literal())
             }
-            Command::Receive { object_id, object_type } => {
-                let type_str = object_type.as_ref().map(|t| format!("{}", t)).unwrap_or_else(|| "unknown".to_string());
-                format!("Receive {} (type: {})", object_id.to_hex_literal(), type_str)
+            Command::Receive {
+                object_id,
+                object_type,
+            } => {
+                let type_str = object_type
+                    .as_ref()
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "unknown".to_string());
+                format!(
+                    "Receive {} (type: {})",
+                    object_id.to_hex_literal(),
+                    type_str
+                )
             }
         }
     }
@@ -2707,7 +2918,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         // Add created objects with their tracked ownership and type
         for (id, (_bytes, object_type)) in &self.created_objects {
-            let owner = self.object_owners.get(id).copied()
+            let owner = self
+                .object_owners
+                .get(id)
+                .copied()
                 .unwrap_or(Owner::Address(AccountAddress::ZERO));
             effects.created.push(*id);
             effects.object_changes.push(ObjectChange::Created {
@@ -2729,7 +2943,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Add mutated objects with their tracked ownership and type
         for (id, (_bytes, object_type)) in &self.mutated_objects {
             if !self.created_objects.contains_key(id) && !self.deleted_objects.contains_key(id) {
-                let owner = self.object_owners.get(id).copied()
+                let owner = self
+                    .object_owners
+                    .get(id)
+                    .copied()
                     .unwrap_or(Owner::Address(AccountAddress::ZERO));
                 effects.mutated.push(*id);
                 effects.object_changes.push(ObjectChange::Mutated {
@@ -2797,31 +3014,41 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         effects.events = self.vm.get_events();
 
         // Capture return values from each command
-        effects.return_values = self.results.iter().map(|result| {
-            match result {
-                CommandResult::Empty => vec![],
-                CommandResult::Values(values) => values.clone(),
-                CommandResult::Created(ids) => {
-                    // For created objects, return their IDs as BCS-encoded bytes
-                    ids.iter().map(|id| id.to_vec()).collect()
+        effects.return_values = self
+            .results
+            .iter()
+            .map(|result| {
+                match result {
+                    CommandResult::Empty => vec![],
+                    CommandResult::Values(values) => values.clone(),
+                    CommandResult::Created(ids) => {
+                        // For created objects, return their IDs as BCS-encoded bytes
+                        ids.iter().map(|id| id.to_vec()).collect()
+                    }
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         // Populate mutated object bytes for syncing back to environment
-        effects.mutated_object_bytes = self.mutated_objects.iter()
+        effects.mutated_object_bytes = self
+            .mutated_objects
+            .iter()
             .map(|(id, (bytes, _))| (*id, bytes.clone()))
             .collect();
 
         // Populate created object bytes for syncing back to environment
-        effects.created_object_bytes = self.created_objects.iter()
+        effects.created_object_bytes = self
+            .created_objects
+            .iter()
             .map(|(id, (bytes, _))| (*id, bytes.clone()))
             .collect();
 
         // Extract dynamic field entries from the VM's shared state.
         // This captures all Table/Bag operations that occurred during MoveCall execution.
         for ((parent_id, child_id), type_tag, bytes) in self.vm.extract_dynamic_fields() {
-            effects.dynamic_field_entries.insert((parent_id, child_id), (type_tag, bytes));
+            effects
+                .dynamic_field_entries
+                .insert((parent_id, child_id), (type_tag, bytes));
         }
 
         // Track objects that were received from pending_receives
@@ -2851,7 +3078,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Get created objects bytes only (for backwards compatibility).
     pub fn created_objects_bytes(&self) -> HashMap<ObjectID, Vec<u8>> {
-        self.created_objects.iter()
+        self.created_objects
+            .iter()
             .map(|(id, (bytes, _))| (*id, bytes.clone()))
             .collect()
     }
@@ -2864,7 +3092,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Get mutated objects bytes only (for backwards compatibility).
     pub fn mutated_objects_bytes(&self) -> HashMap<ObjectID, Vec<u8>> {
-        self.mutated_objects.iter()
+        self.mutated_objects
+            .iter()
             .map(|(id, (bytes, _))| (*id, bytes.clone()))
             .collect()
     }
@@ -2902,14 +3131,27 @@ impl PTBBuilder {
     /// Add an owned object input.
     pub fn object_owned(&mut self, id: ObjectID, bytes: Vec<u8>) -> Argument {
         let idx = self.inputs.len();
-        self.inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
+        self.inputs.push(InputValue::Object(ObjectInput::Owned {
+            id,
+            bytes,
+            type_tag: None,
+        }));
         Argument::Input(idx as u16)
     }
 
     /// Add an owned object input with type information.
-    pub fn object_owned_with_type(&mut self, id: ObjectID, bytes: Vec<u8>, type_tag: TypeTag) -> Argument {
+    pub fn object_owned_with_type(
+        &mut self,
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: TypeTag,
+    ) -> Argument {
         let idx = self.inputs.len();
-        self.inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: Some(type_tag) }));
+        self.inputs.push(InputValue::Object(ObjectInput::Owned {
+            id,
+            bytes,
+            type_tag: Some(type_tag),
+        }));
         Argument::Input(idx as u16)
     }
 
@@ -2959,13 +3201,19 @@ impl PTBBuilder {
 
     /// Add a TransferObjects command.
     pub fn transfer_objects(&mut self, objects: Vec<Argument>, address: Argument) {
-        self.commands.push(Command::TransferObjects { objects, address });
+        self.commands
+            .push(Command::TransferObjects { objects, address });
     }
 
     /// Add a MakeMoveVec command.
-    pub fn make_move_vec(&mut self, type_tag: Option<TypeTag>, elements: Vec<Argument>) -> Argument {
+    pub fn make_move_vec(
+        &mut self,
+        type_tag: Option<TypeTag>,
+        elements: Vec<Argument>,
+    ) -> Argument {
         let cmd_idx = self.commands.len();
-        self.commands.push(Command::MakeMoveVec { type_tag, elements });
+        self.commands
+            .push(Command::MakeMoveVec { type_tag, elements });
         Argument::Result(cmd_idx as u16)
     }
 
@@ -3142,15 +3390,13 @@ mod tests {
     #[test]
     fn test_validate_ptb_self_reference() {
         // Invalid: command 0 references its own result
-        let commands = vec![
-            Command::MoveCall {
-                package: AccountAddress::ZERO,
-                module: Identifier::new("test").unwrap(),
-                function: Identifier::new("foo").unwrap(),
-                type_args: vec![],
-                args: vec![Argument::Result(0)], // Self reference!
-            },
-        ];
+        let commands = vec![Command::MoveCall {
+            package: AccountAddress::ZERO,
+            module: Identifier::new("test").unwrap(),
+            function: Identifier::new("foo").unwrap(),
+            type_args: vec![],
+            args: vec![Argument::Result(0)], // Self reference!
+        }];
 
         let result = validate_ptb(&commands, 1);
         assert!(!result.valid);
@@ -3161,15 +3407,13 @@ mod tests {
     #[test]
     fn test_validate_ptb_input_out_of_bounds() {
         // Invalid: references Input(5) but only 2 inputs available
-        let commands = vec![
-            Command::MoveCall {
-                package: AccountAddress::ZERO,
-                module: Identifier::new("test").unwrap(),
-                function: Identifier::new("foo").unwrap(),
-                type_args: vec![],
-                args: vec![Argument::Input(5)],
-            },
-        ];
+        let commands = vec![Command::MoveCall {
+            package: AccountAddress::ZERO,
+            module: Identifier::new("test").unwrap(),
+            function: Identifier::new("foo").unwrap(),
+            type_args: vec![],
+            args: vec![Argument::Input(5)],
+        }];
 
         let result = validate_ptb(&commands, 2);
         assert!(!result.valid);
@@ -3318,7 +3562,10 @@ mod tests {
 
         // Should be available
         assert!(tracker.get_provenance(&obj_id).is_some());
-        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Available);
+        assert_eq!(
+            tracker.get_provenance(&obj_id).unwrap().state,
+            ObjectState::Available
+        );
 
         // Record a read - should succeed
         assert!(tracker.record_read(obj_id, 0).is_ok());
@@ -3333,12 +3580,18 @@ mod tests {
 
         // Consume the object
         assert!(tracker.record_consume(obj_id, 0).is_ok());
-        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Consumed);
+        assert_eq!(
+            tracker.get_provenance(&obj_id).unwrap().state,
+            ObjectState::Consumed
+        );
 
         // Try to use it again - should fail
         let result = tracker.record_read(obj_id, 1);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind, LifecycleErrorKind::UseAfterConsume);
+        assert_eq!(
+            result.unwrap_err().kind,
+            LifecycleErrorKind::UseAfterConsume
+        );
     }
 
     #[test]
@@ -3351,12 +3604,18 @@ mod tests {
 
         // Transfer the object
         assert!(tracker.record_transfer(obj_id, 0, recipient).is_ok());
-        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Transferred);
+        assert_eq!(
+            tracker.get_provenance(&obj_id).unwrap().state,
+            ObjectState::Transferred
+        );
 
         // Try to use it again - should fail
         let result = tracker.record_mutate(obj_id, 1);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind, LifecycleErrorKind::UseAfterTransfer);
+        assert_eq!(
+            result.unwrap_err().kind,
+            LifecycleErrorKind::UseAfterTransfer
+        );
     }
 
     #[test]
@@ -3381,12 +3640,16 @@ mod tests {
         tracker.register_received(AccountAddress::from_hex_literal("0x4").unwrap(), None);
 
         // Consume one, transfer one
-        tracker.record_consume(AccountAddress::from_hex_literal("0x1").unwrap(), 0).unwrap();
-        tracker.record_transfer(
-            AccountAddress::from_hex_literal("0x2").unwrap(),
-            1,
-            AccountAddress::ZERO,
-        ).unwrap();
+        tracker
+            .record_consume(AccountAddress::from_hex_literal("0x1").unwrap(), 0)
+            .unwrap();
+        tracker
+            .record_transfer(
+                AccountAddress::from_hex_literal("0x2").unwrap(),
+                1,
+                AccountAddress::ZERO,
+            )
+            .unwrap();
 
         let summary = tracker.summary();
         assert_eq!(summary.from_inputs, 2);
@@ -3436,7 +3699,12 @@ mod tests {
     fn test_ptb_trace_add_failure() {
         let mut trace = PTBExecutionTrace::new();
         trace.add_success(0, "MoveCall", "call foo".to_string(), 100, 1);
-        trace.add_failure(1, "MoveCall", "call bar".to_string(), "abort at 42".to_string());
+        trace.add_failure(
+            1,
+            "MoveCall",
+            "call bar".to_string(),
+            "abort at 42".to_string(),
+        );
 
         assert_eq!(trace.commands.len(), 2);
         assert!(!trace.success);

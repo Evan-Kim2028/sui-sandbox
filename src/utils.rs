@@ -352,13 +352,15 @@ mod tests {
     #[test]
     fn test_format_address_short() {
         let addr = AccountAddress::from_hex_literal(
-            "0x0000000000000000000000000000000000000000000000000000000000000002"
-        ).unwrap();
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap();
         assert_eq!(format_address_short(&addr), "0x2");
 
         let addr = AccountAddress::from_hex_literal(
-            "0x0000000000000000000000000000000000000000000000000000000000000000"
-        ).unwrap();
+            "0x0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
         assert_eq!(format_address_short(&addr), "0x0");
     }
 

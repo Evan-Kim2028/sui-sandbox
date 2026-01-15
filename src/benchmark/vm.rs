@@ -98,8 +98,8 @@ impl Default for SimulationConfig {
             random_seed: [0u8; 32],
             sender_address: [0u8; 32],
             tx_timestamp_ms: None,
-            epoch: 100, // Default epoch
-            gas_budget: None, // Unlimited by default
+            epoch: 100,                  // Default epoch
+            gas_budget: None,            // Unlimited by default
             enforce_immutability: false, // Backwards compatible default
         }
     }
@@ -124,7 +124,7 @@ impl SimulationConfig {
             tx_timestamp_ms: None,
             epoch: 100,
             gas_budget: Some(50_000_000_000), // 50 SUI default budget
-            enforce_immutability: true, // Strict mode enforces immutability
+            enforce_immutability: true,       // Strict mode enforces immutability
         }
     }
 
@@ -393,11 +393,7 @@ impl GasMeter for MeteredGasMeter {
     ) -> PartialVMResult<()> {
         let ty_count = ty_args.len() as u64;
         let arg_count = args.len() as u64;
-        self.charge(
-            gas_costs::FUNCTION_CALL_BASE
-                + ty_count * gas_costs::TYPE_ARG
-                + arg_count * 50,
-        )
+        self.charge(gas_costs::FUNCTION_CALL_BASE + ty_count * gas_costs::TYPE_ARG + arg_count * 50)
     }
 
     fn charge_ld_const(&mut self, size: NumBytes) -> PartialVMResult<()> {
@@ -1036,7 +1032,10 @@ impl<'a> VMHarness<'a> {
 
     /// Preload dynamic field state from SimulationEnvironment.
     /// Call this before executing a PTB to provide Table/Bag state.
-    pub fn preload_dynamic_fields(&self, fields: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>) {
+    pub fn preload_dynamic_fields(
+        &self,
+        fields: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
+    ) {
         if let Ok(mut state) = self.shared_df_state.lock() {
             for ((parent, child), type_tag, bytes) in fields {
                 state.add_child(parent, child, type_tag, bytes);
@@ -1047,7 +1046,9 @@ impl<'a> VMHarness<'a> {
 
     /// Extract dynamic field state after PTB execution.
     /// Returns all child objects that were created/modified during execution.
-    pub fn extract_dynamic_fields(&self) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
+    pub fn extract_dynamic_fields(
+        &self,
+    ) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
         if let Ok(state) = self.shared_df_state.lock() {
             state.all_children()
         } else {
@@ -1056,7 +1057,9 @@ impl<'a> VMHarness<'a> {
     }
 
     /// Extract only new dynamic fields (created during this PTB, not preloaded).
-    pub fn extract_new_dynamic_fields(&self) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
+    pub fn extract_new_dynamic_fields(
+        &self,
+    ) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
         if let Ok(state) = self.shared_df_state.lock() {
             state.new_children()
         } else {
@@ -1073,7 +1076,10 @@ impl<'a> VMHarness<'a> {
 
     /// Preload pending receives from SimulationEnvironment.
     /// Call this before executing a PTB to enable transfer::receive in Move code.
-    pub fn preload_pending_receives(&self, receives: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>) {
+    pub fn preload_pending_receives(
+        &self,
+        receives: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
+    ) {
         if let Ok(mut state) = self.shared_df_state.lock() {
             for ((recipient, sent), type_tag, bytes) in receives {
                 state.add_pending_receive(recipient, sent, type_tag, bytes);
@@ -1362,7 +1368,10 @@ impl<'a, 'b> PTBSession<'a, 'b> {
 
         // Pre-calculate input gas before args/ty_args are consumed
         let input_gas = gas_costs::FUNCTION_CALL_BASE
-            + args.iter().map(|a| a.len() as u64 * gas_costs::INPUT_BYTE).sum::<u64>()
+            + args
+                .iter()
+                .map(|a| a.len() as u64 * gas_costs::INPUT_BYTE)
+                .sum::<u64>()
             + ty_args.len() as u64 * gas_costs::TYPE_ARG;
 
         // Create a SharedObjectRuntime that references our shared state
@@ -1370,7 +1379,9 @@ impl<'a, 'b> PTBSession<'a, 'b> {
         let mut extensions = NativeContextExtensions::default();
         extensions.add(shared_runtime);
 
-        let mut session = self.harness.vm()
+        let mut session = self
+            .harness
+            .vm()
             .new_session_with_extensions(self.harness.storage(), extensions);
 
         let mut loaded_ty_args = Vec::new();
@@ -1423,10 +1434,16 @@ impl<'a, 'b> PTBSession<'a, 'b> {
         let gas_used: u64 = if metered_gas > 0 {
             metered_gas
         } else {
-            let output_gas = return_values.iter().map(|r| r.len() as u64 * gas_costs::OUTPUT_BYTE).sum::<u64>()
-                + mutable_ref_outputs.iter().map(|(_, bytes)| {
-                    bytes.len() as u64 * gas_costs::OUTPUT_BYTE + gas_costs::OBJECT_MUTATE
-                }).sum::<u64>();
+            let output_gas = return_values
+                .iter()
+                .map(|r| r.len() as u64 * gas_costs::OUTPUT_BYTE)
+                .sum::<u64>()
+                + mutable_ref_outputs
+                    .iter()
+                    .map(|(_, bytes)| {
+                        bytes.len() as u64 * gas_costs::OUTPUT_BYTE + gas_costs::OBJECT_MUTATE
+                    })
+                    .sum::<u64>();
             input_gas + output_gas
         };
 
@@ -1461,16 +1478,23 @@ impl<'a, 'b> PTBSession<'a, 'b> {
 
     /// Finish and return both the snapshot and all child bytes.
     /// Use this when you need to sync state back to SimulationEnvironment.
-    pub fn finish_with_bytes(self) -> (DynamicFieldSnapshot, Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>) {
+    pub fn finish_with_bytes(
+        self,
+    ) -> (
+        DynamicFieldSnapshot,
+        Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
+    ) {
         let state = self.shared_state.lock().ok();
 
         let (children, all_bytes) = state
             .map(|s| {
-                let children: Vec<_> = s.children
+                let children: Vec<_> = s
+                    .children
                     .iter()
                     .map(|(k, (t, _))| (*k, t.clone()))
                     .collect();
-                let all: Vec<_> = s.children
+                let all: Vec<_> = s
+                    .children
                     .iter()
                     .map(|(k, (t, b))| (*k, t.clone(), b.clone()))
                     .collect();

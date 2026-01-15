@@ -5,10 +5,10 @@ use std::time::Duration;
 use sui_sdk::SuiClientBuilder;
 
 use sui_move_interface_extractor::args::{Args, Command};
-use sui_move_interface_extractor::benchmark::runner::run_benchmark;
 use sui_move_interface_extractor::benchmark::ptb_eval::run_ptb_eval;
+use sui_move_interface_extractor::benchmark::runner::run_benchmark;
 use sui_move_interface_extractor::benchmark::sandbox_exec::run_sandbox_exec;
-use sui_move_interface_extractor::benchmark::tx_replay::{TransactionFetcher, FetchedTransaction};
+use sui_move_interface_extractor::benchmark::tx_replay::{FetchedTransaction, TransactionFetcher};
 use sui_move_interface_extractor::corpus::{collect_package_ids, run_corpus};
 use sui_move_interface_extractor::runner::{run_batch, run_single, run_single_local_bytecode_dir};
 
@@ -54,11 +54,7 @@ async fn main() -> Result<()> {
     }
 
     if args.bytecode_corpus_root.is_some() {
-        run_corpus(
-            &args,
-            Arc::new(build_sui_client(&args).await?),
-        )
-        .await?;
+        run_corpus(&args, Arc::new(build_sui_client(&args).await?)).await?;
         return Ok(());
     }
 
@@ -98,7 +94,8 @@ async fn build_sui_client(args: &Args) -> Result<sui_sdk::SuiClient> {
 fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Result<()> {
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
     use sui_move_interface_extractor::benchmark::tx_replay::{
-        TransactionCache, CachedTransaction, download_transactions, download_single_transaction, replay_parallel
+        download_single_transaction, download_transactions, replay_parallel, CachedTransaction,
+        TransactionCache,
     };
 
     // Create fetcher
@@ -130,12 +127,16 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
                     &fetcher,
                     &cache,
                     digest,
-                    true,  // fetch_packages
-                    true,  // fetch_objects
+                    true, // fetch_packages
+                    true, // fetch_objects
                     args.verbose,
                 )?;
                 if fetched {
-                    eprintln!("Cached transaction {} (total cached: {})", digest, cache.count());
+                    eprintln!(
+                        "Cached transaction {} (total cached: {})",
+                        digest,
+                        cache.count()
+                    );
                 }
                 return Ok(());
             }
@@ -146,11 +147,15 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
                 &fetcher,
                 &cache,
                 count,
-                true,  // fetch_packages
-                true,  // fetch_objects
+                true, // fetch_packages
+                true, // fetch_objects
                 args.verbose,
             )?;
-            eprintln!("\nDownloaded {} new transactions (total cached: {})", new_count, cache.count());
+            eprintln!(
+                "\nDownloaded {} new transactions (total cached: {})",
+                new_count,
+                cache.count()
+            );
             return Ok(());
         }
 
@@ -180,7 +185,9 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
             eprintln!("Loaded {} transactions from cache", cached_txs.len());
 
             if cached_txs.is_empty() {
-                return Err(anyhow!("No transactions in cache. Use --download-only first."));
+                return Err(anyhow!(
+                    "No transactions in cache. Use --download-only first."
+                ));
             }
 
             // Initialize resolver
@@ -188,8 +195,10 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
             eprintln!("Loaded {} framework modules", resolver.module_count());
 
             // Run parallel replay
-            eprintln!("Running parallel replay with {} threads...",
-                args.threads.unwrap_or_else(|| rayon::current_num_threads()));
+            eprintln!(
+                "Running parallel replay with {} threads...",
+                args.threads.unwrap_or_else(|| rayon::current_num_threads())
+            );
 
             let result = replay_parallel(&cached_txs, &resolver, args.threads)?;
 
@@ -198,10 +207,16 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
             println!("PARALLEL REPLAY RESULTS");
             println!("========================================");
             println!("Total transactions: {}", result.total);
-            println!("Successful: {} ({:.1}%)", result.successful,
-                100.0 * result.successful as f64 / result.total as f64);
-            println!("Status match: {} ({:.1}%)", result.status_matched,
-                100.0 * result.status_matched as f64 / result.total as f64);
+            println!(
+                "Successful: {} ({:.1}%)",
+                result.successful,
+                100.0 * result.successful as f64 / result.total as f64
+            );
+            println!(
+                "Status match: {} ({:.1}%)",
+                result.status_matched,
+                100.0 * result.status_matched as f64 / result.total as f64
+            );
             println!("Time: {} ms ({:.1} tx/s)", result.elapsed_ms, result.tps);
 
             return Ok(());
@@ -259,14 +274,20 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
     }
 
     if transactions.is_empty() {
-        return Err(anyhow!("No transactions to process. Use --digest or --recent."));
+        return Err(anyhow!(
+            "No transactions to process. Use --digest or --recent."
+        ));
     }
 
     // Filter to framework-only if requested
     if args.framework_only {
         let before = transactions.len();
         transactions.retain(|tx| tx.uses_only_framework());
-        eprintln!("Filtered to {} framework-only transactions (from {})", transactions.len(), before);
+        eprintln!(
+            "Filtered to {} framework-only transactions (from {})",
+            transactions.len(),
+            before
+        );
     }
 
     run_tx_replay_with_transactions(args, transactions)
@@ -361,9 +382,14 @@ fn run_tx_replay_with_transactions(
                 match fetcher.fetch_transaction_packages(tx) {
                     Ok(packages) => {
                         for (pkg_id, modules) in packages {
-                            let non_empty: Vec<_> = modules.into_iter().filter(|(_, b)| !b.is_empty()).collect();
+                            let non_empty: Vec<_> =
+                                modules.into_iter().filter(|(_, b)| !b.is_empty()).collect();
                             if !non_empty.is_empty() {
-                                eprintln!("  Loading package {} ({} modules)...", pkg_id, non_empty.len());
+                                eprintln!(
+                                    "  Loading package {} ({} modules)...",
+                                    pkg_id,
+                                    non_empty.len()
+                                );
                                 match resolver.add_package_modules(non_empty) {
                                     Ok((count, _)) => eprintln!("    Loaded {} modules", count),
                                     Err(e) => eprintln!("    Warning: Failed to load: {}", e),
@@ -380,41 +406,51 @@ fn run_tx_replay_with_transactions(
             total_replayed += 1;
 
             match VMHarness::new(&resolver, false) {
-                Ok(mut harness) => {
-                    match tx.replay(&mut harness) {
-                        Ok(result) => {
-                            if result.local_success {
-                                total_success += 1;
-                                println!("  LOCAL RESULT: SUCCESS");
-                            } else {
-                                println!("  LOCAL RESULT: FAILURE");
-                                if let Some(err) = &result.local_error {
-                                    println!("    Error: {}", err);
-                                }
-                            }
-
-                            if let Some(cmp) = &result.comparison {
-                                println!("  COMPARISON:");
-                                println!("    Match score: {:.0}%", cmp.match_score * 100.0);
-                                println!("    Status match: {}", if cmp.status_match { "YES" } else { "NO" });
-                                println!("    Created match: {}", if cmp.created_count_match { "YES" } else { "NO" });
-                                println!("    Mutated match: {}", if cmp.mutated_count_match { "YES" } else { "NO" });
-                                println!("    Deleted match: {}", if cmp.deleted_count_match { "YES" } else { "NO" });
-
-                                if cmp.status_match {
-                                    total_match += 1;
-                                }
-
-                                for note in &cmp.notes {
-                                    println!("    Note: {}", note);
-                                }
+                Ok(mut harness) => match tx.replay(&mut harness) {
+                    Ok(result) => {
+                        if result.local_success {
+                            total_success += 1;
+                            println!("  LOCAL RESULT: SUCCESS");
+                        } else {
+                            println!("  LOCAL RESULT: FAILURE");
+                            if let Some(err) = &result.local_error {
+                                println!("    Error: {}", err);
                             }
                         }
-                        Err(e) => {
-                            println!("  REPLAY ERROR: {}", e);
+
+                        if let Some(cmp) = &result.comparison {
+                            println!("  COMPARISON:");
+                            println!("    Match score: {:.0}%", cmp.match_score * 100.0);
+                            println!(
+                                "    Status match: {}",
+                                if cmp.status_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Created match: {}",
+                                if cmp.created_count_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Mutated match: {}",
+                                if cmp.mutated_count_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Deleted match: {}",
+                                if cmp.deleted_count_match { "YES" } else { "NO" }
+                            );
+
+                            if cmp.status_match {
+                                total_match += 1;
+                            }
+
+                            for note in &cmp.notes {
+                                println!("    Note: {}", note);
+                            }
                         }
                     }
-                }
+                    Err(e) => {
+                        println!("  REPLAY ERROR: {}", e);
+                    }
+                },
                 Err(e) => {
                     eprintln!("  Failed to create VM harness: {}", e);
                 }
@@ -451,13 +487,24 @@ fn run_tx_replay_with_transactions(
         println!("========================================");
         println!("Total transactions: {}", transactions.len());
         println!("Replayed: {}", total_replayed);
-        println!("Successful: {} ({:.1}%)", total_success, 100.0 * total_success as f64 / total_replayed as f64);
-        println!("Status match: {} ({:.1}%)", total_match, 100.0 * total_match as f64 / total_replayed as f64);
+        println!(
+            "Successful: {} ({:.1}%)",
+            total_success,
+            100.0 * total_success as f64 / total_replayed as f64
+        );
+        println!(
+            "Status match: {} ({:.1}%)",
+            total_match,
+            100.0 * total_match as f64 / total_replayed as f64
+        );
     }
 
     if let Some(ref mut w) = writer {
         w.flush()?;
-        eprintln!("Results written to {}", args.output.as_ref().unwrap().display());
+        eprintln!(
+            "Results written to {}",
+            args.output.as_ref().unwrap().display()
+        );
     }
 
     Ok(())
@@ -527,14 +574,23 @@ fn run_tx_replay_with_cached_transactions(
             if !cached.packages.is_empty() {
                 for (pkg_id, _modules) in &cached.packages {
                     if let Some(modules) = cached.get_package_modules(pkg_id) {
-                        let non_empty: Vec<(String, Vec<u8>)> = modules.into_iter().filter(|(_, b)| !b.is_empty()).collect();
+                        let non_empty: Vec<(String, Vec<u8>)> =
+                            modules.into_iter().filter(|(_, b)| !b.is_empty()).collect();
                         if !non_empty.is_empty() {
                             if args.verbose {
-                                eprintln!("  Loading package {} ({} modules)...", pkg_id, non_empty.len());
+                                eprintln!(
+                                    "  Loading package {} ({} modules)...",
+                                    pkg_id,
+                                    non_empty.len()
+                                );
                             }
                             match resolver.add_package_modules(non_empty) {
-                                Ok((count, _)) if args.verbose => eprintln!("    Loaded {} modules", count),
-                                Err(e) if args.verbose => eprintln!("    Warning: Failed to load: {}", e),
+                                Ok((count, _)) if args.verbose => {
+                                    eprintln!("    Loaded {} modules", count)
+                                }
+                                Err(e) if args.verbose => {
+                                    eprintln!("    Warning: Failed to load: {}", e)
+                                }
                                 _ => {}
                             }
                         }
@@ -547,41 +603,51 @@ fn run_tx_replay_with_cached_transactions(
             total_replayed += 1;
 
             match VMHarness::new(&resolver, false) {
-                Ok(mut harness) => {
-                    match tx.replay_with_objects(&mut harness, &cached.objects) {
-                        Ok(result) => {
-                            if result.local_success {
-                                total_success += 1;
-                                println!("  LOCAL RESULT: SUCCESS");
-                            } else {
-                                println!("  LOCAL RESULT: FAILURE");
-                                if let Some(err) = &result.local_error {
-                                    println!("    Error: {}", err);
-                                }
-                            }
-
-                            if let Some(cmp) = &result.comparison {
-                                println!("  COMPARISON:");
-                                println!("    Match score: {:.0}%", cmp.match_score * 100.0);
-                                println!("    Status match: {}", if cmp.status_match { "YES" } else { "NO" });
-                                println!("    Created match: {}", if cmp.created_count_match { "YES" } else { "NO" });
-                                println!("    Mutated match: {}", if cmp.mutated_count_match { "YES" } else { "NO" });
-                                println!("    Deleted match: {}", if cmp.deleted_count_match { "YES" } else { "NO" });
-
-                                if cmp.status_match {
-                                    total_match += 1;
-                                }
-
-                                for note in &cmp.notes {
-                                    println!("    Note: {}", note);
-                                }
+                Ok(mut harness) => match tx.replay_with_objects(&mut harness, &cached.objects) {
+                    Ok(result) => {
+                        if result.local_success {
+                            total_success += 1;
+                            println!("  LOCAL RESULT: SUCCESS");
+                        } else {
+                            println!("  LOCAL RESULT: FAILURE");
+                            if let Some(err) = &result.local_error {
+                                println!("    Error: {}", err);
                             }
                         }
-                        Err(e) => {
-                            println!("  REPLAY ERROR: {}", e);
+
+                        if let Some(cmp) = &result.comparison {
+                            println!("  COMPARISON:");
+                            println!("    Match score: {:.0}%", cmp.match_score * 100.0);
+                            println!(
+                                "    Status match: {}",
+                                if cmp.status_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Created match: {}",
+                                if cmp.created_count_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Mutated match: {}",
+                                if cmp.mutated_count_match { "YES" } else { "NO" }
+                            );
+                            println!(
+                                "    Deleted match: {}",
+                                if cmp.deleted_count_match { "YES" } else { "NO" }
+                            );
+
+                            if cmp.status_match {
+                                total_match += 1;
+                            }
+
+                            for note in &cmp.notes {
+                                println!("    Note: {}", note);
+                            }
                         }
                     }
-                }
+                    Err(e) => {
+                        println!("  REPLAY ERROR: {}", e);
+                    }
+                },
                 Err(e) => {
                     eprintln!("  Failed to create VM harness: {}", e);
                 }
@@ -598,8 +664,16 @@ fn run_tx_replay_with_cached_transactions(
         println!("========================================");
         println!("Total transactions: {}", cached_txs.len());
         println!("Replayed: {}", total_replayed);
-        println!("Successful: {} ({:.1}%)", total_success, 100.0 * total_success as f64 / total_replayed as f64);
-        println!("Status match: {} ({:.1}%)", total_match, 100.0 * total_match as f64 / total_replayed as f64);
+        println!(
+            "Successful: {} ({:.1}%)",
+            total_success,
+            100.0 * total_success as f64 / total_replayed as f64
+        );
+        println!(
+            "Status match: {} ({:.1}%)",
+            total_match,
+            100.0 * total_match as f64 / total_replayed as f64
+        );
     }
 
     Ok(())

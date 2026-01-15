@@ -54,12 +54,7 @@ pub fn format_type_tag(type_tag: &TypeTag) -> String {
 
 /// Format a StructTag to its canonical string representation.
 pub fn format_struct_tag(s: &StructTag) -> String {
-    let mut result = format!(
-        "{}::{}::{}",
-        s.address.to_hex_literal(),
-        s.module,
-        s.name
-    );
+    let mut result = format!("{}::{}::{}", s.address.to_hex_literal(), s.module, s.name);
     if !s.type_params.is_empty() {
         let params: Vec<String> = s.type_params.iter().map(format_type_tag).collect();
         result.push_str(&format!("<{}>", params.join(", ")));
@@ -265,9 +260,7 @@ pub fn type_tags_equal(a: &TypeTag, b: &TypeTag) -> bool {
         (TypeTag::U256, TypeTag::U256) => true,
         (TypeTag::Address, TypeTag::Address) => true,
         (TypeTag::Signer, TypeTag::Signer) => true,
-        (TypeTag::Vector(inner_a), TypeTag::Vector(inner_b)) => {
-            type_tags_equal(inner_a, inner_b)
-        }
+        (TypeTag::Vector(inner_a), TypeTag::Vector(inner_b)) => type_tags_equal(inner_a, inner_b),
         (TypeTag::Struct(sa), TypeTag::Struct(sb)) => struct_tags_equal(sa, sb),
         _ => false,
     }
@@ -478,7 +471,9 @@ mod tests {
     fn test_normalize_address_short() {
         assert_eq!(normalize_address_short("0x2"), Some("0x2".to_string()));
         assert_eq!(
-            normalize_address_short("0x0000000000000000000000000000000000000000000000000000000000000002"),
+            normalize_address_short(
+                "0x0000000000000000000000000000000000000000000000000000000000000002"
+            ),
             Some("0x2".to_string())
         );
     }

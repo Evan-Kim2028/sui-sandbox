@@ -228,7 +228,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // LLM Agent Tools - Additional introspection and utility actions
     // ========================================================================
-
     /// List all functions in a module.
     #[serde(rename = "list_functions")]
     ListFunctions {
@@ -356,7 +355,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // Cached Transaction Replay Tools
     // ========================================================================
-
     /// Load cached objects from a transaction replay.
     /// Objects are stored as base64-encoded BCS bytes.
     #[serde(rename = "load_cached_objects")]
@@ -392,7 +390,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // Utility Tools
     // ========================================================================
-
     /// Generate a fresh unique object/address ID.
     #[serde(rename = "generate_id")]
     GenerateId,
@@ -483,7 +480,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // Event Query Tools
     // ========================================================================
-
     /// List all events emitted during this session.
     #[serde(rename = "list_events")]
     ListEvents,
@@ -506,7 +502,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // Shared Object Versioning Tools
     // ========================================================================
-
     /// Get the current lamport clock value.
     /// The lamport clock is used for shared object versioning and consensus simulation.
     #[serde(rename = "get_lamport_clock")]
@@ -530,7 +525,6 @@ pub enum SandboxRequest {
     // ========================================================================
     // Meta / Discovery Tools
     // ========================================================================
-
     /// List all available sandbox tools and their schemas.
     /// This is the unified tool discovery endpoint for LLM agents.
     #[serde(rename = "list_available_tools")]
@@ -554,14 +548,10 @@ pub enum PtbInput {
     },
 
     #[serde(rename = "gas")]
-    Gas {
-        budget: u64,
-    },
+    Gas { budget: u64 },
 
     #[serde(rename = "witness")]
-    Witness {
-        witness_type: String,
-    },
+    Witness { witness_type: String },
 }
 
 /// PTB command specification.
@@ -955,94 +945,101 @@ pub fn execute_request(
     verbose: bool,
 ) -> SandboxResponse {
     match request {
-        SandboxRequest::LoadModule { bytecode_path, module_name } => {
-            execute_load_module(env, bytecode_path, module_name.as_deref(), verbose)
-        }
-        SandboxRequest::CreateObject { object_type, fields, object_id } => {
-            execute_create_object(env, object_type, fields, object_id.as_deref(), verbose)
-        }
+        SandboxRequest::LoadModule {
+            bytecode_path,
+            module_name,
+        } => execute_load_module(env, bytecode_path, module_name.as_deref(), verbose),
+        SandboxRequest::CreateObject {
+            object_type,
+            fields,
+            object_id,
+        } => execute_create_object(env, object_type, fields, object_id.as_deref(), verbose),
         SandboxRequest::ExecutePtb { inputs, commands } => {
             execute_ptb_command(env, inputs, commands, verbose)
         }
         SandboxRequest::ValidatePtb { inputs, commands } => {
             execute_validate_ptb(env, inputs, commands, verbose)
         }
-        SandboxRequest::InspectStruct { package, module, struct_name } => {
-            execute_inspect_struct(env, package, module.as_deref(), struct_name.as_deref(), verbose)
-        }
-        SandboxRequest::GetState => {
-            execute_get_state(env, verbose)
-        }
-        SandboxRequest::Reset => {
-            execute_reset(env, verbose)
-        }
-        SandboxRequest::CallFunction { package, module, function, type_args, args } => {
-            execute_call_function(env, package, module, function, type_args, args, verbose)
-        }
-        SandboxRequest::RegisterCoin { coin_type, decimals, symbol, name } => {
-            execute_register_coin(env, coin_type, *decimals, symbol, name, verbose)
-        }
+        SandboxRequest::InspectStruct {
+            package,
+            module,
+            struct_name,
+        } => execute_inspect_struct(
+            env,
+            package,
+            module.as_deref(),
+            struct_name.as_deref(),
+            verbose,
+        ),
+        SandboxRequest::GetState => execute_get_state(env, verbose),
+        SandboxRequest::Reset => execute_reset(env, verbose),
+        SandboxRequest::CallFunction {
+            package,
+            module,
+            function,
+            type_args,
+            args,
+        } => execute_call_function(env, package, module, function, type_args, args, verbose),
+        SandboxRequest::RegisterCoin {
+            coin_type,
+            decimals,
+            symbol,
+            name,
+        } => execute_register_coin(env, coin_type, *decimals, symbol, name, verbose),
         SandboxRequest::GetCoinMetadata { coin_type } => {
             execute_get_coin_metadata(env, coin_type, verbose)
         }
-        SandboxRequest::ListCoins => {
-            execute_list_coins(env, verbose)
-        }
+        SandboxRequest::ListCoins => execute_list_coins(env, verbose),
         SandboxRequest::InspectObject { object_id } => {
             execute_inspect_object(env, object_id, verbose)
         }
-        SandboxRequest::ListObjects => {
-            execute_list_objects(env, verbose)
-        }
-        SandboxRequest::ListSharedObjects => {
-            execute_list_shared_objects(env, verbose)
-        }
-        SandboxRequest::GetClock => {
-            execute_get_clock(env, verbose)
-        }
-        SandboxRequest::SetClock { timestamp_ms } => {
-            execute_set_clock(env, *timestamp_ms, verbose)
-        }
+        SandboxRequest::ListObjects => execute_list_objects(env, verbose),
+        SandboxRequest::ListSharedObjects => execute_list_shared_objects(env, verbose),
+        SandboxRequest::GetClock => execute_get_clock(env, verbose),
+        SandboxRequest::SetClock { timestamp_ms } => execute_set_clock(env, *timestamp_ms, verbose),
         // New LLM agent tools
-        SandboxRequest::ListModules => {
-            execute_list_modules(env, verbose)
-        }
+        SandboxRequest::ListModules => execute_list_modules(env, verbose),
         SandboxRequest::ListFunctions { module_path } => {
             execute_list_functions(env, module_path, verbose)
         }
         SandboxRequest::ListStructs { module_path } => {
             execute_list_structs(env, module_path, verbose)
         }
-        SandboxRequest::GetFunctionInfo { module_path, function_name } => {
-            execute_get_function_info(env, module_path, function_name, verbose)
-        }
+        SandboxRequest::GetFunctionInfo {
+            module_path,
+            function_name,
+        } => execute_get_function_info(env, module_path, function_name, verbose),
         SandboxRequest::FindConstructors { type_path } => {
             execute_find_constructors(env, type_path, verbose)
         }
-        SandboxRequest::SearchTypes { pattern, ability_filter } => {
-            execute_search_types(env, pattern, ability_filter.as_deref(), verbose)
-        }
-        SandboxRequest::SearchFunctions { pattern, entry_only } => {
-            execute_search_functions(env, pattern, *entry_only, verbose)
-        }
+        SandboxRequest::SearchTypes {
+            pattern,
+            ability_filter,
+        } => execute_search_types(env, pattern, ability_filter.as_deref(), verbose),
+        SandboxRequest::SearchFunctions {
+            pattern,
+            entry_only,
+        } => execute_search_functions(env, pattern, *entry_only, verbose),
         SandboxRequest::GetSystemObjectInfo { object_name } => {
             execute_get_system_object_info(object_name, verbose)
         }
-        SandboxRequest::ValidateType { type_str } => {
-            execute_validate_type(type_str, verbose)
-        }
+        SandboxRequest::ValidateType { type_str } => execute_validate_type(type_str, verbose),
         SandboxRequest::EncodeBcs { type_str, value } => {
             execute_encode_bcs(type_str, value, verbose)
         }
-        SandboxRequest::DecodeBcs { type_str, bytes_hex } => {
-            execute_decode_bcs(type_str, bytes_hex, verbose)
-        }
-        SandboxRequest::DisassembleFunction { module_path, function_name } => {
-            execute_disassemble_function(env, module_path, function_name, verbose)
-        }
-        SandboxRequest::CompileMove { package_name, module_name, source } => {
-            execute_compile_move(env, package_name, module_name, source, verbose)
-        }
+        SandboxRequest::DecodeBcs {
+            type_str,
+            bytes_hex,
+        } => execute_decode_bcs(type_str, bytes_hex, verbose),
+        SandboxRequest::DisassembleFunction {
+            module_path,
+            function_name,
+        } => execute_disassemble_function(env, module_path, function_name, verbose),
+        SandboxRequest::CompileMove {
+            package_name,
+            module_name,
+            source,
+        } => execute_compile_move(env, package_name, module_name, source, verbose),
         SandboxRequest::GetStructInfo { type_path } => {
             execute_get_struct_info(env, type_path, verbose)
         }
@@ -1050,34 +1047,44 @@ pub fn execute_request(
             execute_create_test_object(env, type_tag, value, verbose)
         }
         // Cached transaction replay tools
-        SandboxRequest::LoadCachedObjects { objects, object_types, shared_object_ids } => {
-            execute_load_cached_objects(env, objects, object_types, shared_object_ids, verbose)
-        }
-        SandboxRequest::LoadCachedObject { object_id, bcs_bytes, object_type, is_shared } => {
-            execute_load_cached_object(env, object_id, bcs_bytes, object_type.as_deref(), *is_shared, verbose)
-        }
-        SandboxRequest::ListCachedObjects => {
-            execute_list_cached_objects(env, verbose)
-        }
+        SandboxRequest::LoadCachedObjects {
+            objects,
+            object_types,
+            shared_object_ids,
+        } => execute_load_cached_objects(env, objects, object_types, shared_object_ids, verbose),
+        SandboxRequest::LoadCachedObject {
+            object_id,
+            bcs_bytes,
+            object_type,
+            is_shared,
+        } => execute_load_cached_object(
+            env,
+            object_id,
+            bcs_bytes,
+            object_type.as_deref(),
+            *is_shared,
+            verbose,
+        ),
+        SandboxRequest::ListCachedObjects => execute_list_cached_objects(env, verbose),
         // Utility tools
-        SandboxRequest::GenerateId => {
-            execute_generate_id(env, verbose)
-        }
-        SandboxRequest::ParseAddress { address } => {
-            execute_parse_address(address, verbose)
-        }
+        SandboxRequest::GenerateId => execute_generate_id(env, verbose),
+        SandboxRequest::ParseAddress { address } => execute_parse_address(address, verbose),
         SandboxRequest::FormatAddress { address, format } => {
             execute_format_address(address, format.as_deref(), verbose)
         }
-        SandboxRequest::ComputeHash { bytes_hex, algorithm } => {
-            execute_compute_hash(bytes_hex, algorithm.as_deref(), verbose)
-        }
-        SandboxRequest::ConvertNumber { value, from_type, to_type } => {
-            execute_convert_number(value, from_type, to_type, verbose)
-        }
-        SandboxRequest::EncodeVector { element_type, values } => {
-            execute_encode_vector(element_type, values, verbose)
-        }
+        SandboxRequest::ComputeHash {
+            bytes_hex,
+            algorithm,
+        } => execute_compute_hash(bytes_hex, algorithm.as_deref(), verbose),
+        SandboxRequest::ConvertNumber {
+            value,
+            from_type,
+            to_type,
+        } => execute_convert_number(value, from_type, to_type, verbose),
+        SandboxRequest::EncodeVector {
+            element_type,
+            values,
+        } => execute_encode_vector(element_type, values, verbose),
         SandboxRequest::GetModuleDependencies { module_path } => {
             execute_get_module_dependencies(env, module_path, verbose)
         }
@@ -1087,44 +1094,24 @@ pub fn execute_request(
         SandboxRequest::ModuleSummary { module_path } => {
             execute_module_summary(env, module_path, verbose)
         }
-        SandboxRequest::ParseError { error } => {
-            execute_parse_error(error, verbose)
-        }
-        SandboxRequest::IsFrameworkCached => {
-            execute_is_framework_cached(verbose)
-        }
-        SandboxRequest::EnsureFrameworkCached => {
-            execute_ensure_framework_cached(verbose)
-        }
+        SandboxRequest::ParseError { error } => execute_parse_error(error, verbose),
+        SandboxRequest::IsFrameworkCached => execute_is_framework_cached(verbose),
+        SandboxRequest::EnsureFrameworkCached => execute_ensure_framework_cached(verbose),
         // Event query tools
-        SandboxRequest::ListEvents => {
-            execute_list_events(env, verbose)
-        }
+        SandboxRequest::ListEvents => execute_list_events(env, verbose),
         SandboxRequest::GetEventsByType { type_prefix } => {
             execute_get_events_by_type(env, type_prefix, verbose)
         }
-        SandboxRequest::GetLastTxEvents => {
-            execute_get_last_tx_events(env, verbose)
-        }
-        SandboxRequest::ClearEvents => {
-            execute_clear_events(env, verbose)
-        }
+        SandboxRequest::GetLastTxEvents => execute_get_last_tx_events(env, verbose),
+        SandboxRequest::ClearEvents => execute_clear_events(env, verbose),
         // Shared object versioning tools
-        SandboxRequest::GetLamportClock => {
-            execute_get_lamport_clock(env, verbose)
-        }
+        SandboxRequest::GetLamportClock => execute_get_lamport_clock(env, verbose),
         SandboxRequest::GetSharedObjectInfo { object_id } => {
             execute_get_shared_object_info(env, object_id, verbose)
         }
-        SandboxRequest::ListSharedLocks => {
-            execute_list_shared_locks(env, verbose)
-        }
-        SandboxRequest::AdvanceLamportClock => {
-            execute_advance_lamport_clock(env, verbose)
-        }
-        SandboxRequest::ListAvailableTools => {
-            execute_list_available_tools(verbose)
-        }
+        SandboxRequest::ListSharedLocks => execute_list_shared_locks(env, verbose),
+        SandboxRequest::AdvanceLamportClock => execute_advance_lamport_clock(env, verbose),
+        SandboxRequest::ListAvailableTools => execute_list_available_tools(verbose),
     }
 }
 
@@ -1150,7 +1137,8 @@ fn execute_load_module(
                 for entry in entries.flatten() {
                     let file_path = entry.path();
                     if file_path.extension().map_or(false, |e| e == "mv") {
-                        let name = file_path.file_stem()
+                        let name = file_path
+                            .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default();
 
@@ -1170,7 +1158,9 @@ fn execute_load_module(
                             }
                             Err(e) => {
                                 return SandboxResponse::error(format!(
-                                    "Failed to read {}: {}", file_path.display(), e
+                                    "Failed to read {}: {}",
+                                    file_path.display(),
+                                    e
                                 ));
                             }
                         }
@@ -1185,7 +1175,8 @@ fn execute_load_module(
         // Single file
         match std::fs::read(path) {
             Ok(bytes) => {
-                let name = path.file_stem()
+                let name = path
+                    .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 modules.push((name, bytes));
@@ -1202,19 +1193,15 @@ fn execute_load_module(
 
     // Deploy to environment
     match env.deploy_package(modules.clone()) {
-        Ok(address) => {
-            SandboxResponse::success_with_data(serde_json::json!({
-                "package_address": address.to_hex_literal(),
-                "modules_loaded": modules.len(),
-                "module_names": modules.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-            }))
-        }
-        Err(e) => {
-            SandboxResponse::error_with_category(
-                format!("Failed to deploy package: {}", e),
-                "DeploymentError",
-            )
-        }
+        Ok(address) => SandboxResponse::success_with_data(serde_json::json!({
+            "package_address": address.to_hex_literal(),
+            "modules_loaded": modules.len(),
+            "module_names": modules.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to deploy package: {}", e),
+            "DeploymentError",
+        ),
     }
 }
 
@@ -1242,18 +1229,14 @@ fn execute_create_object(
 
     // Create the object in the environment
     match env.create_object_from_json(object_type, fields, id) {
-        Ok(created_id) => {
-            SandboxResponse::success_with_data(serde_json::json!({
-                "object_id": created_id.to_hex_literal(),
-                "type": object_type,
-            }))
-        }
-        Err(e) => {
-            SandboxResponse::error_with_category(
-                format!("Failed to create object: {}", e),
-                "ObjectCreationError",
-            )
-        }
+        Ok(created_id) => SandboxResponse::success_with_data(serde_json::json!({
+            "object_id": created_id.to_hex_literal(),
+            "type": object_type,
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Failed to create object: {}", e),
+            "ObjectCreationError",
+        ),
     }
 }
 
@@ -1263,12 +1246,16 @@ fn execute_ptb_command(
     commands: &[PtbCommand],
     verbose: bool,
 ) -> SandboxResponse {
-    use crate::benchmark::ptb::{InputValue, Command as RealPtbCommand, Argument};
+    use crate::benchmark::ptb::{Argument, Command as RealPtbCommand, InputValue};
     use move_core_types::identifier::Identifier;
     use move_core_types::language_storage::TypeTag;
 
     if verbose {
-        eprintln!("Executing PTB with {} inputs and {} commands", inputs.len(), commands.len());
+        eprintln!(
+            "Executing PTB with {} inputs and {} commands",
+            inputs.len(),
+            commands.len()
+        );
     }
 
     // Track gas budget for simulation
@@ -1278,16 +1265,19 @@ fn execute_ptb_command(
     let mut real_inputs: Vec<InputValue> = Vec::new();
     for input in inputs {
         match input {
-            PtbInput::Pure { value, value_type } => {
-                match encode_pure_value(value, value_type) {
-                    Ok(bytes) => real_inputs.push(InputValue::Pure(bytes)),
-                    Err(e) => return SandboxResponse::error(format!("Failed to encode input: {}", e)),
-                }
-            }
+            PtbInput::Pure { value, value_type } => match encode_pure_value(value, value_type) {
+                Ok(bytes) => real_inputs.push(InputValue::Pure(bytes)),
+                Err(e) => return SandboxResponse::error(format!("Failed to encode input: {}", e)),
+            },
             PtbInput::Object { object_id, mode } => {
                 match env.get_object_for_ptb_with_mode(object_id, mode.as_deref()) {
                     Ok(obj) => real_inputs.push(InputValue::Object(obj)),
-                    Err(e) => return SandboxResponse::error(format!("Failed to get object {}: {}", object_id, e)),
+                    Err(e) => {
+                        return SandboxResponse::error(format!(
+                            "Failed to get object {}: {}",
+                            object_id, e
+                        ))
+                    }
                 }
             }
             PtbInput::Gas { budget } => {
@@ -1295,7 +1285,9 @@ fn execute_ptb_command(
                 // Gas coin is a special input - create a SUI coin with the budget
                 match env.create_gas_coin(*budget) {
                     Ok(obj) => real_inputs.push(InputValue::Object(obj)),
-                    Err(e) => return SandboxResponse::error(format!("Failed to create gas coin: {}", e)),
+                    Err(e) => {
+                        return SandboxResponse::error(format!("Failed to create gas coin: {}", e))
+                    }
                 }
             }
             PtbInput::Witness { witness_type } => {
@@ -1312,10 +1304,18 @@ fn execute_ptb_command(
     let mut real_commands: Vec<RealPtbCommand> = Vec::new();
     for cmd in commands {
         match cmd {
-            PtbCommand::MoveCall { package, module, function, type_args, args } => {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } => {
                 let pkg_addr = match AccountAddress::from_hex_literal(package) {
                     Ok(a) => a,
-                    Err(e) => return SandboxResponse::error(format!("Invalid package address: {}", e)),
+                    Err(e) => {
+                        return SandboxResponse::error(format!("Invalid package address: {}", e))
+                    }
                 };
 
                 let module_id = match Identifier::new(module.as_str()) {
@@ -1325,18 +1325,25 @@ fn execute_ptb_command(
 
                 let function_id = match Identifier::new(function.as_str()) {
                     Ok(id) => id,
-                    Err(e) => return SandboxResponse::error(format!("Invalid function name: {}", e)),
+                    Err(e) => {
+                        return SandboxResponse::error(format!("Invalid function name: {}", e))
+                    }
                 };
 
                 // Parse type args from strings
-                let parsed_type_args: Vec<TypeTag> = match type_args.iter()
+                let parsed_type_args: Vec<TypeTag> = match type_args
+                    .iter()
                     .map(|s| crate::benchmark::tx_replay::parse_type_tag(s))
-                    .collect::<Result<Vec<_>, _>>() {
-                        Ok(tags) => tags,
-                        Err(e) => return SandboxResponse::error(format!("Invalid type argument: {}", e)),
-                    };
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(tags) => tags,
+                    Err(e) => {
+                        return SandboxResponse::error(format!("Invalid type argument: {}", e))
+                    }
+                };
 
-                let converted_args: Vec<Argument> = args.iter().map(|a| convert_ptb_arg(a)).collect();
+                let converted_args: Vec<Argument> =
+                    args.iter().map(|a| convert_ptb_arg(a)).collect();
 
                 real_commands.push(RealPtbCommand::MoveCall {
                     package: pkg_addr,
@@ -1364,11 +1371,16 @@ fn execute_ptb_command(
                     sources: sources.iter().map(convert_ptb_arg).collect(),
                 });
             }
-            PtbCommand::MakeMoveVec { element_type, elements } => {
+            PtbCommand::MakeMoveVec {
+                element_type,
+                elements,
+            } => {
                 let type_tag = if let Some(type_str) = element_type {
                     match crate::benchmark::tx_replay::parse_type_tag(type_str) {
                         Ok(tag) => Some(tag),
-                        Err(e) => return SandboxResponse::error(format!("Invalid element type: {}", e)),
+                        Err(e) => {
+                            return SandboxResponse::error(format!("Invalid element type: {}", e))
+                        }
                     }
                 } else {
                     None
@@ -1378,14 +1390,22 @@ fn execute_ptb_command(
                     elements: elements.iter().map(convert_ptb_arg).collect(),
                 });
             }
-            PtbCommand::Publish { modules, dependencies } => {
+            PtbCommand::Publish {
+                modules,
+                dependencies,
+            } => {
                 use base64::Engine;
                 // Decode base64 modules
                 let mut decoded_modules = Vec::new();
                 for (i, b64) in modules.iter().enumerate() {
                     match base64::engine::general_purpose::STANDARD.decode(b64) {
                         Ok(bytes) => decoded_modules.push(bytes),
-                        Err(e) => return SandboxResponse::error(format!("Invalid base64 in module {}: {}", i, e)),
+                        Err(e) => {
+                            return SandboxResponse::error(format!(
+                                "Invalid base64 in module {}: {}",
+                                i, e
+                            ))
+                        }
                     }
                 }
 
@@ -1394,7 +1414,12 @@ fn execute_ptb_command(
                 for dep in dependencies {
                     match AccountAddress::from_hex_literal(dep) {
                         Ok(addr) => dep_ids.push(addr),
-                        Err(e) => return SandboxResponse::error(format!("Invalid dependency ID '{}': {}", dep, e)),
+                        Err(e) => {
+                            return SandboxResponse::error(format!(
+                                "Invalid dependency ID '{}': {}",
+                                dep, e
+                            ))
+                        }
                     }
                 }
 
@@ -1403,14 +1428,23 @@ fn execute_ptb_command(
                     dep_ids,
                 });
             }
-            PtbCommand::Upgrade { modules, package, ticket } => {
+            PtbCommand::Upgrade {
+                modules,
+                package,
+                ticket,
+            } => {
                 use base64::Engine;
                 // Decode base64 modules
                 let mut decoded_modules = Vec::new();
                 for (i, b64) in modules.iter().enumerate() {
                     match base64::engine::general_purpose::STANDARD.decode(b64) {
                         Ok(bytes) => decoded_modules.push(bytes),
-                        Err(e) => return SandboxResponse::error(format!("Invalid base64 in module {}: {}", i, e)),
+                        Err(e) => {
+                            return SandboxResponse::error(format!(
+                                "Invalid base64 in module {}: {}",
+                                i, e
+                            ))
+                        }
                     }
                 }
 
@@ -1426,7 +1460,10 @@ fn execute_ptb_command(
                     ticket: convert_ptb_arg(ticket),
                 });
             }
-            PtbCommand::Receive { object_id, object_type } => {
+            PtbCommand::Receive {
+                object_id,
+                object_type,
+            } => {
                 // Parse object ID
                 let obj_id = match AccountAddress::from_hex_literal(object_id) {
                     Ok(addr) => addr,
@@ -1437,7 +1474,9 @@ fn execute_ptb_command(
                 let type_tag = if let Some(type_str) = object_type {
                     match crate::benchmark::tx_replay::parse_type_tag(type_str) {
                         Ok(tag) => Some(tag),
-                        Err(e) => return SandboxResponse::error(format!("Invalid object type: {}", e)),
+                        Err(e) => {
+                            return SandboxResponse::error(format!("Invalid object type: {}", e))
+                        }
                     }
                 } else {
                     None
@@ -1459,7 +1498,11 @@ fn execute_ptb_command(
         if let Some(ref effects) = result.effects {
             let effects_response = build_effects_response(effects);
             let events_response = build_events_response(&effects.events);
-            SandboxResponse::success_with_effects(effects_response, events_response, effects.gas_used)
+            SandboxResponse::success_with_effects(
+                effects_response,
+                events_response,
+                effects.gas_used,
+            )
         } else {
             SandboxResponse::success_with_data(serde_json::json!({
                 "status": "success",
@@ -1467,13 +1510,19 @@ fn execute_ptb_command(
         }
     } else if let Some(ref error) = result.error {
         let mut response = match error {
-            crate::benchmark::simulation::SimulationError::ContractAbort { abort_code, module, function, .. } => {
-                SandboxResponse::abort(
-                    *abort_code,
-                    Some(format!("{}::{}", module, function)),
-                    format!("Contract abort in {}::{} with code {}", module, function, abort_code),
-                )
-            }
+            crate::benchmark::simulation::SimulationError::ContractAbort {
+                abort_code,
+                module,
+                function,
+                ..
+            } => SandboxResponse::abort(
+                *abort_code,
+                Some(format!("{}::{}", module, function)),
+                format!(
+                    "Contract abort in {}::{} with code {}",
+                    module, function, abort_code
+                ),
+            ),
             _ => SandboxResponse::error_with_category(
                 error.to_string(),
                 categorize_simulation_error(error),
@@ -1513,7 +1562,11 @@ fn execute_validate_ptb(
     use move_core_types::identifier::Identifier;
 
     if verbose {
-        eprintln!("Validating PTB with {} inputs and {} commands", inputs.len(), commands.len());
+        eprintln!(
+            "Validating PTB with {} inputs and {} commands",
+            inputs.len(),
+            commands.len()
+        );
     }
 
     let mut validation_errors: Vec<String> = Vec::new();
@@ -1530,31 +1583,30 @@ fn execute_validate_ptb(
     // Validate and collect info about inputs
     for (i, input) in inputs.iter().enumerate() {
         match input {
-            PtbInput::Pure { value, value_type } => {
-                match encode_pure_value(value, value_type) {
-                    Ok(bytes) => {
-                        input_type_map.push(Some(value_type.clone()));
-                        input_types.push(serde_json::json!({
-                            "index": i,
-                            "type": "pure",
-                            "value_type": value_type,
-                            "bytes_len": bytes.len(),
-                            "valid": true
-                        }));
-                    }
-                    Err(e) => {
-                        input_type_map.push(None);
-                        validation_errors.push(format!("Input {}: Failed to encode pure value: {}", i, e));
-                        input_types.push(serde_json::json!({
-                            "index": i,
-                            "type": "pure",
-                            "value_type": value_type,
-                            "valid": false,
-                            "error": e.to_string()
-                        }));
-                    }
+            PtbInput::Pure { value, value_type } => match encode_pure_value(value, value_type) {
+                Ok(bytes) => {
+                    input_type_map.push(Some(value_type.clone()));
+                    input_types.push(serde_json::json!({
+                        "index": i,
+                        "type": "pure",
+                        "value_type": value_type,
+                        "bytes_len": bytes.len(),
+                        "valid": true
+                    }));
                 }
-            }
+                Err(e) => {
+                    input_type_map.push(None);
+                    validation_errors
+                        .push(format!("Input {}: Failed to encode pure value: {}", i, e));
+                    input_types.push(serde_json::json!({
+                        "index": i,
+                        "type": "pure",
+                        "value_type": value_type,
+                        "valid": false,
+                        "error": e.to_string()
+                    }));
+                }
+            },
             PtbInput::Object { object_id, mode } => {
                 match env.get_object_for_ptb_with_mode(object_id, mode.as_deref()) {
                     Ok(obj) => {
@@ -1571,7 +1623,8 @@ fn execute_validate_ptb(
                     }
                     Err(e) => {
                         input_type_map.push(None);
-                        validation_errors.push(format!("Input {}: Object not found or invalid: {}", i, e));
+                        validation_errors
+                            .push(format!("Input {}: Object not found or invalid: {}", i, e));
                         input_types.push(serde_json::json!({
                             "index": i,
                             "type": "object",
@@ -1608,7 +1661,13 @@ fn execute_validate_ptb(
     // Validate commands
     for (i, cmd) in commands.iter().enumerate() {
         match cmd {
-            PtbCommand::MoveCall { package, module, function, type_args, args } => {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } => {
                 let mut cmd_valid = true;
                 let mut cmd_errors: Vec<String> = Vec::new();
 
@@ -1658,27 +1717,36 @@ fn execute_validate_ptb(
 
                         // Extract parameter count (excluding &mut TxContext / &TxContext at end)
                         if let Some(params) = info.get("params").and_then(|p| p.as_array()) {
-                            param_types = params.iter()
+                            param_types = params
+                                .iter()
                                 .filter_map(|p| p.as_str().map(|s| s.to_string()))
                                 .collect();
                             // Count params, excluding trailing TxContext
-                            expected_params = param_types.iter()
+                            expected_params = param_types
+                                .iter()
                                 .filter(|p| !p.contains("TxContext"))
                                 .count();
                         }
 
                         // Extract type parameter count
-                        if let Some(type_params) = info.get("type_params").and_then(|p| p.as_array()) {
+                        if let Some(type_params) =
+                            info.get("type_params").and_then(|p| p.as_array())
+                        {
                             expected_type_args = type_params.len();
                         }
 
                         // Extract visibility info
-                        is_entry = info.get("is_entry").and_then(|v| v.as_bool()).unwrap_or(false);
-                        is_public = info.get("visibility").and_then(|v| v.as_str()) == Some("public");
+                        is_entry = info
+                            .get("is_entry")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        is_public =
+                            info.get("visibility").and_then(|v| v.as_str()) == Some("public");
 
                         // Extract return types
                         if let Some(returns) = info.get("returns").and_then(|r| r.as_array()) {
-                            return_types = returns.iter()
+                            return_types = returns
+                                .iter()
                                 .filter_map(|r| r.as_str().map(|s| s.to_string()))
                                 .collect();
                         }
@@ -1687,7 +1755,8 @@ fn execute_validate_ptb(
                         if !is_entry && !is_public {
                             cmd_valid = false;
                             cmd_errors.push(format!(
-                                "Function '{}' is private and cannot be called via PTB", function
+                                "Function '{}' is private and cannot be called via PTB",
+                                function
                             ));
                         }
 
@@ -1712,13 +1781,15 @@ fn execute_validate_ptb(
                     None => {
                         cmd_valid = false;
                         cmd_errors.push(format!(
-                            "Function '{}::{}' not found in module", module, function
+                            "Function '{}::{}' not found in module",
+                            module, function
                         ));
                     }
                 }
 
                 if !cmd_errors.is_empty() {
-                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                    validation_errors
+                        .extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
                 }
 
                 // Track result types for this command
@@ -1767,7 +1838,9 @@ fn execute_validate_ptb(
                     _ => None,
                 };
                 // SplitCoins returns a vector of coins of same type
-                let result_type = coin_type.map(|t| format!("vector<{}>", t)).unwrap_or_else(|| "vector<Coin>".to_string());
+                let result_type = coin_type
+                    .map(|t| format!("vector<{}>", t))
+                    .unwrap_or_else(|| "vector<Coin>".to_string());
                 command_result_types.push(vec![result_type]);
 
                 command_info.push(serde_json::json!({
@@ -1787,12 +1860,16 @@ fn execute_validate_ptb(
                     "valid": true
                 }));
             }
-            PtbCommand::MakeMoveVec { element_type, elements } => {
+            PtbCommand::MakeMoveVec {
+                element_type,
+                elements,
+            } => {
                 let type_valid = if let Some(type_str) = element_type {
                     match crate::benchmark::tx_replay::parse_type_tag(type_str) {
                         Ok(_) => true,
                         Err(e) => {
-                            validation_errors.push(format!("Command {}: Invalid element type: {}", i, e));
+                            validation_errors
+                                .push(format!("Command {}: Invalid element type: {}", i, e));
                             false
                         }
                     }
@@ -1801,7 +1878,8 @@ fn execute_validate_ptb(
                 };
 
                 // MakeMoveVec returns vector<T>
-                let result_type = element_type.as_ref()
+                let result_type = element_type
+                    .as_ref()
                     .map(|t| format!("vector<{}>", t))
                     .unwrap_or_else(|| "vector<?>".to_string());
                 command_result_types.push(vec![result_type]);
@@ -1814,14 +1892,20 @@ fn execute_validate_ptb(
                     "valid": type_valid
                 }));
             }
-            PtbCommand::Publish { modules, dependencies } => {
+            PtbCommand::Publish {
+                modules,
+                dependencies,
+            } => {
                 use base64::Engine;
                 let mut cmd_valid = true;
                 let mut cmd_errors: Vec<String> = Vec::new();
 
                 // Validate base64 modules
                 for (j, b64) in modules.iter().enumerate() {
-                    if base64::engine::general_purpose::STANDARD.decode(b64).is_err() {
+                    if base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .is_err()
+                    {
                         cmd_valid = false;
                         cmd_errors.push(format!("Invalid base64 in module {}", j));
                     }
@@ -1836,7 +1920,8 @@ fn execute_validate_ptb(
                 }
 
                 if !cmd_errors.is_empty() {
-                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                    validation_errors
+                        .extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
                 }
 
                 // Publish returns (UpgradeCap)
@@ -1851,14 +1936,19 @@ fn execute_validate_ptb(
                     "errors": cmd_errors
                 }));
             }
-            PtbCommand::Upgrade { modules, package, .. } => {
+            PtbCommand::Upgrade {
+                modules, package, ..
+            } => {
                 use base64::Engine;
                 let mut cmd_valid = true;
                 let mut cmd_errors: Vec<String> = Vec::new();
 
                 // Validate base64 modules
                 for (j, b64) in modules.iter().enumerate() {
-                    if base64::engine::general_purpose::STANDARD.decode(b64).is_err() {
+                    if base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .is_err()
+                    {
                         cmd_valid = false;
                         cmd_errors.push(format!("Invalid base64 in module {}", j));
                     }
@@ -1871,7 +1961,8 @@ fn execute_validate_ptb(
                 }
 
                 if !cmd_errors.is_empty() {
-                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                    validation_errors
+                        .extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
                 }
 
                 // Upgrade returns (UpgradeReceipt)
@@ -1886,7 +1977,10 @@ fn execute_validate_ptb(
                     "errors": cmd_errors
                 }));
             }
-            PtbCommand::Receive { object_id, object_type } => {
+            PtbCommand::Receive {
+                object_id,
+                object_type,
+            } => {
                 let mut cmd_valid = true;
                 let mut cmd_errors: Vec<String> = Vec::new();
 
@@ -1910,7 +2004,8 @@ fn execute_validate_ptb(
                 };
 
                 if !cmd_errors.is_empty() {
-                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                    validation_errors
+                        .extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
                 }
 
                 // Receive returns the object
@@ -1930,30 +2025,34 @@ fn execute_validate_ptb(
 
     // Additional validation: check Result references are valid
     // Helper to validate a PtbArg reference
-    let validate_arg_reference = |arg: &PtbArg, cmd_idx: usize, errors: &mut Vec<String>| {
-        match arg {
-            PtbArg::Input(idx) => {
-                if *idx >= inputs.len() {
-                    errors.push(format!(
-                        "Command {}: Input({}) references non-existent input (only {} inputs)",
-                        cmd_idx, idx, inputs.len()
-                    ));
-                }
+    let validate_arg_reference = |arg: &PtbArg, cmd_idx: usize, errors: &mut Vec<String>| match arg
+    {
+        PtbArg::Input(idx) => {
+            if *idx >= inputs.len() {
+                errors.push(format!(
+                    "Command {}: Input({}) references non-existent input (only {} inputs)",
+                    cmd_idx,
+                    idx,
+                    inputs.len()
+                ));
             }
-            PtbArg::Result { cmd: result_cmd, idx: result_idx } => {
-                if *result_cmd >= cmd_idx {
-                    errors.push(format!(
+        }
+        PtbArg::Result {
+            cmd: result_cmd,
+            idx: result_idx,
+        } => {
+            if *result_cmd >= cmd_idx {
+                errors.push(format!(
                         "Command {}: Result(cmd={}, idx={}) references command {} which hasn't executed yet (forward reference)",
                         cmd_idx, result_cmd, result_idx, result_cmd
                     ));
-                } else if *result_cmd < command_result_types.len() {
-                    let result_count = command_result_types[*result_cmd].len();
-                    if *result_idx >= result_count {
-                        errors.push(format!(
+            } else if *result_cmd < command_result_types.len() {
+                let result_count = command_result_types[*result_cmd].len();
+                if *result_idx >= result_count {
+                    errors.push(format!(
                             "Command {}: Result(cmd={}, idx={}) references return index {} but command {} only returns {} values",
                             cmd_idx, result_cmd, result_idx, result_idx, result_cmd, result_count
                         ));
-                    }
                 }
             }
         }
@@ -2003,10 +2102,12 @@ fn execute_validate_ptb(
     let result_type_info: Vec<serde_json::Value> = command_result_types
         .iter()
         .enumerate()
-        .map(|(idx, types)| serde_json::json!({
-            "command_index": idx,
-            "return_types": types
-        }))
+        .map(|(idx, types)| {
+            serde_json::json!({
+                "command_index": idx,
+                "return_types": types
+            })
+        })
         .collect();
 
     if is_valid {
@@ -2031,8 +2132,10 @@ fn execute_validate_ptb(
 }
 
 /// Build transaction effects response from internal effects.
-fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -> TransactionEffectsResponse {
-    use crate::benchmark::ptb::{Owner, ObjectChange};
+fn build_effects_response(
+    effects: &crate::benchmark::ptb::TransactionEffects,
+) -> TransactionEffectsResponse {
+    use crate::benchmark::ptb::{ObjectChange, Owner};
 
     let owner_to_string = |owner: &Owner| -> String {
         match owner {
@@ -2050,13 +2153,18 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
     let mut unwrapped = Vec::new();
 
     // Helper to format TypeTag as string
-    let type_to_string = |t: &Option<move_core_types::language_storage::TypeTag>| -> Option<String> {
-        t.as_ref().map(|tag| format!("{}", tag))
-    };
+    let type_to_string =
+        |t: &Option<move_core_types::language_storage::TypeTag>| -> Option<String> {
+            t.as_ref().map(|tag| format!("{}", tag))
+        };
 
     for change in &effects.object_changes {
         match change {
-            ObjectChange::Created { id, owner, object_type } => {
+            ObjectChange::Created {
+                id,
+                owner,
+                object_type,
+            } => {
                 created.push(ObjectEffectResponse {
                     id: id.to_hex_literal(),
                     object_type: type_to_string(object_type),
@@ -2064,7 +2172,11 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
                     version: 1,
                 });
             }
-            ObjectChange::Mutated { id, owner, object_type } => {
+            ObjectChange::Mutated {
+                id,
+                owner,
+                object_type,
+            } => {
                 mutated.push(ObjectEffectResponse {
                     id: id.to_hex_literal(),
                     object_type: type_to_string(object_type),
@@ -2078,7 +2190,11 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
             ObjectChange::Wrapped { id, .. } => {
                 wrapped.push(id.to_hex_literal());
             }
-            ObjectChange::Unwrapped { id, owner, object_type } => {
+            ObjectChange::Unwrapped {
+                id,
+                owner,
+                object_type,
+            } => {
                 unwrapped.push(ObjectEffectResponse {
                     id: id.to_hex_literal(),
                     object_type: type_to_string(object_type),
@@ -2086,7 +2202,12 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
                     version: 1,
                 });
             }
-            ObjectChange::Transferred { id, recipient, object_type, .. } => {
+            ObjectChange::Transferred {
+                id,
+                recipient,
+                object_type,
+                ..
+            } => {
                 // Transferred objects show up as mutated with new owner
                 mutated.push(ObjectEffectResponse {
                     id: id.to_hex_literal(),
@@ -2100,41 +2221,62 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
 
     // If no object_changes, fall back to simple lists
     if created.is_empty() && !effects.created.is_empty() {
-        created = effects.created.iter().map(|id| ObjectEffectResponse {
-            id: id.to_hex_literal(),
-            object_type: None,
-            owner: "unknown".to_string(),
-            version: 1,
-        }).collect();
+        created = effects
+            .created
+            .iter()
+            .map(|id| ObjectEffectResponse {
+                id: id.to_hex_literal(),
+                object_type: None,
+                owner: "unknown".to_string(),
+                version: 1,
+            })
+            .collect();
     }
     if mutated.is_empty() && !effects.mutated.is_empty() {
-        mutated = effects.mutated.iter().map(|id| ObjectEffectResponse {
-            id: id.to_hex_literal(),
-            object_type: None,
-            owner: "unknown".to_string(),
-            version: 2,
-        }).collect();
+        mutated = effects
+            .mutated
+            .iter()
+            .map(|id| ObjectEffectResponse {
+                id: id.to_hex_literal(),
+                object_type: None,
+                owner: "unknown".to_string(),
+                version: 2,
+            })
+            .collect();
     }
     if deleted.is_empty() && !effects.deleted.is_empty() {
-        deleted = effects.deleted.iter().map(|id| id.to_hex_literal()).collect();
+        deleted = effects
+            .deleted
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect();
     }
     if wrapped.is_empty() && !effects.wrapped.is_empty() {
-        wrapped = effects.wrapped.iter().map(|id| id.to_hex_literal()).collect();
+        wrapped = effects
+            .wrapped
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect();
     }
     if unwrapped.is_empty() && !effects.unwrapped.is_empty() {
-        unwrapped = effects.unwrapped.iter().map(|id| ObjectEffectResponse {
-            id: id.to_hex_literal(),
-            object_type: None,
-            owner: "unknown".to_string(),
-            version: 1,
-        }).collect();
+        unwrapped = effects
+            .unwrapped
+            .iter()
+            .map(|id| ObjectEffectResponse {
+                id: id.to_hex_literal(),
+                object_type: None,
+                owner: "unknown".to_string(),
+                version: 1,
+            })
+            .collect();
     }
 
     // Build return values from effects
     let return_values: Option<Vec<CommandReturnValues>> = if effects.return_values.is_empty() {
         None
     } else {
-        let values: Vec<CommandReturnValues> = effects.return_values
+        let values: Vec<CommandReturnValues> = effects
+            .return_values
             .iter()
             .enumerate()
             .map(|(i, vals)| CommandReturnValues {
@@ -2158,11 +2300,14 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
 
 /// Build events response from emitted events.
 fn build_events_response(events: &[crate::benchmark::natives::EmittedEvent]) -> Vec<EventResponse> {
-    events.iter().map(|e| EventResponse {
-        event_type: e.type_tag.clone(),
-        data_hex: hex::encode(&e.data),
-        sequence: e.sequence,
-    }).collect()
+    events
+        .iter()
+        .map(|e| EventResponse {
+            event_type: e.type_tag.clone(),
+            data_hex: hex::encode(&e.data),
+            sequence: e.sequence,
+        })
+        .collect()
 }
 
 fn execute_inspect_struct(
@@ -2178,23 +2323,36 @@ fn execute_inspect_struct(
 
     let structs = match env.get_struct_definitions(package, module, struct_name) {
         Ok(s) => s,
-        Err(e) => return SandboxResponse::error(format!("Failed to get struct definitions: {}", e)),
+        Err(e) => {
+            return SandboxResponse::error(format!("Failed to get struct definitions: {}", e))
+        }
     };
 
-    let struct_defs: Vec<StructDef> = structs.into_iter().map(|s| StructDef {
-        package: s.package,
-        module: s.module,
-        name: s.name,
-        abilities: s.abilities,
-        type_params: s.type_params.into_iter().map(|tp| TypeParam {
-            name: tp.name,
-            constraints: tp.constraints,
-        }).collect(),
-        fields: s.fields.into_iter().map(|f| FieldDef {
-            name: f.name,
-            field_type: f.field_type,
-        }).collect(),
-    }).collect();
+    let struct_defs: Vec<StructDef> = structs
+        .into_iter()
+        .map(|s| StructDef {
+            package: s.package,
+            module: s.module,
+            name: s.name,
+            abilities: s.abilities,
+            type_params: s
+                .type_params
+                .into_iter()
+                .map(|tp| TypeParam {
+                    name: tp.name,
+                    constraints: tp.constraints,
+                })
+                .collect(),
+            fields: s
+                .fields
+                .into_iter()
+                .map(|f| FieldDef {
+                    name: f.name,
+                    field_type: f.field_type,
+                })
+                .collect(),
+        })
+        .collect();
 
     SandboxResponse::success_with_data(serde_json::json!({
         "structs": struct_defs,
@@ -2243,18 +2401,14 @@ fn execute_call_function(
     }
 
     match env.call_function(package, module, function, type_args, args) {
-        Ok(result) => {
-            SandboxResponse::success_with_data(serde_json::json!({
-                "return_values": result.return_values,
-                "gas_used": result.gas_used,
-            }))
-        }
-        Err(e) => {
-            SandboxResponse::error_with_category(
-                format!("Function call failed: {}", e),
-                "ExecutionError",
-            )
-        }
+        Ok(result) => SandboxResponse::success_with_data(serde_json::json!({
+            "return_values": result.return_values,
+            "gas_used": result.gas_used,
+        })),
+        Err(e) => SandboxResponse::error_with_category(
+            format!("Function call failed: {}", e),
+            "ExecutionError",
+        ),
     }
 }
 
@@ -2305,14 +2459,17 @@ fn execute_list_coins(env: &SimulationEnvironment, verbose: bool) -> SandboxResp
         eprintln!("Listing registered coins");
     }
 
-    let coins: Vec<serde_json::Value> = env.list_registered_coins()
+    let coins: Vec<serde_json::Value> = env
+        .list_registered_coins()
         .into_iter()
-        .map(|m| serde_json::json!({
-            "coin_type": m.type_tag,
-            "decimals": m.decimals,
-            "symbol": m.symbol,
-            "name": m.name,
-        }))
+        .map(|m| {
+            serde_json::json!({
+                "coin_type": m.type_tag,
+                "decimals": m.decimals,
+                "symbol": m.symbol,
+                "name": m.name,
+            })
+        })
         .collect();
 
     SandboxResponse::success_with_data(serde_json::json!({
@@ -2372,19 +2529,26 @@ fn decode_object_state(
     // Handle common types specially
     match &obj.type_tag {
         TypeTag::Struct(st) => {
-            let type_str = format!("{}::{}::{}",
+            let type_str = format!(
+                "{}::{}::{}",
                 st.address.to_hex_literal(),
                 st.module,
                 st.name
             );
 
             // Handle Coin<T> specially
-            if st.address.to_hex_literal() == "0x2" && st.module.as_str() == "coin" && st.name.as_str() == "Coin" {
+            if st.address.to_hex_literal() == "0x2"
+                && st.module.as_str() == "coin"
+                && st.name.as_str() == "Coin"
+            {
                 return decode_coin(&obj.bcs_bytes, &st.type_params);
             }
 
             // Handle Balance<T> specially
-            if st.address.to_hex_literal() == "0x2" && st.module.as_str() == "balance" && st.name.as_str() == "Balance" {
+            if st.address.to_hex_literal() == "0x2"
+                && st.module.as_str() == "balance"
+                && st.name.as_str() == "Balance"
+            {
                 return decode_balance(&obj.bcs_bytes);
             }
 
@@ -2417,7 +2581,10 @@ fn decode_object_state(
 }
 
 /// Decode a Coin<T> object.
-fn decode_coin(bcs_bytes: &[u8], type_params: &[move_core_types::language_storage::TypeTag]) -> serde_json::Value {
+fn decode_coin(
+    bcs_bytes: &[u8],
+    type_params: &[move_core_types::language_storage::TypeTag],
+) -> serde_json::Value {
     // Coin<T> = { id: UID (32 bytes), balance: Balance<T> (8 bytes) }
     if bcs_bytes.len() < 40 {
         return serde_json::json!({
@@ -2430,7 +2597,8 @@ fn decode_coin(bcs_bytes: &[u8], type_params: &[move_core_types::language_storag
     let balance_bytes = &bcs_bytes[32..40];
     let balance = u64::from_le_bytes(balance_bytes.try_into().unwrap_or([0; 8]));
 
-    let coin_type = type_params.first()
+    let coin_type = type_params
+        .first()
         .map(|t| format!("{}", t))
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -2521,7 +2689,7 @@ fn decode_field_value(bytes: &[u8], field_type: &str) -> (serde_json::Value, usi
         }
         "u128" => {
             if let Some(arr) = bytes.get(0..16).and_then(|s| <[u8; 16]>::try_from(s).ok()) {
-                (serde_json::json!(u128::from_le_bytes(arr).to_string()), 16)  // String to avoid JSON precision issues
+                (serde_json::json!(u128::from_le_bytes(arr).to_string()), 16) // String to avoid JSON precision issues
             } else {
                 (serde_json::json!(null), bytes.len())
             }
@@ -2570,10 +2738,13 @@ fn decode_field_value(bytes: &[u8], field_type: &str) -> (serde_json::Value, usi
         // Generic vector - ULEB128 length prefix
         t if t.starts_with("vector<") => {
             // For now, return raw hex for complex vectors
-            (serde_json::json!({
-                "raw_hex": hex::encode(bytes),
-                "note": format!("Cannot fully decode {}", t)
-            }), bytes.len())
+            (
+                serde_json::json!({
+                    "raw_hex": hex::encode(bytes),
+                    "note": format!("Cannot fully decode {}", t)
+                }),
+                bytes.len(),
+            )
         }
         // Option<T> - 0 for None, 1 + value for Some
         t if t.starts_with("0x1::option::Option<") => {
@@ -2583,7 +2754,8 @@ fn decode_field_value(bytes: &[u8], field_type: &str) -> (serde_json::Value, usi
                 (serde_json::json!(null), 1)
             } else {
                 // Extract inner type and decode
-                let inner = t.strip_prefix("0x1::option::Option<")
+                let inner = t
+                    .strip_prefix("0x1::option::Option<")
                     .and_then(|s| s.strip_suffix(">"))
                     .unwrap_or("unknown");
                 let (inner_val, consumed) = decode_field_value(&bytes[1..], inner);
@@ -2591,12 +2763,13 @@ fn decode_field_value(bytes: &[u8], field_type: &str) -> (serde_json::Value, usi
             }
         }
         // Unknown type - return raw hex
-        _ => {
-            (serde_json::json!({
+        _ => (
+            serde_json::json!({
                 "raw_hex": hex::encode(bytes),
                 "type": field_type,
-            }), bytes.len())
-        }
+            }),
+            bytes.len(),
+        ),
     }
 }
 
@@ -2618,10 +2791,13 @@ fn decode_vector_u8(bytes: &[u8]) -> (serde_json::Value, usize) {
     }
 
     if offset + len > bytes.len() {
-        return (serde_json::json!({
-            "error": "Invalid vector: length exceeds available bytes",
-            "raw_hex": hex::encode(bytes),
-        }), bytes.len());
+        return (
+            serde_json::json!({
+                "error": "Invalid vector: length exceeds available bytes",
+                "raw_hex": hex::encode(bytes),
+            }),
+            bytes.len(),
+        );
     }
 
     let data = &bytes[offset..offset + len];
@@ -2630,7 +2806,10 @@ fn decode_vector_u8(bytes: &[u8]) -> (serde_json::Value, usize) {
     if let Ok(s) = std::str::from_utf8(data) {
         (serde_json::json!(s), offset + len)
     } else {
-        (serde_json::json!(format!("0x{}", hex::encode(data))), offset + len)
+        (
+            serde_json::json!(format!("0x{}", hex::encode(data))),
+            offset + len,
+        )
     }
 }
 
@@ -2639,7 +2818,8 @@ fn execute_list_objects(env: &SimulationEnvironment, verbose: bool) -> SandboxRe
         eprintln!("Listing all objects");
     }
 
-    let objects: Vec<serde_json::Value> = env.list_objects()
+    let objects: Vec<serde_json::Value> = env
+        .list_objects()
         .into_iter()
         .map(|obj| {
             let ownership = if obj.is_shared {
@@ -2672,7 +2852,8 @@ fn execute_list_shared_objects(env: &SimulationEnvironment, verbose: bool) -> Sa
     }
 
     // Get all shared objects from the environment
-    let shared_objects: Vec<serde_json::Value> = env.list_objects()
+    let shared_objects: Vec<serde_json::Value> = env
+        .list_objects()
         .into_iter()
         .filter(|obj| obj.is_shared)
         .map(|obj| {
@@ -2685,7 +2866,8 @@ fn execute_list_shared_objects(env: &SimulationEnvironment, verbose: bool) -> Sa
         .collect();
 
     // Get current locks
-    let locks: Vec<serde_json::Value> = env.get_shared_locks()
+    let locks: Vec<serde_json::Value> = env
+        .get_shared_locks()
         .into_iter()
         .map(|lock| {
             serde_json::json!({
@@ -2726,7 +2908,14 @@ fn execute_get_clock(env: &SimulationEnvironment, verbose: bool) -> SandboxRespo
         // Approximate year calculation (not accounting for leap years perfectly)
         let year = 1970 + (days_since_epoch / 365);
 
-        format!("~{}-??-?? {:02}:{:02}:{:02}.{:03} UTC (approx)", year, hours, minutes, secs, nanos / 1_000_000)
+        format!(
+            "~{}-??-?? {:02}:{:02}:{:02}.{:03} UTC (approx)",
+            year,
+            hours,
+            minutes,
+            secs,
+            nanos / 1_000_000
+        )
     };
 
     SandboxResponse::success_with_data(serde_json::json!({
@@ -2736,30 +2925,30 @@ fn execute_get_clock(env: &SimulationEnvironment, verbose: bool) -> SandboxRespo
     }))
 }
 
-fn execute_set_clock(env: &mut SimulationEnvironment, timestamp_ms: u64, verbose: bool) -> SandboxResponse {
+fn execute_set_clock(
+    env: &mut SimulationEnvironment,
+    timestamp_ms: u64,
+    verbose: bool,
+) -> SandboxResponse {
     if verbose {
         eprintln!("Setting Clock timestamp to {} ms", timestamp_ms);
     }
 
     match env.advance_clock(timestamp_ms) {
-        Ok(()) => {
-            SandboxResponse::success_with_data(serde_json::json!({
-                "clock_object_id": crate::benchmark::simulation::CLOCK_OBJECT_ID,
-                "timestamp_ms": timestamp_ms,
-                "message": format!("Clock advanced to {} ms", timestamp_ms),
-            }))
-        }
-        Err(e) => {
-            SandboxResponse::error(format!("Failed to set clock: {}", e))
-        }
+        Ok(()) => SandboxResponse::success_with_data(serde_json::json!({
+            "clock_object_id": crate::benchmark::simulation::CLOCK_OBJECT_ID,
+            "timestamp_ms": timestamp_ms,
+            "message": format!("Clock advanced to {} ms", timestamp_ms),
+        })),
+        Err(e) => SandboxResponse::error(format!("Failed to set clock: {}", e)),
     }
 }
 
 // Helper functions
 
 fn parse_object_id(id_str: &str) -> Result<[u8; 32]> {
-    let addr = AccountAddress::from_hex_literal(id_str)
-        .map_err(|e| anyhow!("Invalid hex: {}", e))?;
+    let addr =
+        AccountAddress::from_hex_literal(id_str).map_err(|e| anyhow!("Invalid hex: {}", e))?;
     Ok(addr.into_bytes())
 }
 
@@ -2805,7 +2994,9 @@ fn encode_pure_value(value: &serde_json::Value, value_type: &str) -> Result<Vec<
 fn convert_ptb_arg(arg: &PtbArg) -> crate::benchmark::ptb::Argument {
     match arg {
         PtbArg::Input(idx) => crate::benchmark::ptb::Argument::Input(*idx as u16),
-        PtbArg::Result { cmd, idx } => crate::benchmark::ptb::Argument::NestedResult(*cmd as u16, *idx as u16),
+        PtbArg::Result { cmd, idx } => {
+            crate::benchmark::ptb::Argument::NestedResult(*cmd as u16, *idx as u16)
+        }
     }
 }
 
@@ -2813,10 +3004,7 @@ fn convert_ptb_arg(arg: &PtbArg) -> crate::benchmark::ptb::Argument {
 // New LLM Agent Tool Implementations
 // ============================================================================
 
-fn execute_list_modules(
-    env: &SimulationEnvironment,
-    _verbose: bool,
-) -> SandboxResponse {
+fn execute_list_modules(env: &SimulationEnvironment, _verbose: bool) -> SandboxResponse {
     let modules = env.list_modules();
     SandboxResponse::success_with_data(serde_json::json!({
         "modules": modules,
@@ -2861,9 +3049,12 @@ fn execute_get_function_info(
     _verbose: bool,
 ) -> SandboxResponse {
     match env.get_function_info(module_path, function_name) {
-        Some(info) => SandboxResponse::success_with_data(serde_json::to_value(info).unwrap_or_default()),
+        Some(info) => {
+            SandboxResponse::success_with_data(serde_json::to_value(info).unwrap_or_default())
+        }
         None => SandboxResponse::error(format!(
-            "Function not found: {}::{}", module_path, function_name
+            "Function not found: {}::{}",
+            module_path, function_name
         )),
     }
 }
@@ -2911,10 +3102,7 @@ fn execute_search_functions(
     }))
 }
 
-fn execute_get_system_object_info(
-    object_name: &str,
-    _verbose: bool,
-) -> SandboxResponse {
+fn execute_get_system_object_info(object_name: &str, _verbose: bool) -> SandboxResponse {
     let info = match object_name.to_lowercase().as_str() {
         "clock" => serde_json::json!({
             "name": "Clock",
@@ -2964,10 +3152,7 @@ fn execute_get_system_object_info(
     SandboxResponse::success_with_data(info)
 }
 
-fn execute_validate_type(
-    type_str: &str,
-    _verbose: bool,
-) -> SandboxResponse {
+fn execute_validate_type(type_str: &str, _verbose: bool) -> SandboxResponse {
     // Validate type string
     let info = match type_str {
         "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "address" | "signer" => {
@@ -2978,7 +3163,7 @@ fn execute_validate_type(
             })
         }
         _ if type_str.starts_with("vector<") && type_str.ends_with(">") => {
-            let inner = &type_str[7..type_str.len()-1];
+            let inner = &type_str[7..type_str.len() - 1];
             serde_json::json!({
                 "valid": true,
                 "kind": "vector",
@@ -3020,11 +3205,7 @@ fn execute_encode_bcs(
     }
 }
 
-fn execute_decode_bcs(
-    type_str: &str,
-    bytes_hex: &str,
-    _verbose: bool,
-) -> SandboxResponse {
+fn execute_decode_bcs(type_str: &str, bytes_hex: &str, _verbose: bool) -> SandboxResponse {
     let bytes = match hex::decode(bytes_hex.trim_start_matches("0x")) {
         Ok(b) => b,
         Err(e) => return SandboxResponse::error(format!("Invalid hex: {}", e)),
@@ -3081,7 +3262,8 @@ fn execute_disassemble_function(
             "disassembly": disasm,
         })),
         None => SandboxResponse::error(format!(
-            "Function not found or cannot disassemble: {}::{}", module_path, function_name
+            "Function not found or cannot disassemble: {}::{}",
+            module_path, function_name
         )),
     }
 }
@@ -3096,10 +3278,12 @@ fn execute_compile_move(
     // Create package builder with temp directory
     let builder = match PackageBuilder::new_temp() {
         Ok(b) => b,
-        Err(e) => return SandboxResponse::error_with_category(
-            format!("Failed to create package builder: {}", e),
-            "CompilationError".to_string(),
-        ),
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Failed to create package builder: {}", e),
+                "CompilationError".to_string(),
+            )
+        }
     };
 
     if verbose {
@@ -3109,10 +3293,12 @@ fn execute_compile_move(
     // Build from source
     let result = match builder.build_from_source(package_name, module_name, source) {
         Ok(r) => r,
-        Err(e) => return SandboxResponse::error_with_category(
-            format!("Compilation failed: {}", e),
-            "CompilationError".to_string(),
-        ),
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Compilation failed: {}", e),
+                "CompilationError".to_string(),
+            )
+        }
     };
 
     if !result.success {
@@ -3123,7 +3309,9 @@ fn execute_compile_move(
     }
 
     // Convert bytecode to base64 for the response
-    let modules_base64: Vec<serde_json::Value> = result.modules.iter()
+    let modules_base64: Vec<serde_json::Value> = result
+        .modules
+        .iter()
         .map(|(name, bytes)| {
             use base64::Engine;
             serde_json::json!({
@@ -3201,7 +3389,8 @@ fn execute_load_cached_objects(
         eprintln!("Loading {} cached objects", objects.len());
     }
 
-    let shared_set: std::collections::HashSet<&str> = shared_object_ids.iter().map(|s| s.as_str()).collect();
+    let shared_set: std::collections::HashSet<&str> =
+        shared_object_ids.iter().map(|s| s.as_str()).collect();
     let mut loaded = 0;
     let mut failed = Vec::new();
 
@@ -3211,7 +3400,8 @@ fn execute_load_cached_objects(
 
         match base64::engine::general_purpose::STANDARD.decode(b64_bytes) {
             Ok(bcs_bytes) => {
-                match env.load_cached_object_with_type(object_id, bcs_bytes, object_type, is_shared) {
+                match env.load_cached_object_with_type(object_id, bcs_bytes, object_type, is_shared)
+                {
                     Ok(_) => {
                         loaded += 1;
                         if verbose {
@@ -3253,7 +3443,10 @@ fn execute_load_cached_object(
     use base64::Engine;
 
     if verbose {
-        eprintln!("Loading cached object: {} (shared={})", object_id, is_shared);
+        eprintln!(
+            "Loading cached object: {} (shared={})",
+            object_id, is_shared
+        );
     }
 
     let bcs_bytes = match base64::engine::general_purpose::STANDARD.decode(bcs_bytes_b64) {
@@ -3279,15 +3472,13 @@ fn execute_load_cached_object(
     }
 }
 
-fn execute_list_cached_objects(
-    env: &SimulationEnvironment,
-    verbose: bool,
-) -> SandboxResponse {
+fn execute_list_cached_objects(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
     if verbose {
         eprintln!("Listing cached objects");
     }
 
-    let objects: Vec<serde_json::Value> = env.list_objects()
+    let objects: Vec<serde_json::Value> = env
+        .list_objects()
         .iter()
         .map(|obj| {
             serde_json::json!({
@@ -3359,7 +3550,10 @@ fn execute_format_address(address: &str, format: Option<&str>, verbose: bool) ->
                 "no_prefix" => hex_full.strip_prefix("0x").unwrap_or(&hex_full).to_string(),
                 _ => {
                     return SandboxResponse::error_with_category(
-                        format!("Unknown format: {}. Use 'short', 'full', or 'no_prefix'", fmt),
+                        format!(
+                            "Unknown format: {}. Use 'short', 'full', or 'no_prefix'",
+                            fmt
+                        ),
                         "InvalidParameter".to_string(),
                     );
                 }
@@ -3376,7 +3570,11 @@ fn execute_format_address(address: &str, format: Option<&str>, verbose: bool) ->
     }
 }
 
-fn execute_compute_hash(bytes_hex: &str, algorithm: Option<&str>, verbose: bool) -> SandboxResponse {
+fn execute_compute_hash(
+    bytes_hex: &str,
+    algorithm: Option<&str>,
+    verbose: bool,
+) -> SandboxResponse {
     if verbose {
         eprintln!("Computing hash with algorithm: {:?}", algorithm);
     }
@@ -3392,7 +3590,7 @@ fn execute_compute_hash(bytes_hex: &str, algorithm: Option<&str>, verbose: bool)
     };
 
     let algo = algorithm.unwrap_or("sha3_256");
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let hash = match algo {
         "sha256" | "sha3_256" | "blake2b_256" => {
@@ -3403,7 +3601,10 @@ fn execute_compute_hash(bytes_hex: &str, algorithm: Option<&str>, verbose: bool)
         }
         _ => {
             return SandboxResponse::error_with_category(
-                format!("Unknown algorithm: {}. Use sha256, sha3_256, or blake2b_256", algo),
+                format!(
+                    "Unknown algorithm: {}. Use sha256, sha3_256, or blake2b_256",
+                    algo
+                ),
                 "InvalidParameter".to_string(),
             );
         }
@@ -3416,7 +3617,12 @@ fn execute_compute_hash(bytes_hex: &str, algorithm: Option<&str>, verbose: bool)
     }))
 }
 
-fn execute_convert_number(value: &str, from_type: &str, to_type: &str, verbose: bool) -> SandboxResponse {
+fn execute_convert_number(
+    value: &str,
+    from_type: &str,
+    to_type: &str,
+    verbose: bool,
+) -> SandboxResponse {
     if verbose {
         eprintln!("Converting {} from {} to {}", value, from_type, to_type);
     }
@@ -3480,7 +3686,11 @@ fn execute_encode_vector(
     verbose: bool,
 ) -> SandboxResponse {
     if verbose {
-        eprintln!("Encoding vector of {} elements of type {}", values.len(), element_type);
+        eprintln!(
+            "Encoding vector of {} elements of type {}",
+            values.len(),
+            element_type
+        );
     }
 
     // Encode ULEB128 length prefix
@@ -3517,7 +3727,10 @@ fn execute_encode_vector(
             }
             _ => {
                 return SandboxResponse::error_with_category(
-                    format!("Unsupported element type for vector encoding: {}", element_type),
+                    format!(
+                        "Unsupported element type for vector encoding: {}",
+                        element_type
+                    ),
                     "UnsupportedType".to_string(),
                 );
             }
@@ -3545,7 +3758,10 @@ fn execute_get_module_dependencies(
     let parts: Vec<&str> = module_path.split("::").collect();
     if parts.len() != 2 {
         return SandboxResponse::error_with_category(
-            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            format!(
+                "Invalid module path: {}. Expected format: '0x2::module'",
+                module_path
+            ),
             "ParseError".to_string(),
         );
     }
@@ -3565,7 +3781,8 @@ fn execute_get_module_dependencies(
     // Get dependencies from resolver
     match env.get_module_dependencies(&address, module_name) {
         Ok(deps) => {
-            let dep_list: Vec<String> = deps.iter()
+            let dep_list: Vec<String> = deps
+                .iter()
                 .map(|(addr, name)| format!("{}::{}", normalize_address(addr), name))
                 .collect();
             SandboxResponse::success_with_data(serde_json::json!({
@@ -3594,7 +3811,10 @@ fn execute_disassemble_module(
     let parts: Vec<&str> = module_path.split("::").collect();
     if parts.len() != 2 {
         return SandboxResponse::error_with_category(
-            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            format!(
+                "Invalid module path: {}. Expected format: '0x2::module'",
+                module_path
+            ),
             "ParseError".to_string(),
         );
     }
@@ -3636,7 +3856,10 @@ fn execute_module_summary(
     let parts: Vec<&str> = module_path.split("::").collect();
     if parts.len() != 2 {
         return SandboxResponse::error_with_category(
-            format!("Invalid module path: {}. Expected format: '0x2::module'", module_path),
+            format!(
+                "Invalid module path: {}. Expected format: '0x2::module'",
+                module_path
+            ),
             "ParseError".to_string(),
         );
     }
@@ -3729,18 +3952,16 @@ fn execute_ensure_framework_cached(verbose: bool) -> SandboxResponse {
 
     use crate::benchmark::package_builder::FrameworkCache;
     match FrameworkCache::new() {
-        Ok(cache) => {
-            match cache.ensure_cached() {
-                Ok(()) => SandboxResponse::success_with_data(serde_json::json!({
-                    "cached": true,
-                    "path": cache.sui_framework_path().display().to_string(),
-                })),
-                Err(e) => SandboxResponse::error_with_category(
-                    format!("Failed to cache framework: {}", e),
-                    "CacheError".to_string(),
-                ),
-            }
-        }
+        Ok(cache) => match cache.ensure_cached() {
+            Ok(()) => SandboxResponse::success_with_data(serde_json::json!({
+                "cached": true,
+                "path": cache.sui_framework_path().display().to_string(),
+            })),
+            Err(e) => SandboxResponse::error_with_category(
+                format!("Failed to cache framework: {}", e),
+                "CacheError".to_string(),
+            ),
+        },
         Err(e) => SandboxResponse::error_with_category(
             format!("Failed to initialize framework cache: {}", e),
             "CacheError".to_string(),
@@ -3756,8 +3977,7 @@ fn parse_address_string(s: &str) -> Result<AccountAddress, String> {
     } else {
         hex_str.to_string()
     };
-    let bytes = hex::decode(&padded)
-        .map_err(|e| format!("Invalid hex: {}", e))?;
+    let bytes = hex::decode(&padded).map_err(|e| format!("Invalid hex: {}", e))?;
     if bytes.len() != 32 {
         return Err(format!("Address must be 32 bytes, got {}", bytes.len()));
     }
@@ -3775,7 +3995,8 @@ fn execute_list_events(env: &SimulationEnvironment, verbose: bool) -> SandboxRes
         eprintln!("Listing all events ({})", env.event_count());
     }
 
-    let events: Vec<EventResponse> = env.get_all_events()
+    let events: Vec<EventResponse> = env
+        .get_all_events()
         .iter()
         .map(|e| EventResponse {
             event_type: e.type_tag.clone(),
@@ -3791,12 +4012,17 @@ fn execute_list_events(env: &SimulationEnvironment, verbose: bool) -> SandboxRes
     }))
 }
 
-fn execute_get_events_by_type(env: &SimulationEnvironment, type_prefix: &str, verbose: bool) -> SandboxResponse {
+fn execute_get_events_by_type(
+    env: &SimulationEnvironment,
+    type_prefix: &str,
+    verbose: bool,
+) -> SandboxResponse {
     if verbose {
         eprintln!("Getting events by type prefix: {}", type_prefix);
     }
 
-    let events: Vec<EventResponse> = env.get_events_by_type(type_prefix)
+    let events: Vec<EventResponse> = env
+        .get_events_by_type(type_prefix)
         .iter()
         .map(|e| EventResponse {
             event_type: e.type_tag.clone(),
@@ -3818,7 +4044,8 @@ fn execute_get_last_tx_events(env: &SimulationEnvironment, verbose: bool) -> San
         eprintln!("Getting events from last transaction");
     }
 
-    let events: Vec<EventResponse> = env.get_last_tx_events()
+    let events: Vec<EventResponse> = env
+        .get_last_tx_events()
         .iter()
         .map(|e| EventResponse {
             event_type: e.type_tag.clone(),
@@ -3949,7 +4176,10 @@ fn execute_list_shared_locks(env: &SimulationEnvironment, verbose: bool) -> Sand
     }))
 }
 
-fn execute_advance_lamport_clock(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
+fn execute_advance_lamport_clock(
+    env: &mut SimulationEnvironment,
+    verbose: bool,
+) -> SandboxResponse {
     let previous = env.lamport_clock();
     let new_value = env.advance_lamport_clock();
 
@@ -4518,7 +4748,10 @@ pub fn run_sandbox_exec(args: &SandboxExecArgs) -> Result<()> {
             SimulationEnvironment::from_state_file(state_file)?
         } else {
             if args.verbose {
-                eprintln!("State file {} does not exist, creating new environment", state_file.display());
+                eprintln!(
+                    "State file {} does not exist, creating new environment",
+                    state_file.display()
+                );
             }
             SimulationEnvironment::new()?
         }

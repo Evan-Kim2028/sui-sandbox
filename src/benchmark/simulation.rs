@@ -132,7 +132,7 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{TypeTag, StructTag};
+use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 
@@ -155,10 +155,12 @@ pub const SUI_COIN_TYPE: &str = "0x2::sui::SUI";
 pub const DEFAULT_GAS_PRICE: u64 = 1000;
 
 /// Clock object ID (0x6) - well-known system object
-pub const CLOCK_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000006";
+pub const CLOCK_OBJECT_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000006";
 
 /// Random object ID (0x8) - well-known system object for on-chain randomness
-pub const RANDOM_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000008";
+pub const RANDOM_OBJECT_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000008";
 
 /// Default Clock timestamp base (2024-01-01 00:00:00 UTC)
 pub const DEFAULT_CLOCK_BASE_MS: u64 = 1704067200000;
@@ -175,8 +177,8 @@ pub struct CoinMetadata {
     /// Full type tag (e.g., "0x2::sui::SUI")
     pub type_tag: String,
 }
-use crate::benchmark::vm::VMHarness;
 use crate::benchmark::ptb::{Command, InputValue, ObjectInput, TransactionEffects};
+use crate::benchmark::vm::VMHarness;
 
 // Re-export EmittedEvent for convenience
 pub use crate::benchmark::natives::EmittedEvent;
@@ -218,9 +220,7 @@ pub enum SimulationError {
     },
 
     /// Other execution error.
-    ExecutionError {
-        message: String,
-    },
+    ExecutionError { message: String },
 
     /// Shared object lock conflict (concurrent access detection).
     SharedObjectLockConflict {
@@ -248,10 +248,23 @@ impl std::fmt::Display for SimulationError {
                     write!(f, "ObjectNotFound: {}", id)
                 }
             }
-            SimulationError::TypeMismatch { expected, got, location } => {
-                write!(f, "TYPE_MISMATCH at {}: expected {}, got {}", location, expected, got)
+            SimulationError::TypeMismatch {
+                expected,
+                got,
+                location,
+            } => {
+                write!(
+                    f,
+                    "TYPE_MISMATCH at {}: expected {}, got {}",
+                    location, expected, got
+                )
             }
-            SimulationError::ContractAbort { module, function, abort_code, message } => {
+            SimulationError::ContractAbort {
+                module,
+                function,
+                abort_code,
+                message,
+            } => {
                 if let Some(msg) = message {
                     write!(f, "MoveAbort(MoveLocation {{ module: {}::{}, function: 0, instruction: 0 }}, {}) in {}",
                         module, function, abort_code, msg)
@@ -260,20 +273,39 @@ impl std::fmt::Display for SimulationError {
                         module, function, abort_code)
                 }
             }
-            SimulationError::DeserializationFailed { argument_index, expected_type } => {
-                write!(f, "FAILED_TO_DESERIALIZE_ARGUMENT: argument {} cannot be deserialized as {}",
-                    argument_index, expected_type)
+            SimulationError::DeserializationFailed {
+                argument_index,
+                expected_type,
+            } => {
+                write!(
+                    f,
+                    "FAILED_TO_DESERIALIZE_ARGUMENT: argument {} cannot be deserialized as {}",
+                    argument_index, expected_type
+                )
             }
             SimulationError::ExecutionError { message } => {
                 write!(f, "{}", message)
             }
-            SimulationError::SharedObjectLockConflict { object_id, held_by, reason } => {
+            SimulationError::SharedObjectLockConflict {
+                object_id,
+                held_by,
+                reason,
+            } => {
                 if let Some(tx) = held_by {
-                    write!(f, "SharedObjectLockConflict: object {} is locked by transaction {}: {}",
-                        object_id.to_hex_literal(), tx, reason)
+                    write!(
+                        f,
+                        "SharedObjectLockConflict: object {} is locked by transaction {}: {}",
+                        object_id.to_hex_literal(),
+                        tx,
+                        reason
+                    )
                 } else {
-                    write!(f, "SharedObjectLockConflict: object {}: {}",
-                        object_id.to_hex_literal(), reason)
+                    write!(
+                        f,
+                        "SharedObjectLockConflict: object {}: {}",
+                        object_id.to_hex_literal(),
+                        reason
+                    )
                 }
             }
         }
@@ -345,7 +377,8 @@ impl CompileError {
         if self.errors.is_empty() {
             self.raw_output.clone()
         } else {
-            self.errors.iter()
+            self.errors
+                .iter()
                 .map(|e| e.format())
                 .collect::<Vec<_>>()
                 .join("\n\n")
@@ -800,8 +833,8 @@ impl SimulationEnvironment {
         // The actual randomness is handled by the native function mocks
         let mut random_bytes = Vec::with_capacity(48);
         random_bytes.extend_from_slice(random_id.as_ref()); // UID (32 bytes)
-        // Inner Versioned struct: { id: UID, version: u64 }
-        // For simplicity, use same ID and version 1
+                                                            // Inner Versioned struct: { id: UID, version: u64 }
+                                                            // For simplicity, use same ID and version 1
         random_bytes.extend_from_slice(random_id.as_ref()); // inner UID (32 bytes)
         random_bytes.extend_from_slice(&1u64.to_le_bytes()); // version (8 bytes)
 
@@ -832,7 +865,9 @@ impl SimulationEnvironment {
         let random_id = AccountAddress::from_hex_literal(RANDOM_OBJECT_ID)
             .map_err(|e| anyhow!("Invalid random ID: {}", e))?;
 
-        let random_obj = self.objects.get(&random_id)
+        let random_obj = self
+            .objects
+            .get(&random_id)
             .ok_or_else(|| anyhow!("Random object not found - this should not happen"))?;
 
         Ok(crate::benchmark::ptb::ObjectInput::Shared {
@@ -882,7 +917,9 @@ impl SimulationEnvironment {
         let clock_id = AccountAddress::from_hex_literal(CLOCK_OBJECT_ID)
             .map_err(|e| anyhow!("Invalid clock ID: {}", e))?;
 
-        let clock_obj = self.objects.get(&clock_id)
+        let clock_obj = self
+            .objects
+            .get(&clock_id)
             .ok_or_else(|| anyhow!("Clock object not found - this should not happen"))?;
 
         Ok(crate::benchmark::ptb::ObjectInput::Shared {
@@ -960,8 +997,9 @@ impl SimulationEnvironment {
 
     /// Fetch and deploy a package from mainnet.
     pub fn deploy_package_from_mainnet(&mut self, package_id: &str) -> Result<AccountAddress> {
-        let fetcher = self.fetcher.as_ref()
-            .ok_or_else(|| anyhow!("Mainnet fetching not enabled. Call with_mainnet_fetching() first."))?;
+        let fetcher = self.fetcher.as_ref().ok_or_else(|| {
+            anyhow!("Mainnet fetching not enabled. Call with_mainnet_fetching() first.")
+        })?;
 
         let modules = fetcher.fetch_package_modules(package_id)?;
         let (count, _) = self.resolver.add_package_modules(modules)?;
@@ -1073,13 +1111,7 @@ impl SimulationEnvironment {
 
     /// Register a new coin type with its metadata.
     /// This allows the sandbox to track decimal places for custom coins.
-    pub fn register_coin(
-        &mut self,
-        coin_type: &str,
-        decimals: u8,
-        symbol: &str,
-        name: &str,
-    ) {
+    pub fn register_coin(&mut self, coin_type: &str, decimals: u8, symbol: &str, name: &str) {
         self.coin_registry.insert(
             coin_type.to_string(),
             CoinMetadata {
@@ -1122,7 +1154,9 @@ impl SimulationEnvironment {
 
     /// Set object bytes directly.
     pub fn set_object_bytes(&mut self, id: AccountAddress, bytes: Vec<u8>) -> Result<()> {
-        let obj = self.objects.get_mut(&id)
+        let obj = self
+            .objects
+            .get_mut(&id)
             .ok_or_else(|| anyhow!("Object {} not found", id.to_hex_literal()))?;
         obj.bcs_bytes = bytes;
         obj.version += 1;
@@ -1209,7 +1243,9 @@ impl SimulationEnvironment {
     /// Fetch an object from mainnet and add it to the environment.
     /// Uses the full fetch to get type, ownership, and version information.
     pub fn fetch_object_from_mainnet(&mut self, object_id: &str) -> Result<AccountAddress> {
-        let fetcher = self.fetcher.as_ref()
+        let fetcher = self
+            .fetcher
+            .as_ref()
             .ok_or_else(|| anyhow!("Mainnet fetching not enabled"))?;
 
         let fetched = fetcher.fetch_object_full(object_id)?;
@@ -1372,7 +1408,10 @@ impl SimulationEnvironment {
 
     /// Pre-publish modules and return (package_id, upgrade_cap_id).
     /// This adds the modules to the resolver before PTB execution.
-    fn pre_publish_modules(&mut self, modules: &[Vec<u8>]) -> Result<(AccountAddress, AccountAddress)> {
+    fn pre_publish_modules(
+        &mut self,
+        modules: &[Vec<u8>],
+    ) -> Result<(AccountAddress, AccountAddress)> {
         if modules.is_empty() {
             return Err(anyhow!("Publish requires at least one module"));
         }
@@ -1382,8 +1421,9 @@ impl SimulationEnvironment {
         let mut module_names = Vec::new();
 
         for module_bytes in modules {
-            let module = move_binary_format::CompiledModule::deserialize_with_defaults(module_bytes)
-                .map_err(|e| anyhow!("Failed to deserialize module: {:?}", e))?;
+            let module =
+                move_binary_format::CompiledModule::deserialize_with_defaults(module_bytes)
+                    .map_err(|e| anyhow!("Failed to deserialize module: {:?}", e))?;
 
             let module_id = module.self_id();
             module_names.push(module_id.name().to_string());
@@ -1419,9 +1459,9 @@ impl SimulationEnvironment {
         // Store UpgradeCap as an object
         let mut upgrade_cap_bytes = Vec::new();
         upgrade_cap_bytes.extend_from_slice(upgrade_cap_id.as_ref()); // UID
-        upgrade_cap_bytes.extend_from_slice(package_addr.as_ref());   // package ID
-        upgrade_cap_bytes.extend_from_slice(&1u64.to_le_bytes());     // version
-        upgrade_cap_bytes.push(0u8);                                   // policy
+        upgrade_cap_bytes.extend_from_slice(package_addr.as_ref()); // package ID
+        upgrade_cap_bytes.extend_from_slice(&1u64.to_le_bytes()); // version
+        upgrade_cap_bytes.push(0u8); // policy
 
         let upgrade_cap = SimulatedObject {
             id: upgrade_cap_id,
@@ -1456,8 +1496,9 @@ impl SimulationEnvironment {
         let mut module_names = Vec::new();
 
         for module_bytes in modules {
-            let module = move_binary_format::CompiledModule::deserialize_with_defaults(module_bytes)
-                .map_err(|e| anyhow!("Failed to deserialize module: {:?}", e))?;
+            let module =
+                move_binary_format::CompiledModule::deserialize_with_defaults(module_bytes)
+                    .map_err(|e| anyhow!("Failed to deserialize module: {:?}", e))?;
 
             let module_id = module.self_id();
             module_names.push(module_id.name().to_string());
@@ -1487,7 +1528,7 @@ impl SimulationEnvironment {
         // Store UpgradeReceipt as an object
         // UpgradeReceipt { cap: ID, package: ID }
         let mut receipt_bytes = Vec::new();
-        receipt_bytes.extend_from_slice(receipt_id.as_ref());       // UID
+        receipt_bytes.extend_from_slice(receipt_id.as_ref()); // UID
         receipt_bytes.extend_from_slice(original_package.as_ref()); // cap ID (placeholder)
         receipt_bytes.extend_from_slice(new_package_addr.as_ref()); // new package ID
 
@@ -1518,7 +1559,8 @@ impl SimulationEnvironment {
         use crate::benchmark::ptb::ObjectInput;
 
         // Extract shared objects from inputs and acquire locks
-        let shared_objects: Vec<(AccountAddress, bool)> = inputs.iter()
+        let shared_objects: Vec<(AccountAddress, bool)> = inputs
+            .iter()
             .filter_map(|input| {
                 match input {
                     InputValue::Object(ObjectInput::Shared { id, .. }) => {
@@ -1537,7 +1579,11 @@ impl SimulationEnvironment {
 
             match self.acquire_shared_locks(shared_objects.clone(), Some(tx_id.clone())) {
                 LockResult::Success { locks } => Some(locks),
-                LockResult::Conflict { object_id, existing_lock, reason } => {
+                LockResult::Conflict {
+                    object_id,
+                    existing_lock,
+                    reason,
+                } => {
                     let raw_error = format!(
                         "Shared object lock conflict on {}: {}",
                         object_id.to_hex_literal(),
@@ -1607,14 +1653,11 @@ impl SimulationEnvironment {
         use crate::benchmark::ptb::ObjectInput;
 
         // Extract shared objects from inputs and acquire locks
-        let shared_objects: Vec<(AccountAddress, bool)> = inputs.iter()
-            .filter_map(|input| {
-                match input {
-                    InputValue::Object(ObjectInput::Shared { id, .. }) => {
-                        Some((*id, true))
-                    }
-                    _ => None,
-                }
+        let shared_objects: Vec<(AccountAddress, bool)> = inputs
+            .iter()
+            .filter_map(|input| match input {
+                InputValue::Object(ObjectInput::Shared { id, .. }) => Some((*id, true)),
+                _ => None,
             })
             .collect();
 
@@ -1625,7 +1668,11 @@ impl SimulationEnvironment {
 
             match self.acquire_shared_locks(shared_objects.clone(), Some(tx_id.clone())) {
                 LockResult::Success { locks } => Some(locks),
-                LockResult::Conflict { object_id, existing_lock, reason } => {
+                LockResult::Conflict {
+                    object_id,
+                    existing_lock,
+                    reason,
+                } => {
                     let raw_error = format!(
                         "Shared object lock conflict on {}: {}",
                         object_id.to_hex_literal(),
@@ -1671,50 +1718,52 @@ impl SimulationEnvironment {
         // Pre-process: Handle Publish and Upgrade commands by adding modules to resolver first
         // This allows the published/upgraded modules to be available for subsequent MoveCall commands
         let mut published_packages: Vec<(AccountAddress, AccountAddress)> = Vec::new(); // (package_id, upgrade_cap_id)
-        let mut upgraded_packages: Vec<(AccountAddress, AccountAddress)> = Vec::new();  // (new_package_id, receipt_id)
+        let mut upgraded_packages: Vec<(AccountAddress, AccountAddress)> = Vec::new(); // (new_package_id, receipt_id)
 
         for cmd in &commands {
             match cmd {
-                Command::Publish { modules, .. } => {
-                    match self.pre_publish_modules(modules) {
-                        Ok((pkg_id, cap_id)) => {
-                            published_packages.push((pkg_id, cap_id));
-                        }
-                        Err(e) => {
-                            return ExecutionResult {
-                                success: false,
-                                effects: None,
-                                error: Some(SimulationError::ExecutionError {
-                                    message: format!("Failed to publish modules: {}", e),
-                                }),
-                                raw_error: Some(e.to_string()),
-                                failed_command_index: None,
-                                failed_command_description: Some("Publish (pre-processing)".to_string()),
-                                commands_succeeded: 0,
-                            };
-                        }
+                Command::Publish { modules, .. } => match self.pre_publish_modules(modules) {
+                    Ok((pkg_id, cap_id)) => {
+                        published_packages.push((pkg_id, cap_id));
                     }
-                }
-                Command::Upgrade { modules, package, .. } => {
-                    match self.pre_upgrade_modules(modules, *package) {
-                        Ok((new_pkg_id, receipt_id)) => {
-                            upgraded_packages.push((new_pkg_id, receipt_id));
-                        }
-                        Err(e) => {
-                            return ExecutionResult {
-                                success: false,
-                                effects: None,
-                                error: Some(SimulationError::ExecutionError {
-                                    message: format!("Failed to upgrade package: {}", e),
-                                }),
-                                raw_error: Some(e.to_string()),
-                                failed_command_index: None,
-                                failed_command_description: Some("Upgrade (pre-processing)".to_string()),
-                                commands_succeeded: 0,
-                            };
-                        }
+                    Err(e) => {
+                        return ExecutionResult {
+                            success: false,
+                            effects: None,
+                            error: Some(SimulationError::ExecutionError {
+                                message: format!("Failed to publish modules: {}", e),
+                            }),
+                            raw_error: Some(e.to_string()),
+                            failed_command_index: None,
+                            failed_command_description: Some(
+                                "Publish (pre-processing)".to_string(),
+                            ),
+                            commands_succeeded: 0,
+                        };
                     }
-                }
+                },
+                Command::Upgrade {
+                    modules, package, ..
+                } => match self.pre_upgrade_modules(modules, *package) {
+                    Ok((new_pkg_id, receipt_id)) => {
+                        upgraded_packages.push((new_pkg_id, receipt_id));
+                    }
+                    Err(e) => {
+                        return ExecutionResult {
+                            success: false,
+                            effects: None,
+                            error: Some(SimulationError::ExecutionError {
+                                message: format!("Failed to upgrade package: {}", e),
+                            }),
+                            raw_error: Some(e.to_string()),
+                            failed_command_index: None,
+                            failed_command_description: Some(
+                                "Upgrade (pre-processing)".to_string(),
+                            ),
+                            commands_succeeded: 0,
+                        };
+                    }
+                },
                 _ => {}
             }
         }
@@ -1748,7 +1797,8 @@ impl SimulationEnvironment {
 
         // Preload dynamic field state from the environment.
         // This makes existing Table/Bag entries available to MoveCall functions.
-        let preload_fields: Vec<_> = self.dynamic_fields
+        let preload_fields: Vec<_> = self
+            .dynamic_fields
             .iter()
             .map(|((p, c), (t, b))| ((*p, *c), t.clone(), b.clone()))
             .collect();
@@ -1756,7 +1806,8 @@ impl SimulationEnvironment {
 
         // Preload pending receives for transfer::receive in Move code.
         // This makes objects sent to other objects available for receiving.
-        let preload_receives: Vec<_> = self.pending_receives
+        let preload_receives: Vec<_> = self
+            .pending_receives
             .iter()
             .map(|((r, s), (b, t))| ((*r, *s), t.clone(), b.clone()))
             .collect();
@@ -1834,9 +1885,15 @@ impl SimulationEnvironment {
 
         for change in &effects.object_changes {
             match change {
-                ObjectChange::Created { id, owner, object_type } => {
+                ObjectChange::Created {
+                    id,
+                    owner,
+                    object_type,
+                } => {
                     // Get the bytes from the effects if available
-                    let bcs_bytes = effects.created_object_bytes.get(id)
+                    let bcs_bytes = effects
+                        .created_object_bytes
+                        .get(id)
                         .cloned()
                         .unwrap_or_default();
 
@@ -1870,7 +1927,11 @@ impl SimulationEnvironment {
                         self.objects.insert(*id, obj);
                     }
                 }
-                ObjectChange::Mutated { id, owner, object_type } => {
+                ObjectChange::Mutated {
+                    id,
+                    owner,
+                    object_type,
+                } => {
                     // Get the mutated bytes from the effects
                     let mutated_bytes = effects.mutated_object_bytes.get(id);
 
@@ -1914,9 +1975,15 @@ impl SimulationEnvironment {
                     // (they exist inside another object)
                     self.objects.remove(id);
                 }
-                ObjectChange::Unwrapped { id, owner, object_type } => {
+                ObjectChange::Unwrapped {
+                    id,
+                    owner,
+                    object_type,
+                } => {
                     // Get bytes from created_object_bytes (unwrapped objects are tracked there)
-                    let bcs_bytes = effects.created_object_bytes.get(id)
+                    let bcs_bytes = effects
+                        .created_object_bytes
+                        .get(id)
                         .cloned()
                         .unwrap_or_default();
 
@@ -1947,24 +2014,28 @@ impl SimulationEnvironment {
                         self.objects.insert(*id, obj);
                     }
                 }
-                ObjectChange::Transferred { id, recipient, object_type, object_bytes } => {
+                ObjectChange::Transferred {
+                    id,
+                    recipient,
+                    object_type,
+                    object_bytes,
+                } => {
                     // Remove the object from top-level objects (it's now owned by recipient)
                     self.objects.remove(id);
 
                     // Add to pending_receives so it can be received in the next PTB
                     // The recipient address is the "receiving object" (or address)
                     let type_tag = object_type.clone().unwrap_or(TypeTag::Address);
-                    self.pending_receives.insert(
-                        (*recipient, *id),
-                        (object_bytes.clone(), type_tag),
-                    );
+                    self.pending_receives
+                        .insert((*recipient, *id), (object_bytes.clone(), type_tag));
                 }
             }
         }
 
         // Sync dynamic field entries from the PTB execution
         for ((parent_id, child_id), (type_tag, bytes)) in &effects.dynamic_field_entries {
-            self.dynamic_fields.insert((*parent_id, *child_id), (type_tag.clone(), bytes.clone()));
+            self.dynamic_fields
+                .insert((*parent_id, *child_id), (type_tag.clone(), bytes.clone()));
         }
 
         // Clear received objects from pending_receives
@@ -1972,19 +2043,27 @@ impl SimulationEnvironment {
         // removed from pending_receives so it can't be received again.
         for received_id in &effects.received {
             // Find and remove the entry with this sent_id
-            self.pending_receives.retain(|(_, sent_id), _| sent_id != received_id);
+            self.pending_receives
+                .retain(|(_, sent_id), _| sent_id != received_id);
         }
     }
 
     /// Get a dynamic field entry by parent and child ID.
     /// Used for looking up Table/Bag entries.
-    pub fn get_dynamic_field(&self, parent_id: AccountAddress, child_id: AccountAddress) -> Option<&(TypeTag, Vec<u8>)> {
+    pub fn get_dynamic_field(
+        &self,
+        parent_id: AccountAddress,
+        child_id: AccountAddress,
+    ) -> Option<&(TypeTag, Vec<u8>)> {
         self.dynamic_fields.get(&(parent_id, child_id))
     }
 
     /// Get all dynamic fields for a parent object.
     /// Returns an iterator over (child_id, type_tag, bytes) tuples.
-    pub fn get_dynamic_fields_for_parent(&self, parent_id: AccountAddress) -> impl Iterator<Item = (AccountAddress, &TypeTag, &Vec<u8>)> {
+    pub fn get_dynamic_fields_for_parent(
+        &self,
+        parent_id: AccountAddress,
+    ) -> impl Iterator<Item = (AccountAddress, &TypeTag, &Vec<u8>)> {
         self.dynamic_fields
             .iter()
             .filter(move |((p, _), _)| *p == parent_id)
@@ -1993,12 +2072,23 @@ impl SimulationEnvironment {
 
     /// Set a dynamic field entry directly.
     /// Used for pre-populating state from mainnet or tests.
-    pub fn set_dynamic_field(&mut self, parent_id: AccountAddress, child_id: AccountAddress, type_tag: TypeTag, bytes: Vec<u8>) {
-        self.dynamic_fields.insert((parent_id, child_id), (type_tag, bytes));
+    pub fn set_dynamic_field(
+        &mut self,
+        parent_id: AccountAddress,
+        child_id: AccountAddress,
+        type_tag: TypeTag,
+        bytes: Vec<u8>,
+    ) {
+        self.dynamic_fields
+            .insert((parent_id, child_id), (type_tag, bytes));
     }
 
     /// Remove a dynamic field entry.
-    pub fn remove_dynamic_field(&mut self, parent_id: AccountAddress, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+    pub fn remove_dynamic_field(
+        &mut self,
+        parent_id: AccountAddress,
+        child_id: AccountAddress,
+    ) -> Option<(TypeTag, Vec<u8>)> {
         self.dynamic_fields.remove(&(parent_id, child_id))
     }
 
@@ -2046,7 +2136,10 @@ impl SimulationEnvironment {
 
     /// Get all pending receives for an object.
     /// Returns (sent_object_id, bytes, type_tag) for each pending receive.
-    pub fn get_pending_receives(&self, recipient_object_id: AccountAddress) -> Vec<(AccountAddress, &Vec<u8>, &TypeTag)> {
+    pub fn get_pending_receives(
+        &self,
+        recipient_object_id: AccountAddress,
+    ) -> Vec<(AccountAddress, &Vec<u8>, &TypeTag)> {
         self.pending_receives
             .iter()
             .filter(|((recipient, _), _)| *recipient == recipient_object_id)
@@ -2067,7 +2160,8 @@ impl SimulationEnvironment {
         recipient_object_id: AccountAddress,
         sent_object_id: AccountAddress,
     ) -> Option<(Vec<u8>, TypeTag)> {
-        self.pending_receives.remove(&(recipient_object_id, sent_object_id))
+        self.pending_receives
+            .remove(&(recipient_object_id, sent_object_id))
     }
 
     // ============================================================
@@ -2141,7 +2235,8 @@ impl SimulationEnvironment {
                     } else if existing_lock.is_mutable {
                         "Existing transaction holds mutable lock".to_string()
                     } else {
-                        "New transaction requires mutable access but object has read lock".to_string()
+                        "New transaction requires mutable access but object has read lock"
+                            .to_string()
                     };
 
                     return LockResult::Conflict {
@@ -2162,7 +2257,9 @@ impl SimulationEnvironment {
         let mut acquired_locks = Vec::new();
         for (object_id, is_mutable) in shared_objects {
             // Use lamport clock for version if object doesn't exist yet
-            let version = self.objects.get(&object_id)
+            let version = self
+                .objects
+                .get(&object_id)
                 .map(|o| o.version.max(tx_lamport))
                 .unwrap_or(tx_lamport);
 
@@ -2177,7 +2274,9 @@ impl SimulationEnvironment {
             acquired_locks.push(lock);
         }
 
-        LockResult::Success { locks: acquired_locks }
+        LockResult::Success {
+            locks: acquired_locks,
+        }
     }
 
     /// Release shared object locks after transaction completion.
@@ -2197,7 +2296,8 @@ impl SimulationEnvironment {
 
     /// Release all locks for a specific transaction.
     pub fn release_locks_for_transaction(&mut self, transaction_id: &str) {
-        let to_remove: Vec<_> = self.shared_locks
+        let to_remove: Vec<_> = self
+            .shared_locks
             .iter()
             .filter(|(_, lock)| lock.transaction_id.as_deref() == Some(transaction_id))
             .map(|(id, _)| *id)
@@ -2226,7 +2326,8 @@ impl SimulationEnvironment {
 
     /// Check if a shared object has a mutable lock.
     pub fn has_mutable_lock(&self, object_id: AccountAddress) -> bool {
-        self.shared_locks.get(&object_id)
+        self.shared_locks
+            .get(&object_id)
             .map(|lock| lock.is_mutable)
             .unwrap_or(false)
     }
@@ -2496,12 +2597,7 @@ impl SimulationEnvironment {
     /// Iterate over dynamic fields with a closure.
     ///
     /// Useful for aggregating data from Table/Bag contents.
-    pub fn fold_dynamic_fields<T, F>(
-        &self,
-        parent_id: AccountAddress,
-        initial: T,
-        mut f: F,
-    ) -> T
+    pub fn fold_dynamic_fields<T, F>(&self, parent_id: AccountAddress, initial: T, mut f: F) -> T
     where
         F: FnMut(T, AccountAddress, &TypeTag, &[u8]) -> T,
     {
@@ -2558,7 +2654,8 @@ impl SimulationEnvironment {
         if error.contains("FAILED_TO_DESERIALIZE_ARGUMENT") {
             return SimulationError::DeserializationFailed {
                 argument_index: Self::extract_argument_index(error).unwrap_or(0),
-                expected_type: Self::extract_expected_type(error).unwrap_or_else(|| "unknown".to_string()),
+                expected_type: Self::extract_expected_type(error)
+                    .unwrap_or_else(|| "unknown".to_string()),
             };
         }
 
@@ -2725,7 +2822,10 @@ impl SimulationEnvironment {
     /// # Returns
     /// * `Ok(CompileResult)` - Compilation succeeded, bytecode is in build directory
     /// * `Err(CompileError)` - Compilation failed with structured error info
-    pub fn compile_source(&self, project_path: &std::path::Path) -> Result<CompileResult, CompileError> {
+    pub fn compile_source(
+        &self,
+        project_path: &std::path::Path,
+    ) -> Result<CompileResult, CompileError> {
         use std::process::Command;
 
         // Verify Move.toml exists
@@ -2780,10 +2880,7 @@ impl SimulationEnvironment {
         } else {
             // Parse compile errors
             let errors = Self::parse_compile_errors(&stderr);
-            Err(CompileError {
-                errors,
-                raw_output,
-            })
+            Err(CompileError { errors, raw_output })
         }
     }
 
@@ -2800,11 +2897,14 @@ impl SimulationEnvironment {
     /// # Returns
     /// * `Ok((package_id, module_names))` - Deployment succeeded
     /// * `Err` - Either compilation or deployment failed
-    pub fn compile_and_deploy(&mut self, project_path: &std::path::Path) -> Result<(AccountAddress, Vec<String>)> {
+    pub fn compile_and_deploy(
+        &mut self,
+        project_path: &std::path::Path,
+    ) -> Result<(AccountAddress, Vec<String>)> {
         // Compile
-        let compile_result = self.compile_source(project_path).map_err(|e| {
-            anyhow!("Compilation failed:\n{}", e.format_errors())
-        })?;
+        let compile_result = self
+            .compile_source(project_path)
+            .map_err(|e| anyhow!("Compilation failed:\n{}", e.format_errors()))?;
 
         // Read bytecode from compiled modules
         let mut modules_bytecode = Vec::new();
@@ -2826,7 +2926,9 @@ impl SimulationEnvironment {
         let mut module_names = Vec::new();
 
         for bytecode in modules_bytecode {
-            if let Ok(module) = move_binary_format::CompiledModule::deserialize_with_defaults(&bytecode) {
+            if let Ok(module) =
+                move_binary_format::CompiledModule::deserialize_with_defaults(&bytecode)
+            {
                 let name = module.name().to_string();
                 module_names.push(name.clone());
                 modules_with_names.push((name, bytecode));
@@ -2834,7 +2936,8 @@ impl SimulationEnvironment {
         }
 
         // Deploy to resolver with address aliasing
-        self.resolver.add_package_modules_at(modules_with_names, Some(package_id))?;
+        self.resolver
+            .add_package_modules_at(modules_with_names, Some(package_id))?;
 
         Ok((package_id, module_names))
     }
@@ -2989,44 +3092,42 @@ impl SimulationEnvironment {
     ///
     /// If the object is not found locally and mainnet fetching is enabled,
     /// this will NOT auto-fetch. Use `get_or_fetch_object_for_ptb` for auto-fetch behavior.
-    pub fn get_object_for_ptb_with_mode(&self, object_id: &str, mode: Option<&str>) -> Result<ObjectInput> {
+    pub fn get_object_for_ptb_with_mode(
+        &self,
+        object_id: &str,
+        mode: Option<&str>,
+    ) -> Result<ObjectInput> {
         let addr = AccountAddress::from_hex_literal(object_id)
             .map_err(|e| anyhow!("Invalid object ID: {}", e))?;
 
-        let obj = self.objects.get(&addr)
+        let obj = self
+            .objects
+            .get(&addr)
             .ok_or_else(|| anyhow!("ObjectNotFound: {}", object_id))?;
 
         // Use explicit mode if provided, otherwise infer from object properties
         let type_tag = Some(obj.type_tag.clone());
         match mode {
-            Some("mutable") | Some("mut") => {
-                Ok(ObjectInput::MutRef {
-                    id: addr,
-                    bytes: obj.bcs_bytes.clone(),
-                    type_tag,
-                })
-            }
-            Some("immutable") | Some("imm") => {
-                Ok(ObjectInput::ImmRef {
-                    id: addr,
-                    bytes: obj.bcs_bytes.clone(),
-                    type_tag,
-                })
-            }
-            Some("owned") | Some("value") => {
-                Ok(ObjectInput::Owned {
-                    id: addr,
-                    bytes: obj.bcs_bytes.clone(),
-                    type_tag,
-                })
-            }
-            Some("shared") => {
-                Ok(ObjectInput::Shared {
-                    id: addr,
-                    bytes: obj.bcs_bytes.clone(),
-                    type_tag,
-                })
-            }
+            Some("mutable") | Some("mut") => Ok(ObjectInput::MutRef {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+            }),
+            Some("immutable") | Some("imm") => Ok(ObjectInput::ImmRef {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+            }),
+            Some("owned") | Some("value") => Ok(ObjectInput::Owned {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+            }),
+            Some("shared") => Ok(ObjectInput::Shared {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+            }),
             // Default: infer from object properties
             None | Some(_) => {
                 if obj.is_shared {
@@ -3055,7 +3156,11 @@ impl SimulationEnvironment {
 
     /// Get an object for PTB execution, auto-fetching from mainnet if not found locally.
     /// This is the recommended method when mainnet fetching is enabled.
-    pub fn get_or_fetch_object_for_ptb(&mut self, object_id: &str, mode: Option<&str>) -> Result<ObjectInput> {
+    pub fn get_or_fetch_object_for_ptb(
+        &mut self,
+        object_id: &str,
+        mode: Option<&str>,
+    ) -> Result<ObjectInput> {
         let addr = AccountAddress::from_hex_literal(object_id)
             .map_err(|e| anyhow!("Invalid object ID: {}", e))?;
 
@@ -3087,7 +3192,8 @@ impl SimulationEnvironment {
     pub fn delete_object(&mut self, object_id: &str) -> Result<()> {
         let addr = AccountAddress::from_hex_literal(object_id)
             .map_err(|e| anyhow!("Invalid object ID: {}", e))?;
-        self.objects.remove(&addr)
+        self.objects
+            .remove(&addr)
             .ok_or_else(|| anyhow!("ObjectNotFound: {}", object_id))?;
         Ok(())
     }
@@ -3104,7 +3210,9 @@ impl SimulationEnvironment {
         let coin_id = self.create_coin("0x2::sui::SUI", balance)?;
 
         // Get it as an owned object (gas coin is consumed by value)
-        let obj = self.objects.get(&coin_id)
+        let obj = self
+            .objects
+            .get(&coin_id)
             .ok_or_else(|| anyhow!("Failed to retrieve created gas coin"))?;
 
         Ok(ObjectInput::Owned {
@@ -3152,14 +3260,22 @@ impl SimulationEnvironment {
                         module: module_name.clone(),
                         name: struct_name,
                         abilities: struct_info.abilities,
-                        type_params: struct_info.type_params.into_iter().map(|tp| TypeParamDef {
-                            name: tp.name,
-                            constraints: tp.constraints,
-                        }).collect(),
-                        fields: struct_info.fields.into_iter().map(|f| FieldDefinition {
-                            name: f.name,
-                            field_type: f.field_type,
-                        }).collect(),
+                        type_params: struct_info
+                            .type_params
+                            .into_iter()
+                            .map(|tp| TypeParamDef {
+                                name: tp.name,
+                                constraints: tp.constraints,
+                            })
+                            .collect(),
+                        fields: struct_info
+                            .fields
+                            .into_iter()
+                            .map(|f| FieldDefinition {
+                                name: f.name,
+                                field_type: f.field_type,
+                            })
+                            .collect(),
                     });
                 }
             }
@@ -3170,15 +3286,20 @@ impl SimulationEnvironment {
 
     /// Get a summary of the sandbox state.
     pub fn get_state_summary(&self) -> StateSummary {
-        let loaded_packages: Vec<String> = self.resolver.list_packages()
+        let loaded_packages: Vec<String> = self
+            .resolver
+            .list_packages()
             .into_iter()
             .map(|a| a.to_hex_literal())
             .collect();
 
-        let loaded_modules: Vec<(String, String)> = self.resolver.list_packages()
+        let loaded_modules: Vec<(String, String)> = self
+            .resolver
+            .list_packages()
             .into_iter()
             .flat_map(|addr| {
-                self.resolver.get_package_modules(&addr)
+                self.resolver
+                    .get_package_modules(&addr)
                     .into_iter()
                     .map(move |name| (addr.to_hex_literal(), name))
             })
@@ -3217,7 +3338,8 @@ impl SimulationEnvironment {
         let function_id = Identifier::new(function)?;
 
         // Parse type args
-        let parsed_type_args: Vec<TypeTag> = type_args.iter()
+        let parsed_type_args: Vec<TypeTag> = type_args
+            .iter()
             .map(|s| crate::benchmark::tx_replay::parse_type_tag(s))
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -3227,27 +3349,32 @@ impl SimulationEnvironment {
             module: module_id,
             function: function_id,
             type_args: parsed_type_args,
-            args: (0..args.len()).map(|i| crate::benchmark::ptb::Argument::Input(i as u16)).collect(),
+            args: (0..args.len())
+                .map(|i| crate::benchmark::ptb::Argument::Input(i as u16))
+                .collect(),
         };
 
         // Convert args to inputs
-        let inputs: Vec<InputValue> = args.iter().map(|v| {
-            InputValue::Pure(serde_json::to_vec(v).unwrap_or_default())
-        }).collect();
+        let inputs: Vec<InputValue> = args
+            .iter()
+            .map(|v| InputValue::Pure(serde_json::to_vec(v).unwrap_or_default()))
+            .collect();
 
         // Execute
         let result = self.execute_ptb(inputs, vec![command]);
 
         if result.success {
             // Extract return values from the first (and only) command's results
-            let return_values = result.effects
+            let return_values = result
+                .effects
                 .as_ref()
                 .and_then(|effects| effects.return_values.first())
                 .cloned()
                 .unwrap_or_default();
 
             // Extract gas used from effects
-            let gas_used = result.effects
+            let gas_used = result
+                .effects
                 .as_ref()
                 .map(|effects| effects.gas_used)
                 .unwrap_or(0);
@@ -3257,7 +3384,12 @@ impl SimulationEnvironment {
                 gas_used,
             })
         } else {
-            Err(anyhow!("{}", result.raw_error.unwrap_or_else(|| "Unknown error".to_string())))
+            Err(anyhow!(
+                "{}",
+                result
+                    .raw_error
+                    .unwrap_or_else(|| "Unknown error".to_string())
+            ))
         }
     }
 
@@ -3287,7 +3419,8 @@ impl SimulationEnvironment {
             } else if line.contains("-->") && current_error.is_some() {
                 // Parse location: --> path/to/file.move:line:column
                 if let Some(ref mut err) = current_error {
-                    let location = line.trim_start_matches(|c: char| c == '-' || c == '>' || c.is_whitespace());
+                    let location = line
+                        .trim_start_matches(|c: char| c == '-' || c == '>' || c.is_whitespace());
                     let parts: Vec<&str> = location.split(':').collect();
                     if !parts.is_empty() {
                         err.file = Some(parts[0].to_string());
@@ -3331,16 +3464,18 @@ impl SimulationEnvironment {
         use base64::Engine;
 
         // Export objects
-        let objects: Vec<SerializedObject> = self.objects.values().map(|obj| {
-            SerializedObject {
+        let objects: Vec<SerializedObject> = self
+            .objects
+            .values()
+            .map(|obj| SerializedObject {
                 id: obj.id.to_hex_literal(),
                 type_tag: format!("{}", obj.type_tag),
                 bcs_bytes_b64: base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
                 is_shared: obj.is_shared,
                 is_immutable: obj.is_immutable,
                 version: obj.version,
-            }
-        }).collect();
+            })
+            .collect();
 
         // Export non-framework modules
         // We skip 0x1, 0x2, 0x3 as those are always loaded from bundled framework
@@ -3348,9 +3483,13 @@ impl SimulationEnvironment {
             AccountAddress::from_hex_literal("0x1").unwrap(),
             AccountAddress::from_hex_literal("0x2").unwrap(),
             AccountAddress::from_hex_literal("0x3").unwrap(),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
-        let modules: Vec<SerializedModule> = self.resolver.iter_modules()
+        let modules: Vec<SerializedModule> = self
+            .resolver
+            .iter_modules()
             .filter(|m| !framework_addrs.contains(m.self_id().address()))
             .filter_map(|m| {
                 // Get bytecode from resolver
@@ -3366,7 +3505,8 @@ impl SimulationEnvironment {
             .collect();
 
         // Export coin registry
-        let coin_registry: std::collections::HashMap<String, CoinMetadata> = self.coin_registry
+        let coin_registry: std::collections::HashMap<String, CoinMetadata> = self
+            .coin_registry
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -3387,8 +3527,7 @@ impl SimulationEnvironment {
         let state = self.export_state();
         let json = serde_json::to_string_pretty(&state)
             .map_err(|e| anyhow!("Failed to serialize state: {}", e))?;
-        std::fs::write(path, json)
-            .map_err(|e| anyhow!("Failed to write state file: {}", e))?;
+        std::fs::write(path, json).map_err(|e| anyhow!("Failed to write state file: {}", e))?;
         Ok(())
     }
 
@@ -3446,8 +3585,8 @@ impl SimulationEnvironment {
 
         // Load sender
         if !state.sender.is_empty() && state.sender != "0x0" {
-            self.sender = AccountAddress::from_hex_literal(&state.sender)
-                .unwrap_or(AccountAddress::ZERO);
+            self.sender =
+                AccountAddress::from_hex_literal(&state.sender).unwrap_or(AccountAddress::ZERO);
         }
 
         // Load id counter (use max to avoid collisions)
@@ -3488,7 +3627,11 @@ impl SimulationEnvironment {
     }
 
     /// Get detailed function info.
-    pub fn get_function_info(&self, module_path: &str, function_name: &str) -> Option<serde_json::Value> {
+    pub fn get_function_info(
+        &self,
+        module_path: &str,
+        function_name: &str,
+    ) -> Option<serde_json::Value> {
         self.resolver.get_function_info(module_path, function_name)
     }
 
@@ -3498,7 +3641,11 @@ impl SimulationEnvironment {
     }
 
     /// Search for types matching a pattern.
-    pub fn search_types(&self, pattern: &str, ability_filter: Option<&str>) -> Vec<serde_json::Value> {
+    pub fn search_types(
+        &self,
+        pattern: &str,
+        ability_filter: Option<&str>,
+    ) -> Vec<serde_json::Value> {
         self.resolver.search_types(pattern, ability_filter)
     }
 
@@ -3509,7 +3656,8 @@ impl SimulationEnvironment {
 
     /// Disassemble a function to bytecode.
     pub fn disassemble_function(&self, module_path: &str, function_name: &str) -> Option<String> {
-        self.resolver.disassemble_function(module_path, function_name)
+        self.resolver
+            .disassemble_function(module_path, function_name)
     }
 
     /// Get struct type information.
@@ -3523,7 +3671,11 @@ impl SimulationEnvironment {
     /// - JSON objects: used directly as field map
     /// - JSON primitives (number, string, bool): wrapped as {"value": ...}
     /// - JSON arrays: wrapped as {"elements": [...]}
-    pub fn create_test_object(&mut self, type_tag: &str, value: serde_json::Value) -> Result<AccountAddress> {
+    pub fn create_test_object(
+        &mut self,
+        type_tag: &str,
+        value: serde_json::Value,
+    ) -> Result<AccountAddress> {
         use std::collections::HashMap;
 
         // Convert JSON value to a field map
@@ -3532,7 +3684,9 @@ impl SimulationEnvironment {
                 // If the value is already an object, convert the map to HashMap
                 map.into_iter().collect()
             }
-            serde_json::Value::Number(_) | serde_json::Value::Bool(_) | serde_json::Value::String(_) => {
+            serde_json::Value::Number(_)
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::String(_) => {
                 // Wrap primitives in a "value" field (common pattern for wrapper types)
                 let mut fields = HashMap::new();
                 fields.insert("value".to_string(), value);
@@ -3569,14 +3723,17 @@ impl SimulationEnvironment {
                 .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
         );
 
-        let module_bytes = self.resolver.get_module(&module_id)
+        let module_bytes = self
+            .resolver
+            .get_module(&module_id)
             .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
 
         let module = CompiledModule::deserialize_with_defaults(&module_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
 
-        let deps: Vec<(AccountAddress, String)> = module.immediate_dependencies()
+        let deps: Vec<(AccountAddress, String)> = module
+            .immediate_dependencies()
             .into_iter()
             .map(|dep| (*dep.address(), dep.name().to_string()))
             .collect();
@@ -3591,9 +3748,9 @@ impl SimulationEnvironment {
         module_name: &str,
     ) -> Result<String> {
         use move_binary_format::CompiledModule;
+        use move_command_line_common::files::FileHash;
         use move_disassembler::disassembler::Disassembler;
         use move_ir_types::location::Loc;
-        use move_command_line_common::files::FileHash;
 
         let module_id = move_core_types::language_storage::ModuleId::new(
             *address,
@@ -3601,19 +3758,21 @@ impl SimulationEnvironment {
                 .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
         );
 
-        let module_bytes = self.resolver.get_module(&module_id)
+        let module_bytes = self
+            .resolver
+            .get_module(&module_id)
             .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
 
         let module = CompiledModule::deserialize_with_defaults(&module_bytes)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
 
-        let disasm = Disassembler::from_module(
-            &module,
-            Loc::new(FileHash::empty(), 0, 0),
-        ).map_err(|e| anyhow::anyhow!("Failed to create disassembler: {:?}", e))?;
+        let disasm = Disassembler::from_module(&module, Loc::new(FileHash::empty(), 0, 0))
+            .map_err(|e| anyhow::anyhow!("Failed to create disassembler: {:?}", e))?;
 
-        Ok(disasm.disassemble().unwrap_or_else(|_| "Disassembly failed".to_string()))
+        Ok(disasm
+            .disassemble()
+            .unwrap_or_else(|_| "Disassembly failed".to_string()))
     }
 
     /// Get a human-readable summary of a module.
@@ -3630,7 +3789,9 @@ impl SimulationEnvironment {
                 .map_err(|e| anyhow::anyhow!("Invalid module name: {}", e))?,
         );
 
-        let module_bytes = self.resolver.get_module(&module_id)
+        let module_bytes = self
+            .resolver
+            .get_module(&module_id)
             .map_err(|e| anyhow::anyhow!("Module not found: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Module not found: {}", module_id))?;
 
@@ -3638,7 +3799,11 @@ impl SimulationEnvironment {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize module: {:?}", e))?;
 
         let mut summary = String::new();
-        summary.push_str(&format!("Module: {}::{}\n", address.to_hex_literal(), module_name));
+        summary.push_str(&format!(
+            "Module: {}::{}\n",
+            address.to_hex_literal(),
+            module_name
+        ));
         summary.push_str(&format!("Structs: {}\n", module.struct_defs().len()));
         summary.push_str(&format!("Functions: {}\n", module.function_defs().len()));
 
@@ -3755,7 +3920,9 @@ mod tests {
         let parsed = env.parse_error(error);
 
         match parsed {
-            SimulationError::MissingPackage { address, module, .. } => {
+            SimulationError::MissingPackage {
+                address, module, ..
+            } => {
                 assert!(address.contains("dba34672"));
                 assert_eq!(module, Some("usdc".to_string()));
             }
@@ -3770,7 +3937,12 @@ mod tests {
         let parsed = env.parse_error(error);
 
         match parsed {
-            SimulationError::ContractAbort { abort_code, module, function, .. } => {
+            SimulationError::ContractAbort {
+                abort_code,
+                module,
+                function,
+                ..
+            } => {
                 assert_eq!(abort_code, 202);
                 assert_eq!(module, "sq");
                 assert_eq!(function, "csst");
@@ -3781,10 +3953,22 @@ mod tests {
 
     #[test]
     fn test_parse_type_string_primitives() {
-        assert!(matches!(SimulationEnvironment::parse_type_string("u8"), Some(TypeTag::U8)));
-        assert!(matches!(SimulationEnvironment::parse_type_string("u64"), Some(TypeTag::U64)));
-        assert!(matches!(SimulationEnvironment::parse_type_string("bool"), Some(TypeTag::Bool)));
-        assert!(matches!(SimulationEnvironment::parse_type_string("address"), Some(TypeTag::Address)));
+        assert!(matches!(
+            SimulationEnvironment::parse_type_string("u8"),
+            Some(TypeTag::U8)
+        ));
+        assert!(matches!(
+            SimulationEnvironment::parse_type_string("u64"),
+            Some(TypeTag::U64)
+        ));
+        assert!(matches!(
+            SimulationEnvironment::parse_type_string("bool"),
+            Some(TypeTag::Bool)
+        ));
+        assert!(matches!(
+            SimulationEnvironment::parse_type_string("address"),
+            Some(TypeTag::Address)
+        ));
     }
 
     #[test]
@@ -3816,7 +4000,7 @@ mod tests {
     #[test]
     fn test_parse_type_string_multiple_generics() {
         let result = SimulationEnvironment::parse_type_string(
-            "0xabc::pool::Pool<0x2::sui::SUI, 0x2::usdc::USDC>"
+            "0xabc::pool::Pool<0x2::sui::SUI, 0x2::usdc::USDC>",
         );
         assert!(result.is_some());
         if let Some(TypeTag::Struct(s)) = result {
@@ -3831,7 +4015,7 @@ mod tests {
     #[test]
     fn test_parse_type_string_nested_generics() {
         let result = SimulationEnvironment::parse_type_string(
-            "0x2::option::Option<0x2::coin::Coin<0x2::sui::SUI>>"
+            "0x2::option::Option<0x2::coin::Coin<0x2::sui::SUI>>",
         );
         assert!(result.is_some());
         if let Some(TypeTag::Struct(s)) = result {

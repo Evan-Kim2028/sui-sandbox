@@ -21,8 +21,8 @@ use crate::comparator::{
 };
 use crate::rpc::build_interface_value_for_package;
 use crate::types::{
-    CorpusIndexRow, CorpusRow, CorpusStats, CorpusSummary, LocalBytecodeCounts,
-    ModuleSetDiff, RunMetadata, SubmissionSummary,
+    CorpusIndexRow, CorpusRow, CorpusStats, CorpusSummary, LocalBytecodeCounts, ModuleSetDiff,
+    RunMetadata, SubmissionSummary,
 };
 use crate::utils::{
     fnv1a64, git_head_metadata_for_path, git_metadata_for_path, now_unix_seconds,

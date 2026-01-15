@@ -4,7 +4,7 @@
 //! mainnet transactions.
 
 use sui_move_interface_extractor::benchmark::tx_replay::{
-    TransactionFetcher, TransactionStatus, PtbCommand, PtbArgument,
+    PtbArgument, PtbCommand, TransactionFetcher, TransactionStatus,
 };
 
 /// Test that we can fetch and parse a real mainnet transaction.
@@ -14,9 +14,7 @@ fn test_fetch_mainnet_transaction() {
 
     // This is a known successful mainnet transaction
     // Note: This test requires network access
-    let result = fetcher.fetch_transaction_sync(
-        "8JTTa6k7Expr15zMS2DpTsCsaMC4aV4Lwxvmraew85gY"
-    );
+    let result = fetcher.fetch_transaction_sync("8JTTa6k7Expr15zMS2DpTsCsaMC4aV4Lwxvmraew85gY");
 
     match result {
         Ok(tx) => {
@@ -47,9 +45,7 @@ fn test_fetch_mainnet_transaction() {
 fn test_ptb_command_parsing() {
     let fetcher = TransactionFetcher::mainnet();
 
-    let result = fetcher.fetch_transaction_sync(
-        "5bCek4Am6Sobxpg7LK83qtZiioAjfuJGxaMcH2mu2qo8"
-    );
+    let result = fetcher.fetch_transaction_sync("5bCek4Am6Sobxpg7LK83qtZiioAjfuJGxaMcH2mu2qo8");
 
     match result {
         Ok(tx) => {
@@ -59,7 +55,13 @@ fn test_ptb_command_parsing() {
             // Check first command is a MoveCall
             let first_cmd = &tx.commands[0];
             match first_cmd {
-                PtbCommand::MoveCall { package, module, function, arguments, .. } => {
+                PtbCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    arguments,
+                    ..
+                } => {
                     assert!(!package.is_empty(), "Package should not be empty");
                     assert!(!module.is_empty(), "Module should not be empty");
                     assert!(!function.is_empty(), "Function should not be empty");
@@ -79,16 +81,24 @@ fn test_ptb_command_parsing() {
                         for arg in arguments {
                             match arg {
                                 PtbArgument::Input { index } => {
-                                    assert!((*index as usize) < tx.inputs.len() + 20,
-                                        "Input index {} should be reasonable", index);
+                                    assert!(
+                                        (*index as usize) < tx.inputs.len() + 20,
+                                        "Input index {} should be reasonable",
+                                        index
+                                    );
                                 }
                                 PtbArgument::Result { index } => {
-                                    assert!((*index as usize) < i,
-                                        "Result index {} should reference earlier command", index);
+                                    assert!(
+                                        (*index as usize) < i,
+                                        "Result index {} should reference earlier command",
+                                        index
+                                    );
                                 }
                                 PtbArgument::NestedResult { index, .. } => {
-                                    assert!((*index as usize) < i,
-                                        "Nested result index should reference earlier command");
+                                    assert!(
+                                        (*index as usize) < i,
+                                        "Nested result index should reference earlier command"
+                                    );
                                 }
                                 PtbArgument::GasCoin => {}
                             }
@@ -110,9 +120,7 @@ fn test_fetch_transaction_objects() {
     let fetcher = TransactionFetcher::mainnet();
 
     // Fetch a simple transaction
-    let tx_result = fetcher.fetch_transaction_sync(
-        "6zCFTEkg2mFnqXt6anEBr3FBbWt3NMQqNbiMiGJ1S5LA"
-    );
+    let tx_result = fetcher.fetch_transaction_sync("6zCFTEkg2mFnqXt6anEBr3FBbWt3NMQqNbiMiGJ1S5LA");
 
     match tx_result {
         Ok(tx) => {
@@ -124,7 +132,8 @@ fn test_fetch_transaction_objects() {
                     println!("Fetched {} objects for transaction", objects.len());
 
                     // Verify we got the clock object (0x6)
-                    let clock_id = "0x0000000000000000000000000000000000000000000000000000000000000006";
+                    let clock_id =
+                        "0x0000000000000000000000000000000000000000000000000000000000000006";
                     if let Some(clock_bytes) = objects.get(clock_id) {
                         assert!(clock_bytes.len() > 0, "Clock should have bytes");
                         println!("  Clock object: {} bytes", clock_bytes.len());
@@ -151,9 +160,7 @@ fn test_fetch_transaction_objects() {
 fn test_effects_structure() {
     let fetcher = TransactionFetcher::mainnet();
 
-    let result = fetcher.fetch_transaction_sync(
-        "8JTTa6k7Expr15zMS2DpTsCsaMC4aV4Lwxvmraew85gY"
-    );
+    let result = fetcher.fetch_transaction_sync("8JTTa6k7Expr15zMS2DpTsCsaMC4aV4Lwxvmraew85gY");
 
     match result {
         Ok(tx) => {
@@ -188,9 +195,7 @@ fn test_effects_structure() {
 fn test_to_ptb_commands_conversion() {
     let fetcher = TransactionFetcher::mainnet();
 
-    let result = fetcher.fetch_transaction_sync(
-        "5bCek4Am6Sobxpg7LK83qtZiioAjfuJGxaMcH2mu2qo8"
-    );
+    let result = fetcher.fetch_transaction_sync("5bCek4Am6Sobxpg7LK83qtZiioAjfuJGxaMcH2mu2qo8");
 
     match result {
         Ok(tx) => {
@@ -204,15 +209,21 @@ fn test_to_ptb_commands_conversion() {
                     println!("  Commands: {}", commands.len());
 
                     // Should have same number of commands
-                    assert_eq!(commands.len(), tx.commands.len(),
-                        "Should preserve command count");
+                    assert_eq!(
+                        commands.len(),
+                        tx.commands.len(),
+                        "Should preserve command count"
+                    );
 
                     // Inputs should match (pure values + objects)
                     assert!(inputs.len() > 0, "Should have inputs");
                 }
                 Err(e) => {
                     // Conversion might fail for complex type arguments
-                    eprintln!("Note: Conversion failed (expected for complex types): {}", e);
+                    eprintln!(
+                        "Note: Conversion failed (expected for complex types): {}",
+                        e
+                    );
                 }
             }
         }
@@ -226,10 +237,12 @@ fn test_to_ptb_commands_conversion() {
 /// This demonstrates how an LLM can iteratively fix errors until PTB succeeds.
 #[test]
 fn test_simulation_self_healing_workflow() {
-    use sui_move_interface_extractor::benchmark::simulation::{SimulationEnvironment, SimulationError};
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument};
     use move_core_types::account_address::AccountAddress;
     use move_core_types::identifier::Identifier;
+    use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue};
+    use sui_move_interface_extractor::benchmark::simulation::{
+        SimulationEnvironment, SimulationError,
+    };
 
     // Create environment with framework
     let mut env = SimulationEnvironment::new().expect("create env");
@@ -237,32 +250,41 @@ fn test_simulation_self_healing_workflow() {
     println!("=== Self-Healing Simulation Workflow Demo ===\n");
 
     // Step 1: Create a SUI coin with some balance
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000).expect("create coin");
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("create coin");
     println!("1. Created SUI coin: {}", coin_id.to_hex_literal());
 
     // Step 2: Try a simple PTB - split the coin
     let split_amount: u64 = 100_000_000; // 0.1 SUI
     let inputs = vec![
-        InputValue::Object(sui_move_interface_extractor::benchmark::ptb::ObjectInput::Owned {
-            id: coin_id,
-            bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
-            type_tag: None,
-        }),
+        InputValue::Object(
+            sui_move_interface_extractor::benchmark::ptb::ObjectInput::Owned {
+                id: coin_id,
+                bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
+                type_tag: None,
+            },
+        ),
         InputValue::Pure(split_amount.to_le_bytes().to_vec()),
     ];
 
-    let commands = vec![
-        Command::SplitCoins {
-            coin: Argument::Input(0),
-            amounts: vec![Argument::Input(1)],
-        },
-    ];
+    let commands = vec![Command::SplitCoins {
+        coin: Argument::Input(0),
+        amounts: vec![Argument::Input(1)],
+    }];
 
     println!("2. Executing SplitCoins PTB...");
     let result = env.execute_ptb(inputs.clone(), commands.clone());
 
     if result.success {
-        println!("   SUCCESS! Split created {} new coins", result.effects.as_ref().map(|e| e.created.len()).unwrap_or(0));
+        println!(
+            "   SUCCESS! Split created {} new coins",
+            result
+                .effects
+                .as_ref()
+                .map(|e| e.created.len())
+                .unwrap_or(0)
+        );
     } else {
         println!("   Failed: {:?}", result.error);
         // In a real workflow, the LLM would analyze the error and take corrective action
@@ -278,7 +300,7 @@ fn test_simulation_self_healing_workflow() {
 
     for error in test_errors {
         let parsed = env.execute_ptb(vec![], vec![]); // Just to access parse_error through a result
-        // We'll test error parsing through the actual error paths
+                                                      // We'll test error parsing through the actual error paths
         println!("   Error type parsed correctly");
     }
 
@@ -294,10 +316,12 @@ fn test_simulation_self_healing_workflow() {
 /// This demonstrates the full self-healing flow: try -> fail -> diagnose -> fix -> retry.
 #[test]
 fn test_reconstruct_mainnet_transaction() {
-    use sui_move_interface_extractor::benchmark::simulation::{SimulationEnvironment, SimulationError};
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument};
-    use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
     use move_core_types::identifier::Identifier;
+    use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue};
+    use sui_move_interface_extractor::benchmark::simulation::{
+        SimulationEnvironment, SimulationError,
+    };
+    use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
 
     // Check if we have cached transactions to work with
     let cache_dir = std::path::Path::new(".tx-cache");
@@ -331,7 +355,10 @@ fn test_reconstruct_mainnet_transaction() {
             let mut env = SimulationEnvironment::new().expect("create env");
 
             // Step 1: Try to execute using cached objects
-            let (inputs, commands) = match cached.transaction.to_ptb_commands_with_objects(&cached.objects) {
+            let (inputs, commands) = match cached
+                .transaction
+                .to_ptb_commands_with_objects(&cached.objects)
+            {
                 Ok(ic) => ic,
                 Err(e) => {
                     println!("Could not convert to PTB: {}", e);
@@ -355,8 +382,16 @@ fn test_reconstruct_mainnet_transaction() {
                     Some(SimulationError::MissingPackage { address, .. }) => {
                         println!("Missing package: {}", address);
                     }
-                    Some(SimulationError::ContractAbort { abort_code, module, function, .. }) => {
-                        println!("Contract aborted in {}::{} with code {}", module, function, abort_code);
+                    Some(SimulationError::ContractAbort {
+                        abort_code,
+                        module,
+                        function,
+                        ..
+                    }) => {
+                        println!(
+                            "Contract aborted in {}::{} with code {}",
+                            module, function, abort_code
+                        );
                     }
                     Some(e) => {
                         println!("Other error: {}", e);
@@ -436,12 +471,22 @@ fn test_single_transaction_debug() {
                 }
             }
 
-            let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
+            let address_aliases =
+                sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(
+                    &cached,
+                );
             println!("Address aliases: {:?}", address_aliases.len());
 
-            match sui_move_interface_extractor::benchmark::vm::VMHarness::new(&local_resolver, false) {
+            match sui_move_interface_extractor::benchmark::vm::VMHarness::new(
+                &local_resolver,
+                false,
+            ) {
                 Ok(mut harness) => {
-                    match cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+                    match cached.transaction.replay_with_objects_and_aliases(
+                        &mut harness,
+                        &cached.objects,
+                        &address_aliases,
+                    ) {
                         Ok(result) => {
                             println!("Result: success={}", result.local_success);
                             if let Some(err) = &result.local_error {
@@ -467,9 +512,9 @@ fn test_single_transaction_debug() {
 /// This test uses cached transaction data (no network calls).
 #[test]
 fn test_cached_replay_analysis() {
-    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, replay_parallel};
     use std::collections::HashMap;
+    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::tx_replay::{replay_parallel, TransactionCache};
 
     // Check if cache exists
     let cache_dir = std::path::Path::new(".tx-cache");
@@ -516,8 +561,16 @@ fn test_cached_replay_analysis() {
 
     println!("\n=== REPLAY RESULTS ===");
     println!("Total: {}", result.total);
-    println!("Successful: {} ({:.1}%)", result.successful, result.successful as f64 / result.total as f64 * 100.0);
-    println!("Status matched: {} ({:.1}%)", result.status_matched, result.status_matched as f64 / result.total as f64 * 100.0);
+    println!(
+        "Successful: {} ({:.1}%)",
+        result.successful,
+        result.successful as f64 / result.total as f64 * 100.0
+    );
+    println!(
+        "Status matched: {} ({:.1}%)",
+        result.status_matched,
+        result.status_matched as f64 / result.total as f64 * 100.0
+    );
     println!("Elapsed: {}ms ({:.1} tx/s)", result.elapsed_ms, result.tps);
 
     // Categorize failures
@@ -544,12 +597,14 @@ fn test_cached_replay_analysis() {
                 if err.contains("LINKER_ERROR") {
                     linker_errors += 1;
                     if !error_samples.contains_key("LINKER") {
-                        error_samples.insert("LINKER".to_string(), format!("{}: {}", r.digest.0, err));
+                        error_samples
+                            .insert("LINKER".to_string(), format!("{}: {}", r.digest.0, err));
                     }
                 } else if err.contains("ABORTED") {
                     aborted_errors += 1;
                     if !error_samples.contains_key("ABORTED") {
-                        error_samples.insert("ABORTED".to_string(), format!("{}: {}", r.digest.0, err));
+                        error_samples
+                            .insert("ABORTED".to_string(), format!("{}: {}", r.digest.0, err));
                     }
                 } else {
                     other_errors += 1;
@@ -568,17 +623,31 @@ fn test_cached_replay_analysis() {
     println!("Other: {}", other_errors);
 
     println!("\n=== FRAMEWORK-ONLY TRANSACTIONS ===");
-    println!("Framework-only success: {}/{} ({:.1}%)",
-             framework_only_success, framework_only_total,
-             if framework_only_total > 0 { framework_only_success as f64 / framework_only_total as f64 * 100.0 } else { 0.0 });
+    println!(
+        "Framework-only success: {}/{} ({:.1}%)",
+        framework_only_success,
+        framework_only_total,
+        if framework_only_total > 0 {
+            framework_only_success as f64 / framework_only_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
 
     // Third-party transaction stats
     let third_party_total = result.total - framework_only_total;
     let third_party_success = result.successful - framework_only_success;
     println!("\n=== THIRD-PARTY TRANSACTIONS ===");
-    println!("Third-party success: {}/{} ({:.1}%)",
-             third_party_success, third_party_total,
-             if third_party_total > 0 { third_party_success as f64 / third_party_total as f64 * 100.0 } else { 0.0 });
+    println!(
+        "Third-party success: {}/{} ({:.1}%)",
+        third_party_success,
+        third_party_total,
+        if third_party_total > 0 {
+            third_party_success as f64 / third_party_total as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
 
     println!("\n=== ERROR SAMPLES ===");
     for (category, sample) in &error_samples {
@@ -597,7 +666,7 @@ fn test_cached_replay_analysis() {
                     function_resolution_failures += 1;
                     // Extract the module address
                     if let Some(start) = err.find("address: ") {
-                        let addr_part = &err[start+9..];
+                        let addr_part = &err[start + 9..];
                         if let Some(end) = addr_part.find(",") {
                             let addr = &addr_part[..end];
                             *missing_modules.entry(addr.to_string()).or_insert(0) += 1;
@@ -622,7 +691,10 @@ fn test_cached_replay_analysis() {
     for (i, r) in result.results.iter().enumerate() {
         if !r.local_success {
             if let Some(err) = &r.local_error {
-                if !err.contains("LINKER_ERROR") && !err.contains("ABORTED") && !err.contains("FUNCTION_RESOLUTION_FAILURE") {
+                if !err.contains("LINKER_ERROR")
+                    && !err.contains("ABORTED")
+                    && !err.contains("FUNCTION_RESOLUTION_FAILURE")
+                {
                     println!("  {}: {}", r.digest.0, &err[..err.len().min(150)]);
                 }
             }
@@ -658,7 +730,11 @@ fn test_cached_replay_analysis() {
     // Framework-only should have 100% success
     if framework_only_total > 0 {
         let framework_parity = framework_only_success as f64 / framework_only_total as f64;
-        assert!(framework_parity >= 0.95, "Framework-only parity should be >= 95%, got {:.1}%", framework_parity * 100.0);
+        assert!(
+            framework_parity >= 0.95,
+            "Framework-only parity should be >= 95%, got {:.1}%",
+            framework_parity * 100.0
+        );
     }
 }
 
@@ -671,10 +747,10 @@ fn test_cached_replay_analysis() {
 /// 4. Inspect results and debug errors
 #[test]
 fn test_llm_sandbox_workflow() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument};
     use move_core_types::account_address::AccountAddress;
     use move_core_types::identifier::Identifier;
+    use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue};
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== LLM Sandbox Workflow Demo ===\n");
 
@@ -685,8 +761,9 @@ fn test_llm_sandbox_workflow() {
 
     // Step 2: Set sender address (simulating the LLM's wallet)
     let sender = AccountAddress::from_hex_literal(
-        "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-    ).unwrap();
+        "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    )
+    .unwrap();
     env.set_sender(sender);
     println!("  Sender set to: {}", sender.to_hex_literal());
 
@@ -697,9 +774,13 @@ fn test_llm_sandbox_workflow() {
 
     // Step 4: Create a Coin object for testing
     println!("\nStep 2: Creating test objects...");
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000)
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
         .expect("Failed to create coin");
-    println!("  Created SUI coin with 1 SUI balance: {}", coin_id.to_hex_literal());
+    println!(
+        "  Created SUI coin with 1 SUI balance: {}",
+        coin_id.to_hex_literal()
+    );
 
     // Step 5: Inspect the object
     if let Some(inspection) = env.inspect_object(&coin_id) {
@@ -717,19 +798,17 @@ fn test_llm_sandbox_workflow() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
-        }
+        },
     );
 
     // Amount to split: 100_000_000 (0.1 SUI)
     let amount_input = InputValue::Pure(100_000_000u64.to_le_bytes().to_vec());
 
     let inputs = vec![coin_input, amount_input];
-    let commands = vec![
-        Command::SplitCoins {
-            coin: Argument::Input(0),
-            amounts: vec![Argument::Input(1)],
-        },
-    ];
+    let commands = vec![Command::SplitCoins {
+        coin: Argument::Input(0),
+        amounts: vec![Argument::Input(1)],
+    }];
 
     let result = env.execute_ptb(inputs, commands);
     println!("  Execution result: success={}", result.success);
@@ -771,8 +850,8 @@ fn test_llm_sandbox_workflow() {
 /// and then call functions in the published package.
 #[test]
 fn test_module_publishing_workflow() {
+    use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue};
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument};
 
     println!("=== Module Publishing Test ===\n");
 
@@ -787,12 +866,10 @@ fn test_module_publishing_workflow() {
 
     // Create a PTB with an empty Publish (this will test error handling)
     let inputs = vec![];
-    let commands = vec![
-        Command::Publish {
-            modules: vec![],  // Empty - should fail gracefully
-            dep_ids: vec![],
-        },
-    ];
+    let commands = vec![Command::Publish {
+        modules: vec![], // Empty - should fail gracefully
+        dep_ids: vec![],
+    }];
 
     let result = env.execute_ptb(inputs, commands);
     println!("Empty Publish result: success={}", result.success);
@@ -818,10 +895,10 @@ fn test_module_publishing_workflow() {
 /// This is the key capability that enables LLMs to build and execute their own code.
 #[test]
 fn test_dynamic_publish_and_call_within_session() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::Command;
-    use sui_move_interface_extractor::benchmark::package_builder::PackageBuilder;
     use move_core_types::identifier::Identifier;
+    use sui_move_interface_extractor::benchmark::package_builder::PackageBuilder;
+    use sui_move_interface_extractor::benchmark::ptb::Command;
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== Dynamic Publish and Call Within Session Test ===\n");
 
@@ -835,7 +912,9 @@ fn test_dynamic_publish_and_call_within_session() {
     };
 
     if !builder.is_framework_cached() {
-        println!("Skipping test: Sui framework not cached (run with --features cache-framework first)");
+        println!(
+            "Skipping test: Sui framework not cached (run with --features cache-framework first)"
+        );
         return;
     }
 
@@ -910,7 +989,8 @@ module dynamic_test::counter {
 
     // Step 3: Extract bytecode (compile_result.modules is Vec<(String, Vec<u8>)>)
     println!("Step 3: Extracting bytecode...");
-    let module_bytecodes: Vec<Vec<u8>> = compile_result.modules
+    let module_bytecodes: Vec<Vec<u8>> = compile_result
+        .modules
         .iter()
         .map(|(_, bytes)| bytes.clone())
         .collect();
@@ -921,10 +1001,14 @@ module dynamic_test::counter {
     }
 
     // Parse to get package address
-    let module = move_binary_format::CompiledModule::deserialize_with_defaults(&module_bytecodes[0])
-        .expect("deserialize module");
+    let module =
+        move_binary_format::CompiledModule::deserialize_with_defaults(&module_bytecodes[0])
+            .expect("deserialize module");
     let package_addr = *module.self_id().address();
-    println!("  Package address from bytecode: {}", package_addr.to_hex_literal());
+    println!(
+        "  Package address from bytecode: {}",
+        package_addr.to_hex_literal()
+    );
 
     // Step 4: Execute PTB with Publish followed by MoveCall in SAME PTB
     println!("\nStep 4: Publishing and calling in SAME PTB...");
@@ -943,7 +1027,7 @@ module dynamic_test::counter {
             module: Identifier::new("counter").unwrap(),
             function: Identifier::new("create_and_share").unwrap(),
             type_args: vec![],
-            args: vec![],  // create_and_share only takes ctx (implicit)
+            args: vec![], // create_and_share only takes ctx (implicit)
         },
     ];
 
@@ -964,22 +1048,23 @@ module dynamic_test::counter {
         println!("  Commands succeeded: {}", effects.commands_succeeded);
 
         // At minimum, Publish should have succeeded (creates package + UpgradeCap)
-        assert!(effects.commands_succeeded >= 1, "Publish command should succeed");
+        assert!(
+            effects.commands_succeeded >= 1,
+            "Publish command should succeed"
+        );
     }
 
     // Step 5: Execute a SECOND PTB that calls the previously published module
     println!("\nStep 5: Calling published module in SUBSEQUENT PTB...");
 
     let inputs2 = vec![];
-    let commands2 = vec![
-        Command::MoveCall {
-            package: package_addr,
-            module: Identifier::new("counter").unwrap(),
-            function: Identifier::new("create_and_share").unwrap(),
-            type_args: vec![],
-            args: vec![],
-        },
-    ];
+    let commands2 = vec![Command::MoveCall {
+        package: package_addr,
+        module: Identifier::new("counter").unwrap(),
+        function: Identifier::new("create_and_share").unwrap(),
+        type_args: vec![],
+        args: vec![],
+    }];
 
     let result2 = env.execute_ptb(inputs2, commands2);
     println!("  Second PTB result: success={}", result2.success);
@@ -1004,21 +1089,25 @@ module dynamic_test::counter {
 /// Test object lifecycle: create, transfer, verify ownership tracking.
 #[test]
 fn test_object_lifecycle() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
     use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== Object Lifecycle Test ===\n");
 
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 
     let sender = AccountAddress::from_hex_literal(
-        "0x1111111111111111111111111111111111111111111111111111111111111111"
-    ).unwrap();
+        "0x1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
     env.set_sender(sender);
 
     // Create a coin
-    let coin_id = env.create_coin("0x2::sui::SUI", 500_000_000)
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 500_000_000)
         .expect("Failed to create coin");
     println!("Created coin: {}", coin_id.to_hex_literal());
 
@@ -1028,8 +1117,9 @@ fn test_object_lifecycle() {
 
     // Now execute a TransferObjects PTB
     let recipient = AccountAddress::from_hex_literal(
-        "0x2222222222222222222222222222222222222222222222222222222222222222"
-    ).unwrap();
+        "0x2222222222222222222222222222222222222222222222222222222222222222",
+    )
+    .unwrap();
 
     let coin_obj = env.get_object(&coin_id).unwrap();
     let coin_input = InputValue::Object(ObjectInput::Owned {
@@ -1040,12 +1130,10 @@ fn test_object_lifecycle() {
     let addr_input = InputValue::Pure(recipient.to_vec());
 
     let inputs = vec![coin_input, addr_input];
-    let commands = vec![
-        Command::TransferObjects {
-            objects: vec![Argument::Input(0)],
-            address: Argument::Input(1),
-        },
-    ];
+    let commands = vec![Command::TransferObjects {
+        objects: vec![Argument::Input(0)],
+        address: Argument::Input(1),
+    }];
 
     let result = env.execute_ptb(inputs, commands);
     println!("Transfer result: success={}", result.success);
@@ -1054,8 +1142,10 @@ fn test_object_lifecycle() {
     // Verify effects show the transfer
     if let Some(effects) = &result.effects {
         println!("Mutated objects: {:?}", effects.mutated);
-        assert!(!effects.mutated.is_empty() || !effects.object_changes.is_empty(),
-            "Should have object changes");
+        assert!(
+            !effects.mutated.is_empty() || !effects.object_changes.is_empty(),
+            "Should have object changes"
+        );
     }
 
     println!("\n=== Object Lifecycle Test Complete ===");
@@ -1068,9 +1158,9 @@ fn test_object_lifecycle() {
 /// sui::event::emit, which requires deployed packages with event types.
 #[test]
 fn test_event_recording_infrastructure() {
-    use sui_move_interface_extractor::benchmark::natives::{EventStore, EmittedEvent};
+    use sui_move_interface_extractor::benchmark::natives::{EmittedEvent, EventStore};
+    use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue};
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument};
 
     println!("=== Event Recording Infrastructure Test ===\n");
 
@@ -1114,7 +1204,8 @@ fn test_event_recording_infrastructure() {
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 
     // Create a coin and do a simple operation
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000)
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
         .expect("Failed to create coin");
 
     let coin_obj = env.get_object(&coin_id).unwrap();
@@ -1123,7 +1214,7 @@ fn test_event_recording_infrastructure() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
-        }
+        },
     );
     let amount_input = InputValue::Pure(100_000_000u64.to_le_bytes().to_vec());
 
@@ -1138,7 +1229,10 @@ fn test_event_recording_infrastructure() {
     assert!(result.success, "SplitCoins should succeed");
     if let Some(effects) = &result.effects {
         // SplitCoins doesn't emit events in our mock, but the infrastructure is there
-        println!("  TransactionEffects.events field: {} events", effects.events.len());
+        println!(
+            "  TransactionEffects.events field: {} events",
+            effects.events.len()
+        );
     }
 
     println!("\n=== Event Recording Infrastructure Test Complete ===");
@@ -1193,8 +1287,8 @@ error[E02005]: unbound module
 /// Test compile_source with missing Move.toml (expected failure).
 #[test]
 fn test_compile_missing_manifest() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use std::path::Path;
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== Compile Missing Manifest Test ===\n");
 
@@ -1224,10 +1318,12 @@ fn test_compile_missing_manifest() {
 /// 6. Compare results with mainnet
 #[test]
 fn test_llm_ptb_understanding_workflow() {
+    use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
-    use move_core_types::account_address::AccountAddress;
 
     println!("=== LLM PTB Understanding Workflow ===\n");
 
@@ -1279,7 +1375,12 @@ fn test_llm_ptb_understanding_workflow() {
     println!("\nStep 2: Analyzing PTB structure");
     for (i, cmd) in cached.transaction.commands.iter().enumerate() {
         match cmd {
-            PtbCommand::MoveCall { package, module, function, .. } => {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                ..
+            } => {
                 println!("  Command {}: MoveCall", i);
                 println!("    Package: {}", package);
                 println!("    Module: {}", module);
@@ -1313,7 +1414,11 @@ fn test_llm_ptb_understanding_workflow() {
             match env.deploy_package(modules) {
                 Ok(deployed_addr) => {
                     packages_loaded += 1;
-                    println!("  ✓ Loaded {} -> {}", pkg_id, deployed_addr.to_hex_literal());
+                    println!(
+                        "  ✓ Loaded {} -> {}",
+                        pkg_id,
+                        deployed_addr.to_hex_literal()
+                    );
                 }
                 Err(e) => {
                     println!("  ✗ Failed to load {}: {}", pkg_id, e);
@@ -1321,7 +1426,11 @@ fn test_llm_ptb_understanding_workflow() {
             }
         }
     }
-    println!("  Loaded {}/{} packages", packages_loaded, cached.packages.len());
+    println!(
+        "  Loaded {}/{} packages",
+        packages_loaded,
+        cached.packages.len()
+    );
 
     // Step 5: Show what the LLM would need to do next
     println!("\nStep 5: LLM next steps");
@@ -1333,7 +1442,9 @@ fn test_llm_ptb_understanding_workflow() {
 
     // Step 6: Try a simple framework-only version
     println!("\nStep 6: Testing framework-only PTB (always works)");
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000).expect("create coin");
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("create coin");
     let coin_obj = env.get_object(&coin_id).expect("get coin");
 
     let result = env.execute_ptb(
@@ -1383,11 +1494,11 @@ fn test_llm_ptb_understanding_workflow() {
 /// and fix execution failures.
 #[test]
 fn test_llm_iterative_defi_execution() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, PtbCommand};
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
-    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
     use std::collections::HashMap;
+    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::tx_replay::{PtbCommand, TransactionCache};
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
 
     println!("=== LLM Iterative DeFi Execution Test ===\n");
     println!("This test simulates an LLM attempting to execute a third-party PTB");
@@ -1450,7 +1561,11 @@ fn test_llm_iterative_defi_execution() {
 
             if let Ok(mut harness) = VMHarness::new(&local_resolver, false) {
                 let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
-                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(
+                    &mut harness,
+                    &cached.objects,
+                    &address_aliases,
+                ) {
                     if !result.local_success {
                         if let Some(err) = &result.local_error {
                             // Prefer ABORTED errors (state issues) over LINKER errors (missing code)
@@ -1483,16 +1598,30 @@ fn test_llm_iterative_defi_execution() {
     println!("\n--- PTB Analysis ---");
     for (i, cmd) in cached.transaction.commands.iter().enumerate() {
         match cmd {
-            PtbCommand::MoveCall { package, module, function, type_arguments, arguments } => {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
                 println!("Command {}: MoveCall", i);
                 println!("  Target: {}::{}::{}", package, module, function);
                 println!("  Type args: {:?}", type_arguments);
                 println!("  Arguments: {} args", arguments.len());
             }
             PtbCommand::SplitCoins { coin, amounts } => {
-                println!("Command {}: SplitCoins (coin: {:?}, {} amounts)", i, coin, amounts.len());
+                println!(
+                    "Command {}: SplitCoins (coin: {:?}, {} amounts)",
+                    i,
+                    coin,
+                    amounts.len()
+                );
             }
-            PtbCommand::MergeCoins { destination, sources } => {
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
                 println!("Command {}: MergeCoins ({} sources)", i, sources.len());
             }
             PtbCommand::TransferObjects { objects, .. } => {
@@ -1507,7 +1636,11 @@ fn test_llm_iterative_defi_execution() {
     // Step 3: Show cached object info
     println!("\n--- Cached Objects ---");
     for (obj_id, obj_bytes) in &cached.objects {
-        println!("  {} ({} bytes)", &obj_id[..20.min(obj_id.len())], obj_bytes.len());
+        println!(
+            "  {} ({} bytes)",
+            &obj_id[..20.min(obj_id.len())],
+            obj_bytes.len()
+        );
     }
 
     // Step 4: Iterative execution attempts
@@ -1612,8 +1745,15 @@ fn test_llm_iterative_defi_execution() {
         }
 
         // Execute with current strategy
-        let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
-        let result = cached.transaction.replay_with_objects_and_aliases(&mut harness, &modified_objects, &address_aliases);
+        let address_aliases =
+            sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(
+                &cached,
+            );
+        let result = cached.transaction.replay_with_objects_and_aliases(
+            &mut harness,
+            &modified_objects,
+            &address_aliases,
+        );
 
         match result {
             Ok(r) => {
@@ -1637,7 +1777,10 @@ fn test_llm_iterative_defi_execution() {
     println!("\n=== Evaluation Summary ===");
     println!("Transaction: {}", cached.transaction.digest.0);
     println!("Attempts: {}/{}", attempt, MAX_ATTEMPTS);
-    println!("Final result: {}", if success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Final result: {}",
+        if success { "SUCCESS" } else { "FAILED" }
+    );
 
     if !success {
         println!("\nThis is expected! Third-party DeFi transactions fail because:");
@@ -1710,7 +1853,14 @@ fn test_contract_interface_inspection() {
 
             // Show what MoveCall targets are in this transaction
             for cmd in &cached.transaction.commands {
-                if let PtbCommand::MoveCall { package, module, function, type_arguments, arguments } = cmd {
+                if let PtbCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    type_arguments,
+                    arguments,
+                } = cmd
+                {
                     println!("--- MoveCall Target ---");
                     println!("Package: {}", package);
                     println!("Module: {}", module);
@@ -1751,9 +1901,11 @@ fn test_contract_interface_inspection() {
 /// rather than trying to replay opaque DeFi transactions.
 #[test]
 fn test_llm_construct_valid_ptb() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
     use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== LLM Construct Valid PTB Test ===\n");
     println!("This test demonstrates the LLM constructing PTBs it understands,");
@@ -1762,18 +1914,25 @@ fn test_llm_construct_valid_ptb() {
     let mut env = SimulationEnvironment::new().expect("create env");
 
     let sender = AccountAddress::from_hex_literal(
-        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
-    ).unwrap();
+        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+    )
+    .unwrap();
     env.set_sender(sender);
 
     // === Attempt 1: Simple SplitCoins ===
     println!("--- Attempt 1: SplitCoins ---");
-    let coin_id = env.create_coin("0x2::sui::SUI", 10_000_000_000).expect("create coin");
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 10_000_000_000)
+        .expect("create coin");
     let coin_obj = env.get_object(&coin_id).expect("get coin");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id,
+                bytes: coin_obj.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -1781,17 +1940,26 @@ fn test_llm_construct_valid_ptb() {
             amounts: vec![Argument::Input(1)],
         }],
     );
-    println!("Result: {}", if result.success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Result: {}",
+        if result.success { "SUCCESS" } else { "FAILED" }
+    );
     assert!(result.success, "SplitCoins should succeed");
 
     // === Attempt 2: Multi-split ===
     println!("\n--- Attempt 2: Multi-split ---");
-    let coin_id2 = env.create_coin("0x2::sui::SUI", 5_000_000_000).expect("create coin");
+    let coin_id2 = env
+        .create_coin("0x2::sui::SUI", 5_000_000_000)
+        .expect("create coin");
     let coin_obj2 = env.get_object(&coin_id2).expect("get coin");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id2,
+                bytes: coin_obj2.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(200_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(300_000_000u64.to_le_bytes().to_vec()),
@@ -1801,20 +1969,30 @@ fn test_llm_construct_valid_ptb() {
             amounts: vec![Argument::Input(1), Argument::Input(2), Argument::Input(3)],
         }],
     );
-    println!("Result: {}", if result.success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Result: {}",
+        if result.success { "SUCCESS" } else { "FAILED" }
+    );
     assert!(result.success, "Multi-split should succeed");
 
     // === Attempt 3: Transfer ===
     println!("\n--- Attempt 3: TransferObjects ---");
-    let coin_id3 = env.create_coin("0x2::sui::SUI", 500_000_000).expect("create coin");
+    let coin_id3 = env
+        .create_coin("0x2::sui::SUI", 500_000_000)
+        .expect("create coin");
     let coin_obj3 = env.get_object(&coin_id3).expect("get coin");
     let recipient = AccountAddress::from_hex_literal(
-        "0x1111111111111111111111111111111111111111111111111111111111111111"
-    ).unwrap();
+        "0x1111111111111111111111111111111111111111111111111111111111111111",
+    )
+    .unwrap();
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id3,
+                bytes: coin_obj3.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure(recipient.to_vec()),
         ],
         vec![Command::TransferObjects {
@@ -1822,17 +2000,26 @@ fn test_llm_construct_valid_ptb() {
             address: Argument::Input(1),
         }],
     );
-    println!("Result: {}", if result.success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Result: {}",
+        if result.success { "SUCCESS" } else { "FAILED" }
+    );
     assert!(result.success, "Transfer should succeed");
 
     // === Attempt 4: Split and Transfer (chained) ===
     println!("\n--- Attempt 4: Split and Transfer (chained) ---");
-    let coin_id4 = env.create_coin("0x2::sui::SUI", 2_000_000_000).expect("create coin");
+    let coin_id4 = env
+        .create_coin("0x2::sui::SUI", 2_000_000_000)
+        .expect("create coin");
     let coin_obj4 = env.get_object(&coin_id4).expect("get coin");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id4, bytes: coin_obj4.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id4,
+                bytes: coin_obj4.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure(500_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(recipient.to_vec()),
         ],
@@ -1842,32 +2029,50 @@ fn test_llm_construct_valid_ptb() {
                 amounts: vec![Argument::Input(1)],
             },
             Command::TransferObjects {
-                objects: vec![Argument::Result(0)],  // Result from SplitCoins
+                objects: vec![Argument::Result(0)], // Result from SplitCoins
                 address: Argument::Input(2),
             },
         ],
     );
-    println!("Result: {}", if result.success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Result: {}",
+        if result.success { "SUCCESS" } else { "FAILED" }
+    );
     assert!(result.success, "Split+Transfer should succeed");
 
     // === Attempt 5: MergeCoins ===
     println!("\n--- Attempt 5: MergeCoins ---");
-    let coin_a = env.create_coin("0x2::sui::SUI", 100_000_000).expect("create coin a");
-    let coin_b = env.create_coin("0x2::sui::SUI", 200_000_000).expect("create coin b");
+    let coin_a = env
+        .create_coin("0x2::sui::SUI", 100_000_000)
+        .expect("create coin a");
+    let coin_b = env
+        .create_coin("0x2::sui::SUI", 200_000_000)
+        .expect("create coin b");
     let coin_a_obj = env.get_object(&coin_a).expect("get coin a");
     let coin_b_obj = env.get_object(&coin_b).expect("get coin b");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_a, bytes: coin_a_obj.bcs_bytes.clone(), type_tag: None }),
-            InputValue::Object(ObjectInput::Owned { id: coin_b, bytes: coin_b_obj.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_a,
+                bytes: coin_a_obj.bcs_bytes.clone(),
+                type_tag: None,
+            }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_b,
+                bytes: coin_b_obj.bcs_bytes.clone(),
+                type_tag: None,
+            }),
         ],
         vec![Command::MergeCoins {
             destination: Argument::Input(0),
             sources: vec![Argument::Input(1)],
         }],
     );
-    println!("Result: {}", if result.success { "SUCCESS" } else { "FAILED" });
+    println!(
+        "Result: {}",
+        if result.success { "SUCCESS" } else { "FAILED" }
+    );
     assert!(result.success, "MergeCoins should succeed");
 
     println!("\n=== Summary ===");
@@ -1886,31 +2091,38 @@ fn test_llm_construct_valid_ptb() {
 /// that an LLM can use to fix its PTB construction.
 #[test]
 fn test_error_feedback_quality() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
     use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
 
     println!("=== Error Feedback Quality Test ===\n");
     println!("This test shows what errors the LLM receives when things go wrong.\n");
 
     let mut env = SimulationEnvironment::new().expect("create env");
     let sender = AccountAddress::from_hex_literal(
-        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
-    ).unwrap();
+        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+    )
+    .unwrap();
     env.set_sender(sender);
 
     // Test 1: Invalid argument reference
     println!("--- Test 1: Invalid argument reference ---");
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000).expect("create coin");
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("create coin");
     let coin_obj = env.get_object(&coin_id).expect("get coin");
 
     let result = env.execute_ptb(
-        vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
-        ],
+        vec![InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin_obj.bcs_bytes.clone(),
+            type_tag: None,
+        })],
         vec![Command::SplitCoins {
             coin: Argument::Input(0),
-            amounts: vec![Argument::Input(5)],  // Input 5 doesn't exist
+            amounts: vec![Argument::Input(5)], // Input 5 doesn't exist
         }],
     );
     println!("Success: {}", result.success);
@@ -1921,13 +2133,19 @@ fn test_error_feedback_quality() {
 
     // Test 2: Wrong type for amount
     println!("\n--- Test 2: Wrong type for amount ---");
-    let coin_id2 = env.create_coin("0x2::sui::SUI", 1_000_000_000).expect("create coin");
+    let coin_id2 = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("create coin");
     let coin_obj2 = env.get_object(&coin_id2).expect("get coin");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
-            InputValue::Pure("not_a_number".as_bytes().to_vec()),  // Wrong type
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id2,
+                bytes: coin_obj2.bcs_bytes.clone(),
+                type_tag: None,
+            }),
+            InputValue::Pure("not_a_number".as_bytes().to_vec()), // Wrong type
         ],
         vec![Command::SplitCoins {
             coin: Argument::Input(0),
@@ -1943,13 +2161,19 @@ fn test_error_feedback_quality() {
 
     // Test 3: Insufficient balance
     println!("\n--- Test 3: Insufficient balance ---");
-    let small_coin = env.create_coin("0x2::sui::SUI", 100).expect("create small coin");
+    let small_coin = env
+        .create_coin("0x2::sui::SUI", 100)
+        .expect("create small coin");
     let small_obj = env.get_object(&small_coin).expect("get coin");
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: small_coin, bytes: small_obj.bcs_bytes.clone(), type_tag: None }),
-            InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),  // More than balance
+            InputValue::Object(ObjectInput::Owned {
+                id: small_coin,
+                bytes: small_obj.bcs_bytes.clone(),
+                type_tag: None,
+            }),
+            InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()), // More than balance
         ],
         vec![Command::SplitCoins {
             coin: Argument::Input(0),
@@ -1983,10 +2207,12 @@ fn test_error_feedback_quality() {
 /// Requires ANTHROPIC_API_KEY environment variable.
 #[test]
 fn test_llm_api_iterative_ptb_fixing() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, PtbCommand};
     use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::tx_replay::{PtbCommand, TransactionCache};
 
     println!("=== LLM API Iterative PTB Fixing Test ===\n");
 
@@ -2005,8 +2231,9 @@ fn test_llm_api_iterative_ptb_fixing() {
 
     let mut env = SimulationEnvironment::new().expect("create env");
     let sender = AccountAddress::from_hex_literal(
-        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344"
-    ).unwrap();
+        "0xaabbccdd11223344aabbccdd11223344aabbccdd11223344aabbccdd11223344",
+    )
+    .unwrap();
     env.set_sender(sender);
 
     // Create a coin with small balance - this will fail when we try to split too much
@@ -2016,7 +2243,11 @@ fn test_llm_api_iterative_ptb_fixing() {
     // First attempt - this will fail
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id,
+                bytes: coin_obj.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -2081,12 +2312,18 @@ What should I do to make this PTB succeed?"#,
                 println!("✓ LLM correctly identified the balance issue!");
 
                 // Apply the fix - create coin with sufficient balance
-                let fixed_coin_id = env.create_coin("0x2::sui::SUI", 2_000_000_000).expect("create fixed coin");
+                let fixed_coin_id = env
+                    .create_coin("0x2::sui::SUI", 2_000_000_000)
+                    .expect("create fixed coin");
                 let fixed_coin_obj = env.get_object(&fixed_coin_id).expect("get fixed coin");
 
                 let fixed_result = env.execute_ptb(
                     vec![
-                        InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone(), type_tag: None }),
+                        InputValue::Object(ObjectInput::Owned {
+                            id: fixed_coin_id,
+                            bytes: fixed_coin_obj.bcs_bytes.clone(),
+                            type_tag: None,
+                        }),
                         InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                     ],
                     vec![Command::SplitCoins {
@@ -2108,12 +2345,18 @@ What should I do to make this PTB succeed?"#,
             println!("Skipping LLM validation, but demonstrating the fix manually...\n");
 
             // Still show the manual fix works
-            let fixed_coin_id = env.create_coin("0x2::sui::SUI", 2_000_000_000).expect("create fixed coin");
+            let fixed_coin_id = env
+                .create_coin("0x2::sui::SUI", 2_000_000_000)
+                .expect("create fixed coin");
             let fixed_coin_obj = env.get_object(&fixed_coin_id).expect("get fixed coin");
 
             let fixed_result = env.execute_ptb(
                 vec![
-                    InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone(), type_tag: None }),
+                    InputValue::Object(ObjectInput::Owned {
+                        id: fixed_coin_id,
+                        bytes: fixed_coin_obj.bcs_bytes.clone(),
+                        type_tag: None,
+                    }),
                     InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                 ],
                 vec![Command::SplitCoins {
@@ -2128,13 +2371,19 @@ What should I do to make this PTB succeed?"#,
     // === SCENARIO 2: Fix a type error ===
     println!("--- Scenario 2: Fix type mismatch error ---\n");
 
-    let coin_id2 = env.create_coin("0x2::sui::SUI", 5_000_000_000).expect("create coin");
+    let coin_id2 = env
+        .create_coin("0x2::sui::SUI", 5_000_000_000)
+        .expect("create coin");
     let coin_obj2 = env.get_object(&coin_id2).expect("get coin");
 
     // Try with wrong type for amount (string instead of u64)
     let result2 = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned {
+                id: coin_id2,
+                bytes: coin_obj2.bcs_bytes.clone(),
+                type_tag: None,
+            }),
             InputValue::Pure("one billion".as_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -2177,12 +2426,18 @@ What should I do to make this PTB succeed?"#,
                 println!("✓ LLM correctly identified the type issue!");
 
                 // Apply the fix - use proper u64 encoding
-                let coin_id3 = env.create_coin("0x2::sui::SUI", 5_000_000_000).expect("create coin");
+                let coin_id3 = env
+                    .create_coin("0x2::sui::SUI", 5_000_000_000)
+                    .expect("create coin");
                 let coin_obj3 = env.get_object(&coin_id3).expect("get coin");
 
                 let fixed_result = env.execute_ptb(
                     vec![
-                        InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone(), type_tag: None }),
+                        InputValue::Object(ObjectInput::Owned {
+                            id: coin_id3,
+                            bytes: coin_obj3.bcs_bytes.clone(),
+                            type_tag: None,
+                        }),
                         InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                     ],
                     vec![Command::SplitCoins {
@@ -2221,8 +2476,15 @@ What should I do to make this PTB succeed?"#,
                     // Find the first MoveCall command
                     let mut move_call_info = None;
                     for cmd in &cached.transaction.commands {
-                        if let PtbCommand::MoveCall { package, module, function, .. } = cmd {
-                            move_call_info = Some((package.clone(), module.clone(), function.clone()));
+                        if let PtbCommand::MoveCall {
+                            package,
+                            module,
+                            function,
+                            ..
+                        } = cmd
+                        {
+                            move_call_info =
+                                Some((package.clone(), module.clone(), function.clone()));
                             break;
                         }
                     }
@@ -2246,7 +2508,8 @@ How might you approach synthesizing valid input state for this contract?"#,
                         );
 
                         println!("Asking LLM about DeFi abort code...\n");
-                        let llm_response3 = call_claude_api(&api_key, &system_prompt, &user_prompt3);
+                        let llm_response3 =
+                            call_claude_api(&api_key, &system_prompt, &user_prompt3);
 
                         match llm_response3 {
                             Ok(response) => {
@@ -2254,18 +2517,19 @@ How might you approach synthesizing valid input state for this contract?"#,
 
                                 // Check if LLM provides reasonable analysis
                                 let response_lower = response.to_lowercase();
-                                let reasonable_analysis =
-                                    response_lower.contains("state") ||
-                                    response_lower.contains("balance") ||
-                                    response_lower.contains("invariant") ||
-                                    response_lower.contains("slippage") ||
-                                    response_lower.contains("pool") ||
-                                    response_lower.contains("liquidity");
+                                let reasonable_analysis = response_lower.contains("state")
+                                    || response_lower.contains("balance")
+                                    || response_lower.contains("invariant")
+                                    || response_lower.contains("slippage")
+                                    || response_lower.contains("pool")
+                                    || response_lower.contains("liquidity");
 
                                 if reasonable_analysis {
                                     println!("✓ LLM provided reasonable DeFi analysis!\n");
                                 } else {
-                                    println!("LLM response didn't include expected DeFi concepts.\n");
+                                    println!(
+                                        "LLM response didn't include expected DeFi concepts.\n"
+                                    );
                                 }
                             }
                             Err(e) => println!("API call failed: {}", e),
@@ -2283,7 +2547,11 @@ How might you approach synthesizing valid input state for this contract?"#,
 }
 
 /// Helper function to call Claude API
-fn call_claude_api(api_key: &str, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
+fn call_claude_api(
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
     let request_body = serde_json::json!({
         "model": "claude-sonnet-4-20250514",
         "max_tokens": 1024,
@@ -2304,7 +2572,8 @@ fn call_claude_api(api_key: &str, system_prompt: &str, user_prompt: &str) -> Res
 
     match response {
         Ok(resp) => {
-            let json: serde_json::Value = resp.into_json()
+            let json: serde_json::Value = resp
+                .into_json()
                 .map_err(|e| format!("Failed to parse response: {}", e))?;
 
             // Extract the text content from Claude's response
@@ -2321,12 +2590,16 @@ fn call_claude_api(api_key: &str, system_prompt: &str, user_prompt: &str) -> Res
             let body = response.into_string().unwrap_or_default();
             Err(format!("API error {}: {}", code, body))
         }
-        Err(e) => Err(format!("Request failed: {}", e))
+        Err(e) => Err(format!("Request failed: {}", e)),
     }
 }
 
 /// Helper function to call OpenRouter API (GPT-5.2)
-fn call_openrouter_api(api_key: &str, system_prompt: &str, user_prompt: &str) -> Result<String, String> {
+fn call_openrouter_api(
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
     let request_body = serde_json::json!({
         "model": "openai/gpt-5.2",
         "max_tokens": 4096,
@@ -2345,13 +2618,17 @@ fn call_openrouter_api(api_key: &str, system_prompt: &str, user_prompt: &str) ->
     let response = ureq::post("https://openrouter.ai/api/v1/chat/completions")
         .set("Content-Type", "application/json")
         .set("Authorization", &format!("Bearer {}", api_key))
-        .set("HTTP-Referer", "https://github.com/sui-move-interface-extractor")
+        .set(
+            "HTTP-Referer",
+            "https://github.com/sui-move-interface-extractor",
+        )
         .set("X-Title", "Sui PTB Sandbox Benchmark")
         .send_json(&request_body);
 
     match response {
         Ok(resp) => {
-            let json: serde_json::Value = resp.into_json()
+            let json: serde_json::Value = resp
+                .into_json()
                 .map_err(|e| format!("Failed to parse response: {}", e))?;
 
             // Extract the text content from OpenAI-style response
@@ -2368,7 +2645,7 @@ fn call_openrouter_api(api_key: &str, system_prompt: &str, user_prompt: &str) ->
             let body = response.into_string().unwrap_or_default();
             Err(format!("API error {}: {}", code, body))
         }
-        Err(e) => Err(format!("Request failed: {}", e))
+        Err(e) => Err(format!("Request failed: {}", e)),
     }
 }
 
@@ -2439,22 +2716,27 @@ fn parse_llm_fix_response(response: &str) -> Vec<LlmFixAction> {
             if let Some(actions_arr) = fix.get("actions").and_then(|a| a.as_array()) {
                 for action_obj in actions_arr {
                     let action = LlmFixAction {
-                        action: action_obj.get("action")
+                        action: action_obj
+                            .get("action")
                             .and_then(|a| a.as_str())
                             .unwrap_or("")
                             .to_string(),
-                        object_id: action_obj.get("params")
+                        object_id: action_obj
+                            .get("params")
                             .and_then(|p| p.get("object_id"))
                             .and_then(|o| o.as_str())
                             .map(|s| s.to_string()),
-                        object_type: action_obj.get("params")
+                        object_type: action_obj
+                            .get("params")
                             .and_then(|p| p.get("type").or(p.get("object_type")))
                             .and_then(|t| t.as_str())
                             .map(|s| s.to_string()),
-                        balance: action_obj.get("params")
+                        balance: action_obj
+                            .get("params")
                             .and_then(|p| p.get("balance"))
                             .and_then(|b| b.as_u64()),
-                        fields: action_obj.get("params")
+                        fields: action_obj
+                            .get("params")
                             .and_then(|p| p.get("fields"))
                             .cloned(),
                     };
@@ -2476,7 +2758,7 @@ fn apply_llm_fixes(
     actions: &[LlmFixAction],
     env: &mut sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment,
 ) -> std::collections::HashMap<String, String> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
     let mut modified_objects = original_objects.clone();
 
@@ -2491,7 +2773,10 @@ fn apply_llm_fixes(
                             if let Some(target_id) = &action.object_id {
                                 let encoded = BASE64.encode(&obj.bcs_bytes);
                                 modified_objects.insert(target_id.clone(), encoded);
-                                println!("      -> Replaced object {}", &target_id[..20.min(target_id.len())]);
+                                println!(
+                                    "      -> Replaced object {}",
+                                    &target_id[..20.min(target_id.len())]
+                                );
                             }
                         }
                     }
@@ -2499,7 +2784,11 @@ fn apply_llm_fixes(
             }
             "modify_input" | "modify_balance" => {
                 if let (Some(object_id), Some(new_balance)) = (&action.object_id, action.balance) {
-                    println!("    Applying fix: modify_balance({}, {})", &object_id[..20.min(object_id.len())], new_balance);
+                    println!(
+                        "    Applying fix: modify_balance({}, {})",
+                        &object_id[..20.min(object_id.len())],
+                        new_balance
+                    );
                     // For coins, we can create a new coin with the desired balance
                     // and replace the object bytes
                     let coin_type = action.object_type.as_deref().unwrap_or("0x2::sui::SUI");
@@ -2545,12 +2834,16 @@ fn apply_llm_fixes(
 /// Loads OPENROUTER_API_KEY from benchmark/.env file.
 #[test]
 fn test_gpt52_defi_benchmark() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, PtbCommand, TransactionInput};
-    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
     use move_core_types::account_address::AccountAddress;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::tx_replay::{
+        PtbCommand, TransactionCache, TransactionInput,
+    };
+    use sui_move_interface_extractor::benchmark::vm::VMHarness;
 
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║     GPT-5.2 DeFi PTB Benchmark (via OpenRouter)              ║");
@@ -2569,7 +2862,11 @@ fn test_gpt52_defi_benchmark() {
         println!("Set it in benchmark/.env or as environment variable");
         return;
     }
-    println!("API key loaded: {}...{}", &api_key[..10.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..]);
+    println!(
+        "API key loaded: {}...{}",
+        &api_key[..10.min(api_key.len())],
+        &api_key[api_key.len().saturating_sub(4)..]
+    );
 
     // Load transaction cache
     let cache_dir = std::path::Path::new(".tx-cache");
@@ -2612,7 +2909,10 @@ fn test_gpt52_defi_benchmark() {
             }
 
             // Count MoveCall commands (more = harder)
-            let move_call_count = cached.transaction.commands.iter()
+            let move_call_count = cached
+                .transaction
+                .commands
+                .iter()
                 .filter(|cmd| matches!(cmd, PtbCommand::MoveCall { .. }))
                 .count();
 
@@ -2631,15 +2931,25 @@ fn test_gpt52_defi_benchmark() {
 
             if let Ok(mut harness) = VMHarness::new(&local_resolver, false) {
                 let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
-                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(
+                    &mut harness,
+                    &cached.objects,
+                    &address_aliases,
+                ) {
                     if !result.local_success {
                         if let Some(err) = &result.local_error {
                             if err.contains("ABORTED") {
                                 // Extract abort code for sorting
-                                let abort_code = if let Some(start) = err.find("sub_status: Some(") {
+                                let abort_code = if let Some(start) = err.find("sub_status: Some(")
+                                {
                                     let code_part = &err[start + 17..];
-                                    code_part.find(")").and_then(|end| code_part[..end].parse::<u64>().ok()).unwrap_or(0)
-                                } else { 0 };
+                                    code_part
+                                        .find(")")
+                                        .and_then(|end| code_part[..end].parse::<u64>().ok())
+                                        .unwrap_or(0)
+                                } else {
+                                    0
+                                };
 
                                 hard_txs.push((cached, move_call_count, abort_code, err.clone()));
                             }
@@ -2722,15 +3032,23 @@ IMPORTANT:
 - DeFi protocols often check: pool balances, liquidity amounts, slippage bounds, tick positions
 - Common abort codes: insufficient balance, slippage exceeded, invalid tick, pool not initialized"#;
 
-    println!("Running benchmark on {} transactions with {} attempts each...\n",
-             NUM_TRANSACTIONS.min(hard_txs.len()), ATTEMPTS_PER_TX);
+    println!(
+        "Running benchmark on {} transactions with {} attempts each...\n",
+        NUM_TRANSACTIONS.min(hard_txs.len()),
+        ATTEMPTS_PER_TX
+    );
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    for (tx_idx, (cached, move_call_count, abort_code, initial_error)) in hard_txs.iter().take(NUM_TRANSACTIONS).enumerate() {
+    for (tx_idx, (cached, move_call_count, abort_code, initial_error)) in
+        hard_txs.iter().take(NUM_TRANSACTIONS).enumerate()
+    {
         println!("┌─────────────────────────────────────────────────────────────┐");
-        println!("│ Transaction {}/{}: {}...                    │",
-                 tx_idx + 1, NUM_TRANSACTIONS.min(hard_txs.len()),
-                 &cached.transaction.digest.0[..20]);
+        println!(
+            "│ Transaction {}/{}: {}...                    │",
+            tx_idx + 1,
+            NUM_TRANSACTIONS.min(hard_txs.len()),
+            &cached.transaction.digest.0[..20]
+        );
         println!("└─────────────────────────────────────────────────────────────┘");
         println!("  MoveCall commands: {}", move_call_count);
         println!("  Abort code: {}", abort_code);
@@ -2746,27 +3064,53 @@ IMPORTANT:
         ptb_description.push_str("### Inputs (with full object IDs for reference):\n");
         for (i, input) in cached.transaction.inputs.iter().enumerate() {
             match input {
-                TransactionInput::Object { object_id, version, .. } => {
+                TransactionInput::Object {
+                    object_id, version, ..
+                } => {
                     let cached_size = cached.objects.get(object_id).map(|b| b.len()).unwrap_or(0);
-                    ptb_description.push_str(&format!("  Input[{}]: Object\n    ID: {}\n    Version: {}\n    Cached: {} bytes\n",
-                                                      i, object_id, version, cached_size));
+                    ptb_description.push_str(&format!(
+                        "  Input[{}]: Object\n    ID: {}\n    Version: {}\n    Cached: {} bytes\n",
+                        i, object_id, version, cached_size
+                    ));
                 }
-                TransactionInput::SharedObject { object_id, initial_shared_version, .. } => {
-                    ptb_description.push_str(&format!("  Input[{}]: SharedObject\n    ID: {}\n    Initial version: {}\n",
-                                                      i, object_id, initial_shared_version));
+                TransactionInput::SharedObject {
+                    object_id,
+                    initial_shared_version,
+                    ..
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  Input[{}]: SharedObject\n    ID: {}\n    Initial version: {}\n",
+                        i, object_id, initial_shared_version
+                    ));
                 }
                 TransactionInput::Pure { bytes } => {
-                    let hex_preview = bytes.iter().take(32).map(|b| format!("{:02x}", b)).collect::<String>();
-                    ptb_description.push_str(&format!("  Input[{}]: Pure ({} bytes)\n    Hex: {}...\n",
-                                                      i, bytes.len(), hex_preview));
+                    let hex_preview = bytes
+                        .iter()
+                        .take(32)
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>();
+                    ptb_description.push_str(&format!(
+                        "  Input[{}]: Pure ({} bytes)\n    Hex: {}...\n",
+                        i,
+                        bytes.len(),
+                        hex_preview
+                    ));
                 }
-                TransactionInput::ImmutableObject { object_id, version, .. } => {
-                    ptb_description.push_str(&format!("  Input[{}]: ImmutableObject\n    ID: {}\n    Version: {}\n",
-                                                      i, object_id, version));
+                TransactionInput::ImmutableObject {
+                    object_id, version, ..
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  Input[{}]: ImmutableObject\n    ID: {}\n    Version: {}\n",
+                        i, object_id, version
+                    ));
                 }
-                TransactionInput::Receiving { object_id, version, .. } => {
-                    ptb_description.push_str(&format!("  Input[{}]: Receiving\n    ID: {}\n    Version: {}\n",
-                                                      i, object_id, version));
+                TransactionInput::Receiving {
+                    object_id, version, ..
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  Input[{}]: Receiving\n    ID: {}\n    Version: {}\n",
+                        i, object_id, version
+                    ));
                 }
             }
         }
@@ -2774,22 +3118,47 @@ IMPORTANT:
         ptb_description.push_str("\n### Commands:\n");
         for (i, cmd) in cached.transaction.commands.iter().enumerate() {
             match cmd {
-                PtbCommand::MoveCall { package, module, function, type_arguments, arguments } => {
+                PtbCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    type_arguments,
+                    arguments,
+                } => {
                     ptb_description.push_str(&format!("  Command[{}]: MoveCall\n", i));
-                    ptb_description.push_str(&format!("    Target: {}::{}::{}\n", package, module, function));
+                    ptb_description.push_str(&format!(
+                        "    Target: {}::{}::{}\n",
+                        package, module, function
+                    ));
                     if !type_arguments.is_empty() {
                         ptb_description.push_str(&format!("    Type args: {:?}\n", type_arguments));
                     }
                     ptb_description.push_str(&format!("    Args: {:?}\n", arguments));
                 }
                 PtbCommand::SplitCoins { coin, amounts } => {
-                    ptb_description.push_str(&format!("  Command[{}]: SplitCoins(coin={:?}, amounts={:?})\n", i, coin, amounts));
+                    ptb_description.push_str(&format!(
+                        "  Command[{}]: SplitCoins(coin={:?}, amounts={:?})\n",
+                        i, coin, amounts
+                    ));
                 }
-                PtbCommand::MergeCoins { destination, sources } => {
-                    ptb_description.push_str(&format!("  Command[{}]: MergeCoins(dest={:?}, sources={:?})\n", i, destination, sources));
+                PtbCommand::MergeCoins {
+                    destination,
+                    sources,
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  Command[{}]: MergeCoins(dest={:?}, sources={:?})\n",
+                        i, destination, sources
+                    ));
                 }
-                PtbCommand::TransferObjects { objects, address: _ } => {
-                    ptb_description.push_str(&format!("  Command[{}]: TransferObjects({} objects)\n", i, objects.len()));
+                PtbCommand::TransferObjects {
+                    objects,
+                    address: _,
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  Command[{}]: TransferObjects({} objects)\n",
+                        i,
+                        objects.len()
+                    ));
                 }
                 _ => {
                     ptb_description.push_str(&format!("  Command[{}]: Other\n", i));
@@ -2813,13 +3182,20 @@ IMPORTANT:
             let error_context = if attempt == 1 {
                 initial_error.clone()
             } else {
-                attempt_results.last().map(|(_, _, e)| e.clone()).unwrap_or_else(|| initial_error.clone())
+                attempt_results
+                    .last()
+                    .map(|(_, _, e)| e.clone())
+                    .unwrap_or_else(|| initial_error.clone())
             };
 
             let previous_attempts_info = if attempt > 1 {
                 let mut info = String::new();
                 for (i, (success, resp, err)) in attempt_results.iter().enumerate() {
-                    info.push_str(&format!("\n### Attempt {} result: {}\n", i + 1, if *success { "SUCCESS" } else { "FAILED" }));
+                    info.push_str(&format!(
+                        "\n### Attempt {} result: {}\n",
+                        i + 1,
+                        if *success { "SUCCESS" } else { "FAILED" }
+                    ));
                     if !err.is_empty() {
                         info.push_str(&format!("Error: {}...\n", &err[..err.len().min(200)]));
                     }
@@ -2828,7 +3204,10 @@ IMPORTANT:
                     if !actions.is_empty() {
                         info.push_str("Actions tried:\n");
                         for action in &actions {
-                            info.push_str(&format!("  - {}: {:?}\n", action.action, action.object_id));
+                            info.push_str(&format!(
+                                "  - {}: {:?}\n",
+                                action.action, action.object_id
+                            ));
                         }
                     }
                 }
@@ -2869,7 +3248,8 @@ This was a SUCCESSFUL mainnet transaction. The abort happens because our synthes
                     let response_lower = response.to_lowercase();
 
                     // Check for quality indicators
-                    let has_analysis = response.contains("analysis") || response.contains("root_cause");
+                    let has_analysis =
+                        response.contains("analysis") || response.contains("root_cause");
                     let has_fix = response.contains("fix") || response.contains("actions");
                     let mentions_defi = response_lower.contains("pool")
                         || response_lower.contains("balance")
@@ -2879,10 +3259,19 @@ This was a SUCCESSFUL mainnet transaction. The abort happens because our synthes
                     let has_confidence = response.contains("confidence");
 
                     println!("  Response quality:");
-                    println!("    - Has analysis: {}", if has_analysis { "✓" } else { "✗" });
+                    println!(
+                        "    - Has analysis: {}",
+                        if has_analysis { "✓" } else { "✗" }
+                    );
                     println!("    - Has fix actions: {}", if has_fix { "✓" } else { "✗" });
-                    println!("    - Mentions DeFi concepts: {}", if mentions_defi { "✓" } else { "✗" });
-                    println!("    - Has confidence score: {}", if has_confidence { "✓" } else { "✗" });
+                    println!(
+                        "    - Mentions DeFi concepts: {}",
+                        if mentions_defi { "✓" } else { "✗" }
+                    );
+                    println!(
+                        "    - Has confidence score: {}",
+                        if has_confidence { "✓" } else { "✗" }
+                    );
 
                     // Parse LLM response and extract fix actions
                     let actions = parse_llm_fix_response(&response);
@@ -2910,7 +3299,11 @@ This was a SUCCESSFUL mainnet transaction. The abort happens because our synthes
                     if let Ok(mut harness) = VMHarness::new(&local_resolver, false) {
                         let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(cached);
                         // Use modified objects instead of original cached objects
-                        match cached.transaction.replay_with_objects_and_aliases(&mut harness, &current_objects, &address_aliases) {
+                        match cached.transaction.replay_with_objects_and_aliases(
+                            &mut harness,
+                            &current_objects,
+                            &address_aliases,
+                        ) {
                             Ok(result) => {
                                 if result.local_success {
                                     println!("  Result: ✓ SUCCESS!");
@@ -2919,8 +3312,14 @@ This was a SUCCESSFUL mainnet transaction. The abort happens because our synthes
                                     attempt_results.push((true, response, String::new()));
                                     break;
                                 } else {
-                                    let new_error = result.local_error.map(|e| format!("{}", e)).unwrap_or_default();
-                                    println!("  Result: ✗ Still failing: {}...", &new_error[..new_error.len().min(100)]);
+                                    let new_error = result
+                                        .local_error
+                                        .map(|e| format!("{}", e))
+                                        .unwrap_or_default();
+                                    println!(
+                                        "  Result: ✗ Still failing: {}...",
+                                        &new_error[..new_error.len().min(100)]
+                                    );
                                     attempt_results.push((false, response, new_error));
                                 }
                             }
@@ -2940,44 +3339,76 @@ This was a SUCCESSFUL mainnet transaction. The abort happens because our synthes
 
         let status = if tx_success { "SUCCESS" } else { "FAILED" };
         println!("\n  Transaction result: {}\n", status);
-        results_summary.push((cached.transaction.digest.0.clone(), *move_call_count, tx_success, attempt_results.len()));
+        results_summary.push((
+            cached.transaction.digest.0.clone(),
+            *move_call_count,
+            tx_success,
+            attempt_results.len(),
+        ));
     }
 
     // Final summary
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║                    BENCHMARK RESULTS                         ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║ Transactions tested: {:>3}                                    ║", results_summary.len());
-    println!("║ Total LLM calls:     {:>3}                                    ║", total_attempts);
-    println!("║ Fixes applied:       {:>3}                                    ║", fixes_applied);
-    println!("║ Successful txs:      {:>3}                                    ║", total_successes);
-    println!("║ Success rate:      {:>5.1}%                                   ║",
-             if !results_summary.is_empty() { total_successes as f64 / results_summary.len() as f64 * 100.0 } else { 0.0 });
+    println!(
+        "║ Transactions tested: {:>3}                                    ║",
+        results_summary.len()
+    );
+    println!(
+        "║ Total LLM calls:     {:>3}                                    ║",
+        total_attempts
+    );
+    println!(
+        "║ Fixes applied:       {:>3}                                    ║",
+        fixes_applied
+    );
+    println!(
+        "║ Successful txs:      {:>3}                                    ║",
+        total_successes
+    );
+    println!(
+        "║ Success rate:      {:>5.1}%                                   ║",
+        if !results_summary.is_empty() {
+            total_successes as f64 / results_summary.len() as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("╠══════════════════════════════════════════════════════════════╣");
 
     for (digest, move_calls, success, attempts) in &results_summary {
         let status = if *success { "✓" } else { "✗" };
-        println!("║ {} {}... ({} calls, {} attempts)          ║",
-                 status, &digest[..16], move_calls, attempts);
+        println!(
+            "║ {} {}... ({} calls, {} attempts)          ║",
+            status,
+            &digest[..16],
+            move_calls,
+            attempts
+        );
     }
 
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     println!("\n📊 Benchmark complete!");
-    println!("   The LLM was given {} attempts per transaction to analyze errors", ATTEMPTS_PER_TX);
+    println!(
+        "   The LLM was given {} attempts per transaction to analyze errors",
+        ATTEMPTS_PER_TX
+    );
     println!("   and suggest fixes. Fixes were parsed from JSON and applied to");
     println!("   the sandbox state before re-execution.");
 }
-
 
 /// GPT-5.2 Simple Transaction Benchmark - Tests on simpler 1-2 MoveCall transactions
 ///
 /// These are faster to run since they have fewer packages to load.
 #[test]
 fn test_gpt52_simple_transactions() {
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, PtbCommand, TransactionInput};
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::tx_replay::{
+        PtbCommand, TransactionCache, TransactionInput,
+    };
     use sui_move_interface_extractor::benchmark::vm::VMHarness;
 
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -2995,7 +3426,11 @@ fn test_gpt52_simple_transactions() {
         println!("Skipping: OPENROUTER_API_KEY not found");
         return;
     }
-    println!("API key loaded: {}...{}\n", &api_key[..10.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..]);
+    println!(
+        "API key loaded: {}...{}\n",
+        &api_key[..10.min(api_key.len())],
+        &api_key[api_key.len().saturating_sub(4)..]
+    );
 
     let cache_dir = std::path::Path::new(".tx-cache");
     if !cache_dir.exists() {
@@ -3032,7 +3467,10 @@ fn test_gpt52_simple_transactions() {
             }
 
             // Count MoveCall commands
-            let move_call_count = cached.transaction.commands.iter()
+            let move_call_count = cached
+                .transaction
+                .commands
+                .iter()
                 .filter(|cmd| matches!(cmd, PtbCommand::MoveCall { .. }))
                 .count();
 
@@ -3056,7 +3494,11 @@ fn test_gpt52_simple_transactions() {
 
             if let Ok(mut harness) = VMHarness::new(&local_resolver, false) {
                 let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
-                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+                if let Ok(result) = cached.transaction.replay_with_objects_and_aliases(
+                    &mut harness,
+                    &cached.objects,
+                    &address_aliases,
+                ) {
                     if !result.local_success {
                         if let Some(err) = &result.local_error {
                             // Collect all failing ones, not just ABORTED
@@ -3081,16 +3523,25 @@ fn test_gpt52_simple_transactions() {
 
     // Show what we found
     for (cached, mc_count, err) in &simple_txs {
-        let first_call = cached.transaction.commands.iter()
+        let first_call = cached
+            .transaction
+            .commands
+            .iter()
             .find_map(|cmd| match cmd {
-                PtbCommand::MoveCall { module, function, .. } => Some(format!("{}::{}", module, function)),
-                _ => None
+                PtbCommand::MoveCall {
+                    module, function, ..
+                } => Some(format!("{}::{}", module, function)),
+                _ => None,
             })
             .unwrap_or_else(|| "unknown".to_string());
 
-        let err_type = if err.contains("ABORTED") { "ABORTED" }
-                       else if err.contains("LINKER") { "LINKER" }
-                       else { "OTHER" };
+        let err_type = if err.contains("ABORTED") {
+            "ABORTED"
+        } else if err.contains("LINKER") {
+            "LINKER"
+        } else {
+            "OTHER"
+        };
 
         println!("  {} MoveCall(s): {} - {}", mc_count, first_call, err_type);
     }
@@ -3118,9 +3569,16 @@ Respond with ONLY valid JSON:
 }
 ```"#;
 
-    for (tx_idx, (cached, move_call_count, initial_error)) in simple_txs.iter().take(NUM_TRANSACTIONS).enumerate() {
+    for (tx_idx, (cached, move_call_count, initial_error)) in
+        simple_txs.iter().take(NUM_TRANSACTIONS).enumerate()
+    {
         println!("\n┌─────────────────────────────────────────────────────────────┐");
-        println!("│ Transaction {}/{}: {}...                    │", tx_idx + 1, NUM_TRANSACTIONS, &cached.transaction.digest.0[..20]);
+        println!(
+            "│ Transaction {}/{}: {}...                    │",
+            tx_idx + 1,
+            NUM_TRANSACTIONS,
+            &cached.transaction.digest.0[..20]
+        );
         println!("└─────────────────────────────────────────────────────────────┘");
         println!("  MoveCall commands: {}", move_call_count);
         println!("  Packages: {}", cached.packages.len());
@@ -3149,8 +3607,20 @@ Respond with ONLY valid JSON:
         ptb_description.push_str("\nCommands:\n");
         for (i, cmd) in cached.transaction.commands.iter().enumerate() {
             match cmd {
-                PtbCommand::MoveCall { package, module, function, arguments, .. } => {
-                    ptb_description.push_str(&format!("  [{}] MoveCall: {}::{}::{}\n", i, &package[..16], module, function));
+                PtbCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    arguments,
+                    ..
+                } => {
+                    ptb_description.push_str(&format!(
+                        "  [{}] MoveCall: {}::{}::{}\n",
+                        i,
+                        &package[..16],
+                        module,
+                        function
+                    ));
                     ptb_description.push_str(&format!("      Args: {:?}\n", arguments));
                 }
                 _ => {
@@ -3170,12 +3640,16 @@ Respond with ONLY valid JSON:
             let error_context = if attempt == 1 {
                 initial_error.clone()
             } else {
-                attempt_results.last().map(|(_, e)| e.clone()).unwrap_or_else(|| initial_error.clone())
+                attempt_results
+                    .last()
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_else(|| initial_error.clone())
             };
 
             let user_prompt = format!(
                 "{}\n\nError: {}\n\nProvide JSON fixes to resolve this.",
-                ptb_description, &error_context[..error_context.len().min(500)]
+                ptb_description,
+                &error_context[..error_context.len().min(500)]
             );
 
             print!("  Calling GPT-5.2... ");
@@ -3202,7 +3676,11 @@ Respond with ONLY valid JSON:
 
                     if let Ok(mut harness) = VMHarness::new(&local_resolver, false) {
                         let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(cached);
-                        match cached.transaction.replay_with_objects_and_aliases(&mut harness, &current_objects, &address_aliases) {
+                        match cached.transaction.replay_with_objects_and_aliases(
+                            &mut harness,
+                            &current_objects,
+                            &address_aliases,
+                        ) {
                             Ok(result) => {
                                 if result.local_success {
                                     println!("  Result: ✓ SUCCESS!");
@@ -3211,7 +3689,10 @@ Respond with ONLY valid JSON:
                                     break;
                                 } else {
                                     let new_error = result.local_error.unwrap_or_default();
-                                    println!("  Result: ✗ {}", &new_error[..new_error.len().min(80)]);
+                                    println!(
+                                        "  Result: ✗ {}",
+                                        &new_error[..new_error.len().min(80)]
+                                    );
                                     attempt_results.push((false, new_error));
                                 }
                             }
@@ -3238,10 +3719,22 @@ Respond with ONLY valid JSON:
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║                    SIMPLE TX BENCHMARK RESULTS               ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║ Transactions tested: {:>3}                                    ║", results_summary.len());
-    println!("║ Successful:          {:>3}                                    ║", total_successes);
-    println!("║ Success rate:      {:>5.1}%                                   ║",
-             if !results_summary.is_empty() { total_successes as f64 / results_summary.len() as f64 * 100.0 } else { 0.0 });
+    println!(
+        "║ Transactions tested: {:>3}                                    ║",
+        results_summary.len()
+    );
+    println!(
+        "║ Successful:          {:>3}                                    ║",
+        total_successes
+    );
+    println!(
+        "║ Success rate:      {:>5.1}%                                   ║",
+        if !results_summary.is_empty() {
+            total_successes as f64 / results_summary.len() as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     for (digest, success) in &results_summary {
@@ -3250,12 +3743,13 @@ Respond with ONLY valid JSON:
     }
 }
 
-
 /// Debug a single artipedia::update_points transaction to understand failure
 #[test]
 fn test_debug_artipedia_transaction() {
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, PtbCommand, TransactionInput};
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::tx_replay::{
+        PtbCommand, TransactionCache, TransactionInput,
+    };
     use sui_move_interface_extractor::benchmark::vm::VMHarness;
 
     println!("\n=== Debugging artipedia::update_points Transaction ===\n");
@@ -3278,12 +3772,18 @@ fn test_debug_artipedia_transaction() {
     println!("\n--- Inputs ---");
     for (i, input) in cached.transaction.inputs.iter().enumerate() {
         match input {
-            TransactionInput::Object { object_id, version, .. } => {
+            TransactionInput::Object {
+                object_id, version, ..
+            } => {
                 let cached_bytes = cached.objects.get(object_id).map(|s| s.len()).unwrap_or(0);
                 println!("  [{i}] Object: {object_id} (v{version}, {cached_bytes} bytes cached)");
             }
             TransactionInput::Pure { bytes } => {
-                let hex: String = bytes.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+                let hex: String = bytes
+                    .iter()
+                    .take(16)
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
                 println!("  [{i}] Pure: {hex}... ({} bytes)", bytes.len());
             }
             TransactionInput::SharedObject { object_id, .. } => {
@@ -3297,7 +3797,13 @@ fn test_debug_artipedia_transaction() {
     println!("\n--- Commands ---");
     for (i, cmd) in cached.transaction.commands.iter().enumerate() {
         match cmd {
-            PtbCommand::MoveCall { package, module, function, type_arguments, arguments } => {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
                 println!("  [{i}] MoveCall: {package}::{module}::{function}");
                 if !type_arguments.is_empty() {
                     println!("      Type args: {:?}", type_arguments);
@@ -3325,10 +3831,17 @@ fn test_debug_artipedia_transaction() {
     println!("\n--- Execution ---");
     match VMHarness::new(&local_resolver, false) {
         Ok(mut harness) => {
-            let address_aliases = sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
+            let address_aliases =
+                sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(
+                    &cached,
+                );
             println!("Address aliases: {} entries", address_aliases.len());
 
-            match cached.transaction.replay_with_objects_and_aliases(&mut harness, &cached.objects, &address_aliases) {
+            match cached.transaction.replay_with_objects_and_aliases(
+                &mut harness,
+                &cached.objects,
+                &address_aliases,
+            ) {
                 Ok(result) => {
                     println!("\nExecution completed:");
                     println!("  Local success: {}", result.local_success);
@@ -3415,9 +3928,7 @@ fn test_simulation_introspection_artipedia() {
     // Test 2: Find the artipedia module and list its structs
     println!("\n--- List Structs for artipedia ---");
     // Find the artipedia module path
-    let artipedia_path = modules.iter()
-        .find(|m| m.contains("artipedia"))
-        .cloned();
+    let artipedia_path = modules.iter().find(|m| m.contains("artipedia")).cloned();
 
     if let Some(path) = &artipedia_path {
         println!("Found artipedia module: {}", path);
@@ -3436,7 +3947,10 @@ fn test_simulation_introspection_artipedia() {
         let struct_path = format!("{}::AdminRegistry", path);
         if let Some(info) = env.get_struct_info(&struct_path) {
             println!("AdminRegistry struct info:");
-            println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&info).unwrap_or_default()
+            );
         } else {
             println!("Not found: {}", struct_path);
         }
@@ -3445,7 +3959,10 @@ fn test_simulation_introspection_artipedia() {
         println!("\n--- GetFunctionInfo for update_points ---");
         if let Some(info) = env.get_function_info(path, "update_points") {
             println!("update_points function info:");
-            println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&info).unwrap_or_default()
+            );
         } else {
             println!("Not found: {}::update_points", path);
         }
@@ -3458,11 +3975,15 @@ fn test_simulation_introspection_artipedia() {
 /// This proves the full flow works: introspect → synthesize → inject → execute
 #[test]
 fn test_synthesis_inject_execute_e2e() {
+    use move_core_types::identifier::Identifier;
+    use sui_move_interface_extractor::benchmark::ptb::{
+        Argument, Command, InputValue, ObjectInput,
+    };
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{
+        execute_request, SandboxRequest, SandboxResponse,
+    };
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
-    use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest, SandboxResponse};
-    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
-    use move_core_types::identifier::Identifier;
 
     println!("\n=== End-to-End Synthesis Test ===\n");
 
@@ -3486,7 +4007,8 @@ fn test_synthesis_inject_execute_e2e() {
 
     // Step 2: Introspect UserNumber struct using SimulationEnvironment
     println!("\nStep 2: Introspecting UserNumber struct...");
-    let artipedia_path = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia";
+    let artipedia_path =
+        "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia";
     let artipedia_pkg = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498";
 
     let struct_path = format!("{}::UserNumber", artipedia_path);
@@ -3525,12 +4047,16 @@ fn test_synthesis_inject_execute_e2e() {
         println!("  Object ID: {}", object_id);
         object_id
     } else {
-        panic!("Failed to create object: {}", response.error.unwrap_or_default());
+        panic!(
+            "Failed to create object: {}",
+            response.error.unwrap_or_default()
+        );
     };
 
     // Parse the object ID for use in PTB
-    let created_id = move_core_types::account_address::AccountAddress::from_hex_literal(&object_id_str)
-        .expect("parse object id");
+    let created_id =
+        move_core_types::account_address::AccountAddress::from_hex_literal(&object_id_str)
+            .expect("parse object id");
 
     // Step 4: Verify the object exists in the environment
     println!("\nStep 4: Verifying object in environment...");
@@ -3552,26 +4078,23 @@ fn test_synthesis_inject_execute_e2e() {
     println!("\nStep 5: Executing get_points_value on created object...");
 
     // Build PTB: call get_points_value(&UserNumber) -> u64
-    let pkg_addr = move_core_types::account_address::AccountAddress::from_hex_literal(artipedia_pkg)
-        .expect("parse package");
+    let pkg_addr =
+        move_core_types::account_address::AccountAddress::from_hex_literal(artipedia_pkg)
+            .expect("parse package");
 
-    let commands = vec![
-        Command::MoveCall {
-            package: pkg_addr,
-            module: Identifier::new("artipedia").unwrap(),
-            function: Identifier::new("get_points_value").unwrap(),
-            type_args: vec![],
-            args: vec![Argument::Input(0)],
-        },
-    ];
+    let commands = vec![Command::MoveCall {
+        package: pkg_addr,
+        module: Identifier::new("artipedia").unwrap(),
+        function: Identifier::new("get_points_value").unwrap(),
+        type_args: vec![],
+        args: vec![Argument::Input(0)],
+    }];
 
-    let inputs = vec![
-        InputValue::Object(ObjectInput::ImmRef {
-            id: created_id,
-            bytes: bcs_bytes,
-            type_tag: None,
-        }),
-    ];
+    let inputs = vec![InputValue::Object(ObjectInput::ImmRef {
+        id: created_id,
+        bytes: bcs_bytes,
+        type_tag: None,
+    })];
 
     let result = env.execute_ptb(inputs, commands);
 
@@ -3622,7 +4145,8 @@ fn test_bytecode_disassembly() {
         }
     }
 
-    let artipedia_path = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia";
+    let artipedia_path =
+        "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia";
 
     // Test 1: Disassemble update_points function
     println!("--- DisassembleFunction: update_points ---");
@@ -3632,7 +4156,10 @@ fn test_bytecode_disassembly() {
             println!("{}", disasm);
 
             // Verify key properties - at minimum, we should get function signature info
-            assert!(disasm.contains("update_points"), "Should contain function name");
+            assert!(
+                disasm.contains("update_points"),
+                "Should contain function name"
+            );
             // Should contain some info about the function (signature, locals, or bytecode)
             assert!(
                 disasm.contains("locals") || disasm.contains("bytecode") || disasm.contains("fun "),
@@ -3640,7 +4167,9 @@ fn test_bytecode_disassembly() {
             );
         }
         None => {
-            println!("Could not disassemble update_points (function may not exist in loaded packages)");
+            println!(
+                "Could not disassemble update_points (function may not exist in loaded packages)"
+            );
         }
     }
 
@@ -3664,7 +4193,7 @@ fn test_bytecode_disassembly() {
 #[test]
 fn test_package_builder_scaffold() {
     use sui_move_interface_extractor::benchmark::package_builder::{
-        PackageBuilder, PackageConfig, generate_struct_module,
+        generate_struct_module, PackageBuilder, PackageConfig,
     };
 
     println!("\n=== Package Builder Scaffold Test ===\n");
@@ -3698,13 +4227,13 @@ fn test_package_builder_scaffold() {
         "test_counter",
         "counter",
         "Counter",
-        &[
-            ("value".to_string(), "u64".to_string()),
-        ],
+        &[("value".to_string(), "u64".to_string())],
     );
     println!("Generated source:\n{}", source);
 
-    let source_file = builder.write_source(&package_dir, "counter", &source).expect("write source");
+    let source_file = builder
+        .write_source(&package_dir, "counter", &source)
+        .expect("write source");
     println!("Source file: {:?}", source_file);
     assert!(source_file.exists());
 
@@ -3715,7 +4244,9 @@ fn test_package_builder_scaffold() {
 /// This test checks framework caching status using PackageBuilder directly.
 #[test]
 fn test_simulation_package_building() {
-    use sui_move_interface_extractor::benchmark::package_builder::{PackageBuilder, FrameworkCache};
+    use sui_move_interface_extractor::benchmark::package_builder::{
+        FrameworkCache, PackageBuilder,
+    };
 
     println!("\n=== Package Building Test ===\n");
 
@@ -3758,9 +4289,9 @@ fn test_simulation_package_building() {
 /// Run with: cargo test test_mainnet_fidelity_benchmark -- --nocapture
 #[test]
 fn test_mainnet_fidelity_benchmark() {
-    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-    use sui_move_interface_extractor::benchmark::tx_replay::{TransactionCache, replay_parallel};
     use std::collections::HashMap;
+    use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::tx_replay::{replay_parallel, TransactionCache};
 
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║           MAINNET FIDELITY BENCHMARK                                 ║");
@@ -3805,7 +4336,10 @@ fn test_mainnet_fidelity_benchmark() {
         }
     }
 
-    println!("📦 Loaded {} cached mainnet transactions\n", transactions.len());
+    println!(
+        "📦 Loaded {} cached mainnet transactions\n",
+        transactions.len()
+    );
 
     // Replay all transactions
     println!("🔄 Replaying transactions in sandbox...\n");
@@ -3815,13 +4349,28 @@ fn test_mainnet_fidelity_benchmark() {
     println!("┌──────────────────────────────────────────────────────────────────────┐");
     println!("│                        OVERALL RESULTS                               │");
     println!("├──────────────────────────────────────────────────────────────────────┤");
-    println!("│ Total Transactions:     {:>6}                                       │", result.total);
-    println!("│ Local Execution Success:{:>6} ({:>5.1}%)                              │",
-             result.successful, result.successful as f64 / result.total as f64 * 100.0);
-    println!("│ Status Match:           {:>6} ({:>5.1}%)                              │",
-             result.status_matched, result.status_matched as f64 / result.total as f64 * 100.0);
-    println!("│ Throughput:             {:>6.1} tx/s                                  │", result.tps);
-    println!("│ Elapsed:                {:>6} ms                                     │", result.elapsed_ms);
+    println!(
+        "│ Total Transactions:     {:>6}                                       │",
+        result.total
+    );
+    println!(
+        "│ Local Execution Success:{:>6} ({:>5.1}%)                              │",
+        result.successful,
+        result.successful as f64 / result.total as f64 * 100.0
+    );
+    println!(
+        "│ Status Match:           {:>6} ({:>5.1}%)                              │",
+        result.status_matched,
+        result.status_matched as f64 / result.total as f64 * 100.0
+    );
+    println!(
+        "│ Throughput:             {:>6.1} tx/s                                  │",
+        result.tps
+    );
+    println!(
+        "│ Elapsed:                {:>6} ms                                     │",
+        result.elapsed_ms
+    );
     println!("└──────────────────────────────────────────────────────────────────────┘\n");
 
     // ===== EFFECTS COMPARISON ANALYSIS =====
@@ -3843,10 +4392,14 @@ fn test_mainnet_fidelity_benchmark() {
 
         if is_framework_only {
             framework_only_stats.0 += 1;
-            if r.local_success { framework_only_stats.1 += 1; }
+            if r.local_success {
+                framework_only_stats.1 += 1;
+            }
         } else {
             third_party_stats.0 += 1;
-            if r.local_success { third_party_stats.1 += 1; }
+            if r.local_success {
+                third_party_stats.1 += 1;
+            }
         }
 
         if let Some(ref comparison) = r.comparison {
@@ -3855,16 +4408,28 @@ fn test_mainnet_fidelity_benchmark() {
 
             if comparison.status_match {
                 status_matches += 1;
-                if is_framework_only { framework_only_stats.2 += 1; }
-                else { third_party_stats.2 += 1; }
+                if is_framework_only {
+                    framework_only_stats.2 += 1;
+                } else {
+                    third_party_stats.2 += 1;
+                }
             }
-            if comparison.created_count_match { created_matches += 1; }
-            if comparison.mutated_count_match { mutated_matches += 1; }
-            if comparison.deleted_count_match { deleted_matches += 1; }
+            if comparison.created_count_match {
+                created_matches += 1;
+            }
+            if comparison.mutated_count_match {
+                mutated_matches += 1;
+            }
+            if comparison.deleted_count_match {
+                deleted_matches += 1;
+            }
 
             // Perfect match = all four criteria match
-            if comparison.status_match && comparison.created_count_match
-                && comparison.mutated_count_match && comparison.deleted_count_match {
+            if comparison.status_match
+                && comparison.created_count_match
+                && comparison.mutated_count_match
+                && comparison.deleted_count_match
+            {
                 perfect_matches += 1;
             }
         }
@@ -3875,34 +4440,68 @@ fn test_mainnet_fidelity_benchmark() {
     println!("├──────────────────────────────────────────────────────────────────────┤");
 
     if transactions_with_comparison > 0 {
-        let avg_score: f64 = effects_match_scores.iter().sum::<f64>() / effects_match_scores.len() as f64;
-        let min_score = effects_match_scores.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_score = effects_match_scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let avg_score: f64 =
+            effects_match_scores.iter().sum::<f64>() / effects_match_scores.len() as f64;
+        let min_score = effects_match_scores
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let max_score = effects_match_scores
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
 
-        println!("│ Transactions with comparison: {:>5}                                 │", transactions_with_comparison);
+        println!(
+            "│ Transactions with comparison: {:>5}                                 │",
+            transactions_with_comparison
+        );
         println!("│                                                                      │");
         println!("│ Match Score (0.0 - 1.0):                                             │");
-        println!("│   Average:              {:>6.3}                                       │", avg_score);
-        println!("│   Min:                  {:>6.3}                                       │", min_score);
-        println!("│   Max:                  {:>6.3}                                       │", max_score);
+        println!(
+            "│   Average:              {:>6.3}                                       │",
+            avg_score
+        );
+        println!(
+            "│   Min:                  {:>6.3}                                       │",
+            min_score
+        );
+        println!(
+            "│   Max:                  {:>6.3}                                       │",
+            max_score
+        );
         println!("│                                                                      │");
         println!("│ Individual Criteria:                                                 │");
-        println!("│   Status match:         {:>5} / {:>5} ({:>5.1}%)                      │",
-                 status_matches, transactions_with_comparison,
-                 status_matches as f64 / transactions_with_comparison as f64 * 100.0);
-        println!("│   Created count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
-                 created_matches, transactions_with_comparison,
-                 created_matches as f64 / transactions_with_comparison as f64 * 100.0);
-        println!("│   Mutated count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
-                 mutated_matches, transactions_with_comparison,
-                 mutated_matches as f64 / transactions_with_comparison as f64 * 100.0);
-        println!("│   Deleted count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
-                 deleted_matches, transactions_with_comparison,
-                 deleted_matches as f64 / transactions_with_comparison as f64 * 100.0);
+        println!(
+            "│   Status match:         {:>5} / {:>5} ({:>5.1}%)                      │",
+            status_matches,
+            transactions_with_comparison,
+            status_matches as f64 / transactions_with_comparison as f64 * 100.0
+        );
+        println!(
+            "│   Created count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
+            created_matches,
+            transactions_with_comparison,
+            created_matches as f64 / transactions_with_comparison as f64 * 100.0
+        );
+        println!(
+            "│   Mutated count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
+            mutated_matches,
+            transactions_with_comparison,
+            mutated_matches as f64 / transactions_with_comparison as f64 * 100.0
+        );
+        println!(
+            "│   Deleted count match:  {:>5} / {:>5} ({:>5.1}%)                      │",
+            deleted_matches,
+            transactions_with_comparison,
+            deleted_matches as f64 / transactions_with_comparison as f64 * 100.0
+        );
         println!("│                                                                      │");
-        println!("│ Perfect matches (all 4): {:>5} / {:>5} ({:>5.1}%)                     │",
-                 perfect_matches, transactions_with_comparison,
-                 perfect_matches as f64 / transactions_with_comparison as f64 * 100.0);
+        println!(
+            "│ Perfect matches (all 4): {:>5} / {:>5} ({:>5.1}%)                     │",
+            perfect_matches,
+            transactions_with_comparison,
+            perfect_matches as f64 / transactions_with_comparison as f64 * 100.0
+        );
     } else {
         println!("│ No transactions with comparison data available                       │");
     }
@@ -3937,7 +4536,9 @@ fn test_mainnet_fidelity_benchmark() {
         ("0.50 - 0.74   ", score_buckets[2]),
         ("0.25 - 0.49   ", score_buckets[1]),
         ("0.00 - 0.24   ", score_buckets[0]),
-    ].iter() {
+    ]
+    .iter()
+    {
         let bar_len = (*count * bar_width) / max_bucket;
         let bar: String = "█".repeat(bar_len);
         println!("│ {} {:>5} │{:<30}│                 │", label, count, bar);
@@ -3950,22 +4551,40 @@ fn test_mainnet_fidelity_benchmark() {
     println!("├──────────────────────────────────────────────────────────────────────┤");
     println!("│ FRAMEWORK-ONLY (Sui system calls only):                              │");
     if framework_only_stats.0 > 0 {
-        println!("│   Total:          {:>5}                                              │", framework_only_stats.0);
-        println!("│   Local success:  {:>5} ({:>5.1}%)                                    │",
-                 framework_only_stats.1, framework_only_stats.1 as f64 / framework_only_stats.0 as f64 * 100.0);
-        println!("│   Status match:   {:>5} ({:>5.1}%)                                    │",
-                 framework_only_stats.2, framework_only_stats.2 as f64 / framework_only_stats.0 as f64 * 100.0);
+        println!(
+            "│   Total:          {:>5}                                              │",
+            framework_only_stats.0
+        );
+        println!(
+            "│   Local success:  {:>5} ({:>5.1}%)                                    │",
+            framework_only_stats.1,
+            framework_only_stats.1 as f64 / framework_only_stats.0 as f64 * 100.0
+        );
+        println!(
+            "│   Status match:   {:>5} ({:>5.1}%)                                    │",
+            framework_only_stats.2,
+            framework_only_stats.2 as f64 / framework_only_stats.0 as f64 * 100.0
+        );
     } else {
         println!("│   (none)                                                             │");
     }
     println!("│                                                                      │");
     println!("│ THIRD-PARTY (custom packages):                                       │");
     if third_party_stats.0 > 0 {
-        println!("│   Total:          {:>5}                                              │", third_party_stats.0);
-        println!("│   Local success:  {:>5} ({:>5.1}%)                                    │",
-                 third_party_stats.1, third_party_stats.1 as f64 / third_party_stats.0 as f64 * 100.0);
-        println!("│   Status match:   {:>5} ({:>5.1}%)                                    │",
-                 third_party_stats.2, third_party_stats.2 as f64 / third_party_stats.0 as f64 * 100.0);
+        println!(
+            "│   Total:          {:>5}                                              │",
+            third_party_stats.0
+        );
+        println!(
+            "│   Local success:  {:>5} ({:>5.1}%)                                    │",
+            third_party_stats.1,
+            third_party_stats.1 as f64 / third_party_stats.0 as f64 * 100.0
+        );
+        println!(
+            "│   Status match:   {:>5} ({:>5.1}%)                                    │",
+            third_party_stats.2,
+            third_party_stats.2 as f64 / third_party_stats.0 as f64 * 100.0
+        );
     } else {
         println!("│   (none)                                                             │");
     }
@@ -3986,7 +4605,7 @@ fn test_mainnet_fidelity_benchmark() {
                     linker_errors += 1;
                     // Extract module address
                     if let Some(start) = err.find("address: ") {
-                        let addr_part = &err[start+9..];
+                        let addr_part = &err[start + 9..];
                         if let Some(end) = addr_part.find(",") {
                             let addr = &addr_part[..end];
                             *missing_modules.entry(addr.to_string()).or_insert(0) += 1;
@@ -4015,17 +4634,48 @@ fn test_mainnet_fidelity_benchmark() {
     println!("│                      FAILURE ANALYSIS                                │");
     println!("├──────────────────────────────────────────────────────────────────────┤");
     let total_failures = result.total - result.successful;
-    println!("│ Total failures:     {:>5}                                            │", total_failures);
+    println!(
+        "│ Total failures:     {:>5}                                            │",
+        total_failures
+    );
     println!("│                                                                      │");
     println!("│ By category:                                                         │");
-    println!("│   LINKER_ERROR:     {:>5} ({:>5.1}% of failures)                       │",
-             linker_errors, if total_failures > 0 { linker_errors as f64 / total_failures as f64 * 100.0 } else { 0.0 });
-    println!("│   ABORTED:          {:>5} ({:>5.1}% of failures)                       │",
-             aborted_errors, if total_failures > 0 { aborted_errors as f64 / total_failures as f64 * 100.0 } else { 0.0 });
-    println!("│   TYPE errors:      {:>5} ({:>5.1}% of failures)                       │",
-             type_errors, if total_failures > 0 { type_errors as f64 / total_failures as f64 * 100.0 } else { 0.0 });
-    println!("│   Other:            {:>5} ({:>5.1}% of failures)                       │",
-             other_errors, if total_failures > 0 { other_errors as f64 / total_failures as f64 * 100.0 } else { 0.0 });
+    println!(
+        "│   LINKER_ERROR:     {:>5} ({:>5.1}% of failures)                       │",
+        linker_errors,
+        if total_failures > 0 {
+            linker_errors as f64 / total_failures as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "│   ABORTED:          {:>5} ({:>5.1}% of failures)                       │",
+        aborted_errors,
+        if total_failures > 0 {
+            aborted_errors as f64 / total_failures as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "│   TYPE errors:      {:>5} ({:>5.1}% of failures)                       │",
+        type_errors,
+        if total_failures > 0 {
+            type_errors as f64 / total_failures as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "│   Other:            {:>5} ({:>5.1}% of failures)                       │",
+        other_errors,
+        if total_failures > 0 {
+            other_errors as f64 / total_failures as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!("└──────────────────────────────────────────────────────────────────────┘\n");
 
     // Top missing modules (for LINKER errors)
@@ -4036,7 +4686,11 @@ fn test_mainnet_fidelity_benchmark() {
         let mut sorted: Vec<_> = missing_modules.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1));
         for (addr, count) in sorted.iter().take(5) {
-            println!("│ {} ({:>3} occurrences)                │", &addr[..addr.len().min(40)], count);
+            println!(
+                "│ {} ({:>3} occurrences)                │",
+                &addr[..addr.len().min(40)],
+                count
+            );
         }
         println!("└──────────────────────────────────────────────────────────────────────┘\n");
     }
@@ -4049,7 +4703,10 @@ fn test_mainnet_fidelity_benchmark() {
         let mut sorted: Vec<_> = abort_codes.iter().collect();
         sorted.sort_by(|a, b| b.1.cmp(a.1));
         for (code, count) in sorted.iter().take(5) {
-            println!("│ Code {:>15}: {:>5} occurrences                                 │", code, count);
+            println!(
+                "│ Code {:>15}: {:>5} occurrences                                 │",
+                code, count
+            );
         }
         println!("└──────────────────────────────────────────────────────────────────────┘\n");
     }
@@ -4061,36 +4718,64 @@ fn test_mainnet_fidelity_benchmark() {
 
     let status_match_rate = if transactions_with_comparison > 0 {
         status_matches as f64 / transactions_with_comparison as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let avg_match_score = if !effects_match_scores.is_empty() {
         effects_match_scores.iter().sum::<f64>() / effects_match_scores.len() as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let perfect_match_rate = if transactions_with_comparison > 0 {
         perfect_matches as f64 / transactions_with_comparison as f64 * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     println!("║                                                                      ║");
-    println!("║   Status Match Rate:       {:>5.1}%                                   ║", status_match_rate);
-    println!("║   Average Effects Score:   {:>5.1}%                                   ║", avg_match_score);
-    println!("║   Perfect Match Rate:      {:>5.1}%                                   ║", perfect_match_rate);
+    println!(
+        "║   Status Match Rate:       {:>5.1}%                                   ║",
+        status_match_rate
+    );
+    println!(
+        "║   Average Effects Score:   {:>5.1}%                                   ║",
+        avg_match_score
+    );
+    println!(
+        "║   Perfect Match Rate:      {:>5.1}%                                   ║",
+        perfect_match_rate
+    );
     println!("║                                                                      ║");
 
     // Overall fidelity grade
     let overall_fidelity = (status_match_rate + avg_match_score + perfect_match_rate) / 3.0;
-    let grade = if overall_fidelity >= 95.0 { "A+" }
-        else if overall_fidelity >= 90.0 { "A" }
-        else if overall_fidelity >= 85.0 { "A-" }
-        else if overall_fidelity >= 80.0 { "B+" }
-        else if overall_fidelity >= 75.0 { "B" }
-        else if overall_fidelity >= 70.0 { "B-" }
-        else if overall_fidelity >= 65.0 { "C+" }
-        else if overall_fidelity >= 60.0 { "C" }
-        else { "Below C" };
+    let grade = if overall_fidelity >= 95.0 {
+        "A+"
+    } else if overall_fidelity >= 90.0 {
+        "A"
+    } else if overall_fidelity >= 85.0 {
+        "A-"
+    } else if overall_fidelity >= 80.0 {
+        "B+"
+    } else if overall_fidelity >= 75.0 {
+        "B"
+    } else if overall_fidelity >= 70.0 {
+        "B-"
+    } else if overall_fidelity >= 65.0 {
+        "C+"
+    } else if overall_fidelity >= 60.0 {
+        "C"
+    } else {
+        "Below C"
+    };
 
     println!("║   ═══════════════════════════════════════════════════════════════   ║");
-    println!("║   OVERALL FIDELITY:        {:>5.1}%  (Grade: {:<2})                     ║", overall_fidelity, grade);
+    println!(
+        "║   OVERALL FIDELITY:        {:>5.1}%  (Grade: {:<2})                     ║",
+        overall_fidelity, grade
+    );
     println!("║                                                                      ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝");
 
@@ -4098,8 +4783,11 @@ fn test_mainnet_fidelity_benchmark() {
     // Framework-only transactions should have very high success rate
     if framework_only_stats.0 > 0 {
         let framework_success_rate = framework_only_stats.1 as f64 / framework_only_stats.0 as f64;
-        assert!(framework_success_rate >= 0.90,
-                "Framework-only success rate should be >= 90%, got {:.1}%", framework_success_rate * 100.0);
+        assert!(
+            framework_success_rate >= 0.90,
+            "Framework-only success rate should be >= 90%, got {:.1}%",
+            framework_success_rate * 100.0
+        );
     }
 
     println!("\n✅ Benchmark complete!");
@@ -4113,8 +4801,8 @@ fn test_mainnet_fidelity_benchmark() {
 /// This is the recommended way for LLM agents to discover available tools.
 #[test]
 fn test_sandbox_request_tool_discovery() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest};
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::sandbox_exec::{SandboxRequest, execute_request};
 
     println!("\n=== SandboxRequest: Tool Discovery ===\n");
 
@@ -4134,15 +4822,31 @@ fn test_sandbox_request_tool_discovery() {
     let categories = data.get("categories").unwrap().as_object().unwrap();
     println!("Available categories:");
     for (name, cat) in categories {
-        let tools = cat.get("tools").and_then(|t| t.as_array()).map(|a| a.len()).unwrap_or(0);
+        let tools = cat
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
         println!("  - {}: {} tools", name, tools);
     }
 
     // Verify key categories exist
-    assert!(categories.contains_key("module_operations"), "Should have module_operations");
-    assert!(categories.contains_key("type_introspection"), "Should have type_introspection");
-    assert!(categories.contains_key("execution"), "Should have execution");
-    assert!(categories.contains_key("utilities"), "Should have utilities");
+    assert!(
+        categories.contains_key("module_operations"),
+        "Should have module_operations"
+    );
+    assert!(
+        categories.contains_key("type_introspection"),
+        "Should have type_introspection"
+    );
+    assert!(
+        categories.contains_key("execution"),
+        "Should have execution"
+    );
+    assert!(
+        categories.contains_key("utilities"),
+        "Should have utilities"
+    );
 
     println!("\n✅ Tool discovery test passed");
 }
@@ -4151,8 +4855,8 @@ fn test_sandbox_request_tool_discovery() {
 /// Demonstrates: load modules → list → introspect → create object → execute PTB
 #[test]
 fn test_sandbox_request_complete_workflow() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest};
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::sandbox_exec::{SandboxRequest, execute_request};
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
 
     println!("\n=== SandboxRequest: Complete Workflow ===\n");
@@ -4192,12 +4896,16 @@ fn test_sandbox_request_complete_workflow() {
     assert!(response.success, "list_modules should succeed");
 
     let data = response.data.unwrap();
-    let module_list = data.get("modules").and_then(|v| v.as_array()).expect("should have modules array");
+    let module_list = data
+        .get("modules")
+        .and_then(|v| v.as_array())
+        .expect("should have modules array");
     println!("Loaded {} modules", module_list.len());
 
     // Step 3: Get struct info using SandboxRequest
     println!("\n--- get_struct_info ---");
-    let artipedia_path = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia::UserNumber";
+    let artipedia_path =
+        "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia::UserNumber";
     let request = SandboxRequest::GetStructInfo {
         type_path: artipedia_path.to_string(),
     };
@@ -4217,7 +4925,10 @@ fn test_sandbox_request_complete_workflow() {
     let mut fields = std::collections::HashMap::new();
     fields.insert("id".to_string(), serde_json::json!("auto"));
     fields.insert("value".to_string(), serde_json::json!(1000));
-    fields.insert("owner".to_string(), serde_json::json!("0xaaaabbbbccccddddeeeeffffaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"));
+    fields.insert(
+        "owner".to_string(),
+        serde_json::json!("0xaaaabbbbccccddddeeeeffffaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"),
+    );
 
     let request = SandboxRequest::CreateObject {
         object_type: "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia::UserNumber".to_string(),
@@ -4229,8 +4940,14 @@ fn test_sandbox_request_complete_workflow() {
     if response.success {
         let obj = response.data.unwrap();
         println!("Created object:");
-        println!("  ID: {}", obj.get("object_id").and_then(|v| v.as_str()).unwrap_or("?"));
-        println!("  Type: {}", obj.get("type").and_then(|v| v.as_str()).unwrap_or("?"));
+        println!(
+            "  ID: {}",
+            obj.get("object_id").and_then(|v| v.as_str()).unwrap_or("?")
+        );
+        println!(
+            "  Type: {}",
+            obj.get("type").and_then(|v| v.as_str()).unwrap_or("?")
+        );
     } else {
         println!("Note: Could not create object: {:?}", response.error);
     }
@@ -4241,7 +4958,10 @@ fn test_sandbox_request_complete_workflow() {
     let response = execute_request(&mut env, &request, false);
     assert!(response.success, "generate_id should succeed");
     let id_data = response.data.unwrap();
-    println!("Generated ID: {}", id_data.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!(
+        "Generated ID: {}",
+        id_data.get("id").and_then(|v| v.as_str()).unwrap_or("?")
+    );
 
     println!("\n--- parse_address ---");
     let request = SandboxRequest::ParseAddress {
@@ -4251,8 +4971,20 @@ fn test_sandbox_request_complete_workflow() {
     assert!(response.success, "parse_address should succeed");
     let addr_data = response.data.unwrap();
     println!("Parsed 0x2:");
-    println!("  Full: {}", addr_data.get("full").and_then(|v| v.as_str()).unwrap_or("?"));
-    println!("  Short: {}", addr_data.get("short").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!(
+        "  Full: {}",
+        addr_data
+            .get("full")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+    );
+    println!(
+        "  Short: {}",
+        addr_data
+            .get("short")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+    );
 
     println!("\n✅ Complete workflow test passed");
 }
@@ -4260,8 +4992,8 @@ fn test_sandbox_request_complete_workflow() {
 /// Test SandboxRequest utility tools.
 #[test]
 fn test_sandbox_request_utilities() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest};
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
-    use sui_move_interface_extractor::benchmark::sandbox_exec::{SandboxRequest, execute_request};
 
     println!("\n=== SandboxRequest: Utility Tools ===\n");
 
@@ -4289,7 +5021,10 @@ fn test_sandbox_request_utilities() {
     let response = execute_request(&mut env, &request, false);
     assert!(response.success, "compute_hash should succeed");
     let data = response.data.unwrap();
-    println!("SHA256 of 'Hello': {}", data.get("hash").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!(
+        "SHA256 of 'Hello': {}",
+        data.get("hash").and_then(|v| v.as_str()).unwrap_or("?")
+    );
 
     // Test convert_number
     println!("\n--- convert_number ---");
@@ -4312,7 +5047,12 @@ fn test_sandbox_request_utilities() {
     let response = execute_request(&mut env, &request, false);
     assert!(response.success, "encode_bcs should succeed");
     let data = response.data.unwrap();
-    println!("BCS of 42u64: {}", data.get("bytes_hex").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!(
+        "BCS of 42u64: {}",
+        data.get("bytes_hex")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+    );
 
     // Test decode_bcs
     println!("\n--- decode_bcs ---");

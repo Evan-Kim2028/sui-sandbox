@@ -141,13 +141,17 @@ impl StateSnapshot {
     /// Record that an object was modified (save original for rollback)
     pub fn record_modify(&mut self, object_id: AccountAddress, original_bytes: Vec<u8>) {
         // Only record the first modification (original state)
-        self.objects_before.entry(object_id).or_insert(original_bytes);
+        self.objects_before
+            .entry(object_id)
+            .or_insert(original_bytes);
     }
 
     /// Record that an object was deleted (save for restoration on rollback)
     pub fn record_delete(&mut self, object_id: AccountAddress, original_bytes: Vec<u8>) {
         self.objects_deleted.insert(object_id);
-        self.objects_before.entry(object_id).or_insert(original_bytes);
+        self.objects_before
+            .entry(object_id)
+            .or_insert(original_bytes);
     }
 
     /// Record that a dynamic field was added
@@ -417,7 +421,9 @@ mod tests {
 
         let type_tag = TypeTag::Bool;
         snapshot.record_field_remove(parent, child, type_tag.clone(), vec![1]);
-        assert!(snapshot.dynamic_fields_removed.contains_key(&(parent, child)));
+        assert!(snapshot
+            .dynamic_fields_removed
+            .contains_key(&(parent, child)));
     }
 
     #[test]
@@ -454,9 +460,7 @@ mod tests {
         registry.register(obj_id);
 
         assert!(registry.is_immutable(&obj_id));
-        assert!(!registry.is_immutable(
-            &AccountAddress::from_hex_literal("0x123").unwrap()
-        ));
+        assert!(!registry.is_immutable(&AccountAddress::from_hex_literal("0x123").unwrap()));
     }
 
     #[test]

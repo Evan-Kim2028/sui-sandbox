@@ -15,7 +15,9 @@ use std::io::Write;
 
 use crate::args::PtbEvalArgs;
 use crate::benchmark::simulation::{SimulationEnvironment, SimulationError};
-use crate::benchmark::tx_replay::{TransactionCache, CachedTransaction, build_address_aliases_for_test};
+use crate::benchmark::tx_replay::{
+    build_address_aliases_for_test, CachedTransaction, TransactionCache,
+};
 
 /// Result of evaluating a single PTB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +42,7 @@ pub struct PtbEvalReport {
 
     /// Dependency fetching actions taken (packages/objects fetched from mainnet).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub healing_actions: Vec<HealingAction>,  // Field name kept for backwards compatibility
+    pub healing_actions: Vec<HealingAction>, // Field name kept for backwards compatibility
 
     /// Final error if failed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,24 +137,44 @@ impl EvalSummary {
     pub fn print(&self) {
         println!("\n=== PTB Evaluation Summary ===");
         println!("Total evaluated: {}", self.total);
-        println!("Success: {} ({:.1}%)", self.success,
-            if self.total > 0 { self.success as f64 / self.total as f64 * 100.0 } else { 0.0 });
-        println!("Failed: {} ({:.1}%)", self.failed,
-            if self.total > 0 { self.failed as f64 / self.total as f64 * 100.0 } else { 0.0 });
+        println!(
+            "Success: {} ({:.1}%)",
+            self.success,
+            if self.total > 0 {
+                self.success as f64 / self.total as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "Failed: {} ({:.1}%)",
+            self.failed,
+            if self.total > 0 {
+                self.failed as f64 / self.total as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
         if self.skipped > 0 {
             println!("Skipped: {}", self.skipped);
         }
 
         println!("\n--- By Transaction Type ---");
         if self.framework_only_total > 0 {
-            println!("Framework-only: {}/{} ({:.1}%)",
-                self.framework_only_success, self.framework_only_total,
-                self.framework_only_success as f64 / self.framework_only_total as f64 * 100.0);
+            println!(
+                "Framework-only: {}/{} ({:.1}%)",
+                self.framework_only_success,
+                self.framework_only_total,
+                self.framework_only_success as f64 / self.framework_only_total as f64 * 100.0
+            );
         }
         if self.third_party_total > 0 {
-            println!("Third-party: {}/{} ({:.1}%)",
-                self.third_party_success, self.third_party_total,
-                self.third_party_success as f64 / self.third_party_total as f64 * 100.0);
+            println!(
+                "Third-party: {}/{} ({:.1}%)",
+                self.third_party_success,
+                self.third_party_total,
+                self.third_party_success as f64 / self.third_party_total as f64 * 100.0
+            );
         }
 
         if !self.error_categories.is_empty() {
@@ -167,8 +189,11 @@ impl EvalSummary {
         if self.healing_actions_taken > 0 {
             println!("\n--- Dependency Fetching ---");
             println!("Fetches attempted: {}", self.healing_actions_taken);
-            println!("Successful: {} ({:.1}%)", self.healing_actions_successful,
-                self.healing_actions_successful as f64 / self.healing_actions_taken as f64 * 100.0);
+            println!(
+                "Successful: {} ({:.1}%)",
+                self.healing_actions_successful,
+                self.healing_actions_successful as f64 / self.healing_actions_taken as f64 * 100.0
+            );
         }
     }
 }
@@ -233,7 +258,10 @@ fn evaluate_transaction(
     // This is critical for authorization checks (tx_context.sender() comparisons)
     env.set_sender(cached.transaction.sender);
     if verbose {
-        eprintln!("Set sender to {}", cached.transaction.sender.to_hex_literal());
+        eprintln!(
+            "Set sender to {}",
+            cached.transaction.sender.to_hex_literal()
+        );
     }
 
     // Set the timestamp from the original transaction if available
@@ -248,10 +276,9 @@ fn evaluate_transaction(
     let address_aliases = build_address_aliases_for_test(cached);
 
     // Convert to PTB commands
-    let ptb_result = cached.transaction.to_ptb_commands_with_objects_and_aliases(
-        &cached.objects,
-        &address_aliases,
-    );
+    let ptb_result = cached
+        .transaction
+        .to_ptb_commands_with_objects_and_aliases(&cached.objects, &address_aliases);
 
     let (inputs, commands) = match ptb_result {
         Ok(ic) => ic,
@@ -272,14 +299,23 @@ fn evaluate_transaction(
 
     // Debug: show PTB structure
     if verbose {
-        eprintln!("PTB has {} inputs, {} commands", inputs.len(), commands.len());
+        eprintln!(
+            "PTB has {} inputs, {} commands",
+            inputs.len(),
+            commands.len()
+        );
         for (i, input) in inputs.iter().enumerate() {
             match input {
                 crate::benchmark::ptb::InputValue::Pure(bytes) => {
                     eprintln!("  Input {}: Pure({} bytes)", i, bytes.len());
                 }
                 crate::benchmark::ptb::InputValue::Object(obj) => {
-                    eprintln!("  Input {}: Object {} ({} bytes)", i, obj.id().to_hex_literal(), obj.bytes().len());
+                    eprintln!(
+                        "  Input {}: Object {} ({} bytes)",
+                        i,
+                        obj.id().to_hex_literal(),
+                        obj.bytes().len()
+                    );
                 }
             }
         }
@@ -363,7 +399,9 @@ fn try_heal(
     show_healing: bool,
 ) -> Option<HealingAction> {
     match error {
-        SimulationError::MissingPackage { address, module: _, .. } => {
+        SimulationError::MissingPackage {
+            address, module: _, ..
+        } => {
             if show_healing {
                 eprintln!("  Fetching missing package {} from mainnet...", address);
             }
@@ -392,7 +430,11 @@ fn try_heal(
                 }
             }
         }
-        SimulationError::MissingObject { id, expected_type: _, .. } => {
+        SimulationError::MissingObject {
+            id,
+            expected_type: _,
+            ..
+        } => {
             if show_healing {
                 eprintln!("  Fetching missing object {} from mainnet...", id);
             }
@@ -421,11 +463,11 @@ fn try_heal(
                 }
             }
         }
-        SimulationError::ContractAbort { .. } |
-        SimulationError::TypeMismatch { .. } |
-        SimulationError::DeserializationFailed { .. } |
-        SimulationError::ExecutionError { .. } |
-        SimulationError::SharedObjectLockConflict { .. } => {
+        SimulationError::ContractAbort { .. }
+        | SimulationError::TypeMismatch { .. }
+        | SimulationError::DeserializationFailed { .. }
+        | SimulationError::ExecutionError { .. }
+        | SimulationError::SharedObjectLockConflict { .. } => {
             // These errors typically can't be healed automatically
             // They require changes to the object state or transaction structure
             None
@@ -479,7 +521,10 @@ pub fn run_ptb_eval(args: &PtbEvalArgs) -> Result<()> {
             Err(e) => {
                 load_failures += 1;
                 if args.verbose {
-                    eprintln!("  Warning: Failed to load cached transaction {}: {}", digest, e);
+                    eprintln!(
+                        "  Warning: Failed to load cached transaction {}: {}",
+                        digest, e
+                    );
                 }
                 continue;
             }
@@ -496,7 +541,12 @@ pub fn run_ptb_eval(args: &PtbEvalArgs) -> Result<()> {
         }
 
         if args.verbose {
-            println!("\n[{}/{}] Evaluating {}...", i + 1, limit.min(digests.len()), digest);
+            println!(
+                "\n[{}/{}] Evaluating {}...",
+                i + 1,
+                limit.min(digests.len()),
+                digest
+            );
         }
 
         // Create fresh environment for each transaction
@@ -524,7 +574,11 @@ pub fn run_ptb_eval(args: &PtbEvalArgs) -> Result<()> {
 
         // Progress indicator
         if !args.verbose && (i + 1) % 10 == 0 {
-            print!("\rEvaluated {}/{} transactions...", i + 1, limit.min(digests.len()));
+            print!(
+                "\rEvaluated {}/{} transactions...",
+                i + 1,
+                limit.min(digests.len())
+            );
             std::io::stdout().flush()?;
         }
     }
@@ -535,7 +589,10 @@ pub fn run_ptb_eval(args: &PtbEvalArgs) -> Result<()> {
 
     // Print load failure summary if any
     if load_failures > 0 {
-        println!("\nWarning: {} transaction(s) failed to load from cache", load_failures);
+        println!(
+            "\nWarning: {} transaction(s) failed to load from cache",
+            load_failures
+        );
     }
 
     // Print summary

@@ -620,9 +620,9 @@ fn build_sui_natives(
             // The first 32 bytes of a serialized object are typically the ID
 
             // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args.pop().and_then(|obj_ty| {
-                ctx.type_to_type_layout(&obj_ty).ok().flatten()
-            });
+            let layout = ty_args
+                .pop()
+                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 // Try to serialize the object to get its bytes and ID
@@ -635,7 +635,9 @@ fn build_sui_natives(
                         // Now we can borrow extensions mutably
                         if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
                             // Transfer ownership - ignore errors for objects we haven't tracked
-                            let _ = runtime.object_store_mut().transfer(&object_id, Owner::Address(recipient));
+                            let _ = runtime
+                                .object_store_mut()
+                                .transfer(&object_id, Owner::Address(recipient));
                         }
                     }
                 }
@@ -661,9 +663,9 @@ fn build_sui_natives(
             })?;
 
             // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args.pop().and_then(|obj_ty| {
-                ctx.type_to_type_layout(&obj_ty).ok().flatten()
-            });
+            let layout = ty_args
+                .pop()
+                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 if let Some(bytes) = obj_value.typed_serialize(&layout) {
@@ -701,9 +703,9 @@ fn build_sui_natives(
             })?;
 
             // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args.pop().and_then(|obj_ty| {
-                ctx.type_to_type_layout(&obj_ty).ok().flatten()
-            });
+            let layout = ty_args
+                .pop()
+                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 if let Some(bytes) = obj_value.typed_serialize(&layout) {
@@ -772,7 +774,8 @@ fn build_sui_natives(
                         // Get the pending receives and try to receive one
                         let result = {
                             if let Ok(mut state) = shared.shared_state().lock() {
-                                let pending: Vec<AccountAddress> = state.get_pending_receives_for(parent)
+                                let pending: Vec<AccountAddress> = state
+                                    .get_pending_receives_for(parent)
                                     .iter()
                                     .map(|(id, _, _)| *id)
                                     .collect();
@@ -790,7 +793,10 @@ fn build_sui_natives(
                             if let Some(type_layout) = &fallback_type_layout {
                                 match Value::simple_deserialize(&obj_bytes, type_layout) {
                                     Some(value) => {
-                                        return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                                        return Ok(NativeResult::ok(
+                                            InternalGas::new(0),
+                                            smallvec![value],
+                                        ));
                                     }
                                     None => {
                                         return Ok(NativeResult::err(InternalGas::new(0), 3));
@@ -835,7 +841,8 @@ fn build_sui_natives(
 
                 // Also try the local ObjectRuntime's ObjectStore
                 let runtime = shared.local_mut();
-                if let Ok(recv_bytes) = runtime.object_store_mut().receive_object(parent, object_id) {
+                if let Ok(recv_bytes) = runtime.object_store_mut().receive_object(parent, object_id)
+                {
                     match Value::simple_deserialize(&recv_bytes, &type_layout) {
                         Some(value) => {
                             return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
@@ -850,16 +857,14 @@ fn build_sui_natives(
             // Fallback to regular ObjectRuntime
             if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
                 match runtime.object_store_mut().receive_object(parent, object_id) {
-                    Ok(recv_bytes) => {
-                        match Value::simple_deserialize(&recv_bytes, &type_layout) {
-                            Some(value) => {
-                                return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
-                            }
-                            None => {
-                                return Ok(NativeResult::err(InternalGas::new(0), 3));
-                            }
+                    Ok(recv_bytes) => match Value::simple_deserialize(&recv_bytes, &type_layout) {
+                        Some(value) => {
+                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
                         }
-                    }
+                        None => {
+                            return Ok(NativeResult::err(InternalGas::new(0), 3));
+                        }
+                    },
                     Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
                 }
             }
@@ -895,7 +900,12 @@ fn build_sui_natives(
 
                     // Serialize the event value to BCS
                     // Note: We use typed_serialize which may fail for some complex types
-                    let event_bytes = match event_value.typed_serialize(&ctx.type_to_type_layout(event_ty).ok().flatten().unwrap_or(MoveTypeLayout::Bool)) {
+                    let event_bytes = match event_value.typed_serialize(
+                        &ctx.type_to_type_layout(event_ty)
+                            .ok()
+                            .flatten()
+                            .unwrap_or(MoveTypeLayout::Bool),
+                    ) {
                         Some(bytes) => bytes,
                         None => vec![], // Empty if serialization fails
                     };
@@ -920,7 +930,12 @@ fn build_sui_natives(
                         Ok(tag) => format!("{}", tag),
                         Err(_) => "unknown".to_string(),
                     };
-                    let event_bytes = match event_value.typed_serialize(&ctx.type_to_type_layout(event_ty).ok().flatten().unwrap_or(MoveTypeLayout::Bool)) {
+                    let event_bytes = match event_value.typed_serialize(
+                        &ctx.type_to_type_layout(event_ty)
+                            .ok()
+                            .flatten()
+                            .unwrap_or(MoveTypeLayout::Bool),
+                    ) {
                         Some(bytes) => bytes,
                         None => vec![],
                     };
@@ -1197,9 +1212,8 @@ fn add_test_utility_natives(
             let value = pop_arg!(args, u64);
             // Balance<T> = struct { value: u64 }
             // We construct it as a struct with one field
-            let balance = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(
-                value,
-            )]));
+            let balance =
+                Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(value)]));
             Ok(NativeResult::ok(InternalGas::new(0), smallvec![balance]))
         }),
     ));
@@ -1237,13 +1251,11 @@ fn add_test_utility_natives(
             )]));
 
             // Construct UID { id: ID }
-            let uid =
-                Value::struct_(move_vm_types::values::Struct::pack(vec![id]));
+            let uid = Value::struct_(move_vm_types::values::Struct::pack(vec![id]));
 
             // Construct Balance<T> { value: u64 }
-            let balance = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(
-                value,
-            )]));
+            let balance =
+                Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(value)]));
 
             // Construct Coin<T> { id: UID, balance: Balance<T> }
             let coin = Value::struct_(move_vm_types::values::Struct::pack(vec![uid, balance]));
@@ -1281,9 +1293,7 @@ fn add_test_utility_natives(
     natives.push((
         "balance",
         "destroy_supply_for_testing",
-        make_native(|_ctx, _ty_args, _args| {
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
-        }),
+        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
     ));
 }
 
@@ -1300,7 +1310,10 @@ fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Optio
 /// Tries SharedObjectRuntime first (for PTB sessions), falls back to ObjectRuntime.
 fn get_object_runtime_ref<'a>(
     ctx: &'a NativeContext,
-) -> Result<&'a crate::benchmark::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+) -> Result<
+    &'a crate::benchmark::object_runtime::ObjectRuntime,
+    move_binary_format::errors::PartialVMError,
+> {
     use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first (used in PTB sessions for persistent state)
@@ -1316,7 +1329,10 @@ fn get_object_runtime_ref<'a>(
 /// Helper to get mutable ObjectRuntime from extensions.
 fn get_object_runtime_mut<'a>(
     ctx: &'a mut NativeContext,
-) -> Result<&'a mut crate::benchmark::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+) -> Result<
+    &'a mut crate::benchmark::object_runtime::ObjectRuntime,
+    move_binary_format::errors::PartialVMError,
+> {
     use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first
@@ -1378,10 +1394,7 @@ fn check_shared_state_for_child(
 }
 
 /// Count children for a parent in shared state (if using SharedObjectRuntime).
-fn count_shared_state_children(
-    ctx: &NativeContext,
-    parent: AccountAddress,
-) -> u64 {
+fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u64 {
     use crate::benchmark::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {

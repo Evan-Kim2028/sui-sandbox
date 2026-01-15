@@ -123,8 +123,8 @@ mod pipeline_tests {
         ];
 
         for config in configs {
-            let mut harness = VMHarness::with_config(&resolver, true, config)
-                .expect("harness should create");
+            let mut harness =
+                VMHarness::with_config(&resolver, true, config).expect("harness should create");
 
             let result = harness.execute_function(
                 &module.self_id(),
@@ -170,7 +170,10 @@ mod module_loading_tests {
             AccountAddress::from_hex_literal("0xdeadbeef").unwrap(),
             Identifier::new("fake").unwrap(),
         );
-        assert!(!resolver.has_module(&fake_id), "should not have fake module");
+        assert!(
+            !resolver.has_module(&fake_id),
+            "should not have fake module"
+        );
     }
 
     #[test]
@@ -184,9 +187,13 @@ mod module_loading_tests {
 
         // Use a full 32-byte address that's very unlikely to match
         let fake_addr = AccountAddress::from_hex_literal(
-            "0xfeedfacedeadbeefcafebabe1234567890abcdef1234567890abcdef12345678"
-        ).unwrap();
-        assert!(!resolver.has_package(&fake_addr), "should not have fake package");
+            "0xfeedfacedeadbeefcafebabe1234567890abcdef1234567890abcdef12345678",
+        )
+        .unwrap();
+        assert!(
+            !resolver.has_package(&fake_addr),
+            "should not have fake package"
+        );
     }
 
     #[test]
@@ -394,11 +401,7 @@ mod error_propagation_tests {
         let resolver = LocalModuleResolver::new(); // Empty resolver
         let validator = Validator::new(&resolver);
 
-        let result = validator.validate_target(
-            AccountAddress::ZERO,
-            "any_module",
-            "any_func",
-        );
+        let result = validator.validate_target(AccountAddress::ZERO, "any_module", "any_func");
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -532,7 +535,10 @@ mod execution_state_tests {
 
         // Trace should show module was accessed
         let trace = harness.get_trace();
-        assert!(trace.accessed_package(&package_addr), "should track module access");
+        assert!(
+            trace.accessed_package(&package_addr),
+            "should track module access"
+        );
     }
 
     #[test]

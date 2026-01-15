@@ -88,8 +88,10 @@ impl FrameworkCache {
         let status = Command::new("git")
             .args([
                 "clone",
-                "--depth", "1",
-                "--branch", FRAMEWORK_VERSION,
+                "--depth",
+                "1",
+                "--branch",
+                FRAMEWORK_VERSION,
                 "--filter=blob:none",
                 "--sparse",
                 git_url,
@@ -254,7 +256,10 @@ impl PackageBuilder {
 
     /// Check if framework is cached (returns false if caching not enabled)
     pub fn is_framework_cached(&self) -> bool {
-        self.framework_cache.as_ref().map(|c| c.is_cached()).unwrap_or(false)
+        self.framework_cache
+            .as_ref()
+            .map(|c| c.is_cached())
+            .unwrap_or(false)
     }
 
     /// Ensure framework is downloaded (no-op if caching not enabled)
@@ -336,7 +341,12 @@ impl PackageBuilder {
     }
 
     /// Write a Move source file to a package
-    pub fn write_source(&self, package_dir: &Path, module_name: &str, source: &str) -> Result<PathBuf> {
+    pub fn write_source(
+        &self,
+        package_dir: &Path,
+        module_name: &str,
+        source: &str,
+    ) -> Result<PathBuf> {
         let sources_dir = package_dir.join("sources");
         fs::create_dir_all(&sources_dir)?;
 
@@ -368,7 +378,9 @@ impl PackageBuilder {
                         let name = unit.unit.name().to_string();
                         let mut bytes = Vec::new();
                         let module = &unit.unit.module;
-                        module.serialize_with_version(module.version, &mut bytes).unwrap();
+                        module
+                            .serialize_with_version(module.version, &mut bytes)
+                            .unwrap();
                         (name, bytes)
                     })
                     .collect();
@@ -459,9 +471,7 @@ pub fn generate_struct_module(
     source.push_str("    }\n\n");
 
     // Add a constructor
-    source.push_str(&format!(
-        r#"    public fun new("#
-    ));
+    source.push_str(&format!(r#"    public fun new("#));
 
     let params: Vec<String> = fields
         .iter()
@@ -576,7 +586,10 @@ mod tests {
 
         // If framework is cached, should use local path
         if builder.is_framework_cached() {
-            assert!(toml.contains("local = "), "Should use local path when cached");
+            assert!(
+                toml.contains("local = "),
+                "Should use local path when cached"
+            );
         } else {
             assert!(toml.contains("git = "), "Should use git when not cached");
         }

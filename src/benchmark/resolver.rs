@@ -37,7 +37,11 @@ pub trait ModuleProvider {
     /// Load a package at a specific address.
     ///
     /// This is useful for loading packages with a known address (e.g., from mainnet).
-    fn load_package_at(&mut self, modules: Vec<(String, Vec<u8>)>, address: AccountAddress) -> Result<AccountAddress>;
+    fn load_package_at(
+        &mut self,
+        modules: Vec<(String, Vec<u8>)>,
+        address: AccountAddress,
+    ) -> Result<AccountAddress>;
 
     /// Check if a module exists in this provider.
     fn has_module(&self, module_id: &ModuleId) -> bool;
@@ -201,7 +205,10 @@ impl LocalModuleResolver {
     /// Returns the number of modules successfully loaded.
     /// Add package modules and return (module_count, package_address).
     /// The package_address is extracted from the first module's bytecode.
-    pub fn add_package_modules(&mut self, modules: Vec<(String, Vec<u8>)>) -> Result<(usize, Option<AccountAddress>)> {
+    pub fn add_package_modules(
+        &mut self,
+        modules: Vec<(String, Vec<u8>)>,
+    ) -> Result<(usize, Option<AccountAddress>)> {
         self.add_package_modules_at(modules, None)
     }
 
@@ -241,7 +248,11 @@ impl LocalModuleResolver {
         // Set up address alias if target differs from source
         if let (Some(target), Some(source)) = (target_addr, source_addr) {
             if target != source {
-                eprintln!("  Address alias: {} -> {}", target.to_hex_literal(), source.to_hex_literal());
+                eprintln!(
+                    "  Address alias: {} -> {}",
+                    target.to_hex_literal(),
+                    source.to_hex_literal()
+                );
                 self.address_aliases.insert(target, source);
             }
         }
@@ -262,9 +273,7 @@ impl LocalModuleResolver {
     /// List all unique package addresses that have been loaded.
     pub fn list_packages(&self) -> Vec<AccountAddress> {
         use std::collections::BTreeSet;
-        let addrs: BTreeSet<AccountAddress> = self.modules.keys()
-            .map(|id| *id.address())
-            .collect();
+        let addrs: BTreeSet<AccountAddress> = self.modules.keys().map(|id| *id.address()).collect();
         addrs.into_iter().collect()
     }
 
@@ -326,10 +335,7 @@ impl LocalModuleResolver {
 
     /// Get all loaded package addresses (unique addresses of loaded modules).
     pub fn loaded_packages(&self) -> std::collections::BTreeSet<AccountAddress> {
-        self.modules
-            .keys()
-            .map(|id| *id.address())
-            .collect()
+        self.modules.keys().map(|id| *id.address()).collect()
     }
 
     /// Get the source address for an aliased address, if any.
@@ -356,7 +362,9 @@ impl LocalModuleResolver {
         let id = ModuleId::new(addr, Identifier::new(name).ok()?);
         let module = self.modules.get(&id)?;
 
-        let functions: Vec<String> = module.function_defs.iter()
+        let functions: Vec<String> = module
+            .function_defs
+            .iter()
             .map(|def| {
                 let handle = &module.function_handles[def.function.0 as usize];
                 module.identifier_at(handle.name).to_string()
@@ -371,7 +379,9 @@ impl LocalModuleResolver {
         let id = ModuleId::new(addr, Identifier::new(name).ok()?);
         let module = self.modules.get(&id)?;
 
-        let structs: Vec<String> = module.struct_defs.iter()
+        let structs: Vec<String> = module
+            .struct_defs
+            .iter()
             .map(|def| {
                 let handle = &module.datatype_handles[def.struct_handle.0 as usize];
                 module.identifier_at(handle.name).to_string()
@@ -381,7 +391,11 @@ impl LocalModuleResolver {
     }
 
     /// Get detailed function information.
-    pub fn get_function_info(&self, module_path: &str, function_name: &str) -> Option<serde_json::Value> {
+    pub fn get_function_info(
+        &self,
+        module_path: &str,
+        function_name: &str,
+    ) -> Option<serde_json::Value> {
         let (addr, mod_name) = Self::parse_module_path(module_path)?;
         let id = ModuleId::new(addr, Identifier::new(mod_name).ok()?);
         let module = self.modules.get(&id)?;
@@ -402,18 +416,24 @@ impl LocalModuleResolver {
 
                 // Get parameters
                 let params_sig = &module.signatures[handle.parameters.0 as usize];
-                let params: Vec<String> = params_sig.0.iter()
+                let params: Vec<String> = params_sig
+                    .0
+                    .iter()
                     .map(|t| format_signature_token(module, t))
                     .collect();
 
                 // Get return types
                 let return_sig = &module.signatures[handle.return_.0 as usize];
-                let returns: Vec<String> = return_sig.0.iter()
+                let returns: Vec<String> = return_sig
+                    .0
+                    .iter()
                     .map(|t| format_signature_token(module, t))
                     .collect();
 
                 // Get type parameters
-                let type_params: Vec<serde_json::Value> = handle.type_parameters.iter()
+                let type_params: Vec<serde_json::Value> = handle
+                    .type_parameters
+                    .iter()
                     .enumerate()
                     .map(|(i, param)| {
                         serde_json::json!({
@@ -469,7 +489,9 @@ impl LocalModuleResolver {
 
                         // Get parameters
                         let params_sig = &module.signatures[handle.parameters.0 as usize];
-                        let params: Vec<String> = params_sig.0.iter()
+                        let params: Vec<String> = params_sig
+                            .0
+                            .iter()
                             .map(|t| format_signature_token(module, t))
                             .collect();
 
@@ -489,7 +511,11 @@ impl LocalModuleResolver {
     }
 
     /// Search for types matching a pattern.
-    pub fn search_types(&self, pattern: &str, ability_filter: Option<&str>) -> Vec<serde_json::Value> {
+    pub fn search_types(
+        &self,
+        pattern: &str,
+        ability_filter: Option<&str>,
+    ) -> Vec<serde_json::Value> {
         let mut results = Vec::new();
         let pattern_lower = pattern.to_lowercase();
 
@@ -508,7 +534,9 @@ impl LocalModuleResolver {
                     let mut pos = 0;
                     let mut matched = true;
                     for part in parts {
-                        if part.is_empty() { continue; }
+                        if part.is_empty() {
+                            continue;
+                        }
                         if let Some(found) = full_lower[pos..].find(part) {
                             pos += found + part.len();
                         } else {
@@ -526,14 +554,19 @@ impl LocalModuleResolver {
 
                     // Check ability filter
                     if let Some(filter) = ability_filter {
-                        if !abilities.iter().any(|a| a.to_lowercase() == filter.to_lowercase()) {
+                        if !abilities
+                            .iter()
+                            .any(|a| a.to_lowercase() == filter.to_lowercase())
+                        {
                             continue;
                         }
                     }
 
                     // Get field count
                     let field_count = match &def.field_information {
-                        move_binary_format::file_format::StructFieldInformation::Declared(fields) => fields.len(),
+                        move_binary_format::file_format::StructFieldInformation::Declared(
+                            fields,
+                        ) => fields.len(),
                         _ => 0,
                     };
 
@@ -569,7 +602,9 @@ impl LocalModuleResolver {
                     let mut pos = 0;
                     let mut matched = true;
                     for part in parts {
-                        if part.is_empty() { continue; }
+                        if part.is_empty() {
+                            continue;
+                        }
                         if let Some(found) = full_lower[pos..].find(part) {
                             pos += found + part.len();
                         } else {
@@ -595,12 +630,16 @@ impl LocalModuleResolver {
                     };
 
                     let params_sig = &module.signatures[handle.parameters.0 as usize];
-                    let params: Vec<String> = params_sig.0.iter()
+                    let params: Vec<String> = params_sig
+                        .0
+                        .iter()
                         .map(|t| format_signature_token(module, t))
                         .collect();
 
                     let return_sig = &module.signatures[handle.return_.0 as usize];
-                    let returns: Vec<String> = return_sig.0.iter()
+                    let returns: Vec<String> = return_sig
+                        .0
+                        .iter()
                         .map(|t| format_signature_token(module, t))
                         .collect();
 
@@ -635,12 +674,16 @@ impl LocalModuleResolver {
                 };
 
                 let params_sig = &module.signatures[handle.parameters.0 as usize];
-                let params: Vec<String> = params_sig.0.iter()
+                let params: Vec<String> = params_sig
+                    .0
+                    .iter()
                     .map(|t| format_signature_token(module, t))
                     .collect();
 
                 let return_sig = &module.signatures[handle.return_.0 as usize];
-                let returns: Vec<String> = return_sig.0.iter()
+                let returns: Vec<String> = return_sig
+                    .0
+                    .iter()
                     .map(|t| format_signature_token(module, t))
                     .collect();
 
@@ -694,7 +737,8 @@ impl LocalModuleResolver {
             let abilities = get_abilities_list(datatype_handle.abilities);
 
             // Get type parameters
-            let type_params: Vec<TypeParamInfo> = datatype_handle.type_parameters
+            let type_params: Vec<TypeParamInfo> = datatype_handle
+                .type_parameters
                 .iter()
                 .enumerate()
                 .map(|(i, param)| TypeParamInfo {
@@ -706,23 +750,29 @@ impl LocalModuleResolver {
             // Get fields
             let fields = match &struct_def.field_information {
                 move_binary_format::file_format::StructFieldInformation::Declared(field_defs) => {
-                    field_defs.iter().map(|field| {
-                        let field_name = module.identifier_at(field.name).to_string();
-                        let field_type = format_signature_token(module, &field.signature.0);
-                        FieldInfo {
-                            name: field_name,
-                            field_type,
-                        }
-                    }).collect()
+                    field_defs
+                        .iter()
+                        .map(|field| {
+                            let field_name = module.identifier_at(field.name).to_string();
+                            let field_type = format_signature_token(module, &field.signature.0);
+                            FieldInfo {
+                                name: field_name,
+                                field_type,
+                            }
+                        })
+                        .collect()
                 }
                 move_binary_format::file_format::StructFieldInformation::Native => Vec::new(),
             };
 
-            structs.push((struct_name, StructInfo {
-                abilities,
-                type_params,
-                fields,
-            }));
+            structs.push((
+                struct_name,
+                StructInfo {
+                    abilities,
+                    type_params,
+                    fields,
+                },
+            ));
         }
 
         Some(structs)
@@ -751,7 +801,8 @@ impl LocalModuleResolver {
                 if name == type_name {
                     let abilities = get_abilities_list(datatype_handle.abilities);
 
-                    let type_params: Vec<serde_json::Value> = datatype_handle.type_parameters
+                    let type_params: Vec<serde_json::Value> = datatype_handle
+                        .type_parameters
                         .iter()
                         .enumerate()
                         .map(|(i, param)| {
@@ -764,17 +815,22 @@ impl LocalModuleResolver {
                         .collect();
 
                     let fields: Vec<serde_json::Value> = match &struct_def.field_information {
-                        move_binary_format::file_format::StructFieldInformation::Declared(field_defs) => {
-                            field_defs.iter().map(|field| {
+                        move_binary_format::file_format::StructFieldInformation::Declared(
+                            field_defs,
+                        ) => field_defs
+                            .iter()
+                            .map(|field| {
                                 let field_name = module.identifier_at(field.name).to_string();
                                 let field_type = format_signature_token(module, &field.signature.0);
                                 serde_json::json!({
                                     "name": field_name,
                                     "type": field_type,
                                 })
-                            }).collect()
+                            })
+                            .collect(),
+                        move_binary_format::file_format::StructFieldInformation::Native => {
+                            Vec::new()
                         }
-                        move_binary_format::file_format::StructFieldInformation::Native => Vec::new(),
                     };
 
                     return Some(serde_json::json!({
@@ -790,13 +846,15 @@ impl LocalModuleResolver {
             // Just a type name, search all modules
             for (id, module) in &self.modules {
                 for struct_def in &module.struct_defs {
-                    let datatype_handle = &module.datatype_handles[struct_def.struct_handle.0 as usize];
+                    let datatype_handle =
+                        &module.datatype_handles[struct_def.struct_handle.0 as usize];
                     let name = module.identifier_at(datatype_handle.name).to_string();
 
                     if name == type_path {
                         let abilities = get_abilities_list(datatype_handle.abilities);
 
-                        let type_params: Vec<serde_json::Value> = datatype_handle.type_parameters
+                        let type_params: Vec<serde_json::Value> = datatype_handle
+                            .type_parameters
                             .iter()
                             .enumerate()
                             .map(|(i, param)| {
@@ -809,17 +867,23 @@ impl LocalModuleResolver {
                             .collect();
 
                         let fields: Vec<serde_json::Value> = match &struct_def.field_information {
-                            move_binary_format::file_format::StructFieldInformation::Declared(field_defs) => {
-                                field_defs.iter().map(|field| {
+                            move_binary_format::file_format::StructFieldInformation::Declared(
+                                field_defs,
+                            ) => field_defs
+                                .iter()
+                                .map(|field| {
                                     let field_name = module.identifier_at(field.name).to_string();
-                                    let field_type = format_signature_token(module, &field.signature.0);
+                                    let field_type =
+                                        format_signature_token(module, &field.signature.0);
                                     serde_json::json!({
                                         "name": field_name,
                                         "type": field_type,
                                     })
-                                }).collect()
+                                })
+                                .collect(),
+                            move_binary_format::file_format::StructFieldInformation::Native => {
+                                Vec::new()
                             }
-                            move_binary_format::file_format::StructFieldInformation::Native => Vec::new(),
                         };
 
                         return Some(serde_json::json!({
@@ -911,10 +975,17 @@ fn format_signature_token(
             let addr = module.address_identifier_at(module_handle.address);
             let mod_name = module.identifier_at(module_handle.name);
             let type_name = module.identifier_at(datatype_handle.name);
-            let args: Vec<String> = type_args.iter()
+            let args: Vec<String> = type_args
+                .iter()
                 .map(|t| format_signature_token(module, t))
                 .collect();
-            format!("{}::{}::{}<{}>", addr.to_hex_literal(), mod_name, type_name, args.join(", "))
+            format!(
+                "{}::{}::{}<{}>",
+                addr.to_hex_literal(),
+                mod_name,
+                type_name,
+                args.join(", ")
+            )
         }
         SignatureToken::Reference(inner) => {
             format!("&{}", format_signature_token(module, inner))
@@ -938,7 +1009,11 @@ impl ModuleProvider for LocalModuleResolver {
         addr.ok_or_else(|| anyhow!("No modules were loaded"))
     }
 
-    fn load_package_at(&mut self, modules: Vec<(String, Vec<u8>)>, address: AccountAddress) -> Result<AccountAddress> {
+    fn load_package_at(
+        &mut self,
+        modules: Vec<(String, Vec<u8>)>,
+        address: AccountAddress,
+    ) -> Result<AccountAddress> {
         let (_, addr) = self.add_package_modules_at(modules, Some(address))?;
         addr.ok_or_else(|| anyhow!("No modules were loaded"))
     }

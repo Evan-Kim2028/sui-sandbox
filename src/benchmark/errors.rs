@@ -298,7 +298,6 @@ impl ErrorCode {
             format!("E{}", code) // E101, E201, etc.
         }
     }
-
 }
 
 impl fmt::Display for ErrorCode {
@@ -306,8 +305,6 @@ impl fmt::Display for ErrorCode {
         write!(f, "{}: {}", self.code_string(), self.description())
     }
 }
-
-
 
 /// Complete failure information for the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,7 +544,12 @@ impl Failure {
 
     /// Format a detailed error message including context stack
     pub fn detailed_message(&self) -> String {
-        let mut msg = format!("[{}] {}: {}", self.phase, self.code.code_string(), self.message);
+        let mut msg = format!(
+            "[{}] {}: {}",
+            self.phase,
+            self.code.code_string(),
+            self.message
+        );
 
         if !self.context_stack.is_empty() {
             msg.push_str("\n\nContext trace:\n");
@@ -2007,9 +2009,8 @@ mod tests {
             type_name: None,
             param_index: Some(1),
         };
-        let failure =
-            Failure::with_context(ErrorCode::TypeMismatch, "expected u64, got bool", ctx)
-                .push_frame(ContextFrame::type_check("validating argument types"));
+        let failure = Failure::with_context(ErrorCode::TypeMismatch, "expected u64, got bool", ctx)
+            .push_frame(ContextFrame::type_check("validating argument types"));
 
         let detailed = failure.detailed_message();
         assert!(detailed.contains("module: 0x2::coin"));

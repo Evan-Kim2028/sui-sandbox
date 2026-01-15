@@ -82,7 +82,12 @@ impl SynthesisResult {
     }
 
     /// Create a new SynthesisResult with type arguments.
-    pub fn with_type_args(bytes: Vec<u8>, is_stub: bool, description: impl Into<String>, type_args: Vec<String>) -> Self {
+    pub fn with_type_args(
+        bytes: Vec<u8>,
+        is_stub: bool,
+        description: impl Into<String>,
+        type_args: Vec<String>,
+    ) -> Self {
         Self {
             bytes,
             is_stub,
@@ -103,7 +108,9 @@ pub struct TypeContext {
 impl TypeContext {
     /// Create a new empty type context.
     pub fn new() -> Self {
-        Self { type_args: Vec::new() }
+        Self {
+            type_args: Vec::new(),
+        }
     }
 
     /// Create a type context with the given type arguments.
@@ -182,7 +189,13 @@ impl<'a> TypeSynthesizer<'a> {
         type_args: &[String],
     ) -> Result<SynthesisResult> {
         let context = TypeContext::with_args(type_args.to_vec());
-        self.synthesize_struct_with_depth_and_context(module_addr, module_name, struct_name, 0, &context)
+        self.synthesize_struct_with_depth_and_context(
+            module_addr,
+            module_name,
+            struct_name,
+            0,
+            &context,
+        )
     }
 
     /// Synthesize BCS bytes for a struct type with TypeTag-based type arguments.
@@ -197,7 +210,13 @@ impl<'a> TypeSynthesizer<'a> {
         type_tags: &[TypeTag],
     ) -> Result<SynthesisResult> {
         let context = TypeContext::from_type_tags(type_tags);
-        self.synthesize_struct_with_depth_and_context(module_addr, module_name, struct_name, 0, &context)
+        self.synthesize_struct_with_depth_and_context(
+            module_addr,
+            module_name,
+            struct_name,
+            0,
+            &context,
+        )
     }
 
     fn synthesize_struct_with_depth(
@@ -262,7 +281,11 @@ impl<'a> TypeSynthesizer<'a> {
         // Remove from in-progress
         self.in_progress.remove(&type_key);
 
-        Ok(SynthesisResult::new(bytes, is_stub, format!("synthesized {}::{}", module_name, struct_name)))
+        Ok(SynthesisResult::new(
+            bytes,
+            is_stub,
+            format!("synthesized {}::{}", module_name, struct_name),
+        ))
     }
 
     /// Synthesize a value for a type string (from MM2's formatted type output).
@@ -286,19 +309,53 @@ impl<'a> TypeSynthesizer<'a> {
         match type_str {
             "bool" => return Ok(SynthesisResult::new(vec![0], false, "bool(false)")),
             "u8" => return Ok(SynthesisResult::new(vec![0], false, "u8(0)")),
-            "u16" => return Ok(SynthesisResult::new(0u16.to_le_bytes().to_vec(), false, "u16(0)")),
-            "u32" => return Ok(SynthesisResult::new(0u32.to_le_bytes().to_vec(), false, "u32(0)")),
-            "u64" => return Ok(SynthesisResult::new(0u64.to_le_bytes().to_vec(), false, "u64(0)")),
-            "u128" => return Ok(SynthesisResult::new(0u128.to_le_bytes().to_vec(), false, "u128(0)")),
+            "u16" => {
+                return Ok(SynthesisResult::new(
+                    0u16.to_le_bytes().to_vec(),
+                    false,
+                    "u16(0)",
+                ))
+            }
+            "u32" => {
+                return Ok(SynthesisResult::new(
+                    0u32.to_le_bytes().to_vec(),
+                    false,
+                    "u32(0)",
+                ))
+            }
+            "u64" => {
+                return Ok(SynthesisResult::new(
+                    0u64.to_le_bytes().to_vec(),
+                    false,
+                    "u64(0)",
+                ))
+            }
+            "u128" => {
+                return Ok(SynthesisResult::new(
+                    0u128.to_le_bytes().to_vec(),
+                    false,
+                    "u128(0)",
+                ))
+            }
             "u256" => return Ok(SynthesisResult::new([0u8; 32].to_vec(), false, "u256(0)")),
-            "address" => return Ok(SynthesisResult::new([0u8; 32].to_vec(), false, "address(0x0)")),
+            "address" => {
+                return Ok(SynthesisResult::new(
+                    [0u8; 32].to_vec(),
+                    false,
+                    "address(0x0)",
+                ))
+            }
             _ => {}
         }
 
         // Handle vectors
         if type_str.starts_with("vector<") {
             // Empty vector - BCS encodes as length prefix 0
-            return Ok(SynthesisResult::new(vec![0], false, format!("empty {}", type_str)));
+            return Ok(SynthesisResult::new(
+                vec![0],
+                false,
+                format!("empty {}", type_str),
+            ));
         }
 
         // Handle Option<T> - synthesize as None
@@ -318,7 +375,11 @@ impl<'a> TypeSynthesizer<'a> {
                 // Check if we have a concrete type in the context
                 if let Some(concrete_type) = context.resolve(idx) {
                     // Recursively synthesize the concrete type
-                    return self.synthesize_type_str_with_context(concrete_type, depth + 1, context);
+                    return self.synthesize_type_str_with_context(
+                        concrete_type,
+                        depth + 1,
+                        context,
+                    );
                 }
             }
             // Default: synthesize as u64 (common default for numeric generics)
@@ -480,14 +541,22 @@ impl<'a> TypeSynthesizer<'a> {
         let struct_info = self
             .model
             .get_struct(module_addr, module_name, struct_name)
-            .ok_or_else(|| anyhow!("struct not found: {}::{}::{}", module_addr.to_hex_literal(), module_name, struct_name))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "struct not found: {}::{}::{}",
+                    module_addr.to_hex_literal(),
+                    module_name,
+                    struct_name
+                )
+            })?;
 
         // Synthesize each field using the type context
         let mut bytes = Vec::new();
         let mut is_stub = false;
 
         for field in &struct_info.fields {
-            let field_result = self.synthesize_type_str_with_context(&field.type_str, depth + 1, context)?;
+            let field_result =
+                self.synthesize_type_str_with_context(&field.type_str, depth + 1, context)?;
             bytes.extend(field_result.bytes);
             is_stub = is_stub || field_result.is_stub;
         }
@@ -495,7 +564,11 @@ impl<'a> TypeSynthesizer<'a> {
         // Remove from in-progress
         self.in_progress.remove(&type_key);
 
-        Ok(SynthesisResult::new(bytes, is_stub, format!("synthesized {}::{}", module_name, struct_name)))
+        Ok(SynthesisResult::new(
+            bytes,
+            is_stub,
+            format!("synthesized {}::{}", module_name, struct_name),
+        ))
     }
 
     /// Special handling for Sui framework types.
@@ -516,7 +589,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: [0u8; 32].to_vec(), // ID { bytes: address }
                         is_stub: true,
-                        description: "UID(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "UID(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // object::ID - just an address
@@ -524,7 +598,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: [0u8; 32].to_vec(),
                         is_stub: true,
-                        description: "ID(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "ID(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // balance::Balance<T> - just a u64 value
@@ -532,7 +607,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: 0u64.to_le_bytes().to_vec(),
                         is_stub: true,
-                        description: "Balance(0)".to_string(), type_args: Vec::new(),
+                        description: "Balance(0)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // balance::Supply<T> - just a u64 value
@@ -540,7 +616,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: 0u64.to_le_bytes().to_vec(),
                         is_stub: true,
-                        description: "Supply(0)".to_string(), type_args: Vec::new(),
+                        description: "Supply(0)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // bag::Bag - UID + size
@@ -551,7 +628,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Bag(empty)".to_string(), type_args: Vec::new(),
+                        description: "Bag(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // table::Table<K, V> - UID + size
@@ -562,7 +640,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Table(empty)".to_string(), type_args: Vec::new(),
+                        description: "Table(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // vec_map::VecMap<K, V> - just a vector of entries (empty)
@@ -570,7 +649,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty vector
                         is_stub: true,
-                        description: "VecMap(empty)".to_string(), type_args: Vec::new(),
+                        description: "VecMap(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // vec_set::VecSet<T> - just a vector (empty)
@@ -578,7 +658,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty vector
                         is_stub: true,
-                        description: "VecSet(empty)".to_string(), type_args: Vec::new(),
+                        description: "VecSet(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // linked_table::LinkedTable<K, V> - UID + size + head + tail
@@ -591,7 +672,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "LinkedTable(empty)".to_string(), type_args: Vec::new(),
+                        description: "LinkedTable(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // object_table::ObjectTable<K, V> - UID + size
@@ -602,7 +684,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "ObjectTable(empty)".to_string(), type_args: Vec::new(),
+                        description: "ObjectTable(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // object_bag::ObjectBag - UID + size
@@ -613,7 +696,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "ObjectBag(empty)".to_string(), type_args: Vec::new(),
+                        description: "ObjectBag(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // priority_queue::PriorityQueue<T> - UID + entries (empty vector)
@@ -623,20 +707,22 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "PriorityQueue(empty)".to_string(), type_args: Vec::new(),
+                        description: "PriorityQueue(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // dynamic_field - store marker types
                 ("dynamic_field", "Field") => {
                     let mut bytes = Vec::new();
                     bytes.extend_from_slice(&[0u8; 32]); // id: UID
-                    // name + value are generic, synthesize minimally
+                                                         // name + value are generic, synthesize minimally
                     bytes.push(0); // placeholder for name (empty)
                     bytes.push(0); // placeholder for value (empty)
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Field(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "Field(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // kiosk::Kiosk - NFT marketplace object
@@ -650,7 +736,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Kiosk(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "Kiosk(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // kiosk::KioskOwnerCap - capability for kiosk
@@ -661,7 +748,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "KioskOwnerCap(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "KioskOwnerCap(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // transfer_policy::TransferPolicy<T>
@@ -673,7 +761,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TransferPolicy(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "TransferPolicy(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // transfer_policy::TransferPolicyCap<T>
@@ -684,7 +773,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TransferPolicyCap(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "TransferPolicyCap(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // coin::CoinMetadata<T>
@@ -699,7 +789,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "CoinMetadata(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "CoinMetadata(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // coin::DenyCap<T> - deny list capability
@@ -709,7 +800,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "DenyCap(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "DenyCap(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // coin::Coin<T> - id + balance
@@ -722,7 +814,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Coin(1_SUI)".to_string(), type_args: Vec::new(),
+                        description: "Coin(1_SUI)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // coin::TreasuryCap<T> - id + total_supply
@@ -735,7 +828,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TreasuryCap(1000_SUI_supply)".to_string(), type_args: Vec::new(),
+                        description: "TreasuryCap(1000_SUI_supply)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // clock::Clock - id + timestamp_ms
@@ -746,7 +840,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "Clock(0)".to_string(), type_args: Vec::new(),
+                        description: "Clock(0)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // tx_context::TxContext - complex but well-known structure
@@ -761,7 +856,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "TxContext(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "TxContext(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // string::String - just a vector<u8>
@@ -769,7 +865,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty string
                         is_stub: false,
-                        description: "String(empty)".to_string(), type_args: Vec::new(),
+                        description: "String(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // url::Url - wrapper around String
@@ -777,7 +874,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0], // Empty URL (empty string)
                         is_stub: true,
-                        description: "Url(empty)".to_string(), type_args: Vec::new(),
+                        description: "Url(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 _ => {}
@@ -792,7 +890,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0],
                         is_stub: false,
-                        description: "Option::None".to_string(), type_args: Vec::new(),
+                        description: "Option::None".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 // string::String - vector<u8>
@@ -800,7 +899,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes: vec![0],
                         is_stub: false,
-                        description: "String(empty)".to_string(), type_args: Vec::new(),
+                        description: "String(empty)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
                 _ => {}
@@ -849,7 +949,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "StakedSui(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "StakedSui(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
 
@@ -862,7 +963,8 @@ impl<'a> TypeSynthesizer<'a> {
                     return Ok(Some(SynthesisResult {
                         bytes,
                         is_stub: true,
-                        description: "FungibleStakedSui(synthetic)".to_string(), type_args: Vec::new(),
+                        description: "FungibleStakedSui(synthetic)".to_string(),
+                        type_args: Vec::new(),
                     }));
                 }
 
@@ -1092,7 +1194,8 @@ impl<'a> TypeSynthesizer<'a> {
         Ok(SynthesisResult {
             bytes,
             is_stub: true,
-            description: "StakingPool(synthetic)".to_string(), type_args: Vec::new(),
+            description: "StakingPool(synthetic)".to_string(),
+            type_args: Vec::new(),
         })
     }
 
@@ -1258,8 +1361,8 @@ impl<'a> TypeSynthesizer<'a> {
             "u128" => Some(16),
             "u256" | "address" => Some(32),
             _ if type_str.starts_with("vector<") => Some(1), // Minimum (empty vector)
-            _ if type_str.contains("::Option<") => Some(1), // Minimum (None)
-            _ => None, // Complex types need full synthesis
+            _ if type_str.contains("::Option<") => Some(1),  // Minimum (None)
+            _ => None,                                       // Complex types need full synthesis
         }
     }
 }
@@ -1298,8 +1401,11 @@ impl SynthesisDiagnostic {
 
     /// Check if the type should be synthesizable.
     pub fn should_be_synthesizable(&self) -> bool {
-        self.is_primitive || self.is_vector || self.is_option
-            || self.is_framework_type || self.struct_found_in_model
+        self.is_primitive
+            || self.is_vector
+            || self.is_option
+            || self.is_framework_type
+            || self.struct_found_in_model
     }
 
     /// Get a human-readable reason why synthesis might have failed.
@@ -1554,7 +1660,8 @@ mod tests {
         let model = create_test_model();
         let mut synthesizer = TypeSynthesizer::new(&model);
 
-        let result = synthesizer.synthesize_type_str("0x2::linked_table::LinkedTable<address, u64>", 0);
+        let result =
+            synthesizer.synthesize_type_str("0x2::linked_table::LinkedTable<address, u64>", 0);
         assert!(result.is_ok(), "LinkedTable synthesis should succeed");
         let result = result.unwrap();
         // LinkedTable: UID (32) + size (8) + head Option (1) + tail Option (1) = 42 bytes
@@ -1570,7 +1677,10 @@ mod tests {
         let result = synthesizer.synthesize_type_str("0x2::kiosk::Kiosk", 0);
         assert!(result.is_ok(), "Kiosk synthesis should succeed");
         let result = result.unwrap();
-        assert!(result.bytes.len() > 32, "Kiosk should have substantial data");
+        assert!(
+            result.bytes.len() > 32,
+            "Kiosk should have substantial data"
+        );
         assert!(result.is_stub);
     }
 
@@ -1586,7 +1696,8 @@ mod tests {
         assert!(diagnostic.should_be_synthesizable());
 
         // Test framework type
-        let (result, diagnostic) = synthesizer.synthesize_with_diagnostics("0x2::coin::Coin<0x2::sui::SUI>");
+        let (result, diagnostic) =
+            synthesizer.synthesize_with_diagnostics("0x2::coin::Coin<0x2::sui::SUI>");
         assert!(result.is_ok());
         assert!(diagnostic.is_framework_type);
         assert!(diagnostic.should_be_synthesizable());
@@ -1612,8 +1723,14 @@ mod tests {
     fn test_default_primitive() {
         assert_eq!(TypeSynthesizer::default_primitive("bool"), Some(vec![0]));
         assert_eq!(TypeSynthesizer::default_primitive("u8"), Some(vec![0]));
-        assert_eq!(TypeSynthesizer::default_primitive("u64"), Some(0u64.to_le_bytes().to_vec()));
-        assert_eq!(TypeSynthesizer::default_primitive("address"), Some([0u8; 32].to_vec()));
+        assert_eq!(
+            TypeSynthesizer::default_primitive("u64"),
+            Some(0u64.to_le_bytes().to_vec())
+        );
+        assert_eq!(
+            TypeSynthesizer::default_primitive("address"),
+            Some([0u8; 32].to_vec())
+        );
         assert_eq!(TypeSynthesizer::default_primitive("unknown"), None);
     }
 
@@ -1626,8 +1743,14 @@ mod tests {
         assert_eq!(synthesizer.estimate_size("u64"), Some(8));
         assert_eq!(synthesizer.estimate_size("address"), Some(32));
         assert_eq!(synthesizer.estimate_size("vector<u8>"), Some(1)); // Empty vector minimum
-        assert_eq!(synthesizer.estimate_size("0x1::option::Option<u64>"), Some(1)); // None minimum
-        assert_eq!(synthesizer.estimate_size("0x2::coin::Coin<0x2::sui::SUI>"), None); // Complex type
+        assert_eq!(
+            synthesizer.estimate_size("0x1::option::Option<u64>"),
+            Some(1)
+        ); // None minimum
+        assert_eq!(
+            synthesizer.estimate_size("0x2::coin::Coin<0x2::sui::SUI>"),
+            None
+        ); // Complex type
     }
 
     #[test]
@@ -1638,7 +1761,10 @@ mod tests {
         let result = synthesizer.synthesize_type_str("0x2::coin::CoinMetadata<0x2::sui::SUI>", 0);
         assert!(result.is_ok(), "CoinMetadata synthesis should succeed");
         let result = result.unwrap();
-        assert!(result.bytes.len() >= 36, "CoinMetadata should have at least UID + decimals + empty strings");
+        assert!(
+            result.bytes.len() >= 36,
+            "CoinMetadata should have at least UID + decimals + empty strings"
+        );
         assert!(result.is_stub);
     }
 
@@ -1647,10 +1773,14 @@ mod tests {
         let model = create_test_model();
         let mut synthesizer = TypeSynthesizer::new(&model);
 
-        let result = synthesizer.synthesize_type_str("0x2::transfer_policy::TransferPolicy<0xabc::nft::NFT>", 0);
+        let result = synthesizer
+            .synthesize_type_str("0x2::transfer_policy::TransferPolicy<0xabc::nft::NFT>", 0);
         assert!(result.is_ok(), "TransferPolicy synthesis should succeed");
         let result = result.unwrap();
-        assert!(result.bytes.len() >= 41, "TransferPolicy should have UID + balance + rules");
+        assert!(
+            result.bytes.len() >= 41,
+            "TransferPolicy should have UID + balance + rules"
+        );
         assert!(result.is_stub);
     }
 }
