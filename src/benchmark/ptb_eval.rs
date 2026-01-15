@@ -1,8 +1,12 @@
 //! # PTB Evaluation Runner
 //!
 //! This module evaluates PTB construction and execution using the SimulationEnvironment.
-//! It implements a self-healing workflow where errors are diagnosed and corrective
-//! actions are taken automatically.
+//! It implements automatic dependency fetching where missing packages/objects are
+//! fetched from mainnet on demand.
+//!
+//! **Note:** This is for regression testing the sandbox against mainnet transactions,
+//! not for LLM evaluation. In LLM sandbox mode, the LLM must explicitly fetch
+//! dependencies - there is no automatic fetching.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -34,9 +38,9 @@ pub struct PtbEvalReport {
     /// Number of retry attempts made.
     pub retry_count: usize,
 
-    /// Self-healing actions taken.
+    /// Dependency fetching actions taken (packages/objects fetched from mainnet).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub healing_actions: Vec<HealingAction>,
+    pub healing_actions: Vec<HealingAction>,  // Field name kept for backwards compatibility
 
     /// Final error if failed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,14 +62,18 @@ pub enum EvalStatus {
     Skipped,
 }
 
-/// A self-healing action taken during evaluation.
+/// A dependency fetching action taken during evaluation.
+///
+/// Named `HealingAction` for backwards compatibility, but this only fetches
+/// missing packages or objects from mainnet - it does not "heal" or fix
+/// transaction logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealingAction {
-    /// Type of action.
+    /// Type of action: "deploy_package" or "fetch_object".
     pub action_type: String,
-    /// Details about what was done.
+    /// Details about what was fetched.
     pub details: String,
-    /// Whether the action succeeded.
+    /// Whether the fetch succeeded.
     pub success: bool,
 }
 
@@ -157,8 +165,8 @@ impl EvalSummary {
         }
 
         if self.healing_actions_taken > 0 {
-            println!("\n--- Self-Healing ---");
-            println!("Actions taken: {}", self.healing_actions_taken);
+            println!("\n--- Dependency Fetching ---");
+            println!("Fetches attempted: {}", self.healing_actions_taken);
             println!("Successful: {} ({:.1}%)", self.healing_actions_successful,
                 self.healing_actions_successful as f64 / self.healing_actions_taken as f64 * 100.0);
         }
@@ -344,7 +352,11 @@ fn evaluate_transaction(
     }
 }
 
-/// Attempt to heal an error by taking corrective action.
+/// Attempt to fetch missing dependencies from mainnet.
+///
+/// This only handles `MissingPackage` and `MissingObject` errors by fetching
+/// the missing data from mainnet. It does NOT modify transaction logic or
+/// fix any other types of errors.
 fn try_heal(
     env: &mut SimulationEnvironment,
     error: &SimulationError,
@@ -353,14 +365,14 @@ fn try_heal(
     match error {
         SimulationError::MissingPackage { address, module: _, .. } => {
             if show_healing {
-                eprintln!("  Healing: Attempting to deploy missing package {}", address);
+                eprintln!("  Fetching missing package {} from mainnet...", address);
             }
 
             // Try to fetch from mainnet
             match env.deploy_package_from_mainnet(address) {
                 Ok(_) => {
                     if show_healing {
-                        eprintln!("  Healing: Successfully deployed {}", address);
+                        eprintln!("  Successfully fetched package {}", address);
                     }
                     Some(HealingAction {
                         action_type: "deploy_package".to_string(),
@@ -370,7 +382,7 @@ fn try_heal(
                 }
                 Err(e) => {
                     if show_healing {
-                        eprintln!("  Healing: Failed to deploy {}: {}", address, e);
+                        eprintln!("  Failed to fetch package {}: {}", address, e);
                     }
                     Some(HealingAction {
                         action_type: "deploy_package".to_string(),
@@ -382,14 +394,14 @@ fn try_heal(
         }
         SimulationError::MissingObject { id, expected_type: _, .. } => {
             if show_healing {
-                eprintln!("  Healing: Attempting to fetch missing object {}", id);
+                eprintln!("  Fetching missing object {} from mainnet...", id);
             }
 
             // Try to fetch from mainnet
             match env.fetch_object_from_mainnet(id) {
                 Ok(_) => {
                     if show_healing {
-                        eprintln!("  Healing: Successfully fetched object {}", id);
+                        eprintln!("  Successfully fetched object {}", id);
                     }
                     Some(HealingAction {
                         action_type: "fetch_object".to_string(),
@@ -399,7 +411,7 @@ fn try_heal(
                 }
                 Err(e) => {
                     if show_healing {
-                        eprintln!("  Healing: Failed to fetch {}: {}", id, e);
+                        eprintln!("  Failed to fetch object {}: {}", id, e);
                     }
                     Some(HealingAction {
                         action_type: "fetch_object".to_string(),

@@ -1293,16 +1293,10 @@ fn attempt_function(
             }
 
             // Single-step entries (Intermediate, FinalParam, ConstructedRef)
-            _ => {
-                // Extract the constructor info from the entry
-                let ctor = match entry {
-                    ConstructorChainEntry::Intermediate(c) => c,
-                    ConstructorChainEntry::FinalParam { ctor, .. } => ctor,
-                    ConstructorChainEntry::ConstructedRef { ctor, .. } => ctor,
-                    ConstructorChainEntry::MultiHopChain { .. } => unreachable!(),
-                    ConstructorChainEntry::ProducerChain { .. } => unreachable!(),
-                    ConstructorChainEntry::Synthesized { .. } => unreachable!(),
-                };
+            ConstructorChainEntry::Intermediate(ctor)
+            | ConstructorChainEntry::FinalParam { ctor, .. }
+            | ConstructorChainEntry::ConstructedRef { ctor, .. } => {
+                // ctor is already extracted from the pattern match
 
                 // Special case: coin::create_currency needs OTW handling
                 let (ctor_type_args, ctor_args) = if ctor.function_name == "create_currency"
@@ -1414,9 +1408,8 @@ fn attempt_function(
                                 return Ok(report);
                             }
                         }
-                        ConstructorChainEntry::MultiHopChain { .. } => unreachable!(),
-                        ConstructorChainEntry::ProducerChain { .. } => unreachable!(),
-                        ConstructorChainEntry::Synthesized { .. } => unreachable!(),
+                        // Other variants are handled in separate outer match arms
+                        _ => {}
                     }
                 } else {
                     report.failure_stage = Some(FailureStage::B1);

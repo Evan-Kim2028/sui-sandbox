@@ -26,13 +26,12 @@
 //! - **Epoch & Time**: Configurable epoch numbers and timestamps for TxContext
 //! - **Randomness**: Deterministic random number generation with configurable seeds (0x8 Random object)
 //! - **Lamport Clock**: Version tracking for shared object consensus simulation
-//! - **Structured Errors**: Errors designed for LLM consumption with actionable suggestions
+//! - **Structured Errors**: Errors designed for programmatic consumption
 //!
 //! ## Design Philosophy
 //!
-//! The environment is designed for **self-healing simulation**:
-//! - When execution fails, errors include actionable suggestions
-//! - The LLM can take corrective actions (deploy missing packages, create objects)
+//! The environment provides neutral, factual error feedback:
+//! - Errors report what happened without prescribing fixes
 //! - The goal is 1:1 parity with mainnet execution semantics
 //!
 //! ## Full-Node Embedding Considerations
@@ -120,16 +119,13 @@
 //! let result = env.execute_ptb(commands)?;
 //! match result {
 //!     Ok(effects) => println!("Success: {:?}", effects),
-//!     Err(SimulationError::MissingPackage { address, suggestion }) => {
-//!         // LLM can act on suggestion
-//!         env.deploy_package_from_mainnet(&address)?;
-//!         // Retry...
+//!     Err(SimulationError::MissingPackage { address, module }) => {
+//!         // Package not found - address contains the missing package ID
 //!     }
-//!     Err(SimulationError::MissingObject { id, type_hint, suggestion }) => {
-//!         // LLM can create the object
-//!         env.create_object(&type_hint, default_fields)?;
-//!         // Retry...
+//!     Err(SimulationError::MissingObject { id, expected_type }) => {
+//!         // Object not found - id contains the missing object ID
 //!     }
+//!     Err(e) => println!("Error: {}", e),
 //! }
 //! ```
 
@@ -317,9 +313,6 @@ pub struct CompileErrorDetail {
 
     /// Error message from the compiler.
     pub message: String,
-
-    /// Suggestion for fixing the error (if available).
-    pub suggestion: String,
 }
 
 impl CompileErrorDetail {
@@ -332,13 +325,7 @@ impl CompileErrorDetail {
             _ => String::new(),
         };
 
-        let suggestion = if self.suggestion.is_empty() {
-            String::new()
-        } else {
-            format!("\n  Help: {}", self.suggestion)
-        };
-
-        format!("{}{}{}", location, self.message, suggestion)
+        format!("{}{}", location, self.message)
     }
 }
 
@@ -706,6 +693,12 @@ pub struct SimulationEnvironment {
     /// Global sequence counter for consensus ordering.
     /// Incremented for every shared object transaction.
     consensus_sequence: u64,
+
+    /// All events captured during this session, across all PTB executions.
+    all_events: Vec<EmittedEvent>,
+
+    /// Events from the last PTB execution only.
+    last_tx_events: Vec<EmittedEvent>,
 }
 
 impl SimulationEnvironment {
@@ -749,6 +742,8 @@ impl SimulationEnvironment {
             config: crate::benchmark::vm::SimulationConfig::default(),
             consensus_history: Vec::new(),
             consensus_sequence: 0,
+            all_events: Vec::new(),
+            last_tx_events: Vec::new(),
         };
 
         // Initialize the Clock object (0x6)
@@ -843,6 +838,7 @@ impl SimulationEnvironment {
         Ok(crate::benchmark::ptb::ObjectInput::Shared {
             id: random_id,
             bytes: random_obj.bcs_bytes.clone(),
+            type_tag: Some(random_obj.type_tag.clone()),
         })
     }
 
@@ -892,6 +888,7 @@ impl SimulationEnvironment {
         Ok(crate::benchmark::ptb::ObjectInput::Shared {
             id: clock_id,
             bytes: clock_obj.bcs_bytes.clone(),
+            type_tag: Some(clock_obj.type_tag.clone()),
         })
     }
 
@@ -1064,7 +1061,7 @@ impl SimulationEnvironment {
     /// This is a convenience wrapper around inject_object.
     pub fn inject_synthesized(
         &mut self,
-        synthesized: &crate::benchmark::llm_tools::SynthesizedObject,
+        synthesized: &crate::benchmark::sandbox_exec::SynthesizedObject,
     ) -> Result<AccountAddress> {
         self.inject_object(
             &synthesized.type_path,
@@ -1358,36 +1355,9 @@ impl SimulationEnvironment {
     }
 
     /// Format a TypeTag back to a string (for debugging/display).
+    /// Delegates to the canonical implementation in types module.
     pub fn format_type_tag(type_tag: &TypeTag) -> String {
-        match type_tag {
-            TypeTag::Bool => "bool".to_string(),
-            TypeTag::U8 => "u8".to_string(),
-            TypeTag::U16 => "u16".to_string(),
-            TypeTag::U32 => "u32".to_string(),
-            TypeTag::U64 => "u64".to_string(),
-            TypeTag::U128 => "u128".to_string(),
-            TypeTag::U256 => "u256".to_string(),
-            TypeTag::Address => "address".to_string(),
-            TypeTag::Signer => "signer".to_string(),
-            TypeTag::Vector(inner) => format!("vector<{}>", Self::format_type_tag(inner)),
-            TypeTag::Struct(s) => {
-                let base = format!(
-                    "{}::{}::{}",
-                    s.address.to_hex_literal(),
-                    s.module,
-                    s.name
-                );
-                if s.type_params.is_empty() {
-                    base
-                } else {
-                    let params: Vec<String> = s.type_params
-                        .iter()
-                        .map(|p| Self::format_type_tag(p))
-                        .collect();
-                    format!("{}<{}>", base, params.join(", "))
-                }
-            }
-        }
+        crate::benchmark::types::format_type_tag(type_tag)
     }
 
     /// List all available packages.
@@ -1431,7 +1401,8 @@ impl SimulationEnvironment {
             }
         }
 
-        let package_addr = package_addr.unwrap();
+        let package_addr = package_addr
+            .ok_or_else(|| anyhow!("No modules provided - cannot determine package address"))?;
 
         // Add modules to resolver
         let modules_with_names: Vec<(String, Vec<u8>)> = module_names
@@ -1820,6 +1791,10 @@ impl SimulationEnvironment {
                 // Apply object changes to our store
                 self.apply_object_changes(&effects);
 
+                // Capture events from this execution
+                self.last_tx_events = effects.events.clone();
+                self.all_events.extend(effects.events.clone());
+
                 ExecutionResult {
                     success: effects.success,
                     effects: Some(effects.clone()),
@@ -1835,6 +1810,9 @@ impl SimulationEnvironment {
                 }
             }
             Err(e) => {
+                // Clear last tx events on error
+                self.last_tx_events.clear();
+
                 let error = self.parse_error(&e.to_string());
                 ExecutionResult {
                     success: false,
@@ -1969,12 +1947,32 @@ impl SimulationEnvironment {
                         self.objects.insert(*id, obj);
                     }
                 }
+                ObjectChange::Transferred { id, recipient, object_type, object_bytes } => {
+                    // Remove the object from top-level objects (it's now owned by recipient)
+                    self.objects.remove(id);
+
+                    // Add to pending_receives so it can be received in the next PTB
+                    // The recipient address is the "receiving object" (or address)
+                    let type_tag = object_type.clone().unwrap_or(TypeTag::Address);
+                    self.pending_receives.insert(
+                        (*recipient, *id),
+                        (object_bytes.clone(), type_tag),
+                    );
+                }
             }
         }
 
         // Sync dynamic field entries from the PTB execution
         for ((parent_id, child_id), (type_tag, bytes)) in &effects.dynamic_field_entries {
             self.dynamic_fields.insert((*parent_id, *child_id), (type_tag.clone(), bytes.clone()));
+        }
+
+        // Clear received objects from pending_receives
+        // When a Receive command successfully receives an object, it should be
+        // removed from pending_receives so it can't be received again.
+        for received_id in &effects.received {
+            // Find and remove the entry with this sent_id
+            self.pending_receives.retain(|(_, sent_id), _| sent_id != received_id);
         }
     }
 
@@ -2739,7 +2737,6 @@ impl SimulationEnvironment {
                     line: None,
                     column: None,
                     message: "Move.toml not found in project directory".to_string(),
-                    suggestion: "Ensure project_path points to a valid Move project root.".to_string(),
                 }],
                 raw_output: "Move.toml not found".to_string(),
             });
@@ -2760,7 +2757,6 @@ impl SimulationEnvironment {
                         line: None,
                         column: None,
                         message: format!("Failed to run 'sui move build': {}", e),
-                        suggestion: "Ensure the Sui CLI is installed and in PATH. Install with: cargo install --locked --git https://github.com/MystenLabs/sui.git sui".to_string(),
                     }],
                     raw_output: e.to_string(),
                 });
@@ -3001,29 +2997,34 @@ impl SimulationEnvironment {
             .ok_or_else(|| anyhow!("ObjectNotFound: {}", object_id))?;
 
         // Use explicit mode if provided, otherwise infer from object properties
+        let type_tag = Some(obj.type_tag.clone());
         match mode {
             Some("mutable") | Some("mut") => {
                 Ok(ObjectInput::MutRef {
                     id: addr,
                     bytes: obj.bcs_bytes.clone(),
+                    type_tag,
                 })
             }
             Some("immutable") | Some("imm") => {
                 Ok(ObjectInput::ImmRef {
                     id: addr,
                     bytes: obj.bcs_bytes.clone(),
+                    type_tag,
                 })
             }
             Some("owned") | Some("value") => {
                 Ok(ObjectInput::Owned {
                     id: addr,
                     bytes: obj.bcs_bytes.clone(),
+                    type_tag,
                 })
             }
             Some("shared") => {
                 Ok(ObjectInput::Shared {
                     id: addr,
                     bytes: obj.bcs_bytes.clone(),
+                    type_tag,
                 })
             }
             // Default: infer from object properties
@@ -3032,17 +3033,20 @@ impl SimulationEnvironment {
                     Ok(ObjectInput::Shared {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
+                        type_tag,
                     })
                 } else if obj.is_immutable {
                     Ok(ObjectInput::ImmRef {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
+                        type_tag,
                     })
                 } else {
                     // Default to mutable reference for non-shared, non-immutable objects
                     Ok(ObjectInput::MutRef {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
+                        type_tag,
                     })
                 }
             }
@@ -3106,6 +3110,7 @@ impl SimulationEnvironment {
         Ok(ObjectInput::Owned {
             id: coin_id,
             bytes: obj.bcs_bytes.clone(),
+            type_tag: Some(obj.type_tag.clone()),
         })
     }
 
@@ -3278,7 +3283,6 @@ impl SimulationEnvironment {
                     line: None,
                     column: None,
                     message: message.to_string(),
-                    suggestion: String::new(),
                 });
             } else if line.contains("-->") && current_error.is_some() {
                 // Parse location: --> path/to/file.move:line:column
@@ -3295,12 +3299,9 @@ impl SimulationEnvironment {
                         err.column = parts[2].parse().ok();
                     }
                 }
-            } else if line.starts_with("help:") || line.contains("suggestion") {
-                // Capture suggestions
-                if let Some(ref mut err) = current_error {
-                    err.suggestion = line.trim_start_matches("help:").trim().to_string();
-                }
             }
+            // Note: We intentionally do not capture 'help:' or 'suggestion' lines
+            // to keep error output neutral and non-prescriptive
         }
 
         // Don't forget the last error
@@ -3315,7 +3316,6 @@ impl SimulationEnvironment {
                 line: None,
                 column: None,
                 message: stderr.lines().next().unwrap_or("Unknown error").to_string(),
-                suggestion: "Review the full compile output for details.".to_string(),
             });
         }
 
@@ -3664,6 +3664,65 @@ impl SimulationEnvironment {
         }
 
         Ok(summary)
+    }
+
+    // ========================================================================
+    // Event Query APIs
+    // ========================================================================
+
+    /// Get all events emitted during this session.
+    pub fn get_all_events(&self) -> &[EmittedEvent] {
+        &self.all_events
+    }
+
+    /// Get events from the last PTB execution.
+    pub fn get_last_tx_events(&self) -> &[EmittedEvent] {
+        &self.last_tx_events
+    }
+
+    /// Get events filtered by type prefix.
+    /// The prefix is matched against the event type string (e.g., "0x2::display::").
+    pub fn get_events_by_type(&self, type_prefix: &str) -> Vec<&EmittedEvent> {
+        self.all_events
+            .iter()
+            .filter(|e| e.type_tag.to_string().contains(type_prefix))
+            .collect()
+    }
+
+    /// Clear all captured events.
+    /// Useful for isolating tests or starting a fresh event capture.
+    pub fn clear_events(&mut self) {
+        self.all_events.clear();
+        self.last_tx_events.clear();
+    }
+
+    /// Get the total count of events captured during this session.
+    pub fn event_count(&self) -> usize {
+        self.all_events.len()
+    }
+
+    // ========================================================================
+    // Shared Object Lock Query APIs
+    // ========================================================================
+
+    /// Get the lock information for a specific object, if any.
+    pub fn get_lock_for_object(&self, object_id: &AccountAddress) -> Option<SharedObjectLock> {
+        self.shared_locks.get(object_id).cloned()
+    }
+
+    /// List all currently held shared object locks.
+    pub fn list_shared_locks(&self) -> Vec<SharedObjectLock> {
+        self.shared_locks.values().cloned().collect()
+    }
+
+    /// Check if a specific object has a lock held.
+    pub fn is_object_locked(&self, object_id: &AccountAddress) -> bool {
+        self.shared_locks.contains_key(object_id)
+    }
+
+    /// Get the count of currently held locks.
+    pub fn lock_count(&self) -> usize {
+        self.shared_locks.len()
     }
 }
 

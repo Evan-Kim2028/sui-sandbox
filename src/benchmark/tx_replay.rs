@@ -1357,6 +1357,116 @@ pub fn replay_parallel(
     })
 }
 
+/// Download and cache a single transaction by digest.
+///
+/// Returns Ok(true) if the transaction was fetched and cached, Ok(false) if already cached.
+pub fn download_single_transaction(
+    fetcher: &TransactionFetcher,
+    cache: &TransactionCache,
+    digest: &str,
+    fetch_packages: bool,
+    fetch_objects: bool,
+    verbose: bool,
+) -> Result<bool> {
+    use std::io::Write;
+
+    // Skip if already cached
+    if cache.has(digest) {
+        if verbose {
+            eprintln!("Transaction {} already cached", digest);
+        }
+        return Ok(false);
+    }
+
+    if verbose {
+        eprint!("Fetching transaction {}...", digest);
+        std::io::stderr().flush().ok();
+    }
+
+    // Fetch the transaction
+    let tx = fetcher.fetch_transaction_sync(digest)?;
+    let mut cached = CachedTransaction::new(tx);
+
+    // Fetch packages if requested
+    if fetch_packages {
+        if let Ok(packages) = fetcher.fetch_transaction_packages(&cached.transaction) {
+            for (pkg_id, modules) in packages {
+                cached.add_package(pkg_id, modules);
+            }
+        }
+
+        // Fetch transitive dependencies (up to 3 levels deep)
+        for _depth in 0..3 {
+            let missing = find_missing_dependencies(&cached);
+            if missing.is_empty() {
+                break;
+            }
+
+            if verbose {
+                eprint!(" (+{} deps)", missing.len());
+                std::io::stderr().flush().ok();
+            }
+
+            for pkg_addr in missing {
+                let pkg_hex = format!("0x{}", pkg_addr.to_hex());
+                match fetcher.fetch_package_modules(&pkg_hex) {
+                    Ok(modules) => {
+                        cached.add_package(pkg_hex, modules);
+                    }
+                    Err(_e) => {
+                        // Dependency not found - might be a deleted/old package
+                    }
+                }
+            }
+        }
+    }
+
+    // Fetch objects if requested (with type info)
+    if fetch_objects {
+        if let Ok(objects) = fetcher.fetch_transaction_inputs_with_types(&cached.transaction) {
+            for (obj_id, (bytes, type_str)) in objects {
+                cached.add_object_with_type(obj_id, bytes, type_str);
+            }
+        }
+    }
+
+    // Fetch packages referenced in type arguments (coin types, etc.)
+    // This runs after objects are fetched so we can also check object_types
+    if fetch_packages {
+        let type_arg_packages = extract_type_argument_packages(&cached);
+        if !type_arg_packages.is_empty() {
+            if verbose {
+                eprint!(" (+{} type pkgs)", type_arg_packages.len());
+                std::io::stderr().flush().ok();
+            }
+
+            for pkg_addr in type_arg_packages {
+                let pkg_hex = format!("0x{}", pkg_addr.to_hex());
+                match fetcher.fetch_package_modules(&pkg_hex) {
+                    Ok(modules) => {
+                        cached.add_package(pkg_hex, modules);
+                    }
+                    Err(_e) => {
+                        // Type package not found - might be a deleted/old package
+                    }
+                }
+            }
+        }
+    }
+
+    // Save to cache
+    cache.save(&cached)?;
+
+    if verbose {
+        eprintln!(" ok ({} cmds, {} pkgs, {} objs)",
+            cached.transaction.commands.len(),
+            cached.packages.len(),
+            cached.objects.len());
+    }
+
+    Ok(true)
+}
+
 /// Download and cache transactions from mainnet.
 ///
 /// Returns the number of new transactions cached.
@@ -2185,6 +2295,7 @@ impl FetchedTransaction {
             inputs.push(InputValue::Object(ObjectInput::Owned {
                 id: AccountAddress::ZERO, // Placeholder gas coin ID
                 bytes: gas_coin_bytes,
+                type_tag: None, // Gas coin type is known to be Coin<SUI>
             }));
         }
 
@@ -2201,6 +2312,7 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Object(ObjectInput::Owned {
                         id,
                         bytes,
+                        type_tag: None,
                     }));
                 }
                 TransactionInput::SharedObject { object_id, .. } => {
@@ -2210,6 +2322,7 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Object(ObjectInput::Shared {
                         id,
                         bytes,
+                        type_tag: None,
                     }));
                 }
                 TransactionInput::ImmutableObject { object_id, .. } => {
@@ -2220,6 +2333,7 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Object(ObjectInput::ImmRef {
                         id,
                         bytes,
+                        type_tag: None,
                     }));
                 }
                 TransactionInput::Receiving { object_id, .. } => {
@@ -2230,6 +2344,7 @@ impl FetchedTransaction {
                     inputs.push(InputValue::Object(ObjectInput::Owned {
                         id,
                         bytes,
+                        type_tag: None,
                     }));
                 }
             }
@@ -2403,6 +2518,7 @@ impl FetchedTransaction {
             inputs.push(InputValue::Object(ObjectInput::Owned {
                 id: AccountAddress::ZERO,
                 bytes: gas_coin_bytes,
+                type_tag: None,
             }));
         }
 
@@ -2416,25 +2532,25 @@ impl FetchedTransaction {
                     let id = AccountAddress::from_hex_literal(object_id)
                         .unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes }));
+                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
                 }
                 TransactionInput::SharedObject { object_id, .. } => {
                     let id = AccountAddress::from_hex_literal(object_id)
                         .unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Shared { id, bytes }));
+                    inputs.push(InputValue::Object(ObjectInput::Shared { id, bytes, type_tag: None }));
                 }
                 TransactionInput::ImmutableObject { object_id, .. } => {
                     let id = AccountAddress::from_hex_literal(object_id)
                         .unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::ImmRef { id, bytes }));
+                    inputs.push(InputValue::Object(ObjectInput::ImmRef { id, bytes, type_tag: None }));
                 }
                 TransactionInput::Receiving { object_id, .. } => {
                     let id = AccountAddress::from_hex_literal(object_id)
                         .unwrap_or(AccountAddress::ZERO);
                     let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes }));
+                    inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
                 }
             }
         }

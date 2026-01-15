@@ -32,16 +32,6 @@
 //! | [`errors`] | Error taxonomy with E101-E502 codes |
 //! | [`mm2`] | Move Model 2 integration for static validation |
 //!
-//! ## Deprecated Modules
-//!
-//! | Module | Replacement |
-//! |--------|-------------|
-//! | [`llm_tools`] | Use [`sandbox_exec::SandboxRequest`] instead |
-//!
-//! The `llm_tools` module contains legacy `ToolCall`/`LlmToolkit` APIs that are
-//! deprecated but kept for backwards compatibility. New integrations should use
-//! `sandbox_exec` exclusively.
-//!
 //! ## Two-Tier Evaluation
 //!
 //! - **Tier A (Preflight)**: Types resolve, BCS serializes correctly, layouts are valid
@@ -62,12 +52,14 @@ pub mod phases;
 pub mod ptb;
 pub mod ptb_eval;
 pub mod resolver;
+pub mod output;
 pub mod runner;
 pub mod sandbox_exec;
 pub mod simulation;
 pub mod tx_replay;
+pub mod types;
 pub mod validator;
 pub mod vm;
-pub mod llm_tools;
 pub mod package_builder;
+pub mod state_layer;
 pub mod storage_log;

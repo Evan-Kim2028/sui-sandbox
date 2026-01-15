@@ -48,28 +48,322 @@ use std::collections::{HashMap, HashSet};
 use crate::benchmark::natives::EmittedEvent;
 use crate::benchmark::vm::{gas_costs, VMHarness};
 
-/// Format a TypeTag for display in error messages.
-fn format_type_tag(type_tag: &TypeTag) -> String {
-    match type_tag {
-        TypeTag::Bool => "bool".to_string(),
-        TypeTag::U8 => "u8".to_string(),
-        TypeTag::U16 => "u16".to_string(),
-        TypeTag::U32 => "u32".to_string(),
-        TypeTag::U64 => "u64".to_string(),
-        TypeTag::U128 => "u128".to_string(),
-        TypeTag::U256 => "u256".to_string(),
-        TypeTag::Address => "address".to_string(),
-        TypeTag::Signer => "signer".to_string(),
-        TypeTag::Vector(inner) => format!("vector<{}>", format_type_tag(inner)),
-        TypeTag::Struct(s) => {
-            let mut result = format!("{}::{}::{}", s.address.to_hex_literal(), s.module, s.name);
-            if !s.type_params.is_empty() {
-                let params: Vec<String> = s.type_params.iter().map(format_type_tag).collect();
-                result.push_str(&format!("<{}>", params.join(", ")));
-            }
-            result
+// Re-export format_type_tag from types module for backward compatibility
+pub use crate::benchmark::types::format_type_tag;
+
+// =============================================================================
+// PTB Causality Validation
+// =============================================================================
+
+/// Result of PTB validation.
+#[derive(Debug, Clone)]
+pub struct ValidationResult {
+    /// Whether the PTB is valid.
+    pub valid: bool,
+    /// List of validation errors found.
+    pub errors: Vec<ValidationError>,
+    /// List of validation warnings (non-fatal issues).
+    pub warnings: Vec<String>,
+}
+
+impl ValidationResult {
+    /// Create a successful validation result.
+    pub fn ok() -> Self {
+        Self {
+            valid: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
         }
     }
+
+    /// Create a failed validation result with errors.
+    pub fn failed(errors: Vec<ValidationError>) -> Self {
+        Self {
+            valid: false,
+            errors,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Add a warning to the result.
+    pub fn with_warning(mut self, warning: String) -> Self {
+        self.warnings.push(warning);
+        self
+    }
+}
+
+/// A specific validation error in a PTB.
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    /// The command index where the error was found.
+    pub command_index: usize,
+    /// The type of validation error.
+    pub kind: ValidationErrorKind,
+    /// Human-readable description of the error.
+    pub message: String,
+}
+
+/// Types of validation errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationErrorKind {
+    /// Reference to a result that doesn't exist yet (forward reference).
+    ForwardReference,
+    /// Reference to a result index that's out of bounds.
+    ResultOutOfBounds,
+    /// Reference to an input index that's out of bounds.
+    InputOutOfBounds,
+    /// Circular dependency detected in result references.
+    CircularDependency,
+    /// Self-reference (command references its own result).
+    SelfReference,
+    /// Invalid nested result index.
+    InvalidNestedIndex,
+    /// Other validation error.
+    Other,
+}
+
+/// Validate a PTB before execution.
+///
+/// This performs static validation to catch issues like:
+/// - Forward references (referencing results that haven't been produced yet)
+/// - Out of bounds references
+/// - Self-references (command using its own result)
+///
+/// # Arguments
+/// * `commands` - The commands to validate
+/// * `num_inputs` - Number of transaction inputs available
+///
+/// # Returns
+/// A `ValidationResult` indicating whether the PTB is valid.
+pub fn validate_ptb(commands: &[Command], num_inputs: usize) -> ValidationResult {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for (cmd_idx, cmd) in commands.iter().enumerate() {
+        let args = extract_arguments(cmd);
+
+        for arg in args {
+            match arg {
+                Argument::Input(idx) => {
+                    if (idx as usize) >= num_inputs {
+                        errors.push(ValidationError {
+                            command_index: cmd_idx,
+                            kind: ValidationErrorKind::InputOutOfBounds,
+                            message: format!(
+                                "Command {} references Input({}) but only {} inputs available",
+                                cmd_idx, idx, num_inputs
+                            ),
+                        });
+                    }
+                }
+                Argument::Result(result_idx) => {
+                    let result_idx = result_idx as usize;
+                    if result_idx >= cmd_idx {
+                        if result_idx == cmd_idx {
+                            errors.push(ValidationError {
+                                command_index: cmd_idx,
+                                kind: ValidationErrorKind::SelfReference,
+                                message: format!(
+                                    "Command {} references its own result Result({})",
+                                    cmd_idx, result_idx
+                                ),
+                            });
+                        } else {
+                            errors.push(ValidationError {
+                                command_index: cmd_idx,
+                                kind: ValidationErrorKind::ForwardReference,
+                                message: format!(
+                                    "Command {} references Result({}) which hasn't been produced yet",
+                                    cmd_idx, result_idx
+                                ),
+                            });
+                        }
+                    }
+                }
+                Argument::NestedResult(result_idx, _nested_idx) => {
+                    let result_idx = result_idx as usize;
+                    if result_idx >= cmd_idx {
+                        if result_idx == cmd_idx {
+                            errors.push(ValidationError {
+                                command_index: cmd_idx,
+                                kind: ValidationErrorKind::SelfReference,
+                                message: format!(
+                                    "Command {} references its own result NestedResult({}, _)",
+                                    cmd_idx, result_idx
+                                ),
+                            });
+                        } else {
+                            errors.push(ValidationError {
+                                command_index: cmd_idx,
+                                kind: ValidationErrorKind::ForwardReference,
+                                message: format!(
+                                    "Command {} references NestedResult({}, _) which hasn't been produced yet",
+                                    cmd_idx, result_idx
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for unused results (warning only)
+    let mut result_used = vec![false; commands.len()];
+    for cmd in commands.iter() {
+        for arg in extract_arguments(cmd) {
+            match arg {
+                Argument::Result(idx) => {
+                    if (idx as usize) < result_used.len() {
+                        result_used[idx as usize] = true;
+                    }
+                }
+                Argument::NestedResult(idx, _) => {
+                    if (idx as usize) < result_used.len() {
+                        result_used[idx as usize] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Last command result doesn't need to be used (it's the transaction return)
+    if !result_used.is_empty() {
+        let last_idx = result_used.len() - 1;
+        result_used[last_idx] = true;
+    }
+
+    for (idx, used) in result_used.iter().enumerate() {
+        if !*used && idx < commands.len() - 1 {
+            // Skip this warning for commands that don't produce useful results
+            match &commands[idx] {
+                Command::TransferObjects { .. } => {} // Transfer doesn't produce usable results
+                _ => {
+                    warnings.push(format!(
+                        "Command {} result is never used (potential dead code)",
+                        idx
+                    ));
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        let mut result = ValidationResult::ok();
+        for w in warnings {
+            result = result.with_warning(w);
+        }
+        result
+    } else {
+        ValidationResult::failed(errors)
+    }
+}
+
+/// Extract all arguments from a command.
+fn extract_arguments(cmd: &Command) -> Vec<Argument> {
+    match cmd {
+        Command::MoveCall { args, .. } => args.clone(),
+        Command::SplitCoins { coin, amounts } => {
+            let mut args = vec![*coin];
+            args.extend(amounts.iter().copied());
+            args
+        }
+        Command::MergeCoins { destination, sources } => {
+            let mut args = vec![*destination];
+            args.extend(sources.iter().copied());
+            args
+        }
+        Command::TransferObjects { objects, address } => {
+            let mut args = objects.clone();
+            args.push(*address);
+            args
+        }
+        Command::MakeMoveVec { elements, .. } => elements.clone(),
+        Command::Publish { .. } => Vec::new(),
+        Command::Upgrade { ticket, .. } => vec![*ticket],
+        Command::Receive { .. } => Vec::new(),
+    }
+}
+
+/// Compute the dependency graph of commands in a PTB.
+///
+/// Returns a map from command index to the set of command indices it depends on.
+pub fn compute_dependency_graph(commands: &[Command]) -> HashMap<usize, HashSet<usize>> {
+    let mut deps: HashMap<usize, HashSet<usize>> = HashMap::new();
+
+    for (cmd_idx, cmd) in commands.iter().enumerate() {
+        let mut cmd_deps = HashSet::new();
+
+        for arg in extract_arguments(cmd) {
+            match arg {
+                Argument::Result(idx) => {
+                    cmd_deps.insert(idx as usize);
+                }
+                Argument::NestedResult(idx, _) => {
+                    cmd_deps.insert(idx as usize);
+                }
+                Argument::Input(_) => {} // Inputs don't create dependencies
+            }
+        }
+
+        deps.insert(cmd_idx, cmd_deps);
+    }
+
+    deps
+}
+
+/// Perform a topological sort of commands based on their dependencies.
+///
+/// Returns Ok with the sorted indices if no cycles, or Err with the cycle path if a cycle exists.
+pub fn topological_sort(commands: &[Command]) -> Result<Vec<usize>, Vec<usize>> {
+    let deps = compute_dependency_graph(commands);
+    let n = commands.len();
+
+    // States: 0 = unvisited, 1 = visiting, 2 = visited
+    let mut state = vec![0u8; n];
+    let mut result = Vec::with_capacity(n);
+    let mut path = Vec::new();
+
+    fn visit(
+        node: usize,
+        deps: &HashMap<usize, HashSet<usize>>,
+        state: &mut [u8],
+        result: &mut Vec<usize>,
+        path: &mut Vec<usize>,
+    ) -> Result<(), Vec<usize>> {
+        if state[node] == 2 {
+            return Ok(());
+        }
+        if state[node] == 1 {
+            // Found a cycle - return the path
+            path.push(node);
+            return Err(path.clone());
+        }
+
+        state[node] = 1;
+        path.push(node);
+
+        if let Some(node_deps) = deps.get(&node) {
+            for &dep in node_deps {
+                if dep < state.len() {
+                    visit(dep, deps, state, result, path)?;
+                }
+            }
+        }
+
+        state[node] = 2;
+        path.pop();
+        result.push(node);
+        Ok(())
+    }
+
+    for i in 0..n {
+        path.clear();
+        visit(i, &deps, &mut state, &mut result, &mut path)?;
+    }
+
+    Ok(result)
 }
 
 /// Unique identifier for objects in the PTB context.
@@ -153,6 +447,559 @@ pub enum Argument {
     NestedResult(u16, u16),
 }
 
+// =============================================================================
+// Object Lifecycle Tracking
+// =============================================================================
+
+/// Tracks the provenance and lifecycle of an object during PTB execution.
+#[derive(Debug, Clone)]
+pub struct ObjectProvenance {
+    /// The object ID.
+    pub object_id: ObjectID,
+    /// How this object came to exist in the transaction.
+    pub origin: ObjectOrigin,
+    /// Current state of the object.
+    pub state: ObjectState,
+    /// History of operations on this object.
+    pub history: Vec<ObjectOperation>,
+    /// The type of the object, if known.
+    pub type_tag: Option<TypeTag>,
+}
+
+/// How an object originated in the transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectOrigin {
+    /// Object was provided as a transaction input.
+    Input { input_index: u16 },
+    /// Object was created by a command in this transaction.
+    Created { command_index: usize },
+    /// Object was received from a previous transaction.
+    Received,
+    /// Object was split from another coin.
+    Split { source_id: ObjectID, command_index: usize },
+}
+
+/// Current state of an object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectState {
+    /// Object is available for use.
+    Available,
+    /// Object has been consumed (passed by value).
+    Consumed,
+    /// Object has been transferred to another address.
+    Transferred,
+    /// Object has been deleted/destroyed.
+    Deleted,
+    /// Object has been wrapped (stored inside another object).
+    Wrapped,
+    /// Object has been frozen (made immutable).
+    Frozen,
+}
+
+/// A single operation performed on an object.
+#[derive(Debug, Clone)]
+pub struct ObjectOperation {
+    /// The command index that performed this operation.
+    pub command_index: usize,
+    /// The type of operation.
+    pub operation: OperationType,
+}
+
+/// Types of operations that can be performed on objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationType {
+    /// Object was read (immutable borrow).
+    Read,
+    /// Object was mutated (mutable borrow).
+    Mutate,
+    /// Object was consumed (passed by value).
+    Consume,
+    /// Object was transferred to an address.
+    Transfer { to: AccountAddress },
+    /// Object was deleted.
+    Delete,
+    /// Object was wrapped inside another object.
+    Wrap,
+    /// Object was frozen (made immutable).
+    Freeze,
+    /// Object was merged into another coin.
+    MergeInto { destination: ObjectID },
+}
+
+/// Tracks all object lifecycles during PTB execution.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectLifecycleTracker {
+    /// Provenance for each object by ID.
+    objects: HashMap<ObjectID, ObjectProvenance>,
+    /// Errors detected during lifecycle tracking.
+    errors: Vec<LifecycleError>,
+}
+
+/// An error in object lifecycle (e.g., double-use, use after consume).
+#[derive(Debug, Clone)]
+pub struct LifecycleError {
+    /// The object involved.
+    pub object_id: ObjectID,
+    /// The command that caused the error.
+    pub command_index: usize,
+    /// Description of the error.
+    pub message: String,
+    /// The kind of lifecycle error.
+    pub kind: LifecycleErrorKind,
+}
+
+/// Types of lifecycle errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleErrorKind {
+    /// Object was used after being consumed.
+    UseAfterConsume,
+    /// Object was used after being transferred.
+    UseAfterTransfer,
+    /// Object was used after being deleted.
+    UseAfterDelete,
+    /// Object was used after being wrapped.
+    UseAfterWrap,
+    /// Mutable borrow of immutable object.
+    MutateImmutable,
+    /// Object not found.
+    ObjectNotFound,
+}
+
+impl ObjectLifecycleTracker {
+    /// Create a new lifecycle tracker.
+    pub fn new() -> Self {
+        Self {
+            objects: HashMap::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// Register an object from a transaction input.
+    pub fn register_input(&mut self, object_id: ObjectID, input_index: u16, type_tag: Option<TypeTag>) {
+        self.objects.insert(object_id, ObjectProvenance {
+            object_id,
+            origin: ObjectOrigin::Input { input_index },
+            state: ObjectState::Available,
+            history: Vec::new(),
+            type_tag,
+        });
+    }
+
+    /// Register a newly created object.
+    pub fn register_created(&mut self, object_id: ObjectID, command_index: usize, type_tag: Option<TypeTag>) {
+        self.objects.insert(object_id, ObjectProvenance {
+            object_id,
+            origin: ObjectOrigin::Created { command_index },
+            state: ObjectState::Available,
+            history: Vec::new(),
+            type_tag,
+        });
+    }
+
+    /// Register a received object.
+    pub fn register_received(&mut self, object_id: ObjectID, type_tag: Option<TypeTag>) {
+        self.objects.insert(object_id, ObjectProvenance {
+            object_id,
+            origin: ObjectOrigin::Received,
+            state: ObjectState::Available,
+            history: Vec::new(),
+            type_tag,
+        });
+    }
+
+    /// Record a read operation on an object.
+    pub fn record_read(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+        self.check_available(object_id, command_index)?;
+        if let Some(prov) = self.objects.get_mut(&object_id) {
+            prov.history.push(ObjectOperation {
+                command_index,
+                operation: OperationType::Read,
+            });
+        }
+        Ok(())
+    }
+
+    /// Record a mutation on an object.
+    pub fn record_mutate(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+        self.check_available(object_id, command_index)?;
+        if let Some(prov) = self.objects.get_mut(&object_id) {
+            prov.history.push(ObjectOperation {
+                command_index,
+                operation: OperationType::Mutate,
+            });
+        }
+        Ok(())
+    }
+
+    /// Record consumption of an object (passed by value).
+    pub fn record_consume(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+        self.check_available(object_id, command_index)?;
+        if let Some(prov) = self.objects.get_mut(&object_id) {
+            prov.state = ObjectState::Consumed;
+            prov.history.push(ObjectOperation {
+                command_index,
+                operation: OperationType::Consume,
+            });
+        }
+        Ok(())
+    }
+
+    /// Record a transfer of an object.
+    pub fn record_transfer(&mut self, object_id: ObjectID, command_index: usize, to: AccountAddress) -> Result<(), LifecycleError> {
+        self.check_available(object_id, command_index)?;
+        if let Some(prov) = self.objects.get_mut(&object_id) {
+            prov.state = ObjectState::Transferred;
+            prov.history.push(ObjectOperation {
+                command_index,
+                operation: OperationType::Transfer { to },
+            });
+        }
+        Ok(())
+    }
+
+    /// Record deletion of an object.
+    pub fn record_delete(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+        self.check_available(object_id, command_index)?;
+        if let Some(prov) = self.objects.get_mut(&object_id) {
+            prov.state = ObjectState::Deleted;
+            prov.history.push(ObjectOperation {
+                command_index,
+                operation: OperationType::Delete,
+            });
+        }
+        Ok(())
+    }
+
+    /// Check if an object is available for use.
+    fn check_available(&mut self, object_id: ObjectID, command_index: usize) -> Result<(), LifecycleError> {
+        match self.objects.get(&object_id) {
+            None => {
+                let err = LifecycleError {
+                    object_id,
+                    command_index,
+                    message: format!("Object {} not found in transaction", object_id.to_hex_literal()),
+                    kind: LifecycleErrorKind::ObjectNotFound,
+                };
+                self.errors.push(err.clone());
+                Err(err)
+            }
+            Some(prov) => match prov.state {
+                ObjectState::Available => Ok(()),
+                ObjectState::Consumed => {
+                    let err = LifecycleError {
+                        object_id,
+                        command_index,
+                        message: format!(
+                            "Object {} was consumed at command {} and cannot be used again",
+                            object_id.to_hex_literal(),
+                            prov.history.last().map(|h| h.command_index).unwrap_or(0)
+                        ),
+                        kind: LifecycleErrorKind::UseAfterConsume,
+                    };
+                    self.errors.push(err.clone());
+                    Err(err)
+                }
+                ObjectState::Transferred => {
+                    let err = LifecycleError {
+                        object_id,
+                        command_index,
+                        message: format!(
+                            "Object {} was transferred at command {} and cannot be used again",
+                            object_id.to_hex_literal(),
+                            prov.history.last().map(|h| h.command_index).unwrap_or(0)
+                        ),
+                        kind: LifecycleErrorKind::UseAfterTransfer,
+                    };
+                    self.errors.push(err.clone());
+                    Err(err)
+                }
+                ObjectState::Deleted => {
+                    let err = LifecycleError {
+                        object_id,
+                        command_index,
+                        message: format!(
+                            "Object {} was deleted at command {} and cannot be used",
+                            object_id.to_hex_literal(),
+                            prov.history.last().map(|h| h.command_index).unwrap_or(0)
+                        ),
+                        kind: LifecycleErrorKind::UseAfterDelete,
+                    };
+                    self.errors.push(err.clone());
+                    Err(err)
+                }
+                ObjectState::Wrapped => {
+                    let err = LifecycleError {
+                        object_id,
+                        command_index,
+                        message: format!(
+                            "Object {} was wrapped at command {} and cannot be used directly",
+                            object_id.to_hex_literal(),
+                            prov.history.last().map(|h| h.command_index).unwrap_or(0)
+                        ),
+                        kind: LifecycleErrorKind::UseAfterWrap,
+                    };
+                    self.errors.push(err.clone());
+                    Err(err)
+                }
+                ObjectState::Frozen => Ok(()), // Frozen objects can still be read
+            }
+        }
+    }
+
+    /// Get the provenance of an object.
+    pub fn get_provenance(&self, object_id: &ObjectID) -> Option<&ObjectProvenance> {
+        self.objects.get(object_id)
+    }
+
+    /// Get all tracked objects.
+    pub fn all_objects(&self) -> &HashMap<ObjectID, ObjectProvenance> {
+        &self.objects
+    }
+
+    /// Get all lifecycle errors.
+    pub fn errors(&self) -> &[LifecycleError] {
+        &self.errors
+    }
+
+    /// Check if there were any lifecycle errors.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    /// Get a summary of object states.
+    pub fn summary(&self) -> ObjectLifecycleSummary {
+        let mut summary = ObjectLifecycleSummary::default();
+        for prov in self.objects.values() {
+            match prov.state {
+                ObjectState::Available => summary.available += 1,
+                ObjectState::Consumed => summary.consumed += 1,
+                ObjectState::Transferred => summary.transferred += 1,
+                ObjectState::Deleted => summary.deleted += 1,
+                ObjectState::Wrapped => summary.wrapped += 1,
+                ObjectState::Frozen => summary.frozen += 1,
+            }
+            match &prov.origin {
+                ObjectOrigin::Input { .. } => summary.from_inputs += 1,
+                ObjectOrigin::Created { .. } => summary.created += 1,
+                ObjectOrigin::Received => summary.received += 1,
+                ObjectOrigin::Split { .. } => summary.split += 1,
+            }
+        }
+        summary
+    }
+}
+
+/// Summary statistics of object lifecycle states.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectLifecycleSummary {
+    /// Objects still available at end of transaction.
+    pub available: usize,
+    /// Objects that were consumed.
+    pub consumed: usize,
+    /// Objects that were transferred.
+    pub transferred: usize,
+    /// Objects that were deleted.
+    pub deleted: usize,
+    /// Objects that were wrapped.
+    pub wrapped: usize,
+    /// Objects that were frozen.
+    pub frozen: usize,
+    /// Objects from transaction inputs.
+    pub from_inputs: usize,
+    /// Objects created during transaction.
+    pub created: usize,
+    /// Objects received from previous transactions.
+    pub received: usize,
+    /// Objects created by splitting.
+    pub split: usize,
+}
+
+// =============================================================================
+// PTB Execution Trace
+// =============================================================================
+
+/// Detailed execution trace for a PTB transaction.
+///
+/// This extends the base ExecutionTrace with PTB-specific information like
+/// command-level tracing and argument resolution details.
+#[derive(Debug, Clone, Default)]
+pub struct PTBExecutionTrace {
+    /// Per-command execution traces.
+    pub commands: Vec<CommandTrace>,
+    /// Total gas used across all commands.
+    pub total_gas_used: u64,
+    /// Overall execution success.
+    pub success: bool,
+    /// Error message if execution failed.
+    pub error: Option<String>,
+    /// Index of the command that failed (if any).
+    pub failed_command_index: Option<usize>,
+    /// Object lifecycle summary at end of execution.
+    pub object_summary: Option<ObjectLifecycleSummary>,
+    /// Total execution duration in milliseconds.
+    pub duration_ms: Option<u64>,
+}
+
+/// Trace for a single PTB command execution.
+#[derive(Debug, Clone)]
+pub struct CommandTrace {
+    /// Command index (0-based).
+    pub index: usize,
+    /// Type of command (e.g., "MoveCall", "SplitCoins").
+    pub command_type: String,
+    /// Human-readable description of the command.
+    pub description: String,
+    /// Whether the command succeeded.
+    pub success: bool,
+    /// Gas used by this command.
+    pub gas_used: u64,
+    /// Error message if failed.
+    pub error: Option<String>,
+    /// Duration in microseconds.
+    pub duration_us: Option<u64>,
+    /// Number of return values produced.
+    pub return_count: usize,
+    /// Objects created by this command.
+    pub objects_created: Vec<String>,
+    /// Objects consumed by this command.
+    pub objects_consumed: Vec<String>,
+    /// For MoveCall: the function that was called.
+    pub function_called: Option<FunctionCallInfo>,
+}
+
+/// Information about a function call in a PTB.
+#[derive(Debug, Clone)]
+pub struct FunctionCallInfo {
+    /// Full module path (e.g., "0x2::coin").
+    pub module: String,
+    /// Function name.
+    pub function: String,
+    /// Type arguments.
+    pub type_args: Vec<String>,
+    /// Number of arguments passed.
+    pub arg_count: usize,
+}
+
+impl PTBExecutionTrace {
+    /// Create a new empty trace.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a successful command trace.
+    pub fn add_success(
+        &mut self,
+        index: usize,
+        command_type: &str,
+        description: String,
+        gas_used: u64,
+        return_count: usize,
+    ) {
+        self.commands.push(CommandTrace {
+            index,
+            command_type: command_type.to_string(),
+            description,
+            success: true,
+            gas_used,
+            error: None,
+            duration_us: None,
+            return_count,
+            objects_created: Vec::new(),
+            objects_consumed: Vec::new(),
+            function_called: None,
+        });
+        self.total_gas_used += gas_used;
+    }
+
+    /// Add a failed command trace.
+    pub fn add_failure(
+        &mut self,
+        index: usize,
+        command_type: &str,
+        description: String,
+        error: String,
+    ) {
+        self.commands.push(CommandTrace {
+            index,
+            command_type: command_type.to_string(),
+            description,
+            success: false,
+            gas_used: 0,
+            error: Some(error.clone()),
+            duration_us: None,
+            return_count: 0,
+            objects_created: Vec::new(),
+            objects_consumed: Vec::new(),
+            function_called: None,
+        });
+        self.success = false;
+        self.error = Some(error);
+        self.failed_command_index = Some(index);
+    }
+
+    /// Add function call info to the last command trace.
+    pub fn add_function_call(&mut self, info: FunctionCallInfo) {
+        if let Some(last) = self.commands.last_mut() {
+            last.function_called = Some(info);
+        }
+    }
+
+    /// Record objects created by the last command.
+    pub fn record_created_objects(&mut self, objects: Vec<String>) {
+        if let Some(last) = self.commands.last_mut() {
+            last.objects_created = objects;
+        }
+    }
+
+    /// Record objects consumed by the last command.
+    pub fn record_consumed_objects(&mut self, objects: Vec<String>) {
+        if let Some(last) = self.commands.last_mut() {
+            last.objects_consumed = objects;
+        }
+    }
+
+    /// Mark execution as complete.
+    pub fn complete(&mut self, success: bool, duration_ms: Option<u64>) {
+        self.success = success;
+        self.duration_ms = duration_ms;
+    }
+
+    /// Get a summary of the execution.
+    pub fn summary(&self) -> PTBTraceSummary {
+        PTBTraceSummary {
+            total_commands: self.commands.len(),
+            successful_commands: self.commands.iter().filter(|c| c.success).count(),
+            failed_commands: self.commands.iter().filter(|c| !c.success).count(),
+            total_gas_used: self.total_gas_used,
+            move_calls: self.commands.iter().filter(|c| c.command_type == "MoveCall").count(),
+            transfers: self.commands.iter().filter(|c| c.command_type == "TransferObjects").count(),
+            splits: self.commands.iter().filter(|c| c.command_type == "SplitCoins").count(),
+            merges: self.commands.iter().filter(|c| c.command_type == "MergeCoins").count(),
+        }
+    }
+}
+
+/// Summary of a PTB execution trace.
+#[derive(Debug, Clone, Default)]
+pub struct PTBTraceSummary {
+    /// Total number of commands.
+    pub total_commands: usize,
+    /// Number of successful commands.
+    pub successful_commands: usize,
+    /// Number of failed commands.
+    pub failed_commands: usize,
+    /// Total gas used.
+    pub total_gas_used: u64,
+    /// Number of MoveCall commands.
+    pub move_calls: usize,
+    /// Number of TransferObjects commands.
+    pub transfers: usize,
+    /// Number of SplitCoins commands.
+    pub splits: usize,
+    /// Number of MergeCoins commands.
+    pub merges: usize,
+}
+
 /// An input value to the PTB.
 #[derive(Debug, Clone)]
 pub enum InputValue {
@@ -167,16 +1014,16 @@ pub enum InputValue {
 #[derive(Debug, Clone)]
 pub enum ObjectInput {
     /// Object passed by immutable reference
-    ImmRef { id: ObjectID, bytes: Vec<u8> },
+    ImmRef { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
 
     /// Object passed by mutable reference
-    MutRef { id: ObjectID, bytes: Vec<u8> },
+    MutRef { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
 
     /// Object passed by value (ownership transferred)
-    Owned { id: ObjectID, bytes: Vec<u8> },
+    Owned { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
 
     /// Shared object
-    Shared { id: ObjectID, bytes: Vec<u8> },
+    Shared { id: ObjectID, bytes: Vec<u8>, type_tag: Option<TypeTag> },
 }
 
 impl ObjectInput {
@@ -195,6 +1042,15 @@ impl ObjectInput {
             ObjectInput::MutRef { bytes, .. } => bytes,
             ObjectInput::Owned { bytes, .. } => bytes,
             ObjectInput::Shared { bytes, .. } => bytes,
+        }
+    }
+
+    pub fn type_tag(&self) -> Option<&TypeTag> {
+        match self {
+            ObjectInput::ImmRef { type_tag, .. } => type_tag.as_ref(),
+            ObjectInput::MutRef { type_tag, .. } => type_tag.as_ref(),
+            ObjectInput::Owned { type_tag, .. } => type_tag.as_ref(),
+            ObjectInput::Shared { type_tag, .. } => type_tag.as_ref(),
         }
     }
 }
@@ -330,6 +1186,18 @@ pub enum ObjectChange {
         /// Type of the unwrapped object (if known)
         object_type: Option<TypeTag>,
     },
+    /// Object was transferred to another address.
+    /// This is distinct from Mutated because it enables cross-PTB chaining:
+    /// the transferred object can be received in a subsequent PTB.
+    Transferred {
+        id: ObjectID,
+        /// The recipient address
+        recipient: AccountAddress,
+        /// Type of the transferred object (if known)
+        object_type: Option<TypeTag>,
+        /// The BCS bytes of the transferred object (for receiving)
+        object_bytes: Vec<u8>,
+    },
 }
 
 /// Effects of executing a PTB.
@@ -349,6 +1217,14 @@ pub struct TransactionEffects {
 
     /// Objects that were unwrapped
     pub unwrapped: Vec<ObjectID>,
+
+    /// Objects that were transferred to another address.
+    /// These can be received in subsequent PTBs via the Receive command.
+    pub transferred: Vec<ObjectID>,
+
+    /// Objects that were received from pending_receives.
+    /// These should be removed from the SimulationEnvironment's pending_receives.
+    pub received: Vec<ObjectID>,
 
     /// Detailed object changes
     pub object_changes: Vec<ObjectChange>,
@@ -500,12 +1376,25 @@ pub struct PTBExecutor<'a, 'b> {
     /// An object is wrapped when it's passed by value to a function and not returned.
     wrapped_objects: HashMap<ObjectID, Option<TypeTag>>,
 
+    /// Objects that were received via the Receive command.
+    /// Tracked so SimulationEnvironment can clear them from pending_receives.
+    received_objects: Vec<ObjectID>,
+
     /// Objects that are immutable (cannot be mutated).
     /// If enforce_immutability is true, mutations to these will fail.
     immutable_objects: HashSet<ObjectID>,
 
     /// Whether to enforce immutability constraints.
     enforce_immutability: bool,
+
+    /// Object lifecycle tracker for provenance and double-use detection.
+    lifecycle_tracker: ObjectLifecycleTracker,
+
+    /// Execution trace for debugging and analysis.
+    execution_trace: PTBExecutionTrace,
+
+    /// Whether to enable detailed lifecycle tracking.
+    enable_lifecycle_tracking: bool,
 }
 
 impl<'a, 'b> PTBExecutor<'a, 'b> {
@@ -537,8 +1426,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             transferable_objects: HashSet::new(),
             gas_budget: None,
             wrapped_objects: HashMap::new(),
+            received_objects: Vec::new(),
             immutable_objects: HashSet::new(),
             enforce_immutability: false,
+            lifecycle_tracker: ObjectLifecycleTracker::new(),
+            execution_trace: PTBExecutionTrace::new(),
+            enable_lifecycle_tracking: true,
         }
     }
 
@@ -587,8 +1480,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             transferable_objects: HashSet::new(),
             gas_budget: None,
             wrapped_objects: HashMap::new(),
+            received_objects: Vec::new(),
             immutable_objects: HashSet::new(),
             enforce_immutability: false,
+            lifecycle_tracker: ObjectLifecycleTracker::new(),
+            execution_trace: PTBExecutionTrace::new(),
+            enable_lifecycle_tracking: true,
         }
     }
 
@@ -602,6 +1499,44 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Get the current gas budget, if set.
     pub fn gas_budget(&self) -> Option<u64> {
         self.gas_budget
+    }
+
+    /// Get the accumulated gas used during execution.
+    pub fn gas_used(&self) -> u64 {
+        self.gas_used
+    }
+
+    /// Get a reference to the execution trace.
+    /// This contains detailed information about each command that was executed.
+    pub fn execution_trace(&self) -> &PTBExecutionTrace {
+        &self.execution_trace
+    }
+
+    /// Get a reference to the object lifecycle tracker.
+    /// This contains provenance and state information for all objects.
+    pub fn lifecycle_tracker(&self) -> &ObjectLifecycleTracker {
+        &self.lifecycle_tracker
+    }
+
+    /// Get a summary of the execution trace.
+    pub fn trace_summary(&self) -> PTBTraceSummary {
+        self.execution_trace.summary()
+    }
+
+    /// Get a summary of object lifecycle operations.
+    pub fn lifecycle_summary(&self) -> ObjectLifecycleSummary {
+        self.lifecycle_tracker.summary()
+    }
+
+    /// Enable or disable detailed lifecycle tracking.
+    /// When disabled, lifecycle_tracker still exists but won't record input objects.
+    pub fn set_enable_lifecycle_tracking(&mut self, enable: bool) {
+        self.enable_lifecycle_tracking = enable;
+    }
+
+    /// Check if lifecycle tracking is enabled.
+    pub fn is_lifecycle_tracking_enabled(&self) -> bool {
+        self.enable_lifecycle_tracking
     }
 
     /// Check if the current gas usage exceeds the budget.
@@ -1236,18 +2171,18 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             // Update ownership tracking
             self.object_owners.insert(obj_id, new_owner);
 
-            // Record the change with type info
-            self.object_changes.push(ObjectChange::Mutated {
-                id: obj_id,
-                owner: new_owner,
-                object_type: obj_type.clone(),
-            });
-
-            // Get the current bytes for the object
+            // Get the current bytes for the object (needed for cross-PTB receiving)
             let obj_bytes = self.get_object_bytes(&obj_id).unwrap_or_default();
 
-            // Mark as mutated with current bytes and type info
-            self.mutated_objects.insert(obj_id, (obj_bytes, obj_type));
+            // Record the transfer with bytes so it can be received in the next PTB
+            // Note: We intentionally do NOT add to mutated_objects because Transferred
+            // is a distinct change type that should not be duplicated as Mutated.
+            self.object_changes.push(ObjectChange::Transferred {
+                id: obj_id,
+                recipient,
+                object_type: obj_type,
+                object_bytes: obj_bytes,
+            });
         }
 
         // Estimate gas: native call + object mutation per transferred object
@@ -1296,9 +2231,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         match arg {
             Argument::Input(idx) => {
                 if let Some(InputValue::Object(obj)) = self.inputs.get(*idx as usize) {
-                    // For input objects, we don't have the type readily available
-                    // unless it was tracked elsewhere
-                    Some((*obj.id(), None))
+                    // Get type from the input if available
+                    Some((*obj.id(), obj.type_tag().cloned()))
                 } else {
                     None
                 }
@@ -1578,6 +2512,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.object_owners.insert(*object_id, Owner::Address(self.sender));
         // Received objects are transferable by the sender
         self.transferable_objects.insert(*object_id);
+        // Track for clearing from SimulationEnvironment's pending_receives
+        self.received_objects.push(*object_id);
         self.object_changes.push(ObjectChange::Unwrapped {
             id: *object_id,
             owner: Owner::Address(self.sender),
@@ -1607,18 +2543,76 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Execute all commands in the PTB.
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<TransactionEffects> {
+        let start_time = std::time::Instant::now();
+
+        // Validate PTB causality before execution
+        let validation = validate_ptb(&commands, self.inputs.len());
+        if !validation.valid {
+            let error_msgs: Vec<String> = validation.errors.iter().map(|e| e.message.clone()).collect();
+            self.execution_trace.add_failure(0, "validation", "PTB validation".to_string(), error_msgs.join("; "));
+            return Ok(TransactionEffects::failure_at(
+                format!("PTB validation failed: {}", error_msgs.join("; ")),
+                0,
+                "validation".to_string(),
+                0,
+            ));
+        }
+
+        // Register input objects with lifecycle tracker
+        if self.enable_lifecycle_tracking {
+            for (idx, input) in self.inputs.iter().enumerate() {
+                if let InputValue::Object(obj_input) = input {
+                    self.lifecycle_tracker.register_input(*obj_input.id(), idx as u16, None);
+                }
+            }
+        }
+
         // Clear the VM's execution trace and events before starting
         self.vm.clear_trace();
         self.vm.clear_events();
 
         for (index, cmd) in commands.into_iter().enumerate() {
             let cmd_description = Self::describe_command(&cmd);
+            let cmd_type = Self::command_type_name(&cmd);
+
+            // Extract function call info for MoveCall commands
+            let func_info = if let Command::MoveCall { package, module, function, type_args, args } = &cmd {
+                Some(FunctionCallInfo {
+                    module: format!("{}::{}", package.to_hex_literal(), module),
+                    function: function.to_string(),
+                    type_args: type_args.iter().map(|t| format!("{}", t)).collect(),
+                    arg_count: args.len(),
+                })
+            } else {
+                None
+            };
+
             match self.execute_command(cmd) {
                 Ok(result) => {
+                    let return_count = result.len();
                     self.results.push(result);
+
+                    // Record success in trace
+                    self.execution_trace.add_success(
+                        index,
+                        &cmd_type,
+                        cmd_description.clone(),
+                        self.gas_used,
+                        return_count,
+                    );
+                    if let Some(info) = func_info {
+                        self.execution_trace.add_function_call(info);
+                    }
 
                     // Check gas budget after each successful command
                     if let Err(gas_err) = self.check_gas_budget() {
+                        self.execution_trace.add_failure(
+                            index,
+                            &cmd_type,
+                            format!("{} (out of gas)", cmd_description),
+                            gas_err.to_string(),
+                        );
+                        self.execution_trace.complete(false, Some(start_time.elapsed().as_millis() as u64));
                         return Ok(TransactionEffects::failure_at(
                             gas_err.to_string(),
                             index,
@@ -1628,6 +2622,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                 }
                 Err(e) => {
+                    self.execution_trace.add_failure(index, &cmd_type, cmd_description.clone(), e.to_string());
+                    self.execution_trace.complete(false, Some(start_time.elapsed().as_millis() as u64));
                     return Ok(TransactionEffects::failure_at(
                         e.to_string(),
                         index,
@@ -1638,7 +2634,27 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             }
         }
 
+        // Complete trace with success
+        self.execution_trace.complete(true, Some(start_time.elapsed().as_millis() as u64));
+        if self.enable_lifecycle_tracking {
+            self.execution_trace.object_summary = Some(self.lifecycle_tracker.summary());
+        }
+
         Ok(self.compute_effects())
+    }
+
+    /// Get the command type name for tracing.
+    fn command_type_name(cmd: &Command) -> String {
+        match cmd {
+            Command::MoveCall { .. } => "MoveCall".to_string(),
+            Command::SplitCoins { .. } => "SplitCoins".to_string(),
+            Command::MergeCoins { .. } => "MergeCoins".to_string(),
+            Command::TransferObjects { .. } => "TransferObjects".to_string(),
+            Command::MakeMoveVec { .. } => "MakeMoveVec".to_string(),
+            Command::Publish { .. } => "Publish".to_string(),
+            Command::Upgrade { .. } => "Upgrade".to_string(),
+            Command::Receive { .. } => "Receive".to_string(),
+        }
     }
 
     /// Generate a human-readable description of a command.
@@ -1736,7 +2752,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Include any additional object changes tracked during execution
-        // Also populate the wrapped/unwrapped vectors
+        // Also populate the wrapped/unwrapped/transferred vectors
         for change in &self.object_changes {
             // Avoid duplicates - only add if not already present
             let id = match change {
@@ -1757,6 +2773,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                     id
                 }
+                ObjectChange::Transferred { id, .. } => {
+                    // Track transferred objects
+                    if !effects.transferred.contains(id) {
+                        effects.transferred.push(*id);
+                    }
+                    id
+                }
             };
             if !effects.object_changes.iter().any(|c| match c {
                 ObjectChange::Created { id: cid, .. } => cid == id,
@@ -1764,6 +2787,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 ObjectChange::Deleted { id: cid, .. } => cid == id,
                 ObjectChange::Wrapped { id: cid, .. } => cid == id,
                 ObjectChange::Unwrapped { id: cid, .. } => cid == id,
+                ObjectChange::Transferred { id: cid, .. } => cid == id,
             }) {
                 effects.object_changes.push(change.clone());
             }
@@ -1799,6 +2823,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         for ((parent_id, child_id), type_tag, bytes) in self.vm.extract_dynamic_fields() {
             effects.dynamic_field_entries.insert((parent_id, child_id), (type_tag, bytes));
         }
+
+        // Track objects that were received from pending_receives
+        effects.received = self.received_objects.clone();
 
         // Set accumulated gas usage
         effects.gas_used = self.gas_used;
@@ -1875,7 +2902,14 @@ impl PTBBuilder {
     /// Add an owned object input.
     pub fn object_owned(&mut self, id: ObjectID, bytes: Vec<u8>) -> Argument {
         let idx = self.inputs.len();
-        self.inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes }));
+        self.inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: None }));
+        Argument::Input(idx as u16)
+    }
+
+    /// Add an owned object input with type information.
+    pub fn object_owned_with_type(&mut self, id: ObjectID, bytes: Vec<u8>, type_tag: TypeTag) -> Argument {
+        let idx = self.inputs.len();
+        self.inputs.push(InputValue::Object(ObjectInput::Owned { id, bytes, type_tag: Some(type_tag) }));
         Argument::Input(idx as u16)
     }
 
@@ -2048,5 +3082,402 @@ mod tests {
 
         // The command should be recorded
         assert_eq!(builder.commands().len(), 1);
+    }
+
+    // =========================================================================
+    // PTB Causality Validation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_ptb_valid() {
+        // Valid PTB: each command only references previous results
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("bar").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(0)], // References first command's result
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(result.valid);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_ptb_forward_reference() {
+        // Invalid: command 0 references result 1 which doesn't exist yet
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(1)], // Forward reference!
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("bar").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].kind, ValidationErrorKind::ForwardReference);
+    }
+
+    #[test]
+    fn test_validate_ptb_self_reference() {
+        // Invalid: command 0 references its own result
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(0)], // Self reference!
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].kind, ValidationErrorKind::SelfReference);
+    }
+
+    #[test]
+    fn test_validate_ptb_input_out_of_bounds() {
+        // Invalid: references Input(5) but only 2 inputs available
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(5)],
+            },
+        ];
+
+        let result = validate_ptb(&commands, 2);
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].kind, ValidationErrorKind::InputOutOfBounds);
+    }
+
+    #[test]
+    fn test_validate_ptb_nested_result_forward_reference() {
+        // Invalid: NestedResult references future command
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::NestedResult(1, 0)], // Forward reference
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("bar").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(!result.valid);
+        assert_eq!(result.errors[0].kind, ValidationErrorKind::ForwardReference);
+    }
+
+    #[test]
+    fn test_compute_dependency_graph() {
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("a").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("b").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("c").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(0), Argument::Result(1)],
+            },
+        ];
+
+        let deps = compute_dependency_graph(&commands);
+        assert!(deps[&0].is_empty()); // cmd 0 has no dependencies
+        assert_eq!(deps[&1], [0].into_iter().collect()); // cmd 1 depends on 0
+        assert_eq!(deps[&2], [0, 1].into_iter().collect()); // cmd 2 depends on 0 and 1
+    }
+
+    #[test]
+    fn test_topological_sort_valid() {
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("a").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("b").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(0)],
+            },
+        ];
+
+        let sorted = topological_sort(&commands);
+        assert!(sorted.is_ok());
+        // The sort should put dependencies before dependents
+        let order = sorted.unwrap();
+        assert_eq!(order.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_arguments_move_call() {
+        let cmd = Command::MoveCall {
+            package: AccountAddress::ZERO,
+            module: Identifier::new("test").unwrap(),
+            function: Identifier::new("foo").unwrap(),
+            type_args: vec![],
+            args: vec![Argument::Input(0), Argument::Result(1)],
+        };
+
+        let args = extract_arguments(&cmd);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], Argument::Input(0));
+        assert_eq!(args[1], Argument::Result(1));
+    }
+
+    #[test]
+    fn test_extract_arguments_split_coins() {
+        let cmd = Command::SplitCoins {
+            coin: Argument::Input(0),
+            amounts: vec![Argument::Input(1), Argument::Input(2)],
+        };
+
+        let args = extract_arguments(&cmd);
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], Argument::Input(0));
+        assert_eq!(args[1], Argument::Input(1));
+        assert_eq!(args[2], Argument::Input(2));
+    }
+
+    #[test]
+    fn test_extract_arguments_transfer_objects() {
+        let cmd = Command::TransferObjects {
+            objects: vec![Argument::Result(0), Argument::Result(1)],
+            address: Argument::Input(0),
+        };
+
+        let args = extract_arguments(&cmd);
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], Argument::Result(0));
+        assert_eq!(args[1], Argument::Result(1));
+        assert_eq!(args[2], Argument::Input(0));
+    }
+
+    // =========================================================================
+    // Object Lifecycle Tracking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_lifecycle_tracker_basic() {
+        let mut tracker = ObjectLifecycleTracker::new();
+        let obj_id = AccountAddress::from_hex_literal("0x1234").unwrap();
+
+        // Register an input object
+        tracker.register_input(obj_id, 0, Some(TypeTag::U64));
+
+        // Should be available
+        assert!(tracker.get_provenance(&obj_id).is_some());
+        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Available);
+
+        // Record a read - should succeed
+        assert!(tracker.record_read(obj_id, 0).is_ok());
+    }
+
+    #[test]
+    fn test_lifecycle_tracker_use_after_consume() {
+        let mut tracker = ObjectLifecycleTracker::new();
+        let obj_id = AccountAddress::from_hex_literal("0x1234").unwrap();
+
+        tracker.register_input(obj_id, 0, None);
+
+        // Consume the object
+        assert!(tracker.record_consume(obj_id, 0).is_ok());
+        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Consumed);
+
+        // Try to use it again - should fail
+        let result = tracker.record_read(obj_id, 1);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, LifecycleErrorKind::UseAfterConsume);
+    }
+
+    #[test]
+    fn test_lifecycle_tracker_use_after_transfer() {
+        let mut tracker = ObjectLifecycleTracker::new();
+        let obj_id = AccountAddress::from_hex_literal("0x1234").unwrap();
+        let recipient = AccountAddress::from_hex_literal("0x5678").unwrap();
+
+        tracker.register_input(obj_id, 0, None);
+
+        // Transfer the object
+        assert!(tracker.record_transfer(obj_id, 0, recipient).is_ok());
+        assert_eq!(tracker.get_provenance(&obj_id).unwrap().state, ObjectState::Transferred);
+
+        // Try to use it again - should fail
+        let result = tracker.record_mutate(obj_id, 1);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, LifecycleErrorKind::UseAfterTransfer);
+    }
+
+    #[test]
+    fn test_lifecycle_tracker_object_not_found() {
+        let mut tracker = ObjectLifecycleTracker::new();
+        let obj_id = AccountAddress::from_hex_literal("0x1234").unwrap();
+
+        // Try to use an object that was never registered
+        let result = tracker.record_read(obj_id, 0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, LifecycleErrorKind::ObjectNotFound);
+    }
+
+    #[test]
+    fn test_lifecycle_tracker_summary() {
+        let mut tracker = ObjectLifecycleTracker::new();
+
+        // Register some objects with different origins
+        tracker.register_input(AccountAddress::from_hex_literal("0x1").unwrap(), 0, None);
+        tracker.register_input(AccountAddress::from_hex_literal("0x2").unwrap(), 1, None);
+        tracker.register_created(AccountAddress::from_hex_literal("0x3").unwrap(), 0, None);
+        tracker.register_received(AccountAddress::from_hex_literal("0x4").unwrap(), None);
+
+        // Consume one, transfer one
+        tracker.record_consume(AccountAddress::from_hex_literal("0x1").unwrap(), 0).unwrap();
+        tracker.record_transfer(
+            AccountAddress::from_hex_literal("0x2").unwrap(),
+            1,
+            AccountAddress::ZERO,
+        ).unwrap();
+
+        let summary = tracker.summary();
+        assert_eq!(summary.from_inputs, 2);
+        assert_eq!(summary.created, 1);
+        assert_eq!(summary.received, 1);
+        assert_eq!(summary.consumed, 1);
+        assert_eq!(summary.transferred, 1);
+        assert_eq!(summary.available, 2); // The created and received ones
+    }
+
+    #[test]
+    fn test_lifecycle_tracker_history() {
+        let mut tracker = ObjectLifecycleTracker::new();
+        let obj_id = AccountAddress::from_hex_literal("0x1234").unwrap();
+
+        tracker.register_input(obj_id, 0, None);
+
+        // Perform multiple operations
+        tracker.record_read(obj_id, 0).unwrap();
+        tracker.record_mutate(obj_id, 1).unwrap();
+        tracker.record_read(obj_id, 2).unwrap();
+
+        let prov = tracker.get_provenance(&obj_id).unwrap();
+        assert_eq!(prov.history.len(), 3);
+        assert_eq!(prov.history[0].operation, OperationType::Read);
+        assert_eq!(prov.history[1].operation, OperationType::Mutate);
+        assert_eq!(prov.history[2].operation, OperationType::Read);
+    }
+
+    // =========================================================================
+    // PTB Execution Trace Tests
+    // =========================================================================
+
+    #[test]
+    fn test_ptb_trace_add_success() {
+        let mut trace = PTBExecutionTrace::new();
+        trace.add_success(0, "MoveCall", "call foo".to_string(), 100, 1);
+        trace.add_success(1, "TransferObjects", "transfer".to_string(), 50, 0);
+
+        assert_eq!(trace.commands.len(), 2);
+        assert_eq!(trace.total_gas_used, 150);
+        assert!(trace.commands[0].success);
+        assert_eq!(trace.commands[0].command_type, "MoveCall");
+    }
+
+    #[test]
+    fn test_ptb_trace_add_failure() {
+        let mut trace = PTBExecutionTrace::new();
+        trace.add_success(0, "MoveCall", "call foo".to_string(), 100, 1);
+        trace.add_failure(1, "MoveCall", "call bar".to_string(), "abort at 42".to_string());
+
+        assert_eq!(trace.commands.len(), 2);
+        assert!(!trace.success);
+        assert_eq!(trace.failed_command_index, Some(1));
+        assert!(trace.commands[1].error.is_some());
+    }
+
+    #[test]
+    fn test_ptb_trace_summary() {
+        let mut trace = PTBExecutionTrace::new();
+        trace.add_success(0, "MoveCall", "call 1".to_string(), 100, 1);
+        trace.add_success(1, "MoveCall", "call 2".to_string(), 100, 1);
+        trace.add_success(2, "SplitCoins", "split".to_string(), 50, 2);
+        trace.add_success(3, "TransferObjects", "transfer".to_string(), 25, 0);
+
+        let summary = trace.summary();
+        assert_eq!(summary.total_commands, 4);
+        assert_eq!(summary.successful_commands, 4);
+        assert_eq!(summary.failed_commands, 0);
+        assert_eq!(summary.move_calls, 2);
+        assert_eq!(summary.splits, 1);
+        assert_eq!(summary.transfers, 1);
+        assert_eq!(summary.total_gas_used, 275);
+    }
+
+    #[test]
+    fn test_ptb_trace_function_call_info() {
+        let mut trace = PTBExecutionTrace::new();
+        trace.add_success(0, "MoveCall", "call foo".to_string(), 100, 1);
+        trace.add_function_call(FunctionCallInfo {
+            module: "0x2::coin".to_string(),
+            function: "mint".to_string(),
+            type_args: vec!["0x2::sui::SUI".to_string()],
+            arg_count: 2,
+        });
+
+        let cmd = &trace.commands[0];
+        assert!(cmd.function_called.is_some());
+        let func = cmd.function_called.as_ref().unwrap();
+        assert_eq!(func.module, "0x2::coin");
+        assert_eq!(func.function, "mint");
+        assert_eq!(func.type_args.len(), 1);
     }
 }

@@ -8,6 +8,54 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+// =============================================================================
+// ModuleProvider Trait
+// =============================================================================
+
+/// Trait for unified module loading across different sources.
+///
+/// This trait abstracts over module loading, allowing different implementations:
+/// - `LocalModuleResolver`: Loads from local bytecode files
+/// - Future: RPC-backed providers, cached providers, etc.
+///
+/// # Example
+/// ```ignore
+/// use sui_move_interface_extractor::benchmark::resolver::ModuleProvider;
+///
+/// fn load_modules(provider: &mut impl ModuleProvider) -> Result<()> {
+///     let modules = vec![("my_module".to_string(), bytecode_bytes)];
+///     provider.load_package(modules)?;
+///     Ok(())
+/// }
+/// ```
+pub trait ModuleProvider {
+    /// Load a package (collection of modules) into the provider.
+    ///
+    /// Returns the package address if successfully loaded.
+    fn load_package(&mut self, modules: Vec<(String, Vec<u8>)>) -> Result<AccountAddress>;
+
+    /// Load a package at a specific address.
+    ///
+    /// This is useful for loading packages with a known address (e.g., from mainnet).
+    fn load_package_at(&mut self, modules: Vec<(String, Vec<u8>)>, address: AccountAddress) -> Result<AccountAddress>;
+
+    /// Check if a module exists in this provider.
+    fn has_module(&self, module_id: &ModuleId) -> bool;
+
+    /// Get the bytecode for a module.
+    fn get_module_bytes(&self, module_id: &ModuleId) -> Option<&[u8]>;
+
+    /// List all loaded packages.
+    fn list_packages(&self) -> Vec<AccountAddress>;
+
+    /// Get the module count.
+    fn module_count(&self) -> usize;
+}
+
+// =============================================================================
+// LocalModuleResolver
+// =============================================================================
+
 #[derive(Clone)]
 pub struct LocalModuleResolver {
     modules: BTreeMap<ModuleId, CompiledModule>,
@@ -877,6 +925,38 @@ fn format_signature_token(
         SignatureToken::TypeParameter(idx) => {
             format!("T{}", idx)
         }
+    }
+}
+
+// =============================================================================
+// ModuleProvider Implementation
+// =============================================================================
+
+impl ModuleProvider for LocalModuleResolver {
+    fn load_package(&mut self, modules: Vec<(String, Vec<u8>)>) -> Result<AccountAddress> {
+        let (_, addr) = self.add_package_modules(modules)?;
+        addr.ok_or_else(|| anyhow!("No modules were loaded"))
+    }
+
+    fn load_package_at(&mut self, modules: Vec<(String, Vec<u8>)>, address: AccountAddress) -> Result<AccountAddress> {
+        let (_, addr) = self.add_package_modules_at(modules, Some(address))?;
+        addr.ok_or_else(|| anyhow!("No modules were loaded"))
+    }
+
+    fn has_module(&self, module_id: &ModuleId) -> bool {
+        self.has_module(module_id)
+    }
+
+    fn get_module_bytes(&self, module_id: &ModuleId) -> Option<&[u8]> {
+        self.modules_bytes.get(module_id).map(|v| v.as_slice())
+    }
+
+    fn list_packages(&self) -> Vec<AccountAddress> {
+        self.list_packages()
+    }
+
+    fn module_count(&self) -> usize {
+        self.module_count()
     }
 }
 

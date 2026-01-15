@@ -17,8 +17,6 @@
 //! - Phase: Where in the pipeline it occurred
 //! - Code: Specific error type
 //! - Message: Human-readable description
-//! - is_expected_limitation: Whether this is a sandbox limitation vs LLM failure
-//! - error_source: Attribution (LLM error, infrastructure limitation, etc.)
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -250,8 +248,8 @@ impl ErrorCode {
             2 => Phase::TypeCheck,
             3 => Phase::Synthesis,
             4 => Phase::Execution,
-            5 => Phase::Validation,
-            _ => unreachable!("Invalid error code"),
+            // 5xx and any future codes default to Validation phase
+            _ => Phase::Validation,
         }
     }
 
@@ -291,17 +289,6 @@ impl ErrorCode {
         }
     }
 
-    /// Check if this error represents an expected sandbox limitation
-    /// (as opposed to an LLM failure)
-    pub fn is_expected_limitation(&self) -> bool {
-        matches!(
-            self,
-            ErrorCode::UnsupportedNative
-                | ErrorCode::ChainTooDeep
-                | ErrorCode::UnsupportedConstructorParam
-        )
-    }
-
     /// Get the string code (e.g., "E001", "E101", "E201", etc.)
     pub fn code_string(&self) -> String {
         let code = self.numeric_code();
@@ -309,50 +296,6 @@ impl ErrorCode {
             format!("E{:03}", code) // E001, E002, etc.
         } else {
             format!("E{}", code) // E101, E201, etc.
-        }
-    }
-
-    /// Get the default error source attribution for this error code.
-    ///
-    /// This provides a reasonable default, but specific instances may override
-    /// based on context (e.g., NoConstructor may be LLM error or target limitation).
-    pub fn default_error_source(&self) -> ErrorSource {
-        match self {
-            // Build errors are almost always LLM mistakes
-            ErrorCode::ModuleAddressUndefined
-            | ErrorCode::InvalidManifest
-            | ErrorCode::ImportResolutionFailed
-            | ErrorCode::TypeSyntaxError
-            | ErrorCode::InvalidEntrySignature
-            | ErrorCode::CompileTimeAbilityError => ErrorSource::LlmError,
-
-            // Resolution errors depend on context
-            ErrorCode::ModuleNotFound | ErrorCode::FunctionNotFound | ErrorCode::NotCallable => {
-                ErrorSource::LlmError
-            }
-
-            // TypeCheck errors are usually LLM mistakes
-            ErrorCode::TypeMismatch
-            | ErrorCode::AbilityViolation
-            | ErrorCode::GenericBoundsViolation
-            | ErrorCode::UnknownType => ErrorSource::LlmError,
-            ErrorCode::RecursiveType => ErrorSource::InfrastructureLimitation,
-
-            // Synthesis errors can be either
-            ErrorCode::NoConstructor => ErrorSource::Unknown, // Context-dependent
-            ErrorCode::ChainTooDeep | ErrorCode::UnsupportedConstructorParam => {
-                ErrorSource::InfrastructureLimitation
-            }
-            ErrorCode::BCSSerializationFailed => ErrorSource::InfrastructureLimitation,
-
-            // Execution errors
-            ErrorCode::VMSetupFailed => ErrorSource::InfrastructureLimitation,
-            ErrorCode::ConstructorAborted | ErrorCode::TargetAborted => ErrorSource::Unknown,
-            ErrorCode::UnsupportedNative => ErrorSource::InfrastructureLimitation,
-
-            // Validation errors
-            ErrorCode::NoTargetModulesAccessed => ErrorSource::LlmError,
-            ErrorCode::ReturnTypeMismatch => ErrorSource::LlmError,
         }
     }
 
@@ -364,52 +307,7 @@ impl fmt::Display for ErrorCode {
     }
 }
 
-// =============================================================================
-// Error Source Attribution (P1 Improvement)
-// =============================================================================
 
-/// Attribution for where an error originated.
-///
-/// This helps distinguish between:
-/// - LLM mistakes (should be counted against the model)
-/// - Infrastructure limitations (should not penalize the model)
-/// - Target package issues (package has no valid entry points)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ErrorSource {
-    /// LLM generated incorrect code (should penalize model)
-    LlmError,
-    /// Infrastructure limitation - sandbox can't simulate this (don't penalize)
-    InfrastructureLimitation,
-    /// Target package has no valid entry points or constructible types
-    TargetPackageLimitation,
-    /// Unknown or ambiguous source (needs manual review)
-    #[default]
-    Unknown,
-}
-
-impl ErrorSource {
-    /// Whether this error should count against the LLM's score
-    pub fn counts_against_llm(&self) -> bool {
-        matches!(self, ErrorSource::LlmError)
-    }
-
-    /// Human-readable description
-    pub fn description(&self) -> &'static str {
-        match self {
-            ErrorSource::LlmError => "LLM generated incorrect code",
-            ErrorSource::InfrastructureLimitation => "sandbox infrastructure limitation",
-            ErrorSource::TargetPackageLimitation => "target package has no valid entry points",
-            ErrorSource::Unknown => "unknown or ambiguous error source",
-        }
-    }
-}
-
-impl fmt::Display for ErrorSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.description())
-    }
-}
 
 /// Complete failure information for the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -420,24 +318,17 @@ pub struct Failure {
     pub code: ErrorCode,
     /// Human-readable error message with context
     pub message: String,
-    /// Whether this is an expected sandbox limitation (not an LLM failure).
-    ///
-    /// **Note**: This is a derived field for backwards compatibility. It is `true` when
-    /// `error_source` is `InfrastructureLimitation` or `TargetPackageLimitation`.
-    /// For new code, prefer checking `error_source.counts_against_llm()` directly.
-    #[serde(skip_serializing_if = "is_false")]
-    pub is_expected_limitation: bool,
-    /// Attribution for where this error originated.
-    ///
-    /// This is the canonical field for error attribution:
-    /// - `LlmError`: LLM generated incorrect code (should penalize model)
-    /// - `InfrastructureLimitation`: Sandbox can't simulate this (don't penalize)
-    /// - `TargetPackageLimitation`: Package has no valid entry points (don't penalize)
-    #[serde(default)]
-    pub error_source: ErrorSource,
     /// Optional additional context (e.g., which type failed, which function)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<FailureContext>,
+    /// Context stack showing the chain of operations that led to this failure.
+    ///
+    /// This provides a "breadcrumb trail" for debugging:
+    /// - synthesizing argument 2 for function transfer
+    /// - constructing type 0x2::coin::Coin<SUI>
+    /// - calling constructor new_coin
+    #[serde(skip_serializing_if = "context_stack_is_empty", default)]
+    pub context_stack: ContextStack,
 }
 
 /// Additional context for a failure.
@@ -457,17 +348,148 @@ pub struct FailureContext {
     pub param_index: Option<usize>,
 }
 
+// =============================================================================
+// Error Context Stacking (P2.5 Enhancement)
+// =============================================================================
+
+/// A single frame in the error context stack.
+///
+/// Each frame represents one level of nesting in the operation that failed.
+/// For example, when synthesizing an argument:
+/// - Frame 1: "synthesizing argument 2 for function transfer"
+/// - Frame 2: "constructing type 0x2::coin::Coin<SUI>"
+/// - Frame 3: "calling constructor new_coin"
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextFrame {
+    /// What operation was being performed
+    pub operation: String,
+    /// Phase where this operation occurs
+    pub phase: Phase,
+    /// Optional additional details (type names, indices, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
+impl ContextFrame {
+    /// Create a new context frame
+    pub fn new(phase: Phase, operation: impl Into<String>) -> Self {
+        Self {
+            operation: operation.into(),
+            phase,
+            details: None,
+        }
+    }
+
+    /// Add details to this frame
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+
+    /// Create a resolution phase frame
+    pub fn resolution(operation: impl Into<String>) -> Self {
+        Self::new(Phase::Resolution, operation)
+    }
+
+    /// Create a type check phase frame
+    pub fn type_check(operation: impl Into<String>) -> Self {
+        Self::new(Phase::TypeCheck, operation)
+    }
+
+    /// Create a synthesis phase frame
+    pub fn synthesis(operation: impl Into<String>) -> Self {
+        Self::new(Phase::Synthesis, operation)
+    }
+
+    /// Create an execution phase frame
+    pub fn execution(operation: impl Into<String>) -> Self {
+        Self::new(Phase::Execution, operation)
+    }
+}
+
+impl fmt::Display for ContextFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref details) = self.details {
+            write!(f, "{} ({})", self.operation, details)
+        } else {
+            write!(f, "{}", self.operation)
+        }
+    }
+}
+
+/// Stack of context frames for rich error reporting.
+///
+/// This provides a "breadcrumb trail" showing exactly how an error occurred,
+/// similar to a call stack but for logical operations across phases.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContextStack {
+    /// Frames from outermost (first) to innermost (last)
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub frames: Vec<ContextFrame>,
+}
+
+impl ContextStack {
+    /// Create an empty context stack
+    pub fn new() -> Self {
+        Self { frames: Vec::new() }
+    }
+
+    /// Push a new frame onto the stack
+    pub fn push(&mut self, frame: ContextFrame) {
+        self.frames.push(frame);
+    }
+
+    /// Push a simple operation string
+    pub fn push_operation(&mut self, phase: Phase, operation: impl Into<String>) {
+        self.frames.push(ContextFrame::new(phase, operation));
+    }
+
+    /// Check if the stack is empty
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Get the number of frames
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Format as a multi-line trace
+    pub fn format_trace(&self) -> String {
+        if self.frames.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = Vec::with_capacity(self.frames.len());
+        for (i, frame) in self.frames.iter().enumerate() {
+            let indent = "  ".repeat(i);
+            lines.push(format!("{}→ {}", indent, frame));
+        }
+        lines.join("\n")
+    }
+}
+
+impl fmt::Display for ContextStack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.frames.is_empty() {
+            return Ok(());
+        }
+
+        // Single-line format: "while X → while Y → while Z"
+        let parts: Vec<String> = self.frames.iter().map(|f| format!("{}", f)).collect();
+        write!(f, "while {}", parts.join(" → "))
+    }
+}
+
 impl Failure {
     /// Create a new failure with just the essentials
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        let error_source = code.default_error_source();
         Self {
             phase: code.phase(),
             code,
             message: message.into(),
-            is_expected_limitation: code.is_expected_limitation(),
-            error_source,
             context: None,
+            context_stack: ContextStack::default(),
         }
     }
 
@@ -477,26 +499,23 @@ impl Failure {
         message: impl Into<String>,
         context: FailureContext,
     ) -> Self {
-        let error_source = code.default_error_source();
         Self {
             phase: code.phase(),
             code,
             message: message.into(),
-            is_expected_limitation: code.is_expected_limitation(),
-            error_source,
             context: Some(context),
+            context_stack: ContextStack::default(),
         }
     }
 
-    /// Create a failure with explicit error source
-    pub fn with_source(code: ErrorCode, message: impl Into<String>, source: ErrorSource) -> Self {
+    /// Create a failure with a context stack
+    pub fn with_stack(code: ErrorCode, message: impl Into<String>, stack: ContextStack) -> Self {
         Self {
             phase: code.phase(),
             code,
             message: message.into(),
-            is_expected_limitation: code.is_expected_limitation(),
-            error_source: source,
             context: None,
+            context_stack: stack,
         }
     }
 
@@ -506,23 +525,55 @@ impl Failure {
         self
     }
 
-    /// Set the error source attribution
-    pub fn set_source(mut self, source: ErrorSource) -> Self {
-        self.error_source = source;
-        // Keep is_expected_limitation in sync
-        self.is_expected_limitation = matches!(
-            source,
-            ErrorSource::InfrastructureLimitation | ErrorSource::TargetPackageLimitation
-        );
+    /// Push a context frame onto the stack
+    pub fn push_frame(mut self, frame: ContextFrame) -> Self {
+        self.context_stack.push(frame);
         self
     }
 
-    /// Mark this failure as an expected limitation
-    #[deprecated(note = "Use set_source(ErrorSource::InfrastructureLimitation) instead")]
-    pub fn mark_expected(mut self) -> Self {
-        self.is_expected_limitation = true;
-        self.error_source = ErrorSource::InfrastructureLimitation;
+    /// Push a context frame at the front (for wrapping errors from inner operations)
+    pub fn prepend_frame(mut self, frame: ContextFrame) -> Self {
+        self.context_stack.frames.insert(0, frame);
         self
+    }
+
+    /// Add context stack from another failure (for error chaining)
+    pub fn chain_stack(mut self, other_stack: ContextStack) -> Self {
+        for frame in other_stack.frames {
+            self.context_stack.push(frame);
+        }
+        self
+    }
+
+    /// Format a detailed error message including context stack
+    pub fn detailed_message(&self) -> String {
+        let mut msg = format!("[{}] {}: {}", self.phase, self.code.code_string(), self.message);
+
+        if !self.context_stack.is_empty() {
+            msg.push_str("\n\nContext trace:\n");
+            msg.push_str(&self.context_stack.format_trace());
+        }
+
+        if let Some(ref ctx) = self.context {
+            let mut parts = Vec::new();
+            if let Some(ref module) = ctx.module {
+                parts.push(format!("module: {}", module));
+            }
+            if let Some(ref func) = ctx.function {
+                parts.push(format!("function: {}", func));
+            }
+            if let Some(ref type_name) = ctx.type_name {
+                parts.push(format!("type: {}", type_name));
+            }
+            if let Some(idx) = ctx.param_index {
+                parts.push(format!("param #{}", idx));
+            }
+            if !parts.is_empty() {
+                msg.push_str(&format!("\n\nAt: {}", parts.join(", ")));
+            }
+        }
+
+        msg
     }
 }
 
@@ -1325,9 +1376,9 @@ pub fn is_unsupported_native_error(error: &str) -> bool {
 // Helper functions for serde
 // =============================================================================
 
-/// Helper for skip_serializing_if
-fn is_false(b: &bool) -> bool {
-    !*b
+/// Helper for skip_serializing_if for context_stack
+fn context_stack_is_empty(stack: &ContextStack) -> bool {
+    stack.is_empty()
 }
 
 // =============================================================================
@@ -1366,19 +1417,10 @@ mod tests {
     }
 
     #[test]
-    fn test_expected_limitations() {
-        assert!(ErrorCode::UnsupportedNative.is_expected_limitation());
-        assert!(ErrorCode::ChainTooDeep.is_expected_limitation());
-        assert!(!ErrorCode::TypeMismatch.is_expected_limitation());
-        assert!(!ErrorCode::TargetAborted.is_expected_limitation());
-    }
-
-    #[test]
     fn test_failure_creation() {
         let failure = Failure::new(ErrorCode::ModuleNotFound, "module foo not found");
         assert_eq!(failure.phase, Phase::Resolution);
         assert_eq!(failure.code, ErrorCode::ModuleNotFound);
-        assert!(!failure.is_expected_limitation);
     }
 
     #[test]
@@ -1509,66 +1551,6 @@ mod tests {
     #[test]
     fn test_build_phase_display() {
         assert_eq!(format!("{}", Phase::Build), "build");
-    }
-
-    // =========================================================================
-    // Error Source Attribution Tests (v0.5.0)
-    // =========================================================================
-
-    #[test]
-    fn test_error_source_default() {
-        // Build errors should default to LLM error
-        assert_eq!(
-            ErrorCode::TypeSyntaxError.default_error_source(),
-            ErrorSource::LlmError
-        );
-        // Infrastructure limitations
-        assert_eq!(
-            ErrorCode::UnsupportedNative.default_error_source(),
-            ErrorSource::InfrastructureLimitation
-        );
-        // Unknown/context-dependent
-        assert_eq!(
-            ErrorCode::NoConstructor.default_error_source(),
-            ErrorSource::Unknown
-        );
-    }
-
-    #[test]
-    fn test_error_source_counts_against_llm() {
-        assert!(ErrorSource::LlmError.counts_against_llm());
-        assert!(!ErrorSource::InfrastructureLimitation.counts_against_llm());
-        assert!(!ErrorSource::TargetPackageLimitation.counts_against_llm());
-        assert!(!ErrorSource::Unknown.counts_against_llm());
-    }
-
-    #[test]
-    fn test_failure_with_source() {
-        let failure = Failure::with_source(
-            ErrorCode::NoConstructor,
-            "no ctor",
-            ErrorSource::TargetPackageLimitation,
-        );
-        assert_eq!(failure.error_source, ErrorSource::TargetPackageLimitation);
-    }
-
-    #[test]
-    fn test_failure_set_source() {
-        let failure =
-            Failure::new(ErrorCode::NoConstructor, "no ctor").set_source(ErrorSource::LlmError);
-        assert_eq!(failure.error_source, ErrorSource::LlmError);
-        assert!(!failure.is_expected_limitation);
-    }
-
-    #[test]
-    fn test_error_source_serialization() {
-        let failure = Failure::with_source(
-            ErrorCode::TypeSyntaxError,
-            "syntax error",
-            ErrorSource::LlmError,
-        );
-        let json = serde_json::to_string(&failure).unwrap();
-        assert!(json.contains("\"error_source\":\"llm_error\""));
     }
 
     // =========================================================================
@@ -1882,5 +1864,191 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"abort_info\""));
         assert!(json.contains("\"category\":\"unsupported_native\""));
+    }
+
+    // =========================================================================
+    // Context Stack Tests (P2.5)
+    // =========================================================================
+
+    #[test]
+    fn test_context_frame_creation() {
+        let frame = ContextFrame::synthesis("constructing Coin type");
+        assert_eq!(frame.phase, Phase::Synthesis);
+        assert_eq!(frame.operation, "constructing Coin type");
+        assert!(frame.details.is_none());
+    }
+
+    #[test]
+    fn test_context_frame_with_details() {
+        let frame =
+            ContextFrame::execution("calling function").with_details("0x2::coin::mint<SUI>");
+        assert_eq!(frame.phase, Phase::Execution);
+        assert_eq!(frame.details, Some("0x2::coin::mint<SUI>".to_string()));
+    }
+
+    #[test]
+    fn test_context_frame_display() {
+        let frame = ContextFrame::synthesis("constructing type");
+        assert_eq!(format!("{}", frame), "constructing type");
+
+        let frame_with_details =
+            ContextFrame::synthesis("constructing type").with_details("Coin<SUI>");
+        assert_eq!(
+            format!("{}", frame_with_details),
+            "constructing type (Coin<SUI>)"
+        );
+    }
+
+    #[test]
+    fn test_context_stack_push() {
+        let mut stack = ContextStack::new();
+        assert!(stack.is_empty());
+
+        stack.push(ContextFrame::synthesis("synthesizing argument 1"));
+        stack.push(ContextFrame::synthesis("constructing Coin type"));
+        stack.push(ContextFrame::execution("calling constructor new"));
+
+        assert_eq!(stack.len(), 3);
+        assert!(!stack.is_empty());
+    }
+
+    #[test]
+    fn test_context_stack_display() {
+        let mut stack = ContextStack::new();
+        stack.push(ContextFrame::synthesis("synthesizing argument 1"));
+        stack.push(ContextFrame::synthesis("constructing Coin"));
+
+        let display = format!("{}", stack);
+        assert!(display.contains("while"));
+        assert!(display.contains("synthesizing argument 1"));
+        assert!(display.contains("→"));
+        assert!(display.contains("constructing Coin"));
+    }
+
+    #[test]
+    fn test_context_stack_format_trace() {
+        let mut stack = ContextStack::new();
+        stack.push(ContextFrame::synthesis("synthesizing argument"));
+        stack.push(ContextFrame::synthesis("constructing type"));
+
+        let trace = stack.format_trace();
+        assert!(trace.contains("→ synthesizing argument"));
+        assert!(trace.contains("  → constructing type"));
+    }
+
+    #[test]
+    fn test_failure_with_stack() {
+        let mut stack = ContextStack::new();
+        stack.push(ContextFrame::synthesis("synthesizing argument 2"));
+        stack.push(ContextFrame::synthesis("constructing 0x2::coin::Coin"));
+
+        let failure = Failure::with_stack(ErrorCode::NoConstructor, "no constructor found", stack);
+        assert!(!failure.context_stack.is_empty());
+        assert_eq!(failure.context_stack.len(), 2);
+    }
+
+    #[test]
+    fn test_failure_push_frame() {
+        let failure = Failure::new(ErrorCode::NoConstructor, "no constructor found")
+            .push_frame(ContextFrame::synthesis("synthesizing argument"))
+            .push_frame(ContextFrame::synthesis("constructing type"));
+
+        assert_eq!(failure.context_stack.len(), 2);
+    }
+
+    #[test]
+    fn test_failure_prepend_frame() {
+        let failure = Failure::new(ErrorCode::NoConstructor, "no constructor found")
+            .push_frame(ContextFrame::synthesis("constructing type"))
+            .prepend_frame(ContextFrame::synthesis("synthesizing argument"));
+
+        // Prepended frame should be first
+        assert_eq!(
+            failure.context_stack.frames[0].operation,
+            "synthesizing argument"
+        );
+        assert_eq!(
+            failure.context_stack.frames[1].operation,
+            "constructing type"
+        );
+    }
+
+    #[test]
+    fn test_failure_chain_stack() {
+        let mut inner_stack = ContextStack::new();
+        inner_stack.push(ContextFrame::execution("calling constructor"));
+
+        let failure = Failure::new(ErrorCode::ConstructorAborted, "constructor aborted")
+            .push_frame(ContextFrame::synthesis("synthesizing argument"))
+            .chain_stack(inner_stack);
+
+        assert_eq!(failure.context_stack.len(), 2);
+    }
+
+    #[test]
+    fn test_failure_detailed_message() {
+        let failure = Failure::new(ErrorCode::NoConstructor, "no constructor for Foo")
+            .push_frame(ContextFrame::synthesis("synthesizing argument 2"))
+            .push_frame(ContextFrame::synthesis("constructing type Foo"));
+
+        let detailed = failure.detailed_message();
+        assert!(detailed.contains("[synthesis] E301"));
+        assert!(detailed.contains("no constructor for Foo"));
+        assert!(detailed.contains("Context trace:"));
+        assert!(detailed.contains("synthesizing argument 2"));
+        assert!(detailed.contains("constructing type Foo"));
+    }
+
+    #[test]
+    fn test_failure_detailed_message_with_context() {
+        let ctx = FailureContext {
+            module: Some("0x2::coin".to_string()),
+            function: Some("mint".to_string()),
+            type_name: None,
+            param_index: Some(1),
+        };
+        let failure =
+            Failure::with_context(ErrorCode::TypeMismatch, "expected u64, got bool", ctx)
+                .push_frame(ContextFrame::type_check("validating argument types"));
+
+        let detailed = failure.detailed_message();
+        assert!(detailed.contains("module: 0x2::coin"));
+        assert!(detailed.contains("function: mint"));
+        assert!(detailed.contains("param #1"));
+    }
+
+    #[test]
+    fn test_failure_serialization_with_stack() {
+        let failure = Failure::new(ErrorCode::NoConstructor, "no constructor")
+            .push_frame(ContextFrame::synthesis("synthesizing"));
+
+        let json = serde_json::to_string(&failure).unwrap();
+        assert!(json.contains("\"context_stack\""));
+        assert!(json.contains("\"operation\":\"synthesizing\""));
+        assert!(json.contains("\"phase\":\"synthesis\""));
+    }
+
+    #[test]
+    fn test_failure_serialization_empty_stack_omitted() {
+        let failure = Failure::new(ErrorCode::ModuleNotFound, "not found");
+
+        let json = serde_json::to_string(&failure).unwrap();
+        // Empty stack should be omitted from JSON
+        assert!(!json.contains("\"context_stack\""));
+    }
+
+    #[test]
+    fn test_context_frame_phase_helpers() {
+        let resolution = ContextFrame::resolution("resolving module");
+        assert_eq!(resolution.phase, Phase::Resolution);
+
+        let type_check = ContextFrame::type_check("checking types");
+        assert_eq!(type_check.phase, Phase::TypeCheck);
+
+        let synthesis = ContextFrame::synthesis("synthesizing value");
+        assert_eq!(synthesis.phase, Phase::Synthesis);
+
+        let execution = ContextFrame::execution("executing function");
+        assert_eq!(execution.phase, Phase::Execution);
     }
 }

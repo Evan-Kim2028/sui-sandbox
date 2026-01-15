@@ -39,6 +39,13 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
+// Re-export address formatting from utils
+use crate::utils::format_address_short;
+// Create an alias for backward compatibility within this module
+fn normalize_address(addr: &AccountAddress) -> String {
+    format_address_short(addr)
+}
+
 use crate::args::SandboxExecArgs;
 use crate::benchmark::package_builder::PackageBuilder;
 use crate::benchmark::simulation::SimulationEnvironment;
@@ -76,6 +83,9 @@ use crate::benchmark::simulation::SimulationEnvironment;
 //
 // =============================================================================
 
+// Re-export format_type_tag from types module as the canonical type formatter
+use crate::benchmark::types::format_type_tag;
+
 /// Format a TypeTag to a canonical string representation.
 /// This is the single source of truth for type-to-string conversion in the sandbox API.
 ///
@@ -83,49 +93,9 @@ use crate::benchmark::simulation::SimulationEnvironment;
 /// - Addresses are normalized to short form (0x2 instead of 0x0000...0002)
 /// - Generic parameters are included in angle brackets
 /// - Format: "address::module::Type<TypeArg1, TypeArg2>"
+#[inline]
 fn format_type_canonical(type_tag: &TypeTag) -> String {
-    match type_tag {
-        TypeTag::Bool => "bool".to_string(),
-        TypeTag::U8 => "u8".to_string(),
-        TypeTag::U16 => "u16".to_string(),
-        TypeTag::U32 => "u32".to_string(),
-        TypeTag::U64 => "u64".to_string(),
-        TypeTag::U128 => "u128".to_string(),
-        TypeTag::U256 => "u256".to_string(),
-        TypeTag::Address => "address".to_string(),
-        TypeTag::Signer => "signer".to_string(),
-        TypeTag::Vector(inner) => format!("vector<{}>", format_type_canonical(inner)),
-        TypeTag::Struct(s) => {
-            // Normalize address to short form
-            let addr = normalize_address(&s.address);
-            let base = format!("{}::{}::{}", addr, s.module, s.name);
-            if s.type_params.is_empty() {
-                base
-            } else {
-                let params: Vec<String> = s.type_params.iter()
-                    .map(|t| format_type_canonical(t))
-                    .collect();
-                format!("{}<{}>", base, params.join(", "))
-            }
-        }
-    }
-}
-
-/// Normalize an address to short form (0x2 instead of 0x0000...0002).
-fn normalize_address(addr: &AccountAddress) -> String {
-    let hex = addr.to_hex_literal();
-    // Strip leading zeros after 0x prefix for common framework addresses
-    if hex.starts_with("0x") {
-        let without_prefix = &hex[2..];
-        let trimmed = without_prefix.trim_start_matches('0');
-        if trimmed.is_empty() {
-            "0x0".to_string()
-        } else {
-            format!("0x{}", trimmed)
-        }
-    } else {
-        hex
-    }
+    format_type_tag(type_tag)
 }
 
 /// Request format for sandbox execution.
@@ -155,6 +125,16 @@ pub enum SandboxRequest {
     /// Execute a PTB with the given commands.
     #[serde(rename = "execute_ptb")]
     ExecutePtb {
+        /// PTB inputs (pure values and object references).
+        inputs: Vec<PtbInput>,
+        /// PTB commands to execute.
+        commands: Vec<PtbCommand>,
+    },
+
+    /// Validate a PTB without executing it.
+    /// Returns validation errors or success with type information.
+    #[serde(rename = "validate_ptb")]
+    ValidatePtb {
         /// PTB inputs (pure values and object references).
         inputs: Vec<PtbInput>,
         /// PTB commands to execute.
@@ -410,7 +390,7 @@ pub enum SandboxRequest {
     ListCachedObjects,
 
     // ========================================================================
-    // Utility Tools (migrated from llm_tools.rs)
+    // Utility Tools
     // ========================================================================
 
     /// Generate a fresh unique object/address ID.
@@ -499,6 +479,53 @@ pub enum SandboxRequest {
     /// Download and cache Sui framework (if not already cached).
     #[serde(rename = "ensure_framework_cached")]
     EnsureFrameworkCached,
+
+    // ========================================================================
+    // Event Query Tools
+    // ========================================================================
+
+    /// List all events emitted during this session.
+    #[serde(rename = "list_events")]
+    ListEvents,
+
+    /// Get events filtered by type.
+    #[serde(rename = "get_events_by_type")]
+    GetEventsByType {
+        /// Type prefix to filter by (e.g., "0x2::display::DisplayCreated").
+        type_prefix: String,
+    },
+
+    /// Get events from the last PTB execution.
+    #[serde(rename = "get_last_tx_events")]
+    GetLastTxEvents,
+
+    /// Clear all captured events (useful for isolation between tests).
+    #[serde(rename = "clear_events")]
+    ClearEvents,
+
+    // ========================================================================
+    // Shared Object Versioning Tools
+    // ========================================================================
+
+    /// Get the current lamport clock value.
+    /// The lamport clock is used for shared object versioning and consensus simulation.
+    #[serde(rename = "get_lamport_clock")]
+    GetLamportClock,
+
+    /// Get detailed information about a shared object including version and lock status.
+    #[serde(rename = "get_shared_object_info")]
+    GetSharedObjectInfo {
+        /// Object ID (hex string).
+        object_id: String,
+    },
+
+    /// List all currently held shared object locks.
+    #[serde(rename = "list_shared_locks")]
+    ListSharedLocks,
+
+    /// Manually advance the lamport clock (useful for testing consensus scenarios).
+    #[serde(rename = "advance_lamport_clock")]
+    AdvanceLamportClock,
 
     // ========================================================================
     // Meta / Discovery Tools
@@ -910,6 +937,17 @@ pub struct ObjectInfo {
     pub object_type: String,
 }
 
+/// A synthesized Move object with its BCS-encoded bytes.
+/// Used for injecting pre-built objects into the simulation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesizedObject {
+    pub object_id: String,
+    pub type_path: String,
+    /// BCS-encoded bytes
+    pub bcs_bytes: Vec<u8>,
+    pub is_shared: bool,
+}
+
 /// Execute a sandbox request.
 pub fn execute_request(
     env: &mut SimulationEnvironment,
@@ -925,6 +963,9 @@ pub fn execute_request(
         }
         SandboxRequest::ExecutePtb { inputs, commands } => {
             execute_ptb_command(env, inputs, commands, verbose)
+        }
+        SandboxRequest::ValidatePtb { inputs, commands } => {
+            execute_validate_ptb(env, inputs, commands, verbose)
         }
         SandboxRequest::InspectStruct { package, module, struct_name } => {
             execute_inspect_struct(env, package, module.as_deref(), struct_name.as_deref(), verbose)
@@ -1018,7 +1059,7 @@ pub fn execute_request(
         SandboxRequest::ListCachedObjects => {
             execute_list_cached_objects(env, verbose)
         }
-        // Utility tools (migrated from llm_tools.rs)
+        // Utility tools
         SandboxRequest::GenerateId => {
             execute_generate_id(env, verbose)
         }
@@ -1054,6 +1095,32 @@ pub fn execute_request(
         }
         SandboxRequest::EnsureFrameworkCached => {
             execute_ensure_framework_cached(verbose)
+        }
+        // Event query tools
+        SandboxRequest::ListEvents => {
+            execute_list_events(env, verbose)
+        }
+        SandboxRequest::GetEventsByType { type_prefix } => {
+            execute_get_events_by_type(env, type_prefix, verbose)
+        }
+        SandboxRequest::GetLastTxEvents => {
+            execute_get_last_tx_events(env, verbose)
+        }
+        SandboxRequest::ClearEvents => {
+            execute_clear_events(env, verbose)
+        }
+        // Shared object versioning tools
+        SandboxRequest::GetLamportClock => {
+            execute_get_lamport_clock(env, verbose)
+        }
+        SandboxRequest::GetSharedObjectInfo { object_id } => {
+            execute_get_shared_object_info(env, object_id, verbose)
+        }
+        SandboxRequest::ListSharedLocks => {
+            execute_list_shared_locks(env, verbose)
+        }
+        SandboxRequest::AdvanceLamportClock => {
+            execute_advance_lamport_clock(env, verbose)
         }
         SandboxRequest::ListAvailableTools => {
             execute_list_available_tools(verbose)
@@ -1434,6 +1501,535 @@ fn execute_ptb_command(
     }
 }
 
+/// Validate a PTB without executing it.
+/// This performs all the parsing and type-checking that execute_ptb does,
+/// but returns validation results instead of executing.
+fn execute_validate_ptb(
+    env: &SimulationEnvironment,
+    inputs: &[PtbInput],
+    commands: &[PtbCommand],
+    verbose: bool,
+) -> SandboxResponse {
+    use move_core_types::identifier::Identifier;
+
+    if verbose {
+        eprintln!("Validating PTB with {} inputs and {} commands", inputs.len(), commands.len());
+    }
+
+    let mut validation_errors: Vec<String> = Vec::new();
+    let mut input_types: Vec<serde_json::Value> = Vec::new();
+    let mut command_info: Vec<serde_json::Value> = Vec::new();
+
+    // Track types produced by each command for result type validation
+    // Vec<Vec<String>> where outer index is command index, inner vec is return types
+    let mut command_result_types: Vec<Vec<String>> = Vec::new();
+
+    // Track types available from inputs
+    let mut input_type_map: Vec<Option<String>> = Vec::new();
+
+    // Validate and collect info about inputs
+    for (i, input) in inputs.iter().enumerate() {
+        match input {
+            PtbInput::Pure { value, value_type } => {
+                match encode_pure_value(value, value_type) {
+                    Ok(bytes) => {
+                        input_type_map.push(Some(value_type.clone()));
+                        input_types.push(serde_json::json!({
+                            "index": i,
+                            "type": "pure",
+                            "value_type": value_type,
+                            "bytes_len": bytes.len(),
+                            "valid": true
+                        }));
+                    }
+                    Err(e) => {
+                        input_type_map.push(None);
+                        validation_errors.push(format!("Input {}: Failed to encode pure value: {}", i, e));
+                        input_types.push(serde_json::json!({
+                            "index": i,
+                            "type": "pure",
+                            "value_type": value_type,
+                            "valid": false,
+                            "error": e.to_string()
+                        }));
+                    }
+                }
+            }
+            PtbInput::Object { object_id, mode } => {
+                match env.get_object_for_ptb_with_mode(object_id, mode.as_deref()) {
+                    Ok(obj) => {
+                        let type_str = obj.type_tag().map(|t| format!("{}", t));
+                        input_type_map.push(type_str.clone());
+                        input_types.push(serde_json::json!({
+                            "index": i,
+                            "type": "object",
+                            "object_id": object_id,
+                            "mode": mode,
+                            "object_type": type_str,
+                            "valid": true
+                        }));
+                    }
+                    Err(e) => {
+                        input_type_map.push(None);
+                        validation_errors.push(format!("Input {}: Object not found or invalid: {}", i, e));
+                        input_types.push(serde_json::json!({
+                            "index": i,
+                            "type": "object",
+                            "object_id": object_id,
+                            "mode": mode,
+                            "valid": false,
+                            "error": e.to_string()
+                        }));
+                    }
+                }
+            }
+            PtbInput::Gas { budget } => {
+                // Gas coin is always Coin<SUI>
+                input_type_map.push(Some("0x2::coin::Coin<0x2::sui::SUI>".to_string()));
+                input_types.push(serde_json::json!({
+                    "index": i,
+                    "type": "gas",
+                    "budget": budget,
+                    "valid": true
+                }));
+            }
+            PtbInput::Witness { witness_type } => {
+                input_type_map.push(Some(witness_type.clone()));
+                input_types.push(serde_json::json!({
+                    "index": i,
+                    "type": "witness",
+                    "witness_type": witness_type,
+                    "valid": true
+                }));
+            }
+        }
+    }
+
+    // Validate commands
+    for (i, cmd) in commands.iter().enumerate() {
+        match cmd {
+            PtbCommand::MoveCall { package, module, function, type_args, args } => {
+                let mut cmd_valid = true;
+                let mut cmd_errors: Vec<String> = Vec::new();
+
+                // Validate package address
+                if let Err(e) = AccountAddress::from_hex_literal(package) {
+                    cmd_valid = false;
+                    cmd_errors.push(format!("Invalid package address: {}", e));
+                }
+
+                // Validate module identifier
+                if let Err(e) = Identifier::new(module.as_str()) {
+                    cmd_valid = false;
+                    cmd_errors.push(format!("Invalid module name: {}", e));
+                }
+
+                // Validate function identifier
+                if let Err(e) = Identifier::new(function.as_str()) {
+                    cmd_valid = false;
+                    cmd_errors.push(format!("Invalid function name: {}", e));
+                }
+
+                // Validate type arguments
+                let mut parsed_type_args: Vec<String> = Vec::new();
+                for (j, type_str) in type_args.iter().enumerate() {
+                    match crate::benchmark::tx_replay::parse_type_tag(type_str) {
+                        Ok(tag) => parsed_type_args.push(format!("{}", tag)),
+                        Err(e) => {
+                            cmd_valid = false;
+                            cmd_errors.push(format!("Type arg {}: {}", j, e));
+                        }
+                    }
+                }
+
+                // Deep function validation using introspection
+                let module_path = format!("{}::{}", package, module);
+                let mut function_info_json = serde_json::json!(null);
+                let mut expected_params = 0usize;
+                let mut expected_type_args = 0usize;
+                let mut is_entry = false;
+                let mut is_public = false;
+                let mut param_types: Vec<String> = Vec::new();
+                let mut return_types: Vec<String> = Vec::new();
+
+                match env.get_function_info(&module_path, function) {
+                    Some(info) => {
+                        function_info_json = info.clone();
+
+                        // Extract parameter count (excluding &mut TxContext / &TxContext at end)
+                        if let Some(params) = info.get("params").and_then(|p| p.as_array()) {
+                            param_types = params.iter()
+                                .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                                .collect();
+                            // Count params, excluding trailing TxContext
+                            expected_params = param_types.iter()
+                                .filter(|p| !p.contains("TxContext"))
+                                .count();
+                        }
+
+                        // Extract type parameter count
+                        if let Some(type_params) = info.get("type_params").and_then(|p| p.as_array()) {
+                            expected_type_args = type_params.len();
+                        }
+
+                        // Extract visibility info
+                        is_entry = info.get("is_entry").and_then(|v| v.as_bool()).unwrap_or(false);
+                        is_public = info.get("visibility").and_then(|v| v.as_str()) == Some("public");
+
+                        // Extract return types
+                        if let Some(returns) = info.get("returns").and_then(|r| r.as_array()) {
+                            return_types = returns.iter()
+                                .filter_map(|r| r.as_str().map(|s| s.to_string()))
+                                .collect();
+                        }
+
+                        // Validate: function must be entry or public to be callable via PTB
+                        if !is_entry && !is_public {
+                            cmd_valid = false;
+                            cmd_errors.push(format!(
+                                "Function '{}' is private and cannot be called via PTB", function
+                            ));
+                        }
+
+                        // Validate: argument count matches (excluding TxContext)
+                        if args.len() != expected_params {
+                            cmd_valid = false;
+                            cmd_errors.push(format!(
+                                "Argument count mismatch: provided {} args, function expects {} (excluding TxContext)",
+                                args.len(), expected_params
+                            ));
+                        }
+
+                        // Validate: type argument count matches
+                        if type_args.len() != expected_type_args {
+                            cmd_valid = false;
+                            cmd_errors.push(format!(
+                                "Type argument count mismatch: provided {} type args, function expects {}",
+                                type_args.len(), expected_type_args
+                            ));
+                        }
+                    }
+                    None => {
+                        cmd_valid = false;
+                        cmd_errors.push(format!(
+                            "Function '{}::{}' not found in module", module, function
+                        ));
+                    }
+                }
+
+                if !cmd_errors.is_empty() {
+                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                }
+
+                // Track result types for this command
+                command_result_types.push(return_types.clone());
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "MoveCall",
+                    "package": package,
+                    "module": module,
+                    "function": function,
+                    "type_args": parsed_type_args,
+                    "arg_count": args.len(),
+                    "function_exists": function_info_json != serde_json::json!(null),
+                    "function_signature": {
+                        "expected_params": expected_params,
+                        "expected_type_args": expected_type_args,
+                        "is_entry": is_entry,
+                        "is_public": is_public,
+                        "param_types": param_types,
+                        "return_types": &command_result_types[i]
+                    },
+                    "valid": cmd_valid,
+                    "errors": cmd_errors
+                }));
+            }
+            PtbCommand::TransferObjects { objects, .. } => {
+                // TransferObjects returns nothing
+                command_result_types.push(Vec::new());
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "TransferObjects",
+                    "object_count": objects.len(),
+                    "valid": true
+                }));
+            }
+            PtbCommand::SplitCoins { coin, amounts } => {
+                // SplitCoins returns Vec<Coin<T>> - try to infer the coin type
+                let coin_type = match coin {
+                    PtbArg::Input(idx) if *idx < input_type_map.len() => {
+                        input_type_map[*idx].clone()
+                    }
+                    PtbArg::Result { cmd, idx } if *cmd < command_result_types.len() => {
+                        command_result_types[*cmd].get(*idx).cloned()
+                    }
+                    _ => None,
+                };
+                // SplitCoins returns a vector of coins of same type
+                let result_type = coin_type.map(|t| format!("vector<{}>", t)).unwrap_or_else(|| "vector<Coin>".to_string());
+                command_result_types.push(vec![result_type]);
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "SplitCoins",
+                    "amount_count": amounts.len(),
+                    "valid": true
+                }));
+            }
+            PtbCommand::MergeCoins { sources, .. } => {
+                // MergeCoins returns nothing (modifies target in place)
+                command_result_types.push(Vec::new());
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "MergeCoins",
+                    "source_count": sources.len(),
+                    "valid": true
+                }));
+            }
+            PtbCommand::MakeMoveVec { element_type, elements } => {
+                let type_valid = if let Some(type_str) = element_type {
+                    match crate::benchmark::tx_replay::parse_type_tag(type_str) {
+                        Ok(_) => true,
+                        Err(e) => {
+                            validation_errors.push(format!("Command {}: Invalid element type: {}", i, e));
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+
+                // MakeMoveVec returns vector<T>
+                let result_type = element_type.as_ref()
+                    .map(|t| format!("vector<{}>", t))
+                    .unwrap_or_else(|| "vector<?>".to_string());
+                command_result_types.push(vec![result_type]);
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "MakeMoveVec",
+                    "element_type": element_type,
+                    "element_count": elements.len(),
+                    "valid": type_valid
+                }));
+            }
+            PtbCommand::Publish { modules, dependencies } => {
+                use base64::Engine;
+                let mut cmd_valid = true;
+                let mut cmd_errors: Vec<String> = Vec::new();
+
+                // Validate base64 modules
+                for (j, b64) in modules.iter().enumerate() {
+                    if base64::engine::general_purpose::STANDARD.decode(b64).is_err() {
+                        cmd_valid = false;
+                        cmd_errors.push(format!("Invalid base64 in module {}", j));
+                    }
+                }
+
+                // Validate dependency addresses
+                for dep in dependencies {
+                    if AccountAddress::from_hex_literal(dep).is_err() {
+                        cmd_valid = false;
+                        cmd_errors.push(format!("Invalid dependency ID: {}", dep));
+                    }
+                }
+
+                if !cmd_errors.is_empty() {
+                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                }
+
+                // Publish returns (UpgradeCap)
+                command_result_types.push(vec!["0x2::package::UpgradeCap".to_string()]);
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "Publish",
+                    "module_count": modules.len(),
+                    "dependency_count": dependencies.len(),
+                    "valid": cmd_valid,
+                    "errors": cmd_errors
+                }));
+            }
+            PtbCommand::Upgrade { modules, package, .. } => {
+                use base64::Engine;
+                let mut cmd_valid = true;
+                let mut cmd_errors: Vec<String> = Vec::new();
+
+                // Validate base64 modules
+                for (j, b64) in modules.iter().enumerate() {
+                    if base64::engine::general_purpose::STANDARD.decode(b64).is_err() {
+                        cmd_valid = false;
+                        cmd_errors.push(format!("Invalid base64 in module {}", j));
+                    }
+                }
+
+                // Validate package address
+                if AccountAddress::from_hex_literal(package).is_err() {
+                    cmd_valid = false;
+                    cmd_errors.push(format!("Invalid package ID: {}", package));
+                }
+
+                if !cmd_errors.is_empty() {
+                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                }
+
+                // Upgrade returns (UpgradeReceipt)
+                command_result_types.push(vec!["0x2::package::UpgradeReceipt".to_string()]);
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "Upgrade",
+                    "module_count": modules.len(),
+                    "package": package,
+                    "valid": cmd_valid,
+                    "errors": cmd_errors
+                }));
+            }
+            PtbCommand::Receive { object_id, object_type } => {
+                let mut cmd_valid = true;
+                let mut cmd_errors: Vec<String> = Vec::new();
+
+                // Validate object ID
+                if AccountAddress::from_hex_literal(object_id).is_err() {
+                    cmd_valid = false;
+                    cmd_errors.push(format!("Invalid object ID: {}", object_id));
+                }
+
+                // Validate type if provided
+                let result_type = if let Some(type_str) = object_type {
+                    if crate::benchmark::tx_replay::parse_type_tag(type_str).is_err() {
+                        cmd_valid = false;
+                        cmd_errors.push(format!("Invalid object type: {}", type_str));
+                        "?".to_string()
+                    } else {
+                        type_str.clone()
+                    }
+                } else {
+                    "?".to_string()
+                };
+
+                if !cmd_errors.is_empty() {
+                    validation_errors.extend(cmd_errors.iter().map(|e| format!("Command {}: {}", i, e)));
+                }
+
+                // Receive returns the object
+                command_result_types.push(vec![result_type]);
+
+                command_info.push(serde_json::json!({
+                    "index": i,
+                    "type": "Receive",
+                    "object_id": object_id,
+                    "object_type": object_type,
+                    "valid": cmd_valid,
+                    "errors": cmd_errors
+                }));
+            }
+        }
+    }
+
+    // Additional validation: check Result references are valid
+    // Helper to validate a PtbArg reference
+    let validate_arg_reference = |arg: &PtbArg, cmd_idx: usize, errors: &mut Vec<String>| {
+        match arg {
+            PtbArg::Input(idx) => {
+                if *idx >= inputs.len() {
+                    errors.push(format!(
+                        "Command {}: Input({}) references non-existent input (only {} inputs)",
+                        cmd_idx, idx, inputs.len()
+                    ));
+                }
+            }
+            PtbArg::Result { cmd: result_cmd, idx: result_idx } => {
+                if *result_cmd >= cmd_idx {
+                    errors.push(format!(
+                        "Command {}: Result(cmd={}, idx={}) references command {} which hasn't executed yet (forward reference)",
+                        cmd_idx, result_cmd, result_idx, result_cmd
+                    ));
+                } else if *result_cmd < command_result_types.len() {
+                    let result_count = command_result_types[*result_cmd].len();
+                    if *result_idx >= result_count {
+                        errors.push(format!(
+                            "Command {}: Result(cmd={}, idx={}) references return index {} but command {} only returns {} values",
+                            cmd_idx, result_cmd, result_idx, result_idx, result_cmd, result_count
+                        ));
+                    }
+                }
+            }
+        }
+    };
+
+    // Re-validate command args for reference validity
+    for (i, cmd) in commands.iter().enumerate() {
+        let mut ref_errors: Vec<String> = Vec::new();
+        match cmd {
+            PtbCommand::MoveCall { args, .. } => {
+                for arg in args {
+                    validate_arg_reference(arg, i, &mut ref_errors);
+                }
+            }
+            PtbCommand::TransferObjects { objects, recipient } => {
+                for obj in objects {
+                    validate_arg_reference(obj, i, &mut ref_errors);
+                }
+                validate_arg_reference(recipient, i, &mut ref_errors);
+            }
+            PtbCommand::SplitCoins { coin, amounts } => {
+                validate_arg_reference(coin, i, &mut ref_errors);
+                for amt in amounts {
+                    validate_arg_reference(amt, i, &mut ref_errors);
+                }
+            }
+            PtbCommand::MergeCoins { target, sources } => {
+                validate_arg_reference(target, i, &mut ref_errors);
+                for src in sources {
+                    validate_arg_reference(src, i, &mut ref_errors);
+                }
+            }
+            PtbCommand::MakeMoveVec { elements, .. } => {
+                for elem in elements {
+                    validate_arg_reference(elem, i, &mut ref_errors);
+                }
+            }
+            _ => {}
+        }
+        validation_errors.extend(ref_errors);
+    }
+
+    // Build response
+    let is_valid = validation_errors.is_empty();
+
+    // Include result type tracking in response
+    let result_type_info: Vec<serde_json::Value> = command_result_types
+        .iter()
+        .enumerate()
+        .map(|(idx, types)| serde_json::json!({
+            "command_index": idx,
+            "return_types": types
+        }))
+        .collect();
+
+    if is_valid {
+        SandboxResponse::success_with_data(serde_json::json!({
+            "valid": true,
+            "input_count": inputs.len(),
+            "command_count": commands.len(),
+            "inputs": input_types,
+            "commands": command_info,
+            "result_types": result_type_info
+        }))
+    } else {
+        SandboxResponse::success_with_data(serde_json::json!({
+            "valid": false,
+            "error_count": validation_errors.len(),
+            "errors": validation_errors,
+            "inputs": input_types,
+            "commands": command_info,
+            "result_types": result_type_info
+        }))
+    }
+}
+
 /// Build transaction effects response from internal effects.
 fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -> TransactionEffectsResponse {
     use crate::benchmark::ptb::{Owner, ObjectChange};
@@ -1488,6 +2084,15 @@ fn build_effects_response(effects: &crate::benchmark::ptb::TransactionEffects) -
                     object_type: type_to_string(object_type),
                     owner: owner_to_string(owner),
                     version: 1,
+                });
+            }
+            ObjectChange::Transferred { id, recipient, object_type, .. } => {
+                // Transferred objects show up as mutated with new owner
+                mutated.push(ObjectEffectResponse {
+                    id: id.to_hex_literal(),
+                    object_type: type_to_string(object_type),
+                    owner: format!("address:{}", recipient.to_hex_literal()),
+                    version: 2,
                 });
             }
         }
@@ -2703,7 +3308,7 @@ fn execute_list_cached_objects(
 }
 
 // ============================================================================
-// Utility Tools (migrated from llm_tools.rs)
+// Utility Tools
 // ============================================================================
 
 fn execute_generate_id(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
@@ -3159,6 +3764,203 @@ fn parse_address_string(s: &str) -> Result<AccountAddress, String> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(AccountAddress::new(arr))
+}
+
+// =============================================================================
+// Event Query Functions
+// =============================================================================
+
+fn execute_list_events(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Listing all events ({})", env.event_count());
+    }
+
+    let events: Vec<EventResponse> = env.get_all_events()
+        .iter()
+        .map(|e| EventResponse {
+            event_type: e.type_tag.clone(),
+            data_hex: hex::encode(&e.data),
+            sequence: e.sequence,
+        })
+        .collect();
+
+    let count = events.len();
+    SandboxResponse::success_with_data(serde_json::json!({
+        "events": events,
+        "count": count
+    }))
+}
+
+fn execute_get_events_by_type(env: &SimulationEnvironment, type_prefix: &str, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting events by type prefix: {}", type_prefix);
+    }
+
+    let events: Vec<EventResponse> = env.get_events_by_type(type_prefix)
+        .iter()
+        .map(|e| EventResponse {
+            event_type: e.type_tag.clone(),
+            data_hex: hex::encode(&e.data),
+            sequence: e.sequence,
+        })
+        .collect();
+
+    let count = events.len();
+    SandboxResponse::success_with_data(serde_json::json!({
+        "events": events,
+        "count": count,
+        "type_prefix": type_prefix
+    }))
+}
+
+fn execute_get_last_tx_events(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting events from last transaction");
+    }
+
+    let events: Vec<EventResponse> = env.get_last_tx_events()
+        .iter()
+        .map(|e| EventResponse {
+            event_type: e.type_tag.clone(),
+            data_hex: hex::encode(&e.data),
+            sequence: e.sequence,
+        })
+        .collect();
+
+    let count = events.len();
+    SandboxResponse::success_with_data(serde_json::json!({
+        "events": events,
+        "count": count
+    }))
+}
+
+fn execute_clear_events(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Clearing all events");
+    }
+
+    let previous_count = env.event_count();
+    env.clear_events();
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "cleared": true,
+        "previous_count": previous_count
+    }))
+}
+
+// =============================================================================
+// Shared Object Versioning Functions
+// =============================================================================
+
+fn execute_get_lamport_clock(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting lamport clock value");
+    }
+
+    let clock = env.lamport_clock();
+    SandboxResponse::success_with_data(serde_json::json!({
+        "lamport_clock": clock,
+        "description": "Current lamport clock value used for shared object versioning"
+    }))
+}
+
+fn execute_get_shared_object_info(
+    env: &SimulationEnvironment,
+    object_id: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Getting shared object info for: {}", object_id);
+    }
+
+    // Parse object ID
+    let id = match parse_address_string(object_id) {
+        Ok(addr) => addr,
+        Err(e) => {
+            return SandboxResponse::error_with_category(
+                format!("Invalid object ID: {}", e),
+                "ParseError".to_string(),
+            );
+        }
+    };
+
+    // Get the object
+    let obj = match env.get_object(&id) {
+        Some(o) => o,
+        None => {
+            return SandboxResponse::error_with_category(
+                format!("Object not found: {}", object_id),
+                "ObjectNotFound".to_string(),
+            );
+        }
+    };
+
+    // Check if object is shared
+    if !obj.is_shared {
+        return SandboxResponse::success_with_data(serde_json::json!({
+            "object_id": object_id,
+            "is_shared": false,
+            "version": obj.version,
+            "type": format!("{}", obj.type_tag),
+            "message": "Object is not shared"
+        }));
+    }
+
+    // Get lock status for this object
+    let lock_info = env.get_lock_for_object(&id);
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "object_id": object_id,
+        "is_shared": true,
+        "version": obj.version,
+        "type": format!("{}", obj.type_tag),
+        "is_locked": lock_info.is_some(),
+        "lock_info": lock_info.map(|lock| serde_json::json!({
+            "version": lock.version,
+            "is_mutable": lock.is_mutable,
+            "transaction_id": lock.transaction_id
+        })),
+        "lamport_clock": env.lamport_clock()
+    }))
+}
+
+fn execute_list_shared_locks(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    if verbose {
+        eprintln!("Listing shared object locks");
+    }
+
+    let locks = env.list_shared_locks();
+    let lock_list: Vec<serde_json::Value> = locks
+        .iter()
+        .map(|lock| {
+            serde_json::json!({
+                "object_id": lock.object_id.to_hex_literal(),
+                "version": lock.version,
+                "is_mutable": lock.is_mutable,
+                "transaction_id": lock.transaction_id
+            })
+        })
+        .collect();
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "locks": lock_list,
+        "count": lock_list.len(),
+        "lamport_clock": env.lamport_clock()
+    }))
+}
+
+fn execute_advance_lamport_clock(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    let previous = env.lamport_clock();
+    let new_value = env.advance_lamport_clock();
+
+    if verbose {
+        eprintln!("Advanced lamport clock: {} -> {}", previous, new_value);
+    }
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "previous_value": previous,
+        "new_value": new_value
+    }))
 }
 
 /// Generate unified schema of all available sandbox tools.

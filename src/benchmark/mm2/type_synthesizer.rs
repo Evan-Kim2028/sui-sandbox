@@ -130,34 +130,9 @@ impl TypeContext {
     }
 
     /// Convert a TypeTag to its canonical string representation.
+    /// Delegates to the canonical implementation in types module.
     pub fn type_tag_to_string(tag: &TypeTag) -> String {
-        match tag {
-            TypeTag::Bool => "bool".to_string(),
-            TypeTag::U8 => "u8".to_string(),
-            TypeTag::U16 => "u16".to_string(),
-            TypeTag::U32 => "u32".to_string(),
-            TypeTag::U64 => "u64".to_string(),
-            TypeTag::U128 => "u128".to_string(),
-            TypeTag::U256 => "u256".to_string(),
-            TypeTag::Address => "address".to_string(),
-            TypeTag::Signer => "signer".to_string(),
-            TypeTag::Vector(inner) => format!("vector<{}>", Self::type_tag_to_string(inner)),
-            TypeTag::Struct(s) => {
-                let base = format!(
-                    "{}::{}::{}",
-                    s.address.to_hex_literal(),
-                    s.module,
-                    s.name
-                );
-                if s.type_params.is_empty() {
-                    base
-                } else {
-                    let params: Vec<String> =
-                        s.type_params.iter().map(Self::type_tag_to_string).collect();
-                    format!("{}<{}>", base, params.join(", "))
-                }
-            }
-        }
+        crate::benchmark::types::format_type_tag(tag)
     }
 }
 
@@ -606,6 +581,137 @@ impl<'a> TypeSynthesizer<'a> {
                         description: "VecSet(empty)".to_string(), type_args: Vec::new(),
                     }));
                 }
+                // linked_table::LinkedTable<K, V> - UID + size + head + tail
+                ("linked_table", "LinkedTable") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&0u64.to_le_bytes()); // size: u64
+                    bytes.push(0); // head: Option<K> = None
+                    bytes.push(0); // tail: Option<K> = None
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "LinkedTable(empty)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // object_table::ObjectTable<K, V> - UID + size
+                ("object_table", "ObjectTable") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&0u64.to_le_bytes()); // size: u64
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "ObjectTable(empty)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // object_bag::ObjectBag - UID + size
+                ("object_bag", "ObjectBag") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&0u64.to_le_bytes()); // size: u64
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "ObjectBag(empty)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // priority_queue::PriorityQueue<T> - UID + entries (empty vector)
+                ("priority_queue", "PriorityQueue") => {
+                    let mut bytes = Vec::new();
+                    bytes.push(0); // entries: vector<Entry<T>> - empty
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "PriorityQueue(empty)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // dynamic_field - store marker types
+                ("dynamic_field", "Field") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    // name + value are generic, synthesize minimally
+                    bytes.push(0); // placeholder for name (empty)
+                    bytes.push(0); // placeholder for value (empty)
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "Field(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // kiosk::Kiosk - NFT marketplace object
+                ("kiosk", "Kiosk") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&1_000_000_000u64.to_le_bytes()); // profits: Balance<SUI> (1 SUI)
+                    bytes.extend_from_slice(&[0u8; 32]); // owner: address
+                    bytes.extend_from_slice(&0u32.to_le_bytes()); // item_count: u32
+                    bytes.push(0); // allow_extensions: bool = false
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "Kiosk(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // kiosk::KioskOwnerCap - capability for kiosk
+                ("kiosk", "KioskOwnerCap") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&[0u8; 32]); // for: ID
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "KioskOwnerCap(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // transfer_policy::TransferPolicy<T>
+                ("transfer_policy", "TransferPolicy") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&0u64.to_le_bytes()); // balance: Balance<SUI>
+                    bytes.push(0); // rules: VecSet<TypeName> - empty
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "TransferPolicy(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // transfer_policy::TransferPolicyCap<T>
+                ("transfer_policy", "TransferPolicyCap") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.extend_from_slice(&[0u8; 32]); // policy_id: ID
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "TransferPolicyCap(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // coin::CoinMetadata<T>
+                ("coin", "CoinMetadata") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    bytes.push(9); // decimals: u8 (default 9 like SUI)
+                    bytes.push(0); // name: String (empty)
+                    bytes.push(0); // symbol: String (empty)
+                    bytes.push(0); // description: String (empty)
+                    bytes.push(0); // icon_url: Option<Url> = None
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "CoinMetadata(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
+                // coin::DenyCap<T> - deny list capability
+                ("coin", "DenyCap") => {
+                    let mut bytes = Vec::new();
+                    bytes.extend_from_slice(&[0u8; 32]); // id: UID
+                    return Ok(Some(SynthesisResult {
+                        bytes,
+                        is_stub: true,
+                        description: "DenyCap(synthetic)".to_string(), type_args: Vec::new(),
+                    }));
+                }
                 // coin::Coin<T> - id + balance
                 // Use 1 SUI (1_000_000_000 MIST) as default to avoid zero-balance failures
                 ("coin", "Coin") => {
@@ -1034,6 +1140,190 @@ impl<'a> TypeSynthesizer<'a> {
 
         false
     }
+
+    /// Synthesize a type with detailed error reporting.
+    /// Returns both the result (or error) and diagnostic information about why it failed.
+    pub fn synthesize_with_diagnostics(
+        &mut self,
+        type_str: &str,
+    ) -> (Result<SynthesisResult>, SynthesisDiagnostic) {
+        let mut diagnostic = SynthesisDiagnostic::new(type_str);
+
+        // Track what we're trying to do
+        diagnostic.is_primitive = matches!(
+            type_str,
+            "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "u256" | "address"
+        );
+        diagnostic.is_vector = type_str.starts_with("vector<");
+        diagnostic.is_option = type_str.contains("::Option<");
+
+        // Check if it's a framework type
+        if type_str.contains("::") {
+            let base_type = if let Some(idx) = type_str.find('<') {
+                &type_str[..idx]
+            } else {
+                type_str
+            };
+            let parts: Vec<&str> = base_type.split("::").collect();
+            if parts.len() >= 3 {
+                if let Ok(addr) = AccountAddress::from_hex_literal(parts[0]) {
+                    let addr_str = format!("{}", addr);
+                    diagnostic.is_framework_type = addr_str == SUI_FRAMEWORK
+                        || addr_str == MOVE_STDLIB
+                        || addr_str == SUI_SYSTEM;
+                    diagnostic.module_path = Some(format!("{}::{}", parts[0], parts[1]));
+                    diagnostic.struct_name = Some(parts[2].to_string());
+
+                    // Check if struct exists in model
+                    diagnostic.struct_found_in_model =
+                        self.model.get_struct(&addr, parts[1], parts[2]).is_some();
+                }
+            }
+        }
+
+        // Try synthesis
+        let result = self.synthesize_type_str(type_str, 0);
+        if let Err(ref e) = result {
+            diagnostic.error_message = Some(e.to_string());
+        }
+
+        (result, diagnostic)
+    }
+
+    /// Try to synthesize a type with fallback strategies.
+    /// If the primary synthesis fails, tries simpler fallbacks.
+    pub fn synthesize_with_fallback(&mut self, type_str: &str) -> SynthesisResult {
+        // Try primary synthesis
+        if let Ok(result) = self.synthesize_type_str(type_str, 0) {
+            return result;
+        }
+
+        // Fallback 1: If it's a generic type, try synthesizing without generics
+        if type_str.contains('<') {
+            if let Some(base_idx) = type_str.find('<') {
+                let base = &type_str[..base_idx];
+                if let Ok(result) = self.synthesize_type_str(base, 0) {
+                    return SynthesisResult {
+                        bytes: result.bytes,
+                        is_stub: true,
+                        description: format!("fallback {} (generics ignored)", type_str),
+                        type_args: Vec::new(),
+                    };
+                }
+            }
+        }
+
+        // Fallback 2: Return a minimal stub (UID only for objects)
+        if type_str.contains("::") {
+            return SynthesisResult {
+                bytes: [0u8; 32].to_vec(), // Just a UID
+                is_stub: true,
+                description: format!("minimal_stub({})", type_str),
+                type_args: Vec::new(),
+            };
+        }
+
+        // Fallback 3: For primitives we don't recognize, default to u64
+        SynthesisResult {
+            bytes: 0u64.to_le_bytes().to_vec(),
+            is_stub: true,
+            description: format!("fallback_u64({})", type_str),
+            type_args: Vec::new(),
+        }
+    }
+
+    /// Get the default value for a primitive type.
+    pub fn default_primitive(type_str: &str) -> Option<Vec<u8>> {
+        match type_str {
+            "bool" => Some(vec![0]),
+            "u8" => Some(vec![0]),
+            "u16" => Some(0u16.to_le_bytes().to_vec()),
+            "u32" => Some(0u32.to_le_bytes().to_vec()),
+            "u64" => Some(0u64.to_le_bytes().to_vec()),
+            "u128" => Some(0u128.to_le_bytes().to_vec()),
+            "u256" => Some([0u8; 32].to_vec()),
+            "address" => Some([0u8; 32].to_vec()),
+            _ => None,
+        }
+    }
+
+    /// Estimate the BCS size of a type (for debugging/analysis).
+    /// Returns None if size cannot be determined statically.
+    pub fn estimate_size(&self, type_str: &str) -> Option<usize> {
+        match type_str {
+            "bool" | "u8" => Some(1),
+            "u16" => Some(2),
+            "u32" => Some(4),
+            "u64" => Some(8),
+            "u128" => Some(16),
+            "u256" | "address" => Some(32),
+            _ if type_str.starts_with("vector<") => Some(1), // Minimum (empty vector)
+            _ if type_str.contains("::Option<") => Some(1), // Minimum (None)
+            _ => None, // Complex types need full synthesis
+        }
+    }
+}
+
+/// Diagnostic information from a synthesis attempt.
+#[derive(Debug, Clone, Default)]
+pub struct SynthesisDiagnostic {
+    /// The type being synthesized.
+    pub type_str: String,
+    /// Whether the type is a primitive.
+    pub is_primitive: bool,
+    /// Whether the type is a vector.
+    pub is_vector: bool,
+    /// Whether the type is an Option.
+    pub is_option: bool,
+    /// Whether the type is from the Sui framework.
+    pub is_framework_type: bool,
+    /// The module path (if parsed).
+    pub module_path: Option<String>,
+    /// The struct name (if parsed).
+    pub struct_name: Option<String>,
+    /// Whether the struct was found in the model.
+    pub struct_found_in_model: bool,
+    /// Error message if synthesis failed.
+    pub error_message: Option<String>,
+}
+
+impl SynthesisDiagnostic {
+    /// Create a new diagnostic for a type.
+    pub fn new(type_str: &str) -> Self {
+        Self {
+            type_str: type_str.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Check if the type should be synthesizable.
+    pub fn should_be_synthesizable(&self) -> bool {
+        self.is_primitive || self.is_vector || self.is_option
+            || self.is_framework_type || self.struct_found_in_model
+    }
+
+    /// Get a human-readable reason why synthesis might have failed.
+    pub fn failure_reason(&self) -> String {
+        if let Some(ref err) = self.error_message {
+            return err.clone();
+        }
+
+        if !self.type_str.contains("::") {
+            return format!("Unknown type format: {}", self.type_str);
+        }
+
+        if !self.is_framework_type && !self.struct_found_in_model {
+            if let Some(ref path) = self.module_path {
+                return format!(
+                    "Struct not found in model: {}::{}",
+                    path,
+                    self.struct_name.as_deref().unwrap_or("?")
+                );
+            }
+        }
+
+        "Unknown failure reason".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1257,5 +1547,110 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "0x2::coin::Coin<0x2::sui::SUI>");
         assert_eq!(args[1], "0x2::balance::Balance<0x2::usdc::USDC>");
+    }
+
+    #[test]
+    fn test_linked_table_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        let result = synthesizer.synthesize_type_str("0x2::linked_table::LinkedTable<address, u64>", 0);
+        assert!(result.is_ok(), "LinkedTable synthesis should succeed");
+        let result = result.unwrap();
+        // LinkedTable: UID (32) + size (8) + head Option (1) + tail Option (1) = 42 bytes
+        assert_eq!(result.bytes.len(), 42, "LinkedTable should be 42 bytes");
+        assert!(result.is_stub);
+    }
+
+    #[test]
+    fn test_kiosk_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        let result = synthesizer.synthesize_type_str("0x2::kiosk::Kiosk", 0);
+        assert!(result.is_ok(), "Kiosk synthesis should succeed");
+        let result = result.unwrap();
+        assert!(result.bytes.len() > 32, "Kiosk should have substantial data");
+        assert!(result.is_stub);
+    }
+
+    #[test]
+    fn test_synthesis_with_diagnostics() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Test successful synthesis
+        let (result, diagnostic) = synthesizer.synthesize_with_diagnostics("u64");
+        assert!(result.is_ok());
+        assert!(diagnostic.is_primitive);
+        assert!(diagnostic.should_be_synthesizable());
+
+        // Test framework type
+        let (result, diagnostic) = synthesizer.synthesize_with_diagnostics("0x2::coin::Coin<0x2::sui::SUI>");
+        assert!(result.is_ok());
+        assert!(diagnostic.is_framework_type);
+        assert!(diagnostic.should_be_synthesizable());
+    }
+
+    #[test]
+    fn test_synthesis_with_fallback() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        // Test successful synthesis (no fallback needed)
+        let result = synthesizer.synthesize_with_fallback("u64");
+        assert!(!result.is_stub);
+        assert_eq!(result.bytes.len(), 8);
+
+        // Test fallback for unknown type
+        let result = synthesizer.synthesize_with_fallback("0xdeadbeef::unknown::Type");
+        assert!(result.is_stub);
+        assert!(result.description.contains("minimal_stub"));
+    }
+
+    #[test]
+    fn test_default_primitive() {
+        assert_eq!(TypeSynthesizer::default_primitive("bool"), Some(vec![0]));
+        assert_eq!(TypeSynthesizer::default_primitive("u8"), Some(vec![0]));
+        assert_eq!(TypeSynthesizer::default_primitive("u64"), Some(0u64.to_le_bytes().to_vec()));
+        assert_eq!(TypeSynthesizer::default_primitive("address"), Some([0u8; 32].to_vec()));
+        assert_eq!(TypeSynthesizer::default_primitive("unknown"), None);
+    }
+
+    #[test]
+    fn test_estimate_size() {
+        let model = create_test_model();
+        let synthesizer = TypeSynthesizer::new(&model);
+
+        assert_eq!(synthesizer.estimate_size("bool"), Some(1));
+        assert_eq!(synthesizer.estimate_size("u64"), Some(8));
+        assert_eq!(synthesizer.estimate_size("address"), Some(32));
+        assert_eq!(synthesizer.estimate_size("vector<u8>"), Some(1)); // Empty vector minimum
+        assert_eq!(synthesizer.estimate_size("0x1::option::Option<u64>"), Some(1)); // None minimum
+        assert_eq!(synthesizer.estimate_size("0x2::coin::Coin<0x2::sui::SUI>"), None); // Complex type
+    }
+
+    #[test]
+    fn test_coin_metadata_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        let result = synthesizer.synthesize_type_str("0x2::coin::CoinMetadata<0x2::sui::SUI>", 0);
+        assert!(result.is_ok(), "CoinMetadata synthesis should succeed");
+        let result = result.unwrap();
+        assert!(result.bytes.len() >= 36, "CoinMetadata should have at least UID + decimals + empty strings");
+        assert!(result.is_stub);
+    }
+
+    #[test]
+    fn test_transfer_policy_synthesis() {
+        let model = create_test_model();
+        let mut synthesizer = TypeSynthesizer::new(&model);
+
+        let result = synthesizer.synthesize_type_str("0x2::transfer_policy::TransferPolicy<0xabc::nft::NFT>", 0);
+        assert!(result.is_ok(), "TransferPolicy synthesis should succeed");
+        let result = result.unwrap();
+        assert!(result.bytes.len() >= 41, "TransferPolicy should have UID + balance + rules");
+        assert!(result.is_stub);
     }
 }

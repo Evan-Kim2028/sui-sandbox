@@ -178,6 +178,16 @@ pub struct Args {
     #[arg(long, default_value_t = 5000)]
     pub retry_max_ms: u64,
 
+    /// RPC request timeout in seconds.
+    /// Prevents hanging on slow or unresponsive endpoints.
+    #[arg(long, default_value_t = 60)]
+    pub rpc_timeout_secs: u64,
+
+    /// Maximum RPC response size in bytes (default: 50MB).
+    /// Protects against excessive memory usage from large responses.
+    #[arg(long, default_value_t = 52_428_800)]
+    pub rpc_max_response_bytes: usize,
+
     /// Skip packages whose output JSON already exists in --out-dir.
     #[arg(long, default_value_t = false)]
     pub skip_existing: bool,
@@ -476,9 +486,39 @@ pub struct PtbEvalArgs {
     pub show_healing: bool,
 }
 
+/// Interactive sandbox execution for LLM integration.
+///
+/// Uses a JSON protocol for input/output. Each request is a JSON object with an
+/// "action" field specifying the operation. Send `{"action": "list_available_tools"}`
+/// to discover all available operations.
+///
+/// # Example: Interactive mode
+///
+/// ```bash
+/// sui-move-interface-extractor sandbox-exec --interactive
+/// ```
+///
+/// Then send JSON requests on stdin, one per line:
+///
+/// ```json
+/// {"action": "list_available_tools"}
+/// {"action": "load_module", "bytecode_path": "./module.mv"}
+/// {"action": "call_function", "package": "0x2", "module": "coin", "function": "value", "args": ["..."]}
+/// ```
+///
+/// # Common actions
+///
+/// - `list_available_tools` - Discover all available operations
+/// - `load_module` - Load a Move module from bytecode
+/// - `create_object` - Create a simulated object
+/// - `call_function` - Execute a Move function
+/// - `execute_ptb` - Execute a programmable transaction block
+/// - `get_state` - Get current sandbox state
 #[derive(Debug, Parser)]
 pub struct SandboxExecArgs {
     /// JSON file containing the execution request (or "-" for stdin).
+    /// The JSON must include an "action" field. Use `{"action": "list_available_tools"}`
+    /// to discover all available operations.
     #[arg(long, value_name = "FILE", default_value = "-")]
     pub input: PathBuf,
 
@@ -511,6 +551,7 @@ pub struct SandboxExecArgs {
 
     /// Run in interactive mode (read JSON lines from stdin, write responses to stdout).
     /// Each line should be a complete JSON request. Responses are written as JSON lines.
+    /// Use Ctrl+D to exit.
     #[arg(long, default_value_t = false)]
     pub interactive: bool,
 }
@@ -529,5 +570,77 @@ impl RetryConfig {
             initial_backoff: Duration::from_millis(args.retry_initial_ms),
             max_backoff: Duration::from_millis(args.retry_max_ms),
         }
+    }
+}
+
+impl Args {
+    /// Validate CLI arguments for conflicts and requirements.
+    /// Returns an error message if validation fails.
+    pub fn validate(&self) -> Result<(), String> {
+        // Check corpus mode conflicts
+        if self.corpus_module_names_only {
+            if self.corpus_rpc_compare {
+                return Err("--corpus-module-names-only is not compatible with --corpus-rpc-compare".to_string());
+            }
+            if self.corpus_interface_compare {
+                return Err("--corpus-module-names-only is not compatible with --corpus-interface-compare".to_string());
+            }
+        }
+
+        // corpus_interface_compare requires corpus_rpc_compare
+        if self.corpus_interface_compare && !self.corpus_rpc_compare {
+            return Err("--corpus-interface-compare requires --corpus-rpc-compare".to_string());
+        }
+
+        // emit_compare_report requires compare_bytecode_rpc
+        if self.emit_compare_report.is_some() && !self.compare_bytecode_rpc {
+            return Err("--emit-compare-report requires --compare-bytecode-rpc".to_string());
+        }
+
+        // Validate concurrency is at least 1
+        if self.concurrency == 0 {
+            return Err("--concurrency must be at least 1".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+impl TxReplayArgs {
+    /// Validate transaction replay arguments for conflicts and requirements.
+    pub fn validate(&self) -> Result<(), String> {
+        // --from-cache requires --cache-dir
+        if self.from_cache && self.cache_dir.is_none() {
+            return Err("--from-cache requires --cache-dir".to_string());
+        }
+
+        // --parallel requires --cache-dir and --from-cache
+        if self.parallel {
+            if self.cache_dir.is_none() {
+                return Err("--parallel requires --cache-dir".to_string());
+            }
+            if !self.from_cache {
+                return Err("--parallel requires --from-cache".to_string());
+            }
+        }
+
+        // Either --digest or --recent must be specified (unless --from-cache)
+        if self.digest.is_none() && self.recent.is_none() && !self.from_cache {
+            return Err("either --digest, --recent, or --from-cache must be specified".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+impl PtbEvalArgs {
+    /// Validate PTB evaluation arguments for conflicts.
+    pub fn validate(&self) -> Result<(), String> {
+        // --framework-only and --third-party-only are mutually exclusive
+        if self.framework_only && self.third_party_only {
+            return Err("--framework-only and --third-party-only are mutually exclusive".to_string());
+        }
+
+        Ok(())
     }
 }

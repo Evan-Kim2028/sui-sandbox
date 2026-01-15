@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
 use std::sync::Arc;
+use std::time::Duration;
 use sui_sdk::SuiClientBuilder;
 
 use sui_move_interface_extractor::args::{Args, Command};
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
     if args.bytecode_corpus_root.is_some() {
         run_corpus(
             &args,
-            Arc::new(SuiClientBuilder::default().build(&args.rpc_url).await?),
+            Arc::new(build_sui_client(&args).await?),
         )
         .await?;
         return Ok(());
@@ -68,7 +69,7 @@ async fn main() -> Result<()> {
         ));
     }
 
-    let client = Arc::new(SuiClientBuilder::default().build(&args.rpc_url).await?);
+    let client = Arc::new(build_sui_client(&args).await?);
 
     let is_batch = args.out_dir.is_some()
         || args.package_ids_file.is_some()
@@ -84,11 +85,20 @@ async fn main() -> Result<()> {
     run_single(&args, client, package_id).await
 }
 
+/// Build a SuiClient with timeout configuration from CLI args.
+async fn build_sui_client(args: &Args) -> Result<sui_sdk::SuiClient> {
+    SuiClientBuilder::default()
+        .request_timeout(Duration::from_secs(args.rpc_timeout_secs))
+        .build(&args.rpc_url)
+        .await
+        .map_err(|e| anyhow!("Failed to build Sui client: {}", e))
+}
+
 /// Run transaction replay mode.
 fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Result<()> {
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
     use sui_move_interface_extractor::benchmark::tx_replay::{
-        TransactionCache, CachedTransaction, download_transactions, replay_parallel
+        TransactionCache, CachedTransaction, download_transactions, download_single_transaction, replay_parallel
     };
 
     // Create fetcher
@@ -114,6 +124,23 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
 
         // Download-only mode
         if args.download_only {
+            // Single digest mode
+            if let Some(digest) = &args.digest {
+                let fetched = download_single_transaction(
+                    &fetcher,
+                    &cache,
+                    digest,
+                    true,  // fetch_packages
+                    true,  // fetch_objects
+                    args.verbose,
+                )?;
+                if fetched {
+                    eprintln!("Cached transaction {} (total cached: {})", digest, cache.count());
+                }
+                return Ok(());
+            }
+
+            // Recent transactions mode
             let count = args.recent.unwrap_or(100);
             let new_count = download_transactions(
                 &fetcher,
