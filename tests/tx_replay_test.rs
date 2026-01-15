@@ -3745,6 +3745,7 @@ Respond with ONLY valid JSON:
 
 /// Debug a single artipedia::update_points transaction to understand failure
 #[test]
+#[ignore] // Requires .tx-cache with mainnet transaction data
 fn test_debug_artipedia_transaction() {
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
     use sui_move_interface_extractor::benchmark::tx_replay::{
@@ -3886,6 +3887,7 @@ fn test_debug_artipedia_transaction() {
 /// 2. Discover struct definitions
 /// 3. Find registry/admin structs
 #[test]
+#[ignore] // Requires .tx-cache with mainnet transaction data
 fn test_simulation_introspection_artipedia() {
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
@@ -3974,6 +3976,7 @@ fn test_simulation_introspection_artipedia() {
 /// End-to-end test: synthesize an object, inject it, and execute a transaction.
 /// This proves the full flow works: introspect → synthesize → inject → execute
 #[test]
+#[ignore] // Requires .tx-cache with mainnet transaction data
 fn test_synthesis_inject_execute_e2e() {
     use move_core_types::identifier::Identifier;
     use sui_move_interface_extractor::benchmark::ptb::{
@@ -4124,6 +4127,7 @@ fn test_synthesis_inject_execute_e2e() {
 /// Test bytecode disassembly functionality.
 /// This demonstrates how to use disassembly to understand abort locations.
 #[test]
+#[ignore] // Requires .tx-cache with mainnet transaction data
 fn test_bytecode_disassembly() {
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
