@@ -578,3 +578,659 @@ fn test_ptb_transfer_objects() {
     let effects = effects.unwrap();
     assert!(effects.success, "TransferObjects should succeed: {:?}", effects.error);
 }
+
+/// Test cross-PTB transfer and receive: objects transferred in one PTB
+/// can be received in a subsequent PTB.
+#[test]
+fn test_cross_ptb_transfer_receive() {
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, ObjectInput, Argument, ObjectChange};
+    use move_core_types::account_address::AccountAddress;
+    use move_core_types::language_storage::TypeTag;
+
+    // Create a simulation environment
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Create a test coin with some balance
+    let coin_id = env.create_sui_coin(1_000_000_000).expect("create coin"); // 1 SUI
+
+    // Recipient address for the transfer
+    let recipient = AccountAddress::from_hex_literal("0xabc0000000000000000000000000000000000000000000000000000000000001")
+        .expect("parse recipient");
+
+    // PTB 1: Transfer the coin to the recipient
+    let coin_obj = env.get_object(&coin_id).expect("get coin");
+    let coin_type = coin_obj.type_tag.clone();
+    let coin_input = InputValue::Object(ObjectInput::Owned {
+        id: coin_id,
+        bytes: coin_obj.bcs_bytes.clone(),
+        type_tag: Some(coin_type.clone()),
+    });
+
+    let result1 = env.execute_ptb(
+        vec![
+            coin_input,
+            InputValue::Pure(recipient.to_vec()), // destination address
+        ],
+        vec![
+            Command::TransferObjects {
+                objects: vec![Argument::Input(0)],
+                address: Argument::Input(1),
+            },
+        ],
+    );
+
+    assert!(result1.success, "PTB1 (transfer) should succeed: {:?}", result1.raw_error);
+
+    // Verify the transfer was recorded
+    let effects1 = result1.effects.expect("effects");
+
+    // Debug: print all object changes
+    println!("Object changes: {:?}", effects1.object_changes);
+    println!("Transferred list: {:?}", effects1.transferred);
+
+    assert!(
+        !effects1.transferred.is_empty(),
+        "Should have transferred objects"
+    );
+    assert!(
+        effects1.transferred.contains(&coin_id),
+        "Coin should be in transferred list"
+    );
+
+    // Verify the object change includes the transfer with bytes
+    let transfer_change = effects1.object_changes.iter().find(|c| {
+        matches!(c, ObjectChange::Transferred { id, .. } if *id == coin_id)
+    });
+    assert!(transfer_change.is_some(), "Should have Transferred change for the coin");
+
+    // Verify the coin is now in pending_receives
+    assert!(
+        env.has_pending_receives(recipient),
+        "Recipient should have pending receives"
+    );
+
+    let pending = env.get_pending_receives(recipient);
+    assert_eq!(pending.len(), 1, "Should have exactly one pending receive");
+    assert_eq!(pending[0].0, coin_id, "Pending receive should be our coin");
+
+    // Verify the coin is no longer in top-level objects
+    assert!(
+        env.get_object(&coin_id).is_none(),
+        "Coin should not be in top-level objects after transfer"
+    );
+
+    // PTB 2: Receive the coin as the recipient
+    // First, set the sender to be the recipient
+    env.set_sender(recipient);
+
+    let result2 = env.execute_ptb(
+        vec![],
+        vec![
+            Command::Receive {
+                object_id: coin_id,
+                object_type: Some(coin_type.clone()),
+            },
+        ],
+    );
+
+    assert!(result2.success, "PTB2 (receive) should succeed: {:?}", result2.raw_error);
+
+    // Verify the pending receive was consumed
+    assert!(
+        !env.has_pending_receives(recipient),
+        "Pending receives should be cleared after receive"
+    );
+
+    println!("Cross-PTB transfer/receive test passed!");
+}
+
+/// Test that receiving without a prior transfer fails.
+#[test]
+fn test_receive_without_transfer_fails() {
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::ptb::Command;
+    use move_core_types::account_address::AccountAddress;
+
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Try to receive an object that was never transferred
+    let fake_object_id = AccountAddress::from_hex_literal("0xdeadbeef00000000000000000000000000000000000000000000000000000001")
+        .expect("parse id");
+
+    let result = env.execute_ptb(
+        vec![],
+        vec![
+            Command::Receive {
+                object_id: fake_object_id,
+                object_type: None,
+            },
+        ],
+    );
+
+    assert!(
+        !result.success,
+        "Receive without prior transfer should fail"
+    );
+    assert!(
+        result.raw_error.as_ref().map_or(false, |e| e.contains("not found in pending receives")),
+        "Error should mention pending receives: {:?}",
+        result.raw_error
+    );
+}
+
+/// Test multiple transfers in a single PTB and receiving them separately.
+#[test]
+fn test_multi_transfer_receive() {
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, ObjectInput, Argument};
+    use move_core_types::account_address::AccountAddress;
+
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Create two coins
+    let coin1_id = env.create_sui_coin(1_000_000_000).expect("create coin1");
+    let coin2_id = env.create_sui_coin(2_000_000_000).expect("create coin2");
+
+    // Two different recipients
+    let recipient1 = AccountAddress::from_hex_literal("0xaaa0000000000000000000000000000000000000000000000000000000000001")
+        .expect("parse recipient1");
+    let recipient2 = AccountAddress::from_hex_literal("0xbbb0000000000000000000000000000000000000000000000000000000000002")
+        .expect("parse recipient2");
+
+    let coin1_obj = env.get_object(&coin1_id).expect("get coin1");
+    let coin2_obj = env.get_object(&coin2_id).expect("get coin2");
+
+    // Transfer both coins to different recipients in a single PTB
+    let result1 = env.execute_ptb(
+        vec![
+            InputValue::Object(ObjectInput::Owned { id: coin1_id, bytes: coin1_obj.bcs_bytes.clone(), type_tag: Some(coin1_obj.type_tag.clone()) }),
+            InputValue::Object(ObjectInput::Owned { id: coin2_id, bytes: coin2_obj.bcs_bytes.clone(), type_tag: Some(coin2_obj.type_tag.clone()) }),
+            InputValue::Pure(recipient1.to_vec()),
+            InputValue::Pure(recipient2.to_vec()),
+        ],
+        vec![
+            Command::TransferObjects {
+                objects: vec![Argument::Input(0)],
+                address: Argument::Input(2),
+            },
+            Command::TransferObjects {
+                objects: vec![Argument::Input(1)],
+                address: Argument::Input(3),
+            },
+        ],
+    );
+
+    assert!(result1.success, "Multi-transfer PTB should succeed: {:?}", result1.raw_error);
+
+    // Verify both recipients have pending receives
+    assert!(env.has_pending_receives(recipient1), "Recipient1 should have pending");
+    assert!(env.has_pending_receives(recipient2), "Recipient2 should have pending");
+
+    // Receive as recipient1
+    env.set_sender(recipient1);
+    let result2 = env.execute_ptb(
+        vec![],
+        vec![Command::Receive { object_id: coin1_id, object_type: None }],
+    );
+    assert!(result2.success, "Recipient1 receive should succeed: {:?}", result2.raw_error);
+
+    // Verify recipient1's pending is cleared but recipient2's is still there
+    assert!(!env.has_pending_receives(recipient1), "Recipient1 should have no pending after receive");
+    assert!(env.has_pending_receives(recipient2), "Recipient2 should still have pending");
+
+    // Receive as recipient2
+    env.set_sender(recipient2);
+    let result3 = env.execute_ptb(
+        vec![],
+        vec![Command::Receive { object_id: coin2_id, object_type: None }],
+    );
+    assert!(result3.success, "Recipient2 receive should succeed: {:?}", result3.raw_error);
+
+    assert!(!env.has_pending_receives(recipient2), "Recipient2 should have no pending after receive");
+
+    println!("Multi-transfer/receive test passed!");
+}
+
+/// Test ValidatePTB request type - validates PTB structure without execution.
+#[test]
+fn test_validate_ptb() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{
+        execute_request, SandboxRequest, PtbInput, PtbCommand, PtbArg,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+
+    let mut env = SimulationEnvironment::new().expect("Failed to create environment");
+
+    // Test 1: Valid PTB with pure inputs
+    let valid_ptb = SandboxRequest::ValidatePtb {
+        inputs: vec![
+            PtbInput::Pure {
+                value: serde_json::json!(1000u64),
+                value_type: "u64".to_string(),
+            },
+            PtbInput::Pure {
+                value: serde_json::json!("0x2"),
+                value_type: "address".to_string(),
+            },
+        ],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_args: vec!["0x2::sui::SUI".to_string()],
+                args: vec![PtbArg::Input(0)],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &valid_ptb, false);
+    assert!(response.success, "Valid PTB should validate successfully: {:?}", response.error);
+
+    if let Some(data) = response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(valid, "PTB should be marked as valid");
+
+        let input_count = data.get("input_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert_eq!(input_count, 2, "Should have 2 inputs");
+
+        let command_count = data.get("command_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert_eq!(command_count, 1, "Should have 1 command");
+    }
+
+    // Test 2: Invalid package address
+    let invalid_pkg = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "not_an_address".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_args: vec![],
+                args: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &invalid_pkg, false);
+    assert!(response.success, "Validate should return success status even for invalid PTBs");
+
+    if let Some(data) = response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with invalid package should be marked invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        assert!(errors.is_some(), "Should have errors array");
+        assert!(!errors.unwrap().is_empty(), "Should have at least one error");
+    }
+
+    // Test 3: Invalid type argument
+    let invalid_type = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_args: vec!["invalid::type::BAD".to_string()],
+                args: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &invalid_type, false);
+    if let Some(data) = response.data {
+        // Type arg parsing may fail or succeed depending on strictness
+        // Just verify we get a structured response
+        assert!(data.get("commands").is_some(), "Should have commands info");
+    }
+
+    // Test 4: MakeMoveVec with invalid element type
+    let invalid_vec_type = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MakeMoveVec {
+                element_type: Some("bad!!!type".to_string()),
+                elements: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &invalid_vec_type, false);
+    if let Some(data) = response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "MakeMoveVec with invalid type should be invalid");
+    }
+
+    println!("ValidatePTB tests passed!");
+}
+
+/// Test enhanced ValidatePTB with deep validation features.
+#[test]
+fn test_validate_ptb_enhanced() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{
+        execute_request, SandboxRequest, PtbInput, PtbCommand, PtbArg,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+
+    let mut env = SimulationEnvironment::new().expect("Failed to create environment");
+
+    // Test 1: Wrong argument count - coin::value takes 1 arg (coin), not 2
+    let wrong_arg_count = SandboxRequest::ValidatePtb {
+        inputs: vec![
+            PtbInput::Pure {
+                value: serde_json::json!(100u64),
+                value_type: "u64".to_string(),
+            },
+            PtbInput::Pure {
+                value: serde_json::json!(200u64),
+                value_type: "u64".to_string(),
+            },
+        ],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_args: vec!["0x2::sui::SUI".to_string()],
+                args: vec![PtbArg::Input(0), PtbArg::Input(1)], // Wrong: 2 args instead of 1
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &wrong_arg_count, false);
+    assert!(response.success, "Validate should return success status");
+
+    if let Some(data) = &response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with wrong arg count should be invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        assert!(errors.is_some(), "Should have errors");
+        let err_strs: Vec<String> = errors.unwrap().iter()
+            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+            .collect();
+        let has_arg_count_error = err_strs.iter().any(|e| e.contains("Argument count mismatch"));
+        assert!(has_arg_count_error, "Should report argument count mismatch: {:?}", err_strs);
+    }
+
+    // Test 2: Wrong type argument count - coin::value takes 1 type param, not 2
+    let wrong_type_count = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_args: vec![
+                    "0x2::sui::SUI".to_string(),
+                    "0x2::sui::SUI".to_string(), // Wrong: 2 type args instead of 1
+                ],
+                args: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &wrong_type_count, false);
+    if let Some(data) = &response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with wrong type arg count should be invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        let err_strs: Vec<String> = errors.unwrap_or(&vec![]).iter()
+            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+            .collect();
+        let has_type_count_error = err_strs.iter().any(|e| e.contains("Type argument count mismatch"));
+        assert!(has_type_count_error, "Should report type argument count mismatch: {:?}", err_strs);
+    }
+
+    // Test 3: Forward reference - Result(1, 0) before command 1 executes
+    let forward_ref = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "zero".to_string(),
+                type_args: vec!["0x2::sui::SUI".to_string()],
+                args: vec![PtbArg::Result { cmd: 1, idx: 0 }], // Forward reference!
+            },
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "zero".to_string(),
+                type_args: vec!["0x2::sui::SUI".to_string()],
+                args: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &forward_ref, false);
+    if let Some(data) = &response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with forward reference should be invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        let err_strs: Vec<String> = errors.unwrap_or(&vec![]).iter()
+            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+            .collect();
+        let has_forward_error = err_strs.iter().any(|e| e.contains("forward reference"));
+        assert!(has_forward_error, "Should report forward reference error: {:?}", err_strs);
+    }
+
+    // Test 4: Invalid input reference - Input(5) when only 2 inputs
+    let bad_input_ref = SandboxRequest::ValidatePtb {
+        inputs: vec![
+            PtbInput::Pure {
+                value: serde_json::json!(100u64),
+                value_type: "u64".to_string(),
+            },
+        ],
+        commands: vec![
+            PtbCommand::TransferObjects {
+                objects: vec![PtbArg::Input(5)], // Out of bounds
+                recipient: PtbArg::Input(0),
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &bad_input_ref, false);
+    if let Some(data) = &response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with out-of-bounds input should be invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        let err_strs: Vec<String> = errors.unwrap_or(&vec![]).iter()
+            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+            .collect();
+        let has_input_error = err_strs.iter().any(|e| e.contains("non-existent input"));
+        assert!(has_input_error, "Should report non-existent input error: {:?}", err_strs);
+    }
+
+    // Test 5: Function not found
+    let no_func = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "this_function_does_not_exist".to_string(),
+                type_args: vec![],
+                args: vec![],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &no_func, false);
+    if let Some(data) = &response.data {
+        let valid = data.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
+        assert!(!valid, "PTB with non-existent function should be invalid");
+
+        let errors = data.get("errors").and_then(|v| v.as_array());
+        let err_strs: Vec<String> = errors.unwrap_or(&vec![]).iter()
+            .filter_map(|e| e.as_str().map(|s| s.to_string()))
+            .collect();
+        let has_not_found = err_strs.iter().any(|e| e.contains("not found"));
+        assert!(has_not_found, "Should report function not found: {:?}", err_strs);
+    }
+
+    // Test 6: Check result_types are returned
+    let with_results = SandboxRequest::ValidatePtb {
+        inputs: vec![],
+        commands: vec![
+            PtbCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "zero".to_string(),
+                type_args: vec!["0x2::sui::SUI".to_string()],
+                args: vec![],
+            },
+            PtbCommand::SplitCoins {
+                coin: PtbArg::Result { cmd: 0, idx: 0 },
+                amounts: vec![
+                    PtbArg::Input(0), // Would need proper inputs in real scenario
+                ],
+            },
+        ],
+    };
+
+    let response = execute_request(&mut env, &with_results, false);
+    if let Some(data) = &response.data {
+        // Check that result_types is populated
+        let result_types = data.get("result_types").and_then(|v| v.as_array());
+        assert!(result_types.is_some(), "Should have result_types array");
+        let types = result_types.unwrap();
+        assert_eq!(types.len(), 2, "Should have result types for 2 commands");
+    }
+
+    println!("Enhanced ValidatePTB tests passed!");
+}
+
+/// Test event querying APIs.
+#[test]
+fn test_event_query_apis() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{
+        execute_request, SandboxRequest,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+
+    let mut env = SimulationEnvironment::new().expect("Failed to create environment");
+
+    // Initially, there should be no events
+    let list_events = SandboxRequest::ListEvents;
+    let response = execute_request(&mut env, &list_events, false);
+    assert!(response.success, "ListEvents should succeed");
+
+    if let Some(data) = &response.data {
+        let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(count, 0, "Initially should have no events");
+    }
+
+    // Get last tx events (should be empty initially)
+    let last_tx_events = SandboxRequest::GetLastTxEvents;
+    let response = execute_request(&mut env, &last_tx_events, false);
+    assert!(response.success, "GetLastTxEvents should succeed");
+
+    if let Some(data) = &response.data {
+        let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(count, 0, "Last tx events should be empty initially");
+    }
+
+    // Get events by type (should be empty)
+    let events_by_type = SandboxRequest::GetEventsByType {
+        type_prefix: "0x2::coin".to_string(),
+    };
+    let response = execute_request(&mut env, &events_by_type, false);
+    assert!(response.success, "GetEventsByType should succeed");
+
+    if let Some(data) = &response.data {
+        let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(count, 0, "Events by type should be empty initially");
+    }
+
+    // Clear events (should work even when empty)
+    let clear_events = SandboxRequest::ClearEvents;
+    let response = execute_request(&mut env, &clear_events, false);
+    assert!(response.success, "ClearEvents should succeed");
+
+    if let Some(data) = &response.data {
+        let cleared = data.get("cleared").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(cleared, "Should indicate events were cleared");
+
+        let previous_count = data.get("previous_count").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(previous_count, 0, "Previous count should be 0");
+    }
+
+    println!("Event query API tests passed!");
+}
+
+/// Test shared object versioning APIs.
+#[test]
+fn test_shared_object_versioning_apis() {
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{
+        execute_request, SandboxRequest,
+    };
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+
+    let mut env = SimulationEnvironment::new().expect("Failed to create environment");
+
+    // Test 1: Get lamport clock (should start at 0)
+    let get_clock = SandboxRequest::GetLamportClock;
+    let response = execute_request(&mut env, &get_clock, false);
+    assert!(response.success, "GetLamportClock should succeed");
+
+    if let Some(data) = &response.data {
+        let clock = data.get("lamport_clock").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(clock, 0, "Lamport clock should start at 0");
+    }
+
+    // Test 2: Advance lamport clock
+    let advance_clock = SandboxRequest::AdvanceLamportClock;
+    let response = execute_request(&mut env, &advance_clock, false);
+    assert!(response.success, "AdvanceLamportClock should succeed");
+
+    if let Some(data) = &response.data {
+        let previous = data.get("previous_value").and_then(|v| v.as_u64()).unwrap_or(999);
+        let new_value = data.get("new_value").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert_eq!(previous, 0, "Previous clock should be 0");
+        assert_eq!(new_value, 1, "New clock should be 1");
+    }
+
+    // Test 3: List shared locks (should be empty initially)
+    let list_locks = SandboxRequest::ListSharedLocks;
+    let response = execute_request(&mut env, &list_locks, false);
+    assert!(response.success, "ListSharedLocks should succeed");
+
+    if let Some(data) = &response.data {
+        let count = data.get("count").and_then(|v| v.as_u64()).unwrap_or(999);
+        assert_eq!(count, 0, "Should have no locks initially");
+
+        let clock = data.get("lamport_clock").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert_eq!(clock, 1, "Lamport clock should be 1 after advance");
+    }
+
+    // Test 4: Get shared object info for Clock object (0x6)
+    let get_shared_info = SandboxRequest::GetSharedObjectInfo {
+        object_id: "0x6".to_string(),
+    };
+    let response = execute_request(&mut env, &get_shared_info, false);
+    assert!(response.success, "GetSharedObjectInfo should succeed");
+
+    if let Some(data) = &response.data {
+        let is_shared = data.get("is_shared").and_then(|v| v.as_bool()).unwrap_or(false);
+        assert!(is_shared, "Clock (0x6) should be a shared object");
+
+        let version = data.get("version").and_then(|v| v.as_u64());
+        assert!(version.is_some(), "Should have a version");
+    }
+
+    // Test 5: Get info for non-existent object
+    let get_nonexistent = SandboxRequest::GetSharedObjectInfo {
+        object_id: "0xdeadbeef".to_string(),
+    };
+    let response = execute_request(&mut env, &get_nonexistent, false);
+    assert!(!response.success, "GetSharedObjectInfo for non-existent should fail");
+
+    println!("Shared object versioning API tests passed!");
+}

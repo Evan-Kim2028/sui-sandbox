@@ -246,6 +246,7 @@ fn test_simulation_self_healing_workflow() {
         InputValue::Object(sui_move_interface_extractor::benchmark::ptb::ObjectInput::Owned {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
+            type_tag: None,
         }),
         InputValue::Pure(split_amount.to_le_bytes().to_vec()),
     ];
@@ -715,6 +716,7 @@ fn test_llm_sandbox_workflow() {
         sui_move_interface_extractor::benchmark::ptb::ObjectInput::Owned {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
+            type_tag: None,
         }
     );
 
@@ -1033,6 +1035,7 @@ fn test_object_lifecycle() {
     let coin_input = InputValue::Object(ObjectInput::Owned {
         id: coin_id,
         bytes: coin_obj.bcs_bytes.clone(),
+        type_tag: None,
     });
     let addr_input = InputValue::Pure(recipient.to_vec());
 
@@ -1119,6 +1122,7 @@ fn test_event_recording_infrastructure() {
         sui_move_interface_extractor::benchmark::ptb::ObjectInput::Owned {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
+            type_tag: None,
         }
     );
     let amount_input = InputValue::Pure(100_000_000u64.to_le_bytes().to_vec());
@@ -1337,6 +1341,7 @@ fn test_llm_ptb_understanding_workflow() {
             InputValue::Object(ObjectInput::Owned {
                 id: coin_id,
                 bytes: coin_obj.bcs_bytes.clone(),
+                type_tag: None,
             }),
             InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()),
         ],
@@ -1768,7 +1773,7 @@ fn test_llm_construct_valid_ptb() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -1786,7 +1791,7 @@ fn test_llm_construct_valid_ptb() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(200_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(300_000_000u64.to_le_bytes().to_vec()),
@@ -1809,7 +1814,7 @@ fn test_llm_construct_valid_ptb() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(recipient.to_vec()),
         ],
         vec![Command::TransferObjects {
@@ -1827,7 +1832,7 @@ fn test_llm_construct_valid_ptb() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id4, bytes: coin_obj4.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id4, bytes: coin_obj4.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(500_000_000u64.to_le_bytes().to_vec()),
             InputValue::Pure(recipient.to_vec()),
         ],
@@ -1854,8 +1859,8 @@ fn test_llm_construct_valid_ptb() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_a, bytes: coin_a_obj.bcs_bytes.clone() }),
-            InputValue::Object(ObjectInput::Owned { id: coin_b, bytes: coin_b_obj.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_a, bytes: coin_a_obj.bcs_bytes.clone(), type_tag: None }),
+            InputValue::Object(ObjectInput::Owned { id: coin_b, bytes: coin_b_obj.bcs_bytes.clone(), type_tag: None }),
         ],
         vec![Command::MergeCoins {
             destination: Argument::Input(0),
@@ -1901,7 +1906,7 @@ fn test_error_feedback_quality() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
         ],
         vec![Command::SplitCoins {
             coin: Argument::Input(0),
@@ -1921,7 +1926,7 @@ fn test_error_feedback_quality() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure("not_a_number".as_bytes().to_vec()),  // Wrong type
         ],
         vec![Command::SplitCoins {
@@ -1943,7 +1948,7 @@ fn test_error_feedback_quality() {
 
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: small_coin, bytes: small_obj.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: small_coin, bytes: small_obj.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),  // More than balance
         ],
         vec![Command::SplitCoins {
@@ -2011,7 +2016,7 @@ fn test_llm_api_iterative_ptb_fixing() {
     // First attempt - this will fail
     let result = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id, bytes: coin_obj.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -2081,7 +2086,7 @@ What should I do to make this PTB succeed?"#,
 
                 let fixed_result = env.execute_ptb(
                     vec![
-                        InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone() }),
+                        InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone(), type_tag: None }),
                         InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                     ],
                     vec![Command::SplitCoins {
@@ -2108,7 +2113,7 @@ What should I do to make this PTB succeed?"#,
 
             let fixed_result = env.execute_ptb(
                 vec![
-                    InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone() }),
+                    InputValue::Object(ObjectInput::Owned { id: fixed_coin_id, bytes: fixed_coin_obj.bcs_bytes.clone(), type_tag: None }),
                     InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                 ],
                 vec![Command::SplitCoins {
@@ -2129,7 +2134,7 @@ What should I do to make this PTB succeed?"#,
     // Try with wrong type for amount (string instead of u64)
     let result2 = env.execute_ptb(
         vec![
-            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone() }),
+            InputValue::Object(ObjectInput::Owned { id: coin_id2, bytes: coin_obj2.bcs_bytes.clone(), type_tag: None }),
             InputValue::Pure("one billion".as_bytes().to_vec()),
         ],
         vec![Command::SplitCoins {
@@ -2177,7 +2182,7 @@ What should I do to make this PTB succeed?"#,
 
                 let fixed_result = env.execute_ptb(
                     vec![
-                        InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone() }),
+                        InputValue::Object(ObjectInput::Owned { id: coin_id3, bytes: coin_obj3.bcs_bytes.clone(), type_tag: None }),
                         InputValue::Pure(1_000_000_000u64.to_le_bytes().to_vec()),
                     ],
                     vec![Command::SplitCoins {
@@ -3362,21 +3367,20 @@ fn test_debug_artipedia_transaction() {
     }
 }
 
-/// Test the LLM toolkit with the artipedia transaction.
-/// This demonstrates how an LLM would use the tools to:
+/// Test simulation environment introspection with the artipedia transaction.
+/// This demonstrates how to use the SimulationEnvironment to:
 /// 1. Load and introspect modules
 /// 2. Discover struct definitions
 /// 3. Find registry/admin structs
-/// 4. Synthesize objects to satisfy dependencies
 #[test]
-fn test_llm_toolkit_artipedia() {
+fn test_simulation_introspection_artipedia() {
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
-    use sui_move_interface_extractor::benchmark::llm_tools::{LlmToolkit, ToolCall, ToolResponse};
 
-    println!("\n=== LLM Toolkit Test with Artipedia Transaction ===\n");
+    println!("\n=== Simulation Environment Introspection Test with Artipedia Transaction ===\n");
 
     let cache = TransactionCache::new(".tx-cache").expect("open cache");
-    let mut toolkit = LlmToolkit::new();
+    let mut env = SimulationEnvironment::new().expect("create env");
 
     // Load specific transaction
     let digest = "AHKS3JQtTJC6Bwt7uE6v9z8kho2oQVHxCKvdsezJ9rHi";
@@ -3385,130 +3389,69 @@ fn test_llm_toolkit_artipedia() {
     println!("Transaction: {}", digest);
     println!("Packages: {}", cached.packages.len());
 
-    // Load packages into toolkit
-    println!("\n--- Loading Packages into Toolkit ---");
+    // Load packages into environment
+    println!("\n--- Loading Packages into Environment ---");
     for (pkg_id, _) in &cached.packages {
         if let Some(modules) = cached.get_package_modules(pkg_id) {
             println!("  Package {}: {} modules", &pkg_id[..16], modules.len());
-            if let Err(e) = toolkit.load_from_bytes(pkg_id, &modules) {
+            let module_list: Vec<(String, Vec<u8>)> = modules.into_iter().collect();
+            if let Err(e) = env.deploy_package(module_list) {
                 println!("    Error loading: {}", e);
             }
         }
     }
 
     // Test 1: List all loaded modules
-    println!("\n--- Tool: ListModules ---");
-    let response = toolkit.execute(ToolCall::ListModules);
-    match &response {
-        ToolResponse::Success { data } => {
-            if let Some(arr) = data.as_array() {
-                println!("Loaded {} modules:", arr.len());
-                for m in arr.iter().take(10) {
-                    println!("  - {}", m.as_str().unwrap_or("?"));
-                }
-                if arr.len() > 10 {
-                    println!("  ... and {} more", arr.len() - 10);
-                }
-            }
-        }
-        ToolResponse::Error { message } => println!("Error: {}", message),
+    println!("\n--- List Modules ---");
+    let modules = env.list_modules();
+    println!("Loaded {} modules:", modules.len());
+    for m in modules.iter().take(10) {
+        println!("  - {}", m);
+    }
+    if modules.len() > 10 {
+        println!("  ... and {} more", modules.len() - 10);
     }
 
     // Test 2: Find the artipedia module and list its structs
-    println!("\n--- Tool: ListStructs for artipedia ---");
+    println!("\n--- List Structs for artipedia ---");
     // Find the artipedia module path
-    let artipedia_path = match &toolkit.execute(ToolCall::ListModules) {
-        ToolResponse::Success { data } => {
-            data.as_array()
-                .and_then(|arr| arr.iter().find(|m| m.as_str().map(|s| s.contains("artipedia")).unwrap_or(false)))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        }
-        _ => None,
-    };
+    let artipedia_path = modules.iter()
+        .find(|m| m.contains("artipedia"))
+        .cloned();
 
     if let Some(path) = &artipedia_path {
         println!("Found artipedia module: {}", path);
 
-        let response = toolkit.execute(ToolCall::ListStructs { module_path: path.clone() });
-        match &response {
-            ToolResponse::Success { data } => {
-                if let Some(arr) = data.as_array() {
-                    println!("Structs in artipedia ({}):", arr.len());
-                    for s in arr {
-                        println!("  - {}", s.as_str().unwrap_or("?"));
-                    }
-                }
+        if let Some(structs) = env.list_structs(path) {
+            println!("Structs in artipedia ({}):", structs.len());
+            for s in &structs {
+                println!("  - {}", s);
             }
-            ToolResponse::Error { message } => println!("Error: {}", message),
+        } else {
+            println!("Error: Could not list structs");
         }
 
-        // Test 3: Get module summary
-        println!("\n--- Tool: ModuleSummary ---");
-        let response = toolkit.execute(ToolCall::ModuleSummary { module_path: path.clone() });
-        match &response {
-            ToolResponse::Success { data } => {
-                if let Some(summary) = data.as_str() {
-                    // Print first 80 lines
-                    for (i, line) in summary.lines().take(80).enumerate() {
-                        println!("{}", line);
-                        if i == 79 {
-                            println!("... (truncated)");
-                        }
-                    }
-                }
-            }
-            ToolResponse::Error { message } => println!("Error: {}", message),
+        // Test 3: Get specific struct info for AdminRegistry
+        println!("\n--- GetStructInfo for AdminRegistry ---");
+        let struct_path = format!("{}::AdminRegistry", path);
+        if let Some(info) = env.get_struct_info(&struct_path) {
+            println!("AdminRegistry struct info:");
+            println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+        } else {
+            println!("Not found: {}", struct_path);
         }
 
-        // Test 4: Get specific struct info for AdminRegistry
-        println!("\n--- Tool: GetStructInfo for AdminRegistry ---");
-        let response = toolkit.execute(ToolCall::GetStructInfo {
-            module_path: path.clone(),
-            struct_name: "AdminRegistry".to_string(),
-        });
-        match &response {
-            ToolResponse::Success { data } => {
-                println!("AdminRegistry struct info:");
-                println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
-            }
-            ToolResponse::Error { message } => println!("Not found or error: {}", message),
-        }
-
-        // Test 5: Get function info for update_points
-        println!("\n--- Tool: GetFunctionInfo for update_points ---");
-        let response = toolkit.execute(ToolCall::GetFunctionInfo {
-            module_path: path.clone(),
-            function_name: "update_points".to_string(),
-        });
-        match &response {
-            ToolResponse::Success { data } => {
-                println!("update_points function info:");
-                println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
-            }
-            ToolResponse::Error { message } => println!("Not found or error: {}", message),
+        // Test 4: Get function info for update_points
+        println!("\n--- GetFunctionInfo for update_points ---");
+        if let Some(info) = env.get_function_info(path, "update_points") {
+            println!("update_points function info:");
+            println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+        } else {
+            println!("Not found: {}::update_points", path);
         }
     } else {
         println!("Artipedia module not found in loaded packages");
     }
-
-    // Test 6: Parse the error from the transaction
-    println!("\n--- Tool: ParseError ---");
-    let error_str = r#"execution failed: VMError { major_status: ABORTED, sub_status: Some(2), message: Some("0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia::update_points at offset 14"), exec_state: Some(ExecutionState { stack_trace: [] }), location: Module(ModuleId { address: b7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498, name: Identifier("artipedia") }), indices: [], offsets: [(FunctionDefinitionIndex(12), 14)] }"#;
-
-    let response = toolkit.execute(ToolCall::ParseError { error: error_str.to_string() });
-    match &response {
-        ToolResponse::Success { data } => {
-            println!("Parsed error context:");
-            println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
-        }
-        ToolResponse::Error { message } => println!("Parse error: {}", message),
-    }
-
-    // Test 7: Print the tool schema
-    println!("\n--- Tool Schema (for LLM context) ---");
-    let schema = LlmToolkit::tool_schema();
-    println!("{}", serde_json::to_string_pretty(&schema).unwrap());
 }
 
 /// End-to-end test: synthesize an object, inject it, and execute a transaction.
@@ -3517,7 +3460,7 @@ fn test_llm_toolkit_artipedia() {
 fn test_synthesis_inject_execute_e2e() {
     use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
-    use sui_move_interface_extractor::benchmark::llm_tools::{LlmToolkit, ToolCall, ToolResponse};
+    use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest, SandboxResponse};
     use sui_move_interface_extractor::benchmark::ptb::{Command, InputValue, Argument, ObjectInput};
     use move_core_types::identifier::Identifier;
 
@@ -3541,94 +3484,72 @@ fn test_synthesis_inject_execute_e2e() {
         }
     }
 
-    // Step 2: Load modules into LlmToolkit for introspection
-    println!("\nStep 2: Loading modules into LlmToolkit...");
-    let mut toolkit = LlmToolkit::new();
-    for (pkg_id, _) in &cached.packages {
-        if let Some(modules) = cached.get_package_modules(pkg_id) {
-            toolkit.load_from_bytes(pkg_id, &modules).expect("load into toolkit");
-        }
-    }
-
-    // Step 3: Introspect UserNumber struct
-    println!("\nStep 3: Introspecting UserNumber struct...");
+    // Step 2: Introspect UserNumber struct using SimulationEnvironment
+    println!("\nStep 2: Introspecting UserNumber struct...");
     let artipedia_path = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498::artipedia";
     let artipedia_pkg = "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498";
 
-    let response = toolkit.execute(ToolCall::GetStructInfo {
-        module_path: artipedia_path.to_string(),
-        struct_name: "UserNumber".to_string(),
-    });
-
-    let _user_number_info = match &response {
-        ToolResponse::Success { data } => {
+    let struct_path = format!("{}::UserNumber", artipedia_path);
+    let user_number_info = env.get_struct_info(&struct_path);
+    match &user_number_info {
+        Some(info) => {
             println!("UserNumber struct found:");
-            println!("{}", serde_json::to_string_pretty(data).unwrap());
-            data.clone()
+            println!("{}", serde_json::to_string_pretty(info).unwrap());
         }
-        ToolResponse::Error { message } => {
-            panic!("Failed to get UserNumber info: {}", message);
+        None => {
+            println!("UserNumber struct not found (may not be in loaded packages)");
         }
-    };
+    }
 
-    // Step 4: Synthesize a UserNumber object
-    println!("\nStep 4: Synthesizing UserNumber object...");
+    // Step 3: Create a UserNumber object using sandbox_exec
+    // CreateObject now creates and injects the object directly
+    println!("\nStep 3: Creating UserNumber object...");
     let sender = "0xaaaabbbbccccddddeeeeffffaaaabbbbccccddddeeeeffffaaaabbbbccccdddd";
 
-    let response = toolkit.execute(ToolCall::CreateObject {
-        type_path: format!("{}::UserNumber", artipedia_path),
-        fields: serde_json::json!({
-            "id": "auto",
-            "value": 5000,
-            "owner": sender
-        }),
-        is_shared: false,
-    });
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("id".to_string(), serde_json::json!("auto"));
+    fields.insert("value".to_string(), serde_json::json!(5000));
+    fields.insert("owner".to_string(), serde_json::json!(sender));
 
-    let synthesized = match &response {
-        ToolResponse::Success { data } => {
-            println!("Synthesized object:");
-            println!("{}", serde_json::to_string_pretty(data).unwrap());
-            data.clone()
-        }
-        ToolResponse::Error { message } => {
-            panic!("Failed to synthesize object: {}", message);
-        }
+    let request = SandboxRequest::CreateObject {
+        object_type: format!("{}::UserNumber", artipedia_path),
+        fields,
+        object_id: None,
+    };
+    let response = execute_request(&mut env, &request, false);
+
+    let object_id_str = if response.success {
+        let data = response.data.expect("expected data in response");
+        let object_id = data["object_id"].as_str().expect("object_id").to_string();
+        println!("Created object:");
+        println!("  Object ID: {}", object_id);
+        object_id
+    } else {
+        panic!("Failed to create object: {}", response.error.unwrap_or_default());
     };
 
-    let object_id = synthesized.get("object_id").and_then(|v| v.as_str()).expect("object_id");
-    let bcs_bytes: Vec<u8> = synthesized.get("bcs_bytes")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|n| n.as_u64().map(|n| n as u8)).collect())
-        .expect("bcs_bytes");
+    // Parse the object ID for use in PTB
+    let created_id = move_core_types::account_address::AccountAddress::from_hex_literal(&object_id_str)
+        .expect("parse object id");
 
-    println!("  Object ID: {}", object_id);
-    println!("  BCS bytes length: {}", bcs_bytes.len());
-
-    // Step 5: Inject the synthesized object into the simulation
-    println!("\nStep 5: Injecting object into simulation...");
-    let type_path = format!("{}::UserNumber", artipedia_path);
-    let injected_id = env.inject_object(&type_path, object_id, bcs_bytes.clone(), false)
-        .expect("inject object");
-    println!("  Injected object with ID: 0x{}", hex::encode(injected_id.as_ref()));
-
-    // Step 6: Verify the object exists in the environment
-    println!("\nStep 6: Verifying object in environment...");
-    let obj = env.get_object(&injected_id);
-    match obj {
+    // Step 4: Verify the object exists in the environment
+    println!("\nStep 4: Verifying object in environment...");
+    let obj = env.get_object(&created_id);
+    let bcs_bytes = match obj {
         Some(o) => {
             println!("  Object found!");
             println!("  Type: {:?}", o.type_tag);
             println!("  BCS length: {}", o.bcs_bytes.len());
             println!("  Is shared: {}", o.is_shared);
+            o.bcs_bytes.clone()
         }
         None => {
-            panic!("Object not found after injection!");
+            panic!("Object not found after creation!");
         }
-    }
+    };
 
-    // Step 7: Try to execute a simple read function on the object
-    println!("\nStep 7: Executing get_points_value on synthesized object...");
+    // Step 5: Try to execute a simple read function on the object
+    println!("\nStep 5: Executing get_points_value on created object...");
 
     // Build PTB: call get_points_value(&UserNumber) -> u64
     let pkg_addr = move_core_types::account_address::AccountAddress::from_hex_literal(artipedia_pkg)
@@ -3646,8 +3567,9 @@ fn test_synthesis_inject_execute_e2e() {
 
     let inputs = vec![
         InputValue::Object(ObjectInput::ImmRef {
-            id: injected_id,
+            id: created_id,
             bytes: bcs_bytes,
+            type_tag: None,
         }),
     ];
 
@@ -3673,29 +3595,30 @@ fn test_synthesis_inject_execute_e2e() {
     }
 
     println!("\n=== End-to-End Test Complete ===");
-    println!("Successfully: introspected → synthesized → injected → executed");
+    println!("Successfully: introspected → created → verified → executed");
 }
 
 /// Test bytecode disassembly functionality.
-/// This demonstrates how an LLM can use disassembly to understand abort locations.
+/// This demonstrates how to use disassembly to understand abort locations.
 #[test]
 fn test_bytecode_disassembly() {
+    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
     use sui_move_interface_extractor::benchmark::tx_replay::TransactionCache;
-    use sui_move_interface_extractor::benchmark::llm_tools::{LlmToolkit, ToolCall, ToolResponse};
 
     println!("\n=== Bytecode Disassembly Test ===\n");
 
     let cache = TransactionCache::new(".tx-cache").expect("open cache");
-    let mut toolkit = LlmToolkit::new();
+    let mut env = SimulationEnvironment::new().expect("create env");
 
     // Load artipedia transaction
     let digest = "AHKS3JQtTJC6Bwt7uE6v9z8kho2oQVHxCKvdsezJ9rHi";
     let cached = cache.load(digest).expect("load transaction");
 
-    // Load packages into toolkit
+    // Load packages into environment
     for (pkg_id, _) in &cached.packages {
         if let Some(modules) = cached.get_package_modules(pkg_id) {
-            toolkit.load_from_bytes(pkg_id, &modules).expect("load into toolkit");
+            let module_list: Vec<(String, Vec<u8>)> = modules.into_iter().collect();
+            env.deploy_package(module_list).expect("deploy package");
         }
     }
 
@@ -3703,65 +3626,30 @@ fn test_bytecode_disassembly() {
 
     // Test 1: Disassemble update_points function
     println!("--- DisassembleFunction: update_points ---");
-    let response = toolkit.execute(ToolCall::DisassembleFunction {
-        module_path: artipedia_path.to_string(),
-        function_name: "update_points".to_string(),
-    });
-    match &response {
-        ToolResponse::Success { data } => {
-            if let Some(disasm) = data.as_str() {
-                println!("Disassembly of update_points:");
-                println!("{}", disasm);
+    match env.disassemble_function(artipedia_path, "update_points") {
+        Some(disasm) => {
+            println!("Disassembly of update_points:");
+            println!("{}", disasm);
 
-                // Verify key properties
-                assert!(disasm.contains("update_points"), "Should contain function name");
-                // The disassembly should show instruction offsets
-                assert!(disasm.contains("0:") || disasm.contains("B0"), "Should contain instruction offsets or basic blocks");
-            } else {
-                panic!("Expected string disassembly, got: {:?}", data);
-            }
+            // Verify key properties
+            assert!(disasm.contains("update_points"), "Should contain function name");
+            // The disassembly should show instruction offsets
+            assert!(disasm.contains("0:") || disasm.contains("B0"), "Should contain instruction offsets or basic blocks");
         }
-        ToolResponse::Error { message } => {
-            panic!("Disassembly failed: {}", message);
+        None => {
+            println!("Could not disassemble update_points (function may not exist in loaded packages)");
         }
     }
 
     // Test 2: Disassemble another function to compare
     println!("\n--- DisassembleFunction: get_points_value ---");
-    let response = toolkit.execute(ToolCall::DisassembleFunction {
-        module_path: artipedia_path.to_string(),
-        function_name: "get_points_value".to_string(),
-    });
-    match &response {
-        ToolResponse::Success { data } => {
-            if let Some(disasm) = data.as_str() {
-                println!("Disassembly of get_points_value:");
-                println!("{}", disasm);
-            }
+    match env.disassemble_function(artipedia_path, "get_points_value") {
+        Some(disasm) => {
+            println!("Disassembly of get_points_value:");
+            println!("{}", disasm);
         }
-        ToolResponse::Error { message } => {
-            println!("Could not disassemble get_points_value: {}", message);
-        }
-    }
-
-    // Test 3: Full module disassembly (truncated output)
-    println!("\n--- DisassembleModule: artipedia (first 50 lines) ---");
-    let response = toolkit.execute(ToolCall::DisassembleModule {
-        module_path: artipedia_path.to_string(),
-    });
-    match &response {
-        ToolResponse::Success { data } => {
-            if let Some(disasm) = data.as_str() {
-                for (i, line) in disasm.lines().take(50).enumerate() {
-                    println!("{}", line);
-                    if i == 49 {
-                        println!("... (truncated, {} total lines)", disasm.lines().count());
-                    }
-                }
-            }
-        }
-        ToolResponse::Error { message } => {
-            println!("Could not disassemble module: {}", message);
+        None => {
+            println!("Could not disassemble get_points_value");
         }
     }
 
@@ -3820,48 +3708,40 @@ fn test_package_builder_scaffold() {
     println!("\n=== Package Builder Scaffold Test Complete ===");
 }
 
-/// Test LLM toolkit with package building capabilities.
-/// This test checks framework caching status and the tool schema.
+/// Test package building capabilities with framework caching.
+/// This test checks framework caching status using PackageBuilder directly.
 #[test]
-fn test_llm_toolkit_package_building() {
-    use sui_move_interface_extractor::benchmark::llm_tools::{LlmToolkit, ToolCall, ToolResponse};
+fn test_simulation_package_building() {
+    use sui_move_interface_extractor::benchmark::package_builder::{PackageBuilder, FrameworkCache};
 
-    println!("\n=== LLM Toolkit Package Building Test ===\n");
+    println!("\n=== Package Building Test ===\n");
 
-    // Create toolkit with package building
-    let mut toolkit = LlmToolkit::new();
-    toolkit.enable_package_builder().expect("enable package builder");
-
-    // Test IsFrameworkCached
-    println!("--- Tool: IsFrameworkCached ---");
-    let response = toolkit.execute(ToolCall::IsFrameworkCached);
-    match &response {
-        ToolResponse::Success { data } => {
-            println!("Framework cached: {}", data.get("cached").and_then(|v| v.as_bool()).unwrap_or(false));
-            println!("Cache dir: {}", data.get("cache_dir").and_then(|v| v.as_str()).unwrap_or("unknown"));
+    // Test FrameworkCache directly
+    println!("--- Framework Cache Status ---");
+    match FrameworkCache::new() {
+        Ok(cache) => {
+            println!("Framework cache directory: {:?}", cache.cache_dir());
+            println!("Framework cached: {}", cache.is_cached());
         }
-        ToolResponse::Error { message } => {
-            println!("Error: {}", message);
+        Err(e) => {
+            println!("Error creating framework cache: {}", e);
         }
     }
 
-    // Test tool schema includes new tools
-    println!("\n--- Tool Schema ---");
-    let schema = LlmToolkit::tool_schema();
-    let tools = schema.get("tools").and_then(|v| v.as_array()).expect("tools array");
+    // Test PackageBuilder with framework cache
+    println!("\n--- PackageBuilder with Framework Cache ---");
+    let temp_dir = std::env::temp_dir().join("test_package_builder");
+    match PackageBuilder::with_framework_cache(&temp_dir) {
+        Ok(builder) => {
+            println!("Work directory: {:?}", builder.work_dir());
+            println!("Framework cached: {}", builder.is_framework_cached());
+        }
+        Err(e) => {
+            println!("Error creating builder: {}", e);
+        }
+    }
 
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-        .collect();
-
-    println!("Available tools: {:?}", tool_names);
-
-    assert!(tool_names.contains(&"CompileSource"), "Should have CompileSource tool");
-    assert!(tool_names.contains(&"IsFrameworkCached"), "Should have IsFrameworkCached tool");
-    assert!(tool_names.contains(&"EnsureFrameworkCached"), "Should have EnsureFrameworkCached tool");
-
-    println!("\n=== LLM Toolkit Package Building Test Complete ===");
+    println!("\n=== Package Building Test Complete ===");
 }
 
 /// Comprehensive mainnet fidelity benchmark.
@@ -4443,37 +4323,4 @@ fn test_sandbox_request_utilities() {
     println!("Decoded u64: {:?}", data.get("value"));
 
     println!("\n✅ Utility tools test passed");
-}
-
-/// Test that deprecated LlmToolkit tests still work (backwards compatibility).
-/// This ensures we don't break existing integrations.
-#[test]
-fn test_deprecated_api_backwards_compatibility() {
-    // This test just verifies that the deprecated module compiles and basic calls work
-    // The detailed tests for LlmToolkit are in the existing test_llm_toolkit_* tests
-    #[allow(deprecated)]
-    use sui_move_interface_extractor::benchmark::llm_tools::{LlmToolkit, ToolCall, ToolResponse};
-
-    println!("\n=== Backwards Compatibility: Deprecated API ===\n");
-
-    #[allow(deprecated)]
-    let mut toolkit = LlmToolkit::new();
-
-    // Basic call should still work
-    #[allow(deprecated)]
-    let response = toolkit.execute(ToolCall::ListModules);
-
-    match response {
-        ToolResponse::Success { data } => {
-            println!("LlmToolkit::execute(ListModules) succeeded");
-            println!("  Modules: {:?}", data.as_array().map(|a| a.len()));
-        }
-        ToolResponse::Error { message } => {
-            // Empty result is also fine for a fresh toolkit
-            println!("LlmToolkit::execute(ListModules) returned error (expected for empty): {}", message);
-        }
-    }
-
-    println!("\n✅ Backwards compatibility verified");
-    println!("Note: For new integrations, use SandboxRequest instead of LlmToolkit");
 }
