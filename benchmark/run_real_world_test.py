@@ -17,7 +17,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 
@@ -127,7 +127,7 @@ class RealWorldTester:
             self.log(f"API health check error: {e}", "ERROR")
             return False
 
-    def list_packages_in_manifest(self) -> List[str]:
+    def list_packages_in_manifest(self) -> list[str]:
         """List package IDs from manifest"""
         try:
             manifest_path = Path(self.manifest)
@@ -151,7 +151,7 @@ class RealWorldTester:
 
     async def submit_task(
         self, model: str, samples: int = None, seed: int = None
-    ) -> tuple[bool, str, str, Dict[str, Any]]:
+    ) -> tuple[bool, str, str, dict[str, Any]]:
         """Submit benchmark task via API
 
         Returns:
@@ -217,7 +217,7 @@ class RealWorldTester:
             self.log(f"Task submission error: {e}", "ERROR")
             return False, None, None, {}
 
-    async def poll_task_completion(self, task_id: str, check_interval: int = 5) -> tuple[bool, Dict[str, Any]]:
+    async def poll_task_completion(self, task_id: str, check_interval: int = 5) -> tuple[bool, dict[str, Any]]:
         """Poll task until completion
 
         Returns:
@@ -260,7 +260,7 @@ class RealWorldTester:
         self.log(f"Task timeout after {self.timeout}s", "ERROR")
         return False, {}
 
-    async def test_model(self, model: str, description: str = "") -> Dict[str, Any]:
+    async def test_model(self, model: str, description: str = "") -> dict[str, Any]:
         """Run test with specified model"""
         model_config = MODEL_CONFIGS.get(model, {"name": model, "description": description})
 
@@ -324,7 +324,7 @@ class RealWorldTester:
             "completed_at": int(end_time),
         }
 
-    async def run_multiple_models(self, models: List[str]) -> List[Dict[str, Any]]:
+    async def run_multiple_models(self, models: list[str]) -> list[dict[str, Any]]:
         """Run tests for multiple models sequentially"""
         results = []
 
@@ -344,7 +344,7 @@ class RealWorldTester:
 
         return results
 
-    def print_summary(self, results: List[Dict[str, Any]]):
+    def print_summary(self, results: list[dict[str, Any]]):
         """Print comprehensive test summary"""
         print("\n" + "=" * 70)
         print("REAL-WORLD TEST SUMMARY")

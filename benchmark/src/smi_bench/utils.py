@@ -230,7 +230,7 @@ async def managed_subprocess(*args: Any, **kwargs: Any):
                 proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     proc.kill()
                     await proc.wait()
             except ProcessLookupError:

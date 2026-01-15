@@ -1618,11 +1618,10 @@ def _validate_artifacts(*, run_dir: Path, mm2: dict[str, Any], txsim: dict[str, 
         if not isinstance(tacc, list) or not tacc:
             ok = False
             errors.append("no target mm2 accepted hits")
-        else:
-            # Require at least Tier A evidence for the raw target package.
-            if not any(isinstance(r, dict) and r.get("status") in {"tier_a_hit", "tier_b_hit"} for r in tacc):
-                ok = False
-                errors.append("no target hit (tier_a_hit or tier_b_hit)")
+        # Require at least Tier A evidence for the raw target package.
+        elif not any(isinstance(r, dict) and r.get("status") in {"tier_a_hit", "tier_b_hit"} for r in tacc):
+            ok = False
+            errors.append("no target hit (tier_a_hit or tier_b_hit)")
 
     accepted = mm2.get("accepted")
     if not isinstance(accepted, list) or not accepted:

@@ -8,8 +8,8 @@ black-box integration tests against the HTTP API.
 import json
 import subprocess
 import time
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import httpx
 import pytest
@@ -66,8 +66,8 @@ def docker_service() -> Generator[None, None, None]:
     except subprocess.CalledProcessError as e:
         pytest.fail(f"Failed to start docker service:\n{e.stderr.decode()}")
     except subprocess.TimeoutExpired:
-        subprocess.run(["docker", "compose", "-f", str(compose_file), "logs", "smi-bench"])
-        subprocess.run(["docker", "compose", "-f", str(compose_file), "down"])
+        subprocess.run(["docker", "compose", "-f", str(compose_file), "logs", "smi-bench"], check=False)
+        subprocess.run(["docker", "compose", "-f", str(compose_file), "down"], check=False)
         pytest.fail("Docker service startup timed out")
 
     yield

@@ -26,9 +26,10 @@ import json
 import logging
 import sys
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generator
+from typing import TYPE_CHECKING, Any
 
 from smi_bench.utils import setup_signal_handlers
 
@@ -44,7 +45,7 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_STOP_TIMEOUT = 30
 
 
-def _get_docker_client() -> "docker.DockerClient":
+def _get_docker_client() -> docker.DockerClient:
     """Get Docker client, with helpful error message if Docker is unavailable."""
     try:
         import docker  # type: ignore
@@ -57,7 +58,7 @@ def _get_docker_client() -> "docker.DockerClient":
 
 
 def cleanup_existing_container(
-    client: "docker.DockerClient",
+    client: docker.DockerClient,
     name: str = CONTAINER_NAME,
 ) -> bool:
     """
@@ -78,7 +79,7 @@ def cleanup_existing_container(
 
 
 def wait_for_healthy(
-    container: "Container",
+    container: Container,
     timeout: float = DEFAULT_TIMEOUT,
     health_url: str = "http://localhost:9999/health",
 ) -> bool:
@@ -164,7 +165,7 @@ def managed_container(
     user: str = "1000:1000",
     stop_timeout: int = DEFAULT_STOP_TIMEOUT,
     **extra_run_kwargs: Any,
-) -> Generator["Container", None, None]:
+) -> Generator[Container, None, None]:
     """
     Context manager that ensures container cleanup on ANY exit.
 

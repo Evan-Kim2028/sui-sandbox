@@ -20,12 +20,9 @@ import argparse
 import asyncio
 import json
 import os
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -50,10 +47,10 @@ DEFAULT_MODEL = "openai/gpt-5.2"
 @dataclass
 class SandboxState:
     """Tracks the current state of the sandbox for the LLM."""
-    deployed_packages: List[str] = field(default_factory=list)
-    created_objects: List[Dict] = field(default_factory=list)
-    execution_history: List[Dict] = field(default_factory=list)
-    last_error: Optional[str] = None
+    deployed_packages: list[str] = field(default_factory=list)
+    created_objects: list[dict] = field(default_factory=list)
+    execution_history: list[dict] = field(default_factory=list)
+    last_error: str | None = None
     iteration: int = 0
 
 
@@ -62,11 +59,11 @@ class ExecutionResult:
     """Result of a sandbox execution attempt."""
     success: bool
     output: str
-    error_type: Optional[str] = None
-    error_code: Optional[int] = None
-    error_module: Optional[str] = None
-    error_function: Optional[str] = None
-    suggestion: Optional[str] = None
+    error_type: str | None = None
+    error_code: int | None = None
+    error_module: str | None = None
+    error_function: str | None = None
+    suggestion: str | None = None
 
 
 class LLMClient:
@@ -77,9 +74,9 @@ class LLMClient:
         self.model = model
         self.base_url = OPENROUTER_BASE_URL
         self.client = httpx.AsyncClient(timeout=180.0)
-        self.conversation_history: List[Dict] = []
+        self.conversation_history: list[dict] = []
 
-    async def chat(self, messages: List[Dict], temperature: float = 0.0) -> str:
+    async def chat(self, messages: list[dict], temperature: float = 0.0) -> str:
         """Send a chat completion request."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -255,10 +252,10 @@ Respond ONLY with valid JSON matching one of the action formats above."""
 
 
 async def run_self_healing_loop(
-    target_function: Dict,
+    target_function: dict,
     llm: LLMClient,
     max_iterations: int = 5,
-) -> Tuple[bool, List[Dict]]:
+) -> tuple[bool, list[dict]]:
     """
     Run the self-healing loop where LLM tries to achieve type inhabitation.
 
@@ -328,7 +325,11 @@ What's your first action?"""
             print(f"⚠️ Failed to parse JSON: {e}")
             # Ask LLM to fix
             messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "user", "content": f"Your response was not valid JSON. Error: {e}\nPlease respond with ONLY valid JSON matching one of the action formats."})
+            error_msg = (
+                f"Your response was not valid JSON. Error: {e}\n"
+                "Please respond with ONLY valid JSON matching one of the action formats."
+            )
+            messages.append({"role": "user", "content": error_msg})
             history.append({"iteration": iteration + 1, "parse_error": str(e)})
             continue
 
@@ -343,12 +344,12 @@ What's your first action?"""
 
         # Handle actions
         if action_type == "SUCCESS":
-            print(f"\n✅ LLM declares SUCCESS!")
+            print("\n✅ LLM declares SUCCESS!")
             print(f"Summary: {action.get('summary', 'N/A')}")
             return True, history
 
         elif action_type == "GIVE_UP":
-            print(f"\n❌ LLM gives up")
+            print("\n❌ LLM gives up")
             print(f"Reason: {action.get('reason', 'N/A')}")
             return False, history
 
@@ -360,7 +361,7 @@ What's your first action?"""
 
             # Simulate compilation result
             # In a real implementation, we'd actually compile this
-            result_msg = f"""Module compilation simulated.
+            result_msg = """Module compilation simulated.
 
 Note: In a full implementation, this would:
 1. Write the module to a temp Move project
@@ -469,9 +470,13 @@ What's your next action?"""
         else:
             print(f"⚠️ Unknown action: {action_type}")
             messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "user", "content": f"Unknown action '{action_type}'. Please use one of: WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"})
+            valid_actions = "WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"
+            messages.append({
+                "role": "user",
+                "content": f"Unknown action '{action_type}'. Please use one of: {valid_actions}"
+            })
 
-    print(f"\n⏰ Max iterations reached")
+    print("\n⏰ Max iterations reached")
     return False, history
 
 
@@ -510,7 +515,7 @@ async def main():
         "description": "Swap SUI for USDC in a liquidity pool"
     }
 
-    print(f"\n🎯 Target Function:")
+    print("\n🎯 Target Function:")
     print(f"   {target_function['module']}::{target_function['function']}")
     print(f"   {target_function['description']}")
     print(f"   Args: {target_function['args']}")
@@ -531,7 +536,7 @@ async def main():
         print("=" * 60)
         print(f"Success: {'✅ YES' if success else '❌ NO'}")
         print(f"Iterations: {len(history)}")
-        print(f"\nAction History:")
+        print("\nAction History:")
         for h in history:
             action = h.get('action', h.get('error', 'unknown'))
             print(f"  {h['iteration']}. {action}")

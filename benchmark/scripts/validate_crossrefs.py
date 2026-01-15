@@ -18,11 +18,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
 from urllib.parse import urlparse
 
 
-def extract_links(markdown_path: Path) -> List[Tuple[int, str, str]]:
+def extract_links(markdown_path: Path) -> list[tuple[int, str, str]]:
     """
     Extract all Markdown links.
 
@@ -50,7 +49,7 @@ def is_internal_link(url: str) -> bool:
     return not urlparse(url).netloc or url.startswith("#")
 
 
-def resolve_internal_link(url: str, doc_path: Path, doc_root: Path) -> Tuple[bool, str]:
+def resolve_internal_link(url: str, doc_path: Path, doc_root: Path) -> tuple[bool, str]:
     """
     Resolve internal link against file tree.
 
@@ -84,7 +83,7 @@ def resolve_internal_link(url: str, doc_path: Path, doc_root: Path) -> Tuple[boo
         return False, f"not found: {link_path}"
 
 
-def check_external_link(url: str, timeout: int = 5) -> Tuple[bool, str]:
+def check_external_link(url: str, timeout: int = 5) -> tuple[bool, str]:
     """
     Check external link with HTTP HEAD.
 
@@ -94,7 +93,7 @@ def check_external_link(url: str, timeout: int = 5) -> Tuple[bool, str]:
     try:
         result = subprocess.run(
             ["curl", "-sI", "-o", "/dev/null", "-w", "%{http_code}", url],
-            timeout=timeout,
+            check=False, timeout=timeout,
             capture_output=True,
             text=True,
         )
@@ -115,7 +114,7 @@ def validate_markdown_file(
     md_path: Path,
     doc_root: Path,
     check_external: bool = True,
-) -> List[Tuple[int, str, str, str]]:
+) -> list[tuple[int, str, str, str]]:
     """
     Validate all links in a Markdown file.
 
@@ -138,7 +137,7 @@ def validate_markdown_file(
     return results
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate cross-references in Markdown")
     parser.add_argument(
         "files",

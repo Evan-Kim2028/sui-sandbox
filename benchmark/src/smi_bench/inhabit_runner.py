@@ -790,12 +790,7 @@ def run(
             picked = picked[:samples]
 
     real_agent: RealAgent | None = None
-    if agent_name == "real-openai-compatible":
-        cfg = load_real_agent_config(env_overrides)
-        real_agent = RealAgent(cfg)
-        if logger is not None:
-            logger.event("agent_effective_config", **real_agent.debug_effective_config())
-    elif agent_name == "template-search":
+    if agent_name == "real-openai-compatible" or agent_name == "template-search":
         cfg = load_real_agent_config(env_overrides)
         real_agent = RealAgent(cfg)
         if logger is not None:

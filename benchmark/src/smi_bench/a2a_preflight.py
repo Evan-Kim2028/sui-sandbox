@@ -32,7 +32,7 @@ def _is_listening(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=0.5):
             return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
 
 

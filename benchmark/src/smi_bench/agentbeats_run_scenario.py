@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 with socket.create_connection((host, port), timeout=0.5):
                     return True
-            except (OSError, socket.timeout):
+            except (TimeoutError, OSError):
                 return False
 
         def get_pid_on_port(port: int) -> str | None:
@@ -171,29 +171,9 @@ def main(argv: list[str] | None = None) -> None:
     # `agentbeats run_agent ...`.
     for agent in manager.agents:
         if agent.name == "smi-bench-green":
-            setattr(
-                agent,
-                "get_command",
-                lambda a=agent: (
-                    "cd {cwd} && uv run smi-a2a-green --host {host} --port {port} --card-url http://{host}:{port}/".format(
-                        cwd=Path.cwd(),
-                        host=a.agent_host,
-                        port=a.agent_port,
-                    )
-                ),
-            )
+            agent.get_command = lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-green --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
         elif agent.name == "smi-bench-purple":
-            setattr(
-                agent,
-                "get_command",
-                lambda a=agent: (
-                    "cd {cwd} && uv run smi-a2a-purple --host {host} --port {port} --card-url http://{host}:{port}/".format(
-                        cwd=Path.cwd(),
-                        host=a.agent_host,
-                        port=a.agent_port,
-                    )
-                ),
-            )
+            agent.get_command = lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-purple --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
 
     manager.load_scenario(mode=args.launch_mode)
 
@@ -205,7 +185,7 @@ def main(argv: list[str] | None = None) -> None:
             "scenario_manager_pid": os.getpid(),
         }
         pid_file.write_text(json.dumps(pids, indent=2, sort_keys=True), encoding="utf-8")
-    except (OSError, IOError) as e:
+    except OSError as e:
         print(f"Warning: Failed to save PID file {pid_file}: {e}", file=sys.stderr)
 
     if args.backend and args.frontend:

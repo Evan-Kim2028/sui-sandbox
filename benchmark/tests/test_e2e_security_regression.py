@@ -23,7 +23,7 @@ import pytest
 # Add the scripts directory to path for imports
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "benchmark" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))  # noqa: E402
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 from e2e_one_package import (  # noqa: E402
     _find_built_bytecode_dir,

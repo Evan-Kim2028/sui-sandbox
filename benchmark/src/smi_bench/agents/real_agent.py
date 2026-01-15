@@ -25,7 +25,7 @@ class LLMUsage:
     total_tokens: int
 
     @classmethod
-    def from_api_response(cls, usage: dict | None) -> "LLMUsage":
+    def from_api_response(cls, usage: dict | None) -> LLMUsage:
         """Extract usage from OpenAI-compatible API response."""
         if usage is None:
             return cls(prompt_tokens=0, completion_tokens=0, total_tokens=0)

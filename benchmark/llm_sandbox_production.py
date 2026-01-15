@@ -26,7 +26,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -127,10 +126,10 @@ class ReasoningLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = self.log_dir / "reasoning.jsonl"
         self.summary_file = self.log_dir / "summary.json"
-        self.events: List[Dict] = []
+        self.events: list[dict] = []
         self.start_time = time.time()
 
-    def log(self, event_type: str, data: Dict):
+    def log(self, event_type: str, data: dict):
         """Log an event with timestamp."""
         event = {
             "timestamp": datetime.now().isoformat(),
@@ -144,7 +143,7 @@ class ReasoningLogger:
         with open(self.log_file, "a") as f:
             f.write(json.dumps(event) + "\n")
 
-    def log_llm_request(self, messages: List[Dict], iteration: int):
+    def log_llm_request(self, messages: list[dict], iteration: int):
         """Log LLM request."""
         self.log("llm_request", {
             "iteration": iteration,
@@ -152,7 +151,7 @@ class ReasoningLogger:
             "last_user_message": messages[-1]["content"][:500] if messages else ""
         })
 
-    def log_llm_response(self, response: str, parsed_action: Optional[Dict], iteration: int):
+    def log_llm_response(self, response: str, parsed_action: dict | None, iteration: int):
         """Log LLM response."""
         self.log("llm_response", {
             "iteration": iteration,
@@ -180,7 +179,7 @@ class ReasoningLogger:
             "output": output[:2000]
         })
 
-    def log_struct_inspection(self, package_id: str, structs: List[Dict]):
+    def log_struct_inspection(self, package_id: str, structs: list[dict]):
         """Log struct definition extraction."""
         self.log("struct_inspection", {
             "package_id": package_id,
@@ -188,7 +187,7 @@ class ReasoningLogger:
             "structs": structs
         })
 
-    def save_summary(self, success: bool, iterations: int, final_state: Dict):
+    def save_summary(self, success: bool, iterations: int, final_state: dict):
         """Save session summary."""
         summary = {
             "session_id": self.session_id,
@@ -214,14 +213,14 @@ class RealSandbox:
         if not self.binary.exists():
             self.binary = PROJECT_ROOT / "target/debug/sui_move_interface_extractor"
         self.logger = logger
-        self.temp_projects: List[Path] = []
+        self.temp_projects: list[Path] = []
 
-    def _call_sandbox_exec(self, request: Dict) -> Dict:
+    def _call_sandbox_exec(self, request: dict) -> dict:
         """Call the sandbox-exec CLI with a JSON request."""
         try:
             result = subprocess.run(
                 [str(self.binary), "sandbox-exec", "--input", "-", "--output", "-"],
-                input=json.dumps(request),
+                check=False, input=json.dumps(request),
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -239,7 +238,7 @@ class RealSandbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def extract_struct_definitions(self, package_id: str) -> List[Dict]:
+    def extract_struct_definitions(self, package_id: str) -> list[dict]:
         """Extract struct definitions from a package using sandbox-exec."""
         request = {
             "action": "inspect_struct",
@@ -261,7 +260,7 @@ class RealSandbox:
         })
         return []
 
-    def create_object(self, object_type: str, fields: Dict) -> Tuple[bool, str]:
+    def create_object(self, object_type: str, fields: dict) -> tuple[bool, str]:
         """Create an object in the sandbox."""
         request = {
             "action": "create_object",
@@ -278,7 +277,7 @@ class RealSandbox:
         else:
             return False, response.get("error", "Unknown error")
 
-    def execute_ptb(self, inputs: List[Dict], commands: List[Dict]) -> Tuple[bool, str, Dict]:
+    def execute_ptb(self, inputs: list[dict], commands: list[dict]) -> tuple[bool, str, dict]:
         """Execute a PTB via sandbox-exec."""
         request = {
             "action": "execute_ptb",
@@ -304,7 +303,7 @@ class RealSandbox:
         output = json.dumps(response, indent=2)
         return response.get("success", False), output, error_info
 
-    def load_module(self, bytecode_path: str) -> Tuple[bool, str]:
+    def load_module(self, bytecode_path: str) -> tuple[bool, str]:
         """Load compiled module bytecode into the sandbox."""
         request = {
             "action": "load_module",
@@ -320,7 +319,7 @@ class RealSandbox:
         else:
             return False, response.get("error", "Unknown error")
 
-    def compile_move_module(self, module_code: str, module_name: str) -> Tuple[bool, str, Optional[Path]]:
+    def compile_move_module(self, module_code: str, module_name: str) -> tuple[bool, str, Path | None]:
         """Actually compile a Move module using sui move build."""
         # Create temp project
         temp_dir = Path(tempfile.mkdtemp(prefix="move_module_"))
@@ -352,7 +351,7 @@ Sui = {{ git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fra
             # Run sui move build
             result = subprocess.run(
                 ["sui", "move", "build", "--path", str(temp_dir)],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
                 timeout=120,
             )
@@ -405,7 +404,7 @@ class LLMClient:
         self.base_url = OPENROUTER_BASE_URL
         self.client = httpx.AsyncClient(timeout=180.0)
 
-    async def chat(self, messages: List[Dict], temperature: float = 0.0) -> str:
+    async def chat(self, messages: list[dict], temperature: float = 0.0) -> str:
         """Send a chat completion request."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -529,19 +528,19 @@ Respond with ONLY valid JSON matching an action format."""
 @dataclass
 class SandboxState:
     """Tracks sandbox state."""
-    deployed_modules: List[str] = field(default_factory=list)
-    created_objects: List[Dict] = field(default_factory=list)
-    known_structs: Dict[str, List[Dict]] = field(default_factory=dict)
+    deployed_modules: list[str] = field(default_factory=list)
+    created_objects: list[dict] = field(default_factory=list)
+    known_structs: dict[str, list[dict]] = field(default_factory=dict)
     iteration: int = 0
 
 
 async def run_production_loop(
-    target_info: Dict,
+    target_info: dict,
     llm: LLMClient,
     sandbox: RealSandbox,
     logger: ReasoningLogger,
     max_iterations: int = 10,
-) -> Tuple[bool, Dict]:
+) -> tuple[bool, dict]:
     """Run production self-healing loop with real sandbox."""
 
     state = SandboxState()
@@ -773,9 +772,9 @@ Analyze the error and take corrective action. What's your next step?"""
         else:
             print(f"⚠️ Unknown action: {action_type}")
             messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "user", "content": f"Unknown action. Use: INSPECT_STRUCT, WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"})
+            messages.append({"role": "user", "content": "Unknown action. Use: INSPECT_STRUCT, WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"})
 
-    print(f"\n⏰ Max iterations reached")
+    print("\n⏰ Max iterations reached")
     final_state = {"max_iterations_reached": True}
     logger.save_summary(False, max_iterations, final_state)
     return False, final_state

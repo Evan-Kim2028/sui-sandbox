@@ -82,7 +82,7 @@ async def test_cancellation_handles_timeout_and_kills():
             if asyncio.iscoroutine(fut):
                 # Schedule it but don't wait
                 asyncio.create_task(fut)
-            raise aio.TimeoutError()
+            raise TimeoutError()
         return await aio.wait_for(fut, timeout)
 
     import smi_bench.a2a_green_agent

@@ -342,7 +342,7 @@ def _detect_unknown_fields(raw: dict[str, Any]) -> list[str]:
     """Return list of unknown field names in the config."""
     if not isinstance(raw, dict):
         return []
-    return [k for k in raw.keys() if k not in KNOWN_CONFIG_FIELDS]
+    return [k for k in raw if k not in KNOWN_CONFIG_FIELDS]
 
 
 def _validate_config_dry_run(raw: Any) -> dict[str, Any]:
@@ -1047,7 +1047,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
                             msg = f"{evt.get('event', 'update')}"
                             if "package_id" in evt:
                                 msg += f": {evt['package_id']}"
-                            if "error" in evt and evt["error"]:
+                            if evt.get("error"):
                                 msg += f" (error: {evt['error']})"
                             elif "created_hits" in evt:
                                 msg += f" (hits: {evt['created_hits']}/{evt.get('targets')})"
@@ -1275,7 +1275,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
 
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     proc.kill()
                 except ProcessLookupError:

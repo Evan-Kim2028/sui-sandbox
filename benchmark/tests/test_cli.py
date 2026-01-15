@@ -260,6 +260,5 @@ def test_cli_main_missing_required_args(monkeypatch) -> None:
 
 def test_cli_main_invalid_command(monkeypatch) -> None:
     """Error handling for invalid subcommand."""
-    with patch("sys.argv", ["smi-bench", "invalid-command"]):
-        with pytest.raises(SystemExit):
-            cli.main()
+    with patch("sys.argv", ["smi-bench", "invalid-command"]), pytest.raises(SystemExit):
+        cli.main()

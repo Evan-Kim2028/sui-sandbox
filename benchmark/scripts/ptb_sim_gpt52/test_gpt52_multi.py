@@ -11,12 +11,12 @@ Usage:
     OPENROUTER_API_KEY=... python benchmark/scripts/ptb_sim_gpt52/test_gpt52_multi.py
 """
 
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
-import base64
 import tempfile
 from pathlib import Path
 

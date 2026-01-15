@@ -23,7 +23,7 @@ import pytest
 )
 def test_cli_help_commands_match_documentation(cmd: list[str], expected_keyword: str) -> None:
     """Invariant: Core CLI tools must be reachable and return 0 for --help."""
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, check=False, capture_output=True, text=True)
     assert res.returncode == 0
     assert expected_keyword.lower() in res.stdout.lower()
 

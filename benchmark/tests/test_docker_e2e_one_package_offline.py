@@ -58,7 +58,7 @@ def test_docker_can_run_e2e_one_package_offline_and_persist_artifacts(tmp_path: 
     ]
 
     # Ensure image exists (compose build must have been run by docker tests).
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True, env=env, timeout=600)
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
 
     # Verify artifacts persisted back to host under results/docker_e2e.

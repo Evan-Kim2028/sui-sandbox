@@ -468,14 +468,13 @@ def evaluate_mm2_failure(reason: str, stage: str) -> EvaluationResult:
             error_code = ErrorCode.NO_CONSTRUCTOR
         else:
             error_code = ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM
+    # Tier B failures are execution errors
+    elif "aborted" in reason.lower():
+        error_code = ErrorCode.TARGET_ABORTED
+    elif "unsupported" in reason.lower() or "native" in reason.lower():
+        error_code = ErrorCode.UNSUPPORTED_NATIVE
     else:
-        # Tier B failures are execution errors
-        if "aborted" in reason.lower():
-            error_code = ErrorCode.TARGET_ABORTED
-        elif "unsupported" in reason.lower() or "native" in reason.lower():
-            error_code = ErrorCode.UNSUPPORTED_NATIVE
-        else:
-            error_code = ErrorCode.VM_SETUP_FAILED
+        error_code = ErrorCode.VM_SETUP_FAILED
 
     failure = Failure.from_code(error_code, reason[:500])
     return EvaluationResult.failed(failure)

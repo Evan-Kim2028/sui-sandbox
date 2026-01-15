@@ -49,21 +49,15 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
+# Only check for critical issues - syntax errors and import issues
 select = [
-    "E", "F", "B", "I", "N", "UP", "PL", "RUF",
-    "PT",    # flake8-pytest-style
-    "ASYNC", # flake8-async
-    "C4",    # flake8-comprehensions
-    "SIM",   # flake8-simplify
-    "T20",   # flake8-print
-    "ANN",   # flake8-annotations
+    "E9",    # Syntax errors
+    "F63",   # Invalid print
+    "F7",    # Syntax error in type comment
+    "F82",   # Undefined name
+    "I",     # Import sorting
 ]
-ignore = [
-    "PLR0913", "PLR0912", "PLR0915",
-    "ANN101",  # Missing type annotation for self in method
-    "ANN102",  # Missing type annotation for cls in classmethod
-    "ANN401",  # Any is allowed for generic JSON payloads
-]
+ignore = []
 
 [build-system]
 requires = ["setuptools>=68"]

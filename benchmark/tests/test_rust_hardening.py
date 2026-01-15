@@ -36,9 +36,8 @@ def test_emit_bytecode_json_raises_after_max_retries(tmp_path):
 
     # Mock subprocess.check_output to always fail
     error = subprocess.CalledProcessError(1, "cmd", stderr=b"perm error")
-    with patch("subprocess.check_output", side_effect=error) as mock_run:
-        with patch("time.sleep"):
-            with pytest.raises(RuntimeError, match="Rust extractor failed"):
-                emit_bytecode_json(package_dir=pkg_dir, rust_bin=rust_bin)
+    with patch("subprocess.check_output", side_effect=error) as mock_run, patch("time.sleep"):
+        with pytest.raises(RuntimeError, match="Rust extractor failed"):
+            emit_bytecode_json(package_dir=pkg_dir, rust_bin=rust_bin)
 
-            assert mock_run.call_count == 3
+        assert mock_run.call_count == 3

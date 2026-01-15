@@ -17,10 +17,9 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 
-def load_pyproject_toml(path: Path) -> Dict[str, str]:
+def load_pyproject_toml(path: Path) -> dict[str, str]:
     """Load pyproject.toml and extract script names."""
     try:
         import tomllib
@@ -43,7 +42,7 @@ def load_pyproject_toml(path: Path) -> Dict[str, str]:
         return {}
 
 
-def extract_code_blocks(markdown_path: Path) -> List[Tuple[int, str, str]]:
+def extract_code_blocks(markdown_path: Path) -> list[tuple[int, str, str]]:
     """
     Extract all shell command blocks from Markdown.
 
@@ -77,12 +76,12 @@ def extract_code_blocks(markdown_path: Path) -> List[Tuple[int, str, str]]:
     return blocks
 
 
-def find_placeholders(code: str) -> List[str]:
+def find_placeholders(code: str) -> list[str]:
     """Find all placeholders like <CORPUS_ROOT>, <PACKAGE_ID>."""
     return re.findall(r"<([^>]+)>", code)
 
 
-def find_commands_in_block(code: str) -> List[str]:
+def find_commands_in_block(code: str) -> list[str]:
     """
     Extract shell commands from a code block.
 
@@ -125,8 +124,8 @@ def path_exists(path_str: str, doc_root: Path) -> bool:
 
 
 def validate_code_block(
-    line_num: int, lang: str, code: str, available_scripts: Dict[str, str], doc_root: Path
-) -> List[str]:
+    line_num: int, lang: str, code: str, available_scripts: dict[str, str], doc_root: Path
+) -> list[str]:
     """
     Validate a single code block.
 
@@ -182,7 +181,7 @@ def validate_code_block(
     return errors
 
 
-def validate_markdown_file(md_path: Path, pyproject: Path, doc_root: Path) -> Tuple[List[str], List[str]]:
+def validate_markdown_file(md_path: Path, pyproject: Path, doc_root: Path) -> tuple[list[str], list[str]]:
     """
     Validate all code blocks in a Markdown file.
 
@@ -202,7 +201,7 @@ def validate_markdown_file(md_path: Path, pyproject: Path, doc_root: Path) -> Tu
     return all_errors, all_warnings
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Test documentation examples")
     parser.add_argument(
         "files",

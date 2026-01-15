@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -56,7 +56,7 @@ def is_docker_available() -> bool:
     try:
         result = subprocess.run(
             ["docker", "info"],
-            capture_output=True,
+            check=False, capture_output=True,
             timeout=10,
         )
         return result.returncode == 0
@@ -69,7 +69,7 @@ def is_docker_port_allocated(port: int) -> bool:
     try:
         res = subprocess.run(
             ["docker", "ps", "-q", "--filter", f"publish={port}"],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=10,
         )
@@ -83,7 +83,7 @@ def get_container_by_name(container_name: str) -> dict | None:
     try:
         result = subprocess.run(
             ["docker", "inspect", container_name],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=30,
         )
@@ -100,15 +100,15 @@ def cleanup_container(container_name: str) -> None:
     try:
         subprocess.run(
             ["docker", "stop", container_name],
-            capture_output=True,
+            check=False, capture_output=True,
             timeout=30,
         )
     except subprocess.TimeoutExpired:
-        subprocess.run(["docker", "kill", container_name], capture_output=True)
+        subprocess.run(["docker", "kill", container_name], check=False, capture_output=True)
 
     subprocess.run(
         ["docker", "rm", "-f", container_name],
-        capture_output=True,
+        check=False, capture_output=True,
     )
 
 

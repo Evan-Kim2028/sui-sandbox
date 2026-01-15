@@ -13,9 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import AsyncIterator as AsyncIteratorType
 from pathlib import Path
 from typing import Any
-from typing import AsyncIterator as AsyncIteratorType
 from unittest.mock import AsyncMock, patch
 
 from starlette.testclient import TestClient

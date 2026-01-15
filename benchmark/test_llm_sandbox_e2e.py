@@ -22,7 +22,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import httpx
 
@@ -50,10 +50,10 @@ class CachedTransaction:
     """Represents a cached mainnet transaction."""
     digest: str
     sender: str
-    commands: List[Dict]
-    inputs: List[Dict]
-    packages: Dict[str, Any]
-    objects: Dict[str, Any]
+    commands: list[dict]
+    inputs: list[dict]
+    packages: dict[str, Any]
+    objects: dict[str, Any]
 
     @classmethod
     def load(cls, digest: str) -> "CachedTransaction":
@@ -74,11 +74,11 @@ class CachedTransaction:
             objects=data.get("objects", {}),
         )
 
-    def get_move_calls(self) -> List[Dict]:
+    def get_move_calls(self) -> list[dict]:
         """Extract MoveCall commands."""
         return [cmd for cmd in self.commands if cmd.get("type") == "MoveCall"]
 
-    def get_package_modules(self) -> Dict[str, List[str]]:
+    def get_package_modules(self) -> dict[str, list[str]]:
         """Get modules per package."""
         result = {}
         for pkg_id, pkg_data in self.packages.items():
@@ -128,7 +128,7 @@ class LLMClient:
         self.base_url = OPENROUTER_BASE_URL
         self.client = httpx.AsyncClient(timeout=120.0)
 
-    async def chat(self, messages: List[Dict], temperature: float = 0.0) -> str:
+    async def chat(self, messages: list[dict], temperature: float = 0.0) -> str:
         """Send a chat completion request."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -167,7 +167,7 @@ class SandboxRunner:
             # Try release build
             self.binary = Path(__file__).parent.parent / "target/release/sui_move_interface_extractor"
 
-    def run_ptb_evaluation(self, tx_digest: str) -> Tuple[bool, str]:
+    def run_ptb_evaluation(self, tx_digest: str) -> tuple[bool, str]:
         """Run PTB evaluation for a transaction."""
         try:
             # ptb-eval works on the cache directory - it doesn't take a digest directly
@@ -179,7 +179,7 @@ class SandboxRunner:
                  "--enable-fetching",
                  "--limit", "200"  # Process all cached including our target
                 ],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(Path(__file__).parent.parent),
@@ -192,7 +192,7 @@ class SandboxRunner:
         except FileNotFoundError:
             return False, f"Binary not found: {self.binary}"
 
-    def run_single_tx_evaluation(self, tx_digest: str) -> Tuple[bool, str]:
+    def run_single_tx_evaluation(self, tx_digest: str) -> tuple[bool, str]:
         """Run evaluation for a single specific transaction using tx-replay."""
         try:
             cache_dir = Path(__file__).parent.parent / ".tx-cache"
@@ -203,7 +203,7 @@ class SandboxRunner:
                  "--replay",
                  "--verbose"
                 ],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(Path(__file__).parent.parent),
@@ -216,14 +216,14 @@ class SandboxRunner:
         except FileNotFoundError:
             return False, f"Binary not found: {self.binary}"
 
-    def run_benchmark_local(self, tx_digest: str) -> Tuple[bool, str]:
+    def run_benchmark_local(self, tx_digest: str) -> tuple[bool, str]:
         """Run local benchmark for a transaction."""
         try:
             result = subprocess.run(
                 [str(self.binary), "benchmark-local",
                  "--tx-digest", tx_digest,
                  "--verbose"],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
                 timeout=120,
                 cwd=str(Path(__file__).parent.parent),
@@ -235,7 +235,7 @@ class SandboxRunner:
             return False, f"Binary not found: {self.binary}"
 
 
-def find_complex_transactions() -> List[str]:
+def find_complex_transactions() -> list[str]:
     """Find cached transactions with multiple MoveCall commands."""
     complex_txs = []
 
@@ -255,7 +255,7 @@ def find_complex_transactions() -> List[str]:
     return [tx[0] for tx in complex_txs[:10]]
 
 
-async def run_llm_analysis(tx: CachedTransaction, llm: LLMClient) -> Dict:
+async def run_llm_analysis(tx: CachedTransaction, llm: LLMClient) -> dict:
     """Have LLM analyze what's needed for type inhabitation."""
 
     system_prompt = """You are an expert in Sui Move smart contracts and type inhabitation testing.
@@ -314,7 +314,7 @@ Provide your analysis as JSON."""
 
 async def run_llm_helper_generation(
     tx: CachedTransaction,
-    analysis: Dict,
+    analysis: dict,
     llm: LLMClient
 ) -> str:
     """Have LLM generate helper code for type inhabitation."""
@@ -442,7 +442,7 @@ async def main():
         print(f"❌ {e}")
         sys.exit(1)
 
-    print(f"\n📊 Transaction Overview:")
+    print("\n📊 Transaction Overview:")
     print(tx.describe())
 
     # Initialize LLM client
@@ -529,7 +529,7 @@ async def main():
         print(f"MoveCall commands: {len(tx.get_move_calls())}")
         print(f"Model: {args.model}")
         print(f"Analysis: {'✅ Success' if not analysis.get('parse_error') else '⚠️ Parse error'}")
-        print(f"Helper generation: ✅ Generated")
+        print("Helper generation: ✅ Generated")
         if not args.skip_execution:
             print(f"Sandbox execution: {'✅ Success' if success else '❌ Failed'}")
 

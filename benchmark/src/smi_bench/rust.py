@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 
 # Re-export for convenience
 __all__ = [
+    "BinaryNotExecutableError",
+    "BinaryNotFoundError",
+    "build_rust",
     "default_rust_binary",
-    "validate_rust_binary",
     "emit_bytecode_json",
     "emit_move_stubs",
-    "build_rust",
-    "BinaryNotFoundError",
-    "BinaryNotExecutableError",
+    "validate_rust_binary",
 ]
 
 

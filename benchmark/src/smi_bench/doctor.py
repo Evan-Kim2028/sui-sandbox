@@ -75,7 +75,7 @@ def check_sui_cli() -> tuple[bool, str, str | None]:
         try:
             result = subprocess.run(
                 ["sui", "--version"],
-                capture_output=True,
+                check=False, capture_output=True,
                 text=True,
                 timeout=10,
             )
@@ -140,7 +140,7 @@ def check_docker() -> tuple[bool, str, str | None]:
     try:
         result = subprocess.run(
             ["docker", "info"],
-            capture_output=True,
+            check=False, capture_output=True,
             timeout=10,
         )
         if result.returncode == 0:
@@ -163,7 +163,7 @@ def check_port(port: int) -> tuple[bool, str, str | None]:
     try:
         result = subprocess.run(
             ["lsof", "-i", f":{port}"],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
             timeout=5,
         )
@@ -391,7 +391,7 @@ def run_fixes(results: list[tuple[str, bool, str, str | None]]) -> None:
         try:
             result = subprocess.run(
                 fix,
-                shell=True,
+                check=False, shell=True,
                 cwd=str(REPO_ROOT),
                 capture_output=True,
                 text=True,

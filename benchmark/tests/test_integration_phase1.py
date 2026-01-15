@@ -197,11 +197,10 @@ def test_phase1_samples_from_corpus_file(tmp_path: Path, monkeypatch) -> None:
             str(out_json),
         ]
 
-        with patch("sys.argv", ["smi-phase1"] + argv):
-            with pytest.raises(SystemExit):
-                from smi_bench import runner
+        with patch("sys.argv", ["smi-phase1"] + argv), pytest.raises(SystemExit):
+            from smi_bench import runner
 
-                runner.main(argv)
+            runner.main(argv)
 
 
 def test_phase1_git_metadata_included(tmp_path: Path, monkeypatch) -> None:

@@ -6,12 +6,11 @@ Usage:
     OPENROUTER_API_KEY=... python benchmark/scripts/ptb_sim_gpt52/test_gpt52_clmm_swap.py
 """
 
+import base64
 import json
 import os
-import re
 import subprocess
 import sys
-import base64
 import tempfile
 import time
 from pathlib import Path
@@ -669,7 +668,7 @@ def analyze_failure(results: list[dict], submitted: bool, timed_out: bool) -> di
     if timed_out:
         return {
             "category": "TIMEOUT",
-            "details": f"Exceeded time limit",
+            "details": "Exceeded time limit",
             "suggestions": ["Increase MAX_TIME_SECONDS", "Reduce exploration overhead"],
         }
 
