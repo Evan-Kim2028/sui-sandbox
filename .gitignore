@@ -45,3 +45,8 @@ benchmark/tmp_dbg*
 # Test artifacts
 benchmark/real_world_test_results_*.json
 benchmark/corpus/
+
+# Transaction cache and experiment data
+.tx-cache/
+benchmark/experiments/
+benchmark/llm_logs/
