@@ -5,10 +5,9 @@ This module provides Python dataclasses that mirror the Rust error taxonomy
 from src/benchmark/errors.rs. These structures enable:
 
 1. Phase-based error tracking (Build, Resolution, TypeCheck, Synthesis, Execution, Validation)
-2. Error source attribution (LLM error, infrastructure limitation, target limitation)
-3. Partial credit scoring with a rubric
-4. Inhabitation metrics tracking
-5. Execution traces with call stacks and abort info
+2. Partial credit scoring with a rubric
+3. Inhabitation metrics tracking
+4. Execution traces with call stacks and abort info
 
 The structures are designed to be JSON-serializable for benchmark output.
 """
@@ -153,86 +152,6 @@ class ErrorCode(str, Enum):
         }
         return descriptions.get(self, "unknown error")
 
-    @property
-    def is_expected_limitation(self) -> bool:
-        """Check if this error represents an expected sandbox limitation."""
-        return self in {
-            ErrorCode.UNSUPPORTED_NATIVE,
-            ErrorCode.CHAIN_TOO_DEEP,
-            ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM,
-        }
-
-    @property
-    def default_error_source(self) -> ErrorSource:
-        """Get the default error source attribution for this error code."""
-        # Build errors are almost always LLM mistakes
-        if self.phase == Phase.BUILD:
-            return ErrorSource.LLM_ERROR
-
-        # Resolution errors
-        if self in {ErrorCode.MODULE_NOT_FOUND, ErrorCode.FUNCTION_NOT_FOUND, ErrorCode.NOT_CALLABLE}:
-            return ErrorSource.LLM_ERROR
-
-        # TypeCheck errors
-        if self in {
-            ErrorCode.TYPE_MISMATCH,
-            ErrorCode.ABILITY_VIOLATION,
-            ErrorCode.GENERIC_BOUNDS_VIOLATION,
-            ErrorCode.UNKNOWN_TYPE,
-        }:
-            return ErrorSource.LLM_ERROR
-        if self == ErrorCode.RECURSIVE_TYPE:
-            return ErrorSource.INFRASTRUCTURE_LIMITATION
-
-        # Synthesis errors
-        if self == ErrorCode.NO_CONSTRUCTOR:
-            return ErrorSource.UNKNOWN  # Context-dependent
-        if self in {
-            ErrorCode.CHAIN_TOO_DEEP,
-            ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM,
-            ErrorCode.BCS_SERIALIZATION_FAILED,
-        }:
-            return ErrorSource.INFRASTRUCTURE_LIMITATION
-
-        # Execution errors
-        if self == ErrorCode.VM_SETUP_FAILED:
-            return ErrorSource.INFRASTRUCTURE_LIMITATION
-        if self in {ErrorCode.CONSTRUCTOR_ABORTED, ErrorCode.TARGET_ABORTED}:
-            return ErrorSource.UNKNOWN
-        if self == ErrorCode.UNSUPPORTED_NATIVE:
-            return ErrorSource.INFRASTRUCTURE_LIMITATION
-
-        # Validation errors
-        if self in {ErrorCode.NO_TARGET_MODULES_ACCESSED, ErrorCode.RETURN_TYPE_MISMATCH}:
-            return ErrorSource.LLM_ERROR
-
-        return ErrorSource.UNKNOWN
-
-
-class ErrorSource(str, Enum):
-    """Attribution for where an error originated."""
-
-    LLM_ERROR = "llm_error"
-    INFRASTRUCTURE_LIMITATION = "infrastructure_limitation"
-    TARGET_PACKAGE_LIMITATION = "target_package_limitation"
-    UNKNOWN = "unknown"
-
-    @property
-    def counts_against_llm(self) -> bool:
-        """Whether this error should count against the LLM's score."""
-        return self == ErrorSource.LLM_ERROR
-
-    @property
-    def description(self) -> str:
-        """Human-readable description."""
-        descriptions = {
-            ErrorSource.LLM_ERROR: "LLM generated incorrect code",
-            ErrorSource.INFRASTRUCTURE_LIMITATION: "sandbox infrastructure limitation",
-            ErrorSource.TARGET_PACKAGE_LIMITATION: "target package has no valid entry points",
-            ErrorSource.UNKNOWN: "unknown or ambiguous error source",
-        }
-        return descriptions.get(self, "unknown")
-
 
 # =============================================================================
 # Failure Context
@@ -269,8 +188,6 @@ class Failure:
     phase: Phase
     code: ErrorCode
     message: str
-    is_expected_limitation: bool = False
-    error_source: ErrorSource = ErrorSource.UNKNOWN
     context: FailureContext | None = None
 
     @classmethod
@@ -280,8 +197,6 @@ class Failure:
             phase=code.phase,
             code=code,
             message=message,
-            is_expected_limitation=code.is_expected_limitation,
-            error_source=code.default_error_source,
         )
 
     @classmethod
@@ -291,19 +206,8 @@ class Failure:
             phase=code.phase,
             code=code,
             message=message,
-            is_expected_limitation=code.is_expected_limitation,
-            error_source=code.default_error_source,
             context=context,
         )
-
-    def set_source(self, source: ErrorSource) -> Failure:
-        """Set the error source attribution (fluent API)."""
-        self.error_source = source
-        self.is_expected_limitation = source in {
-            ErrorSource.INFRASTRUCTURE_LIMITATION,
-            ErrorSource.TARGET_PACKAGE_LIMITATION,
-        }
-        return self
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -311,8 +215,6 @@ class Failure:
             "phase": self.phase.value,
             "code": self.code.value,
             "message": self.message,
-            "is_expected_limitation": self.is_expected_limitation,
-            "error_source": self.error_source.value,
         }
         if self.context is not None:
             d["context"] = self.context.to_dict()
@@ -541,7 +443,6 @@ class AbortInfo:
     """Detailed information about an abort during execution."""
 
     message: str
-    is_expected: bool
     category: AbortCategory
     abort_code: int | None = None
     abort_location: str | None = None
@@ -550,11 +451,9 @@ class AbortInfo:
     @classmethod
     def from_move_abort(cls, code: int, location: str | None, message: str) -> AbortInfo:
         """Create abort info from a MoveAbort error."""
-        is_expected = code == E_NOT_SUPPORTED
         category = cls._categorize_abort(code, message)
         return cls(
             message=message,
-            is_expected=is_expected,
             category=category,
             abort_code=code,
             abort_location=location,
@@ -588,7 +487,6 @@ class AbortInfo:
     def to_dict(self) -> dict[str, Any]:
         d = {
             "message": self.message,
-            "is_expected": self.is_expected,
             "category": self.category.value,
         }
         if self.abort_code is not None:
