@@ -37,6 +37,10 @@ This walkthrough demonstrates replaying a real Cetus DEX swap transaction locall
 
 **Transaction:** `7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp` (LEIA → SUI swap)
 
+**Prerequisites:**
+- Rust 1.75+ installed
+- Network access to `archive.mainnet.sui.io:443` (for fetching historical state)
+
 ### Step 1: Build and Verify
 
 ```bash

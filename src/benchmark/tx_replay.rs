@@ -1429,8 +1429,36 @@ pub struct CachedTransaction {
     /// Object type information (object_id -> type_string)
     #[serde(default)]
     pub object_types: std::collections::HashMap<String, String>,
+    /// Object versions at transaction time (object_id -> version)
+    #[serde(default)]
+    pub object_versions: std::collections::HashMap<String, u64>,
+    /// Historical object data at transaction-time versions (object_id -> bytes_base64)
+    /// These are objects fetched at their specific version from gRPC archive
+    #[serde(default)]
+    pub historical_objects: std::collections::HashMap<String, String>,
+    /// Dynamic field children (child_id -> CachedDynamicField)
+    /// Pre-fetched dynamic field data for replay
+    #[serde(default)]
+    pub dynamic_field_children: std::collections::HashMap<String, CachedDynamicField>,
+    /// Package upgrade mappings (original_address -> upgraded_address)
+    /// Maps original package addresses to their upgraded versions
+    #[serde(default)]
+    pub package_upgrades: std::collections::HashMap<String, String>,
     /// Cache timestamp
     pub cached_at: u64,
+}
+
+/// Cached dynamic field child data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedDynamicField {
+    /// Parent object ID
+    pub parent_id: String,
+    /// Type string of the dynamic field
+    pub type_string: String,
+    /// BCS bytes (base64 encoded)
+    pub bcs_base64: String,
+    /// Version at which this was fetched
+    pub version: u64,
 }
 
 impl CachedTransaction {
@@ -1441,6 +1469,10 @@ impl CachedTransaction {
             packages: std::collections::HashMap::new(),
             objects: std::collections::HashMap::new(),
             object_types: std::collections::HashMap::new(),
+            object_versions: std::collections::HashMap::new(),
+            historical_objects: std::collections::HashMap::new(),
+            dynamic_field_children: std::collections::HashMap::new(),
+            package_upgrades: std::collections::HashMap::new(),
             cached_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -1511,6 +1543,106 @@ impl CachedTransaction {
         self.objects
             .get(object_id)
             .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+    }
+
+    /// Get historical object bytes (at transaction-time version).
+    /// Falls back to regular objects if no historical version is cached.
+    pub fn get_historical_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
+        use base64::Engine;
+        // Try historical first, then fall back to regular objects
+        self.historical_objects
+            .get(object_id)
+            .or_else(|| self.objects.get(object_id))
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+    }
+
+    /// Get object version at transaction time.
+    pub fn get_object_version(&self, object_id: &str) -> Option<u64> {
+        self.object_versions.get(object_id).copied()
+    }
+
+    /// Add historical object data to the cache.
+    pub fn add_historical_object(&mut self, object_id: String, bytes: Vec<u8>, version: u64) {
+        use base64::Engine;
+        self.historical_objects.insert(
+            object_id.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+        self.object_versions.insert(object_id, version);
+    }
+
+    /// Add a dynamic field child to the cache.
+    pub fn add_dynamic_field_child(
+        &mut self,
+        child_id: String,
+        parent_id: String,
+        type_string: String,
+        bytes: Vec<u8>,
+        version: u64,
+    ) {
+        use base64::Engine;
+        self.dynamic_field_children.insert(
+            child_id,
+            CachedDynamicField {
+                parent_id,
+                type_string,
+                bcs_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                version,
+            },
+        );
+    }
+
+    /// Get decoded dynamic field child data.
+    pub fn get_dynamic_field_child(
+        &self,
+        child_id: &str,
+    ) -> Option<(String, String, Vec<u8>, u64)> {
+        use base64::Engine;
+        self.dynamic_field_children.get(child_id).and_then(|df| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&df.bcs_base64)
+                .ok()
+                .map(|bytes| (df.parent_id.clone(), df.type_string.clone(), bytes, df.version))
+        })
+    }
+
+    /// Get all dynamic field children for a parent.
+    pub fn get_dynamic_fields_for_parent(
+        &self,
+        parent_id: &str,
+    ) -> Vec<(String, String, Vec<u8>, u64)> {
+        use base64::Engine;
+        self.dynamic_field_children
+            .iter()
+            .filter(|(_, df)| df.parent_id == parent_id)
+            .filter_map(|(child_id, df)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&df.bcs_base64)
+                    .ok()
+                    .map(|bytes| (child_id.clone(), df.type_string.clone(), bytes, df.version))
+            })
+            .collect()
+    }
+
+    /// Add a package upgrade mapping.
+    pub fn add_package_upgrade(&mut self, original_address: String, upgraded_address: String) {
+        self.package_upgrades
+            .insert(original_address, upgraded_address);
+    }
+
+    /// Get the upgraded package address for an original address.
+    pub fn get_upgraded_package(&self, original_address: &str) -> Option<&String> {
+        self.package_upgrades.get(original_address)
+    }
+
+    /// Get objects map with historical objects merged in.
+    /// Historical objects take precedence over regular objects.
+    pub fn get_merged_objects(&self) -> std::collections::HashMap<String, String> {
+        let mut merged = self.objects.clone();
+        for (id, b64) in &self.historical_objects {
+            merged.insert(id.clone(), b64.clone());
+        }
+        merged
     }
 
     /// Convert to PTB commands using cached object data.

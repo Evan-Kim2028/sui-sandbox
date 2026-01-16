@@ -47,3 +47,6 @@ MD046:
 
 # Files should end with single newline
 MD047: true
+
+# Table column style - disabled (conflicts between compact/aligned styles)
+MD060: false
