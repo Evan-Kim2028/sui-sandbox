@@ -602,7 +602,13 @@ def execute_tool(sandbox: SandboxProcess, tool: str, args: dict) -> dict:
             if result.get("success"):
                 results.append(result.get("data", {}))
             else:
-                results.append({"error": result.get("error", "Unknown error"), "module_path": module_path, "function_name": function_name})
+                results.append(
+                    {
+                        "error": result.get("error", "Unknown error"),
+                        "module_path": module_path,
+                        "function_name": function_name,
+                    }
+                )
         return {"success": True, "data": {"functions": results, "count": len(results)}}
 
     elif tool_lower in ("getstructinfo", "get_struct_info"):
@@ -796,7 +802,12 @@ def main():
 Your goal: Successfully simulate this PTB by understanding the interfaces, compiling any needed modules, and executing the transaction. Call submit_solution when done."""
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.append({"role": "user", "content": "Get the function signature for the function(s) listed above, then execute the PTB. You have limited iterations - focus on action over exploration."})
+    messages.append(
+        {
+            "role": "user",
+            "content": "Get the function signature for the function(s) listed above, then execute the PTB. You have limited iterations - focus on action over exploration.",
+        }
+    )
 
     results = []
     submitted = False
@@ -816,7 +827,7 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
             break
 
         remaining = MAX_ITERATIONS - iteration
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"ITERATION {iteration + 1}/{MAX_ITERATIONS} ({remaining} remaining, {remaining_time:.0f}s left)")
         print("=" * 60)
 
@@ -867,12 +878,14 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
                     submitted = True
                     print(f"\n*** SUBMITTED: success={result.get('success')} ***")
                     print(f"Summary: {result.get('summary', 'N/A')}")
-                    results.append({
-                        "iteration": iteration + 1,
-                        "submitted": True,
-                        "success": result.get("success", False),
-                        "summary": result.get("summary", ""),
-                    })
+                    results.append(
+                        {
+                            "iteration": iteration + 1,
+                            "submitted": True,
+                            "success": result.get("success", False),
+                            "summary": result.get("summary", ""),
+                        }
+                    )
 
             if submitted:
                 break
@@ -888,12 +901,14 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content": f"Tool results:\n{results_str}\n\nContinue."})
 
-            results.append({
-                "iteration": iteration + 1,
-                "tools_called": len(tool_calls),
-                "tool_names": [tc.get("tool") for tc in tool_calls],
-                "summaries": tool_summaries,
-            })
+            results.append(
+                {
+                    "iteration": iteration + 1,
+                    "tools_called": len(tool_calls),
+                    "tool_names": [tc.get("tool") for tc in tool_calls],
+                    "summaries": tool_summaries,
+                }
+            )
 
         except Exception as e:
             print(f"\nError: {e}")

@@ -114,6 +114,7 @@ Get detailed function signature.
 ```
 
 **Response includes:**
+
 - `params`: Parameter types
 - `returns`: Return types
 - `type_params`: Generic parameters with constraints
@@ -311,6 +312,7 @@ Validate a PTB without executing.
 ```
 
 **Returns:**
+
 - Function existence check
 - Argument count validation
 - Type argument count validation
@@ -651,3 +653,126 @@ Download and cache Sui framework if needed.
 ```json
 {"action": "ensure_framework_cached"}
 ```
+
+---
+
+## Native Function Coverage
+
+The sandbox implements Sui's native functions using fastcrypto (Mysten Labs' crypto library), providing 1:1 compatibility with mainnet.
+
+### Real Implementations (fastcrypto)
+
+All cryptographic operations use the same library as Sui validators.
+
+**Hash Functions:**
+
+- `hash::sha2_256` - Real SHA2-256
+- `hash::sha3_256` - Real SHA3-256
+- `hash::keccak256` - Real Keccak-256
+- `hash::blake2b256` - Real Blake2b-256
+
+**Signature Verification:**
+
+- `ed25519::ed25519_verify` - Real Ed25519 verification
+- `ecdsa_k1::secp256k1_verify` - Real secp256k1 verification
+- `ecdsa_k1::secp256k1_ecrecover` - Real public key recovery
+- `ecdsa_k1::decompress_pubkey` - Real pubkey decompression
+- `ecdsa_r1::secp256r1_verify` - Real secp256r1 verification
+- `ecdsa_r1::secp256r1_ecrecover` - Real public key recovery
+- `bls12381::bls12381_min_pk_verify` - Real BLS12-381 verification
+- `bls12381::bls12381_min_sig_verify` - Real BLS12-381 verification
+
+**ZK Proof Verification:**
+
+- `groth16::prepare_verifying_key_internal` - Real key preparation (BN254, BLS12-381)
+- `groth16::verify_groth16_proof_internal` - Real proof verification (BN254, BLS12-381)
+
+**Group Operations (BLS12-381):**
+
+- `group_ops::internal_validate` - Real element validation (Scalar, G1, G2, GT)
+- `group_ops::internal_add` - Real group element addition
+- `group_ops::internal_sub` - Real group element subtraction
+- `group_ops::internal_mul` - Real scalar multiplication
+- `group_ops::internal_div` - Real division (scalar inverse multiplication)
+- `group_ops::internal_hash_to` - Real hash-to-curve (G1, G2)
+- `group_ops::internal_multi_scalar_mul` - Real multi-scalar multiplication
+- `group_ops::internal_pairing` - Real pairing operation
+- `group_ops::internal_sum` - Real element sum
+
+**Core Operations (move-stdlib-natives):**
+
+- `vector::*` - All vector operations (real)
+- `bcs::to_bytes` - BCS serialization (real)
+- `string::*` - UTF-8 string operations (real)
+- `type_name::*` - Type name introspection (real)
+
+### Simulated (Correct Behavior, In-Memory State)
+
+**Transfer Operations:**
+
+- `transfer::transfer` - Ownership transfer (tracks state)
+- `transfer::public_transfer` - Public transfer
+- `transfer::share_object` - Share object
+- `transfer::freeze_object` - Freeze object
+- `transfer::receive` - Receive transferred object
+
+**Object Operations:**
+
+- `object::new` - Create new UID (generates IDs)
+- `object::delete` - Delete UID
+- `object::id` - Get object ID
+
+**Dynamic Fields:**
+
+- `dynamic_field::add` - Add dynamic field (stores in BTreeMap)
+- `dynamic_field::borrow` - Borrow field
+- `dynamic_field::borrow_mut` - Borrow field mutable
+- `dynamic_field::remove` - Remove field
+- `dynamic_field::exists_` - Check existence
+- `dynamic_object_field::*` - All object field variants
+
+**Events:**
+
+- `event::emit` - Captured in memory
+
+**Transaction Context:**
+
+- `tx_context::sender` - Returns configured sender
+- `tx_context::digest` - Returns generated digest
+- `tx_context::epoch` - Returns configured epoch
+- `tx_context::fresh_object_address` - Counter-based generation
+
+### Still Mocked (Not Yet Implemented)
+
+**VRF:**
+
+- `ecvrf::ecvrf_verify` - Always returns true
+
+### Configurable
+
+**Clock:**
+
+- `clock::timestamp_ms` - Returns configurable timestamp (default: 2024-01-01 00:00:00 UTC)
+- Set via `set_clock` action
+
+**Randomness:**
+
+- `random::new_generator` - Returns deterministic generator
+- `random::generate_*` - Produces reproducible values based on configured seed
+- Intentionally deterministic for test reproducibility
+
+**Gas:**
+
+- Gas metering runs but limits are configurable
+- Default: permissive limits for exploration
+- Use `sui_dryRunTransactionBlock` for exact mainnet gas estimates
+
+### Not Implemented (Out of Scope)
+
+**Validator/System Operations:**
+
+- `sui_system::request_add_validator`
+- `sui_system::request_withdraw_stake`
+- `validator::*` governance operations
+
+These are governance operations that only make sense in validator context.

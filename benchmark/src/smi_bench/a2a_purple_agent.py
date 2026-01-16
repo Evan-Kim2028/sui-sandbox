@@ -14,12 +14,11 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill, Part, TaskState, TextPart
 from a2a.utils import new_agent_text_message, new_task
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
 
-# A2A Protocol version this implementation supports
-A2A_PROTOCOL_VERSION = "0.3.0"
+from .a2a_middleware import A2AVersionMiddleware
+
+# Import centralized constants and shared middleware
+from .constants import A2A_PROTOCOL_VERSION
 
 
 def _card(*, url: str) -> AgentCard:
@@ -82,16 +81,7 @@ class PurpleExecutor(AgentExecutor):
         raise RuntimeError(f"Task {task.id} cannot be cancelled (purple agent tasks are immediate)")
 
 
-class A2AVersionMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware to add A2A-Version header to all responses.
-    Implements A2A protocol version signaling per spec section 14.2.1.
-    """
-
-    async def dispatch(self, request: Request, call_next: Any) -> Response:
-        response = await call_next(request)
-        response.headers["A2A-Version"] = A2A_PROTOCOL_VERSION
-        return response
+# A2AVersionMiddleware is now imported from a2a_middleware.py
 
 
 def build_app(*, public_url: str) -> Any:

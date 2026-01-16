@@ -56,7 +56,8 @@ def is_docker_available() -> bool:
     try:
         result = subprocess.run(
             ["docker", "info"],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             timeout=10,
         )
         return result.returncode == 0
@@ -69,7 +70,8 @@ def is_docker_port_allocated(port: int) -> bool:
     try:
         res = subprocess.run(
             ["docker", "ps", "-q", "--filter", f"publish={port}"],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             text=True,
             timeout=10,
         )
@@ -83,7 +85,8 @@ def get_container_by_name(container_name: str) -> dict | None:
     try:
         result = subprocess.run(
             ["docker", "inspect", container_name],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             text=True,
             timeout=30,
         )
@@ -100,7 +103,8 @@ def cleanup_container(container_name: str) -> None:
     try:
         subprocess.run(
             ["docker", "stop", container_name],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             timeout=30,
         )
     except subprocess.TimeoutExpired:
@@ -108,7 +112,8 @@ def cleanup_container(container_name: str) -> None:
 
     subprocess.run(
         ["docker", "rm", "-f", container_name],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
     )
 
 

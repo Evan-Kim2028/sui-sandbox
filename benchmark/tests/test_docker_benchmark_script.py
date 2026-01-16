@@ -57,7 +57,8 @@ def run_benchmark_script(
 
     return subprocess.run(
         cmd,
-        check=False, cwd=str(ROOT_DIR),
+        check=False,
+        cwd=str(ROOT_DIR),
         env=result_env,
         capture_output=True,
         text=True,
@@ -150,7 +151,8 @@ def test_container_reuse_same_port(test_port: int, cleanup_test_containers: list
     # Check that we only have one container with this name
     result = subprocess.run(
         ["docker", "ps", "-a", "--filter", f"name={expected_name}", "--format", "{{.Names}}"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
     )
 
@@ -230,7 +232,8 @@ def test_cleanup_flag(test_port: int, cleanup_test_containers: list[str]):
     # Run cleanup
     result = subprocess.run(
         [str(SCRIPT_PATH), "test", "2", str(test_port), "--cleanup"],
-        check=False, cwd=str(ROOT_DIR),
+        check=False,
+        cwd=str(ROOT_DIR),
         capture_output=True,
         text=True,
         timeout=30,
@@ -275,7 +278,8 @@ def test_restart_flag(test_port: int, cleanup_test_containers: list[str]):
     # For testing, we manually call docker restart
     subprocess.run(
         ["docker", "restart", expected_name],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         timeout=30,
     )
 
@@ -341,7 +345,8 @@ def test_stopped_container_reused(test_port: int, cleanup_test_containers: list[
 
     subprocess.run(
         ["docker", "stop", expected_name],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         timeout=30,
     )
 
@@ -357,7 +362,8 @@ def test_stopped_container_reused(test_port: int, cleanup_test_containers: list[
     # For testing, we verify the container state allows restart
     subprocess.run(
         ["docker", "start", expected_name],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         timeout=30,
     )
 
@@ -394,7 +400,8 @@ def test_script_error_on_invalid_args():
     """
     result = subprocess.run(
         [str(SCRIPT_PATH), "--invalid-arg"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
         timeout=5,
     )
@@ -422,7 +429,8 @@ def test_no_conflict_with_manual_containers(test_port: int, cleanup_test_contain
 
     subprocess.run(
         ["docker", "run", "-d", "--name", manual_container_name, "nginx:alpine"],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         timeout=60,
     )
 

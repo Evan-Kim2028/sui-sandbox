@@ -75,14 +75,15 @@ def check_sui_cli() -> tuple[bool, str, str | None]:
         try:
             result = subprocess.run(
                 ["sui", "--version"],
-                check=False, capture_output=True,
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode == 0:
                 version = result.stdout.strip().split("\n")[0]
                 return True, f"Sui CLI found: {version}", None
-        except Exception:
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
     return (
         False,
@@ -140,7 +141,8 @@ def check_docker() -> tuple[bool, str, str | None]:
     try:
         result = subprocess.run(
             ["docker", "info"],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             timeout=10,
         )
         if result.returncode == 0:
@@ -148,7 +150,7 @@ def check_docker() -> tuple[bool, str, str | None]:
         return False, "Docker installed but not running. Start Docker daemon.", "docker info"
     except subprocess.TimeoutExpired:
         return False, "Docker command timed out. Docker may be unresponsive.", None
-    except Exception as e:
+    except (OSError, FileNotFoundError) as e:
         return False, f"Docker check failed: {e}", None
 
 
@@ -163,7 +165,8 @@ def check_port(port: int) -> tuple[bool, str, str | None]:
     try:
         result = subprocess.run(
             ["lsof", "-i", f":{port}"],
-            check=False, capture_output=True,
+            check=False,
+            capture_output=True,
             text=True,
             timeout=5,
         )
@@ -178,7 +181,7 @@ def check_port(port: int) -> tuple[bool, str, str | None]:
                     f"Port {port} in use by {proc_name}. Stop the process or use a different port.",
                     f"lsof -i :{port}  # to see what's using it",
                 )
-    except Exception:
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
     return (
@@ -391,7 +394,8 @@ def run_fixes(results: list[tuple[str, bool, str, str | None]]) -> None:
         try:
             result = subprocess.run(
                 fix,
-                check=False, shell=True,
+                check=False,
+                shell=True,
                 cwd=str(REPO_ROOT),
                 capture_output=True,
                 text=True,
@@ -401,7 +405,7 @@ def run_fixes(results: list[tuple[str, bool, str, str | None]]) -> None:
                 console.print("  [green]Success![/green]")
             else:
                 console.print(f"  [red]Failed:[/red] {result.stderr[:200]}")
-        except Exception as e:
+        except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
             console.print(f"  [red]Error:[/red] {e}")
 
 

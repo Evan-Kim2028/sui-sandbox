@@ -171,9 +171,13 @@ def main(argv: list[str] | None = None) -> None:
     # `agentbeats run_agent ...`.
     for agent in manager.agents:
         if agent.name == "smi-bench-green":
-            agent.get_command = lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-green --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
+            agent.get_command = (
+                lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-green --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
+            )
         elif agent.name == "smi-bench-purple":
-            agent.get_command = lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-purple --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
+            agent.get_command = (
+                lambda a=agent: f"cd {Path.cwd()} && uv run smi-a2a-purple --host {a.agent_host} --port {a.agent_port} --card-url http://{a.agent_host}:{a.agent_port}/"
+            )
 
     manager.load_scenario(mode=args.launch_mode)
 

@@ -1,17 +1,17 @@
 # Quickstart
 
-Get up and running with the sui-move-interface-extractor in minutes.
+Get the local Move execution environment running in minutes.
 
 ## Prerequisites
 
-- Rust toolchain (1.70+)
-- ~2GB disk space for Sui framework bytecode
+- Rust toolchain (1.75+)
+- ~2GB disk space for dependencies
 
 ## Installation
 
 ```bash
 # Clone and build
-git clone <repository-url>
+git clone https://github.com/anthropics/sui-move-interface-extractor.git
 cd sui-move-interface-extractor
 cargo build --release
 
@@ -19,110 +19,95 @@ cargo build --release
 export PATH="$PATH:$(pwd)/target/release"
 ```
 
-## Choose Your Path
+## Your First Commands
 
-### I want to... run the interactive sandbox (for LLM integration)
+### 1. Replay a Mainnet Transaction
 
-```bash
-# Start interactive mode (reads JSON from stdin, writes to stdout)
-sui-move-interface-extractor sandbox-exec --interactive
-
-# Discover available tools
-echo '{"action": "list_available_tools"}' | sui-move-interface-extractor sandbox-exec -i - -o -
-```
-
-See: [LLM Integration Guide](../guides/LLM_INTEGRATION.md)
-
-### I want to... run benchmarks on Move packages
+The fastest way to see the tool in action:
 
 ```bash
-# Quick test with a single package
-sui-move-interface-extractor benchmark-local \
-  --target-corpus ./path/to/bytecode \
-  --output results.jsonl
-
-# View results
-cat results.jsonl | jq '.status'
+# Pick any transaction from https://suiscan.xyz and replay it locally
+./target/release/sui_move_interface_extractor tx-replay <TRANSACTION_DIGEST>
 ```
 
-See: [Running Benchmarks](../guides/RUNNING_BENCHMARKS.md)
+This fetches the transaction, its dependencies, and replays it in the local Move VM.
 
-### I want to... replay mainnet transactions
+### 2. Explore a Module
 
 ```bash
-# Download a transaction and its dependencies
-sui-move-interface-extractor tx-replay \
-  --digest <TRANSACTION_DIGEST> \
-  --download-only
-
-# Replay it locally
-sui-move-interface-extractor ptb-eval \
-  --cache-dir .tx-cache/
+# List functions in the Sui coin module
+echo '{"action": "list_functions", "package_id": "0x2", "module": "coin"}' | \
+  ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
-See: [Transaction Replay](../guides/TRANSACTION_REPLAY.md)
-
-## 30-Second Demo
+### 3. Execute a Simple Transaction
 
 ```bash
-# 1. Start the sandbox
-sui-move-interface-extractor sandbox-exec --interactive << 'EOF'
-{"action": "get_clock"}
-{"action": "list_modules"}
-{"action": "list_functions", "module_path": "0x2::coin"}
-EOF
+# Create a zero-value SUI coin
+echo '{
+  "action": "execute_ptb",
+  "commands": [
+    {"MoveCall": {
+      "package": "0x2",
+      "module": "coin",
+      "function": "zero",
+      "type_arguments": ["0x2::sui::SUI"]
+    }}
+  ]
+}' | ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
-This will:
-1. Show the current simulated clock time
-2. List all loaded modules (Sui framework by default)
-3. List functions in the `0x2::coin` module
+## Interactive Mode
 
-## Directory Structure
+For ongoing work, use interactive mode:
 
-After running, you'll see:
-
-```
-.tx-cache/           # Cached transactions (if using tx-replay)
-.sui-llm-logs/       # Execution logs and artifacts
-results.jsonl        # Benchmark results (if running benchmarks)
+```bash
+./target/release/sui_move_interface_extractor sandbox-exec --interactive
 ```
 
-## Common Options
+Then send JSON commands one per line. The sandbox maintains state between commands.
 
-| Flag | Description |
-|------|-------------|
-| `--verbose` / `-v` | Show detailed output |
-| `--enable-fetching` | Allow fetching packages/objects from mainnet |
-| `--state-file FILE` | Persist sandbox state between runs |
-| `--help` | Show all options |
+## Common Tasks
 
-## Next Steps
-
-- [Understand the architecture](../../ARCHITECTURE.md)
-- [Integrate with an LLM](../guides/LLM_INTEGRATION.md)
-- [CLI Reference](../reference/CLI_REFERENCE.md)
+| I want to... | Command |
+|--------------|---------|
+| Replay a transaction | `tx-replay <DIGEST>` |
+| List available actions | `{"action": "list_available_tools"}` |
+| Load a package from mainnet | `{"action": "deploy_package_from_mainnet", "address": "0x..."}` |
+| Check current clock | `{"action": "get_clock"}` |
+| Execute a PTB | `{"action": "execute_ptb", "commands": [...]}` |
 
 ## Troubleshooting
 
-### "Module not found" errors
+### "Package not found" errors
 
 The sandbox loads the Sui framework (0x1, 0x2, 0x3) by default. For other packages:
 
 ```bash
-# Fetch from mainnet
-echo '{"action": "deploy_package_from_mainnet", "address": "0x<PACKAGE_ADDRESS>"}' \
-  | sui-move-interface-extractor sandbox-exec -i - -o -
+echo '{"action": "deploy_package_from_mainnet", "address": "0x<PACKAGE_ID>"}' | \
+  ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
 ### Build errors
 
 ```bash
-# Clean rebuild
-cargo clean
-cargo build --release
+cargo clean && cargo build --release
 ```
 
-### Need more help?
+### protoc errors
 
-See [Troubleshooting Guide](../TROUBLESHOOTING.md) or open an issue.
+If you see protoc-related build errors, install protobuf:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install protobuf-compiler
+
+# macOS
+brew install protobuf
+```
+
+## Next Steps
+
+- [Transaction Replay Guide](../guides/TRANSACTION_REPLAY.md) - Deep dive into replaying mainnet transactions
+- [Sandbox API Reference](../reference/SANDBOX_API.md) - All available actions
+- [CLI Reference](../reference/CLI_REFERENCE.md) - Command-line options

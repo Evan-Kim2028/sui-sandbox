@@ -255,7 +255,7 @@ def parse_tool_calls(response: str) -> list[dict]:
     response = response.strip()
 
     # Try to find JSON in the response - be more careful with matching
-    json_match = re.search(r'(\[[\s\S]*?\]|\{[\s\S]*?\})(?=\s*$|\s*\[|\s*\{)', response)
+    json_match = re.search(r"(\[[\s\S]*?\]|\{[\s\S]*?\})(?=\s*$|\s*\[|\s*\{)", response)
     if json_match:
         response = json_match.group(1)
 
@@ -332,11 +332,11 @@ def execute_tool(sandbox: SandboxProcess, tool: str, args: dict) -> dict:
 
 def test_transaction(api_key: str, tx_config: dict) -> dict:
     """Test LLM on a single transaction with batched tool calls."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Testing: {tx_config['name']}")
     print(f"Digest: {tx_config['digest']}")
     print(f"Description: {tx_config['description']}")
-    print("="*60)
+    print("=" * 60)
 
     # Load transaction data
     data = load_transaction_context(tx_config["digest"])
@@ -376,7 +376,12 @@ Be efficient - call multiple tools per iteration. Don't spend all iterations jus
 Your goal: Successfully simulate this PTB by understanding the interfaces, compiling any needed modules, and executing the transaction."""
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.append({"role": "user", "content": f"You have {MAX_ITERATIONS} iterations. Start by calling list_modules and search_functions to understand what's available. Be efficient!"})
+    messages.append(
+        {
+            "role": "user",
+            "content": f"You have {MAX_ITERATIONS} iterations. Start by calling list_modules and search_functions to understand what's available. Be efficient!",
+        }
+    )
 
     results = []
     submitted = False
@@ -395,7 +400,12 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
             if not tool_calls:
                 print("No valid tool calls found in response")
                 messages.append({"role": "assistant", "content": response})
-                messages.append({"role": "user", "content": f"Please respond with valid JSON tool calls. You have {remaining - 1} iterations left!"})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Please respond with valid JSON tool calls. You have {remaining - 1} iterations left!",
+                    }
+                )
                 continue
 
             # Execute all tool calls (batched)
@@ -411,12 +421,14 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
                 # Check for submission
                 if tool.lower().replace("_", "") == "submitsolution":
                     submitted = True
-                    results.append({
-                        "iteration": iteration + 1,
-                        "submitted": True,
-                        "success": result.get("success", False),
-                        "summary": result.get("summary", ""),
-                    })
+                    results.append(
+                        {
+                            "iteration": iteration + 1,
+                            "submitted": True,
+                            "success": result.get("success", False),
+                            "summary": result.get("summary", ""),
+                        }
+                    )
 
             if submitted:
                 break
@@ -438,11 +450,13 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
 
             messages.append({"role": "user", "content": f"Tool results:\n{results_str}\n\n{urgency}"})
 
-            results.append({
-                "iteration": iteration + 1,
-                "tools_called": len(tool_calls),
-                "tool_names": [tc.get("tool") for tc in tool_calls],
-            })
+            results.append(
+                {
+                    "iteration": iteration + 1,
+                    "tools_called": len(tool_calls),
+                    "tool_names": [tc.get("tool") for tc in tool_calls],
+                }
+            )
 
         except Exception as e:
             print(f"Error: {e}")
@@ -460,9 +474,9 @@ Your goal: Successfully simulate this PTB by understanding the interfaces, compi
 
 
 def main():
-    print("="*60)
+    print("=" * 60)
     print("GPT-5.2 Multi-PTB Test with Batched Tool Calls")
-    print("="*60)
+    print("=" * 60)
     print(f"Model: {MODEL}")
     print(f"Max iterations per PTB: {MAX_ITERATIONS}")
     print(f"PTBs to test: {len(TEST_TRANSACTIONS)}")
@@ -478,9 +492,9 @@ def main():
         all_results.append(result)
 
     # Summary
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("SUMMARY")
-    print("="*60)
+    print("=" * 60)
 
     for result in all_results:
         status = "SUBMITTED" if result.get("submitted") else "INCOMPLETE"
@@ -492,7 +506,7 @@ def main():
             elif r.get("submitted"):
                 print(f"    Iter {r['iteration']}: SUBMITTED (success={r.get('success')})")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
 
 
 if __name__ == "__main__":

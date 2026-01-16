@@ -128,9 +128,9 @@ def fetch_inventory(rpc_url: str, sender: str) -> dict[str, list[str]]:
     except httpx.RequestError as e:
         logger.error(f"RPC request error: url={rpc_url}, sender={sender}, error={e}")
         raise RuntimeError(f"Failed to connect to Sui RPC {rpc_url}: {e}") from e
-    except Exception as e:
-        # Log unexpected errors with full context
-        logger.exception(f"Unexpected error in fetch_inventory: url={rpc_url}, sender={sender}")
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        # JSON parsing or data extraction errors
+        logger.exception(f"Data parsing error in fetch_inventory: url={rpc_url}, sender={sender}")
         raise RuntimeError(f"fetch_inventory failed: {type(e).__name__}: {e}") from e
 
 
@@ -245,7 +245,7 @@ def run_tx_sim_via_helper(
     tmp_path = tmp_dir / f"ptb_spec_{int(time.time() * 1000)}.json"
     try:
         atomic_write_json(tmp_path, ptb_spec)
-    except Exception as e:
+    except (OSError, PermissionError, TypeError) as e:
         raise RuntimeError(f"Failed to write temp PTB spec: {e}") from e
 
     try:

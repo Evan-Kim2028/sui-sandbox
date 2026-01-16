@@ -5,6 +5,7 @@ Replay real Sui mainnet transactions locally for testing and analysis.
 ## Overview
 
 Transaction replay allows you to:
+
 1. Download transaction data from mainnet
 2. Replay it in the local sandbox
 3. Compare results with actual on-chain effects
@@ -31,6 +32,7 @@ sui-move-interface-extractor tx-replay \
 ```
 
 This creates `.tx-cache/` containing:
+
 - Transaction commands and inputs
 - Object states at time of transaction
 - Package bytecode
@@ -44,6 +46,7 @@ sui-move-interface-extractor ptb-eval \
 ```
 
 Options:
+
 - `--max-retries N`: Retry with dependency fetching (default: 3)
 - `--enable-fetching`: Allow fetching missing packages/objects from mainnet
 - `--framework-only`: Only test Sui framework transactions
@@ -71,6 +74,7 @@ Third-party: 535/680 (78.7%)
 ## Dependency Fetching
 
 When `--enable-fetching` is set, the evaluator automatically fetches:
+
 - **Missing packages**: If a transaction references a package not in cache
 - **Missing objects**: If a transaction references an object not in cache
 
@@ -130,8 +134,9 @@ sui-move-interface-extractor ptb-eval --third-party-only
 ## Limitations
 
 - Historical object state may not be available for very old transactions
-- Some native functions are mocked (crypto verification always passes)
-- Gas metering may differ slightly from mainnet
+- Gas metering may differ from mainnet (use `sui_dryRunTransactionBlock` for exact gas)
+- Randomness is deterministic (not VRF-based like mainnet)
+- `ecvrf` operations are mocked (VRF verification not yet implemented)
 
 ## See Also
 

@@ -187,7 +187,7 @@ def atomic_write_text(path: Path, content: str) -> None:
     try:
         tmp.write_text(content, encoding="utf-8")
         tmp.replace(path)
-    except Exception as e:
+    except (OSError, UnicodeEncodeError) as e:
         logger.error(f"Atomic write to {path} failed: {e}")
         if tmp.exists():
             try:

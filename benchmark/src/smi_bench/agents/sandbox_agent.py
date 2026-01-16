@@ -424,7 +424,7 @@ class SandboxToolExecutor:
                 text=True,
             )
             logger.info(f"Started sandbox process: {' '.join(cmd)}")
-        except Exception as e:
+        except (OSError, FileNotFoundError, subprocess.SubprocessError) as e:
             logger.error(f"Failed to start sandbox: {e}")
             raise
 
@@ -448,7 +448,7 @@ class SandboxToolExecutor:
                 return {"error": "No response from sandbox"}
 
             return json.loads(resp_line)
-        except Exception as e:
+        except (json.JSONDecodeError, OSError, ValueError) as e:
             logger.error(f"Tool execution failed: {e}")
             return {"error": str(e)}
 

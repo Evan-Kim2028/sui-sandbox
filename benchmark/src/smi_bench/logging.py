@@ -67,7 +67,7 @@ class JsonlLogger:
         # Write identity file to help debug shared volume collisions
         try:
             (root / ".hostname").write_text(socket.gethostname(), encoding="utf-8")
-        except Exception:
+        except (OSError, PermissionError):
             pass
 
     def write_run_metadata(self, obj: dict) -> None:

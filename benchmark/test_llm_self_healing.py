@@ -47,6 +47,7 @@ DEFAULT_MODEL = "openai/gpt-5.2"
 @dataclass
 class SandboxState:
     """Tracks the current state of the sandbox for the LLM."""
+
     deployed_packages: list[str] = field(default_factory=list)
     created_objects: list[dict] = field(default_factory=list)
     execution_history: list[dict] = field(default_factory=list)
@@ -57,6 +58,7 @@ class SandboxState:
 @dataclass
 class ExecutionResult:
     """Result of a sandbox execution attempt."""
+
     success: bool
     output: str
     error_type: str | None = None
@@ -272,11 +274,11 @@ async def run_self_healing_loop(
 
     # Initial prompt
     initial_context = f"""## Target Function
-Package: {target_function.get('package', 'unknown')}
-Module: {target_function.get('module', 'unknown')}
-Function: {target_function.get('function', 'unknown')}
-Type Arguments: {target_function.get('type_args', [])}
-Arguments: {target_function.get('args', [])}
+Package: {target_function.get("package", "unknown")}
+Module: {target_function.get("module", "unknown")}
+Function: {target_function.get("function", "unknown")}
+Type Arguments: {target_function.get("type_args", [])}
+Arguments: {target_function.get("args", [])}
 
 ## Initial State
 - Sui Framework (0x1, 0x2, 0x3) is loaded
@@ -296,9 +298,9 @@ What's your first action?"""
 
     for iteration in range(max_iterations):
         state.iteration = iteration + 1
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"ITERATION {state.iteration}/{max_iterations}")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
 
         # Get LLM response
         print("\n📤 Asking LLM for next action...")
@@ -336,11 +338,13 @@ What's your first action?"""
         action_type = action.get("action", "unknown")
         print(f"\n🎯 Action: {action_type}")
 
-        history.append({
-            "iteration": iteration + 1,
-            "action": action_type,
-            "details": action,
-        })
+        history.append(
+            {
+                "iteration": iteration + 1,
+                "action": action_type,
+                "details": action,
+            }
+        )
 
         # Handle actions
         if action_type == "SUCCESS":
@@ -382,15 +386,17 @@ For now, assume the module is available. What's your next action to use it?"""
             # Simulate object creation
             result_msg = f"""Object created (simulated):
 - Type: {obj_type}
-- ID: 0x{'0'*62}01 (placeholder)
+- ID: 0x{"0" * 62}01 (placeholder)
 - State: {initial_state}
 
 The object is now available in the sandbox. What's your next action?"""
 
-            state.created_objects.append({
-                "type": obj_type,
-                "state": initial_state,
-            })
+            state.created_objects.append(
+                {
+                    "type": obj_type,
+                    "state": initial_state,
+                }
+            )
 
             messages.append({"role": "assistant", "content": response})
             messages.append({"role": "user", "content": result_msg})
@@ -471,10 +477,9 @@ What's your next action?"""
             print(f"⚠️ Unknown action: {action_type}")
             messages.append({"role": "assistant", "content": response})
             valid_actions = "WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"
-            messages.append({
-                "role": "user",
-                "content": f"Unknown action '{action_type}'. Please use one of: {valid_actions}"
-            })
+            messages.append(
+                {"role": "user", "content": f"Unknown action '{action_type}'. Please use one of: {valid_actions}"}
+            )
 
     print("\n⏰ Max iterations reached")
     return False, history
@@ -504,7 +509,7 @@ async def main():
         "function": "swap",
         "type_args": [
             "0x2::sui::SUI",
-            "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+            "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
         ],
         "args": [
             "Pool<SUI, USDC>",
@@ -512,7 +517,7 @@ async def main():
             "u64 (min_out)",
             "bool (exact_in)",
         ],
-        "description": "Swap SUI for USDC in a liquidity pool"
+        "description": "Swap SUI for USDC in a liquidity pool",
     }
 
     print("\n🎯 Target Function:")
@@ -538,7 +543,7 @@ async def main():
         print(f"Iterations: {len(history)}")
         print("\nAction History:")
         for h in history:
-            action = h.get('action', h.get('error', 'unknown'))
+            action = h.get("action", h.get("error", "unknown"))
             print(f"  {h['iteration']}. {action}")
 
     finally:

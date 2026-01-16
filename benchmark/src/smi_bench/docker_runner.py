@@ -49,11 +49,12 @@ def _get_docker_client() -> docker.DockerClient:
     """Get Docker client, with helpful error message if Docker is unavailable."""
     try:
         import docker  # type: ignore
+        import docker.errors  # type: ignore
 
         return docker.from_env()
     except ImportError as e:
         raise RuntimeError("Docker SDK not installed. Install with: pip install docker") from e
-    except Exception as e:
+    except (docker.errors.DockerException, ConnectionError, OSError) as e:
         raise RuntimeError(f"Failed to connect to Docker daemon: {e}. Is Docker running?") from e
 
 
@@ -227,6 +228,8 @@ def managed_container(
 
     # Register cleanup for ANY exit path (including kill -9 of parent)
     def cleanup() -> None:
+        import docker.errors  # type: ignore
+
         try:
             container.reload()
             if container.status in ("running", "created", "paused"):
@@ -234,10 +237,11 @@ def managed_container(
                 container.stop(timeout=stop_timeout)
             logger.info(f"Removing container {name}")
             container.remove(force=True)
-        except Exception as e:
+        except docker.errors.NotFound:
             # NotFound is expected if cleanup already ran
-            if "not found" not in str(e).lower():
-                logger.debug(f"Cleanup info (may be already removed): {e}")
+            logger.debug(f"Container {name} already removed")
+        except docker.errors.APIError as e:
+            logger.debug(f"Cleanup info (may be already removed): {e}")
 
     atexit.register(cleanup)
     setup_signal_handlers(cleanup)

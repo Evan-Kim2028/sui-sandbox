@@ -61,61 +61,62 @@ ABORT_CODE_REFERENCE = {
         "name": "E_GENERIC_ABORT",
         "meaning": "Generic assertion failed (assert!(condition))",
         "likely_cause": "A boolean condition was false",
-        "fix_hint": "Check the function's preconditions - often related to object state"
+        "fix_hint": "Check the function's preconditions - often related to object state",
     },
     1: {
         "name": "E_NOT_AUTHORIZED / E_NOT_OWNER",
         "meaning": "Permission/authorization check failed",
         "likely_cause": "Sender doesn't own the object or lack required capability",
-        "fix_hint": "Use env.set_sender() to match the object owner, or create a capability object"
+        "fix_hint": "Use env.set_sender() to match the object owner, or create a capability object",
     },
     2: {
         "name": "E_INVALID_ARGUMENT / E_PERMISSION_DENIED",
         "meaning": "Invalid argument or permission denied",
         "likely_cause": "Argument doesn't meet requirements or sender lacks permission",
-        "fix_hint": "Check argument constraints, ensure sender has required role"
+        "fix_hint": "Check argument constraints, ensure sender has required role",
     },
     3: {
         "name": "E_INVALID_STATE",
         "meaning": "Object is in invalid state for operation",
         "likely_cause": "Object state machine requires different state",
-        "fix_hint": "Initialize object to correct state before calling"
+        "fix_hint": "Initialize object to correct state before calling",
     },
     7: {
         "name": "E_INSUFFICIENT_BALANCE",
         "meaning": "Not enough balance for operation",
         "likely_cause": "Coin balance too low for transfer/swap",
-        "fix_hint": "Create coin with larger balance using env.create_coin()"
+        "fix_hint": "Create coin with larger balance using env.create_coin()",
     },
     202: {
         "name": "E_VERSION_MISMATCH",
         "meaning": "Protocol/object version mismatch",
         "likely_cause": "Object has wrong version field value",
-        "fix_hint": "Set object's version field to expected value (usually 1)"
+        "fix_hint": "Set object's version field to expected value (usually 1)",
     },
     303: {
         "name": "E_INVALID_POOL_STATE",
         "meaning": "Pool state invalid for operation",
         "likely_cause": "Pool liquidity=0 or sqrt_price invalid",
-        "fix_hint": "Initialize pool with liquidity > 0 and valid sqrt_price"
+        "fix_hint": "Initialize pool with liquidity > 0 and valid sqrt_price",
     },
     1000: {
         "name": "E_NOT_SUPPORTED",
         "meaning": "Native function not supported in sandbox",
         "likely_cause": "Called a native that isn't mocked",
-        "fix_hint": "This operation cannot be tested in sandbox"
+        "fix_hint": "This operation cannot be tested in sandbox",
     },
     65537: {  # 0x10001
         "name": "E_NOT_SYSTEM_ADDRESS",
         "meaning": "Operation requires system address (0x0)",
         "likely_cause": "Privileged operation called from non-system sender",
-        "fix_hint": "This is a system-only operation, cannot be tested normally"
+        "fix_hint": "This is a system-only operation, cannot be tested normally",
     },
 }
 
 # =============================================================================
 # Logging System
 # =============================================================================
+
 
 class ReasoningLogger:
     """Logs all LLM reasoning and sandbox interactions for troubleshooting."""
@@ -135,7 +136,7 @@ class ReasoningLogger:
             "timestamp": datetime.now().isoformat(),
             "elapsed_ms": int((time.time() - self.start_time) * 1000),
             "type": event_type,
-            **data
+            **data,
         }
         self.events.append(event)
 
@@ -145,47 +146,48 @@ class ReasoningLogger:
 
     def log_llm_request(self, messages: list[dict], iteration: int):
         """Log LLM request."""
-        self.log("llm_request", {
-            "iteration": iteration,
-            "message_count": len(messages),
-            "last_user_message": messages[-1]["content"][:500] if messages else ""
-        })
+        self.log(
+            "llm_request",
+            {
+                "iteration": iteration,
+                "message_count": len(messages),
+                "last_user_message": messages[-1]["content"][:500] if messages else "",
+            },
+        )
 
     def log_llm_response(self, response: str, parsed_action: dict | None, iteration: int):
         """Log LLM response."""
-        self.log("llm_response", {
-            "iteration": iteration,
-            "response_length": len(response),
-            "response_preview": response[:1000],
-            "parsed_action": parsed_action,
-            "parse_success": parsed_action is not None
-        })
+        self.log(
+            "llm_response",
+            {
+                "iteration": iteration,
+                "response_length": len(response),
+                "response_preview": response[:1000],
+                "parsed_action": parsed_action,
+                "parse_success": parsed_action is not None,
+            },
+        )
 
     def log_sandbox_execution(self, command: str, output: str, success: bool, iteration: int):
         """Log sandbox execution."""
-        self.log("sandbox_execution", {
-            "iteration": iteration,
-            "command": command,
-            "success": success,
-            "output_length": len(output),
-            "output_preview": output[:2000]
-        })
+        self.log(
+            "sandbox_execution",
+            {
+                "iteration": iteration,
+                "command": command,
+                "success": success,
+                "output_length": len(output),
+                "output_preview": output[:2000],
+            },
+        )
 
     def log_move_compilation(self, project_path: str, success: bool, output: str):
         """Log Move compilation attempt."""
-        self.log("move_compilation", {
-            "project_path": project_path,
-            "success": success,
-            "output": output[:2000]
-        })
+        self.log("move_compilation", {"project_path": project_path, "success": success, "output": output[:2000]})
 
     def log_struct_inspection(self, package_id: str, structs: list[dict]):
         """Log struct definition extraction."""
-        self.log("struct_inspection", {
-            "package_id": package_id,
-            "struct_count": len(structs),
-            "structs": structs
-        })
+        self.log("struct_inspection", {"package_id": package_id, "struct_count": len(structs), "structs": structs})
 
     def save_summary(self, success: bool, iterations: int, final_state: dict):
         """Save session summary."""
@@ -195,15 +197,17 @@ class ReasoningLogger:
             "total_iterations": iterations,
             "total_time_ms": int((time.time() - self.start_time) * 1000),
             "final_state": final_state,
-            "event_count": len(self.events)
+            "event_count": len(self.events),
         }
         with open(self.summary_file, "w") as f:
             json.dump(summary, f, indent=2)
         return summary
 
+
 # =============================================================================
 # Sandbox Integration
 # =============================================================================
+
 
 class RealSandbox:
     """Real integration with the Rust sandbox binary via sandbox-exec CLI."""
@@ -220,7 +224,8 @@ class RealSandbox:
         try:
             result = subprocess.run(
                 [str(self.binary), "sandbox-exec", "--input", "-", "--output", "-"],
-                check=False, input=json.dumps(request),
+                check=False,
+                input=json.dumps(request),
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -254,10 +259,9 @@ class RealSandbox:
             self.logger.log_struct_inspection(package_id, structs)
             return structs
 
-        self.logger.log("struct_inspection_error", {
-            "package_id": package_id,
-            "error": response.get("error", "Unknown error")
-        })
+        self.logger.log(
+            "struct_inspection_error", {"package_id": package_id, "error": response.get("error", "Unknown error")}
+        )
         return []
 
     def create_object(self, object_type: str, fields: dict) -> tuple[bool, str]:
@@ -351,7 +355,8 @@ Sui = {{ git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fra
             # Run sui move build
             result = subprocess.run(
                 ["sui", "move", "build", "--path", str(temp_dir)],
-                check=False, capture_output=True,
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=120,
             )
@@ -381,7 +386,11 @@ Sui = {{ git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fra
             self.logger.log_move_compilation(str(temp_dir), False, "TIMEOUT")
             return False, "Compilation timed out", None
         except FileNotFoundError:
-            return False, "sui CLI not found - install with: cargo install --locked --git https://github.com/MystenLabs/sui.git sui", None
+            return (
+                False,
+                "sui CLI not found - install with: cargo install --locked --git https://github.com/MystenLabs/sui.git sui",
+                None,
+            )
 
     def cleanup(self):
         """Clean up temporary directories."""
@@ -391,9 +400,11 @@ Sui = {{ git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fra
             except Exception:
                 pass
 
+
 # =============================================================================
 # LLM Client
 # =============================================================================
+
 
 class LLMClient:
     """Client for OpenRouter API with GPT-5.2."""
@@ -432,6 +443,7 @@ class LLMClient:
 
     async def close(self):
         await self.client.aclose()
+
 
 # =============================================================================
 # System Prompt with Real Capabilities
@@ -525,9 +537,11 @@ Respond with ONLY valid JSON matching an action format."""
 # Main Self-Healing Loop
 # =============================================================================
 
+
 @dataclass
 class SandboxState:
     """Tracks sandbox state."""
+
     deployed_modules: list[str] = field(default_factory=list)
     created_objects: list[dict] = field(default_factory=list)
     known_structs: dict[str, list[dict]] = field(default_factory=dict)
@@ -548,11 +562,11 @@ async def run_production_loop(
 
     # Build initial context
     initial_context = f"""## Target
-Package: {target_info.get('package', 'unknown')}
-Module: {target_info.get('module', 'unknown')}
-Function: {target_info.get('function', 'unknown')}
-Type Arguments: {target_info.get('type_args', [])}
-Expected Arguments: {target_info.get('args', [])}
+Package: {target_info.get("package", "unknown")}
+Module: {target_info.get("module", "unknown")}
+Function: {target_info.get("function", "unknown")}
+Type Arguments: {target_info.get("type_args", [])}
+Expected Arguments: {target_info.get("args", [])}
 
 ## Initial Sandbox State
 - Sui Framework (0x1, 0x2, 0x3) is loaded
@@ -571,9 +585,9 @@ What's your first action?"""
 
     for iteration in range(max_iterations):
         state.iteration = iteration + 1
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"ITERATION {state.iteration}/{max_iterations}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         # Get LLM response
         print("\n📤 Sending to LLM...")
@@ -614,7 +628,7 @@ What's your first action?"""
             final_state = {
                 "deployed_modules": state.deployed_modules,
                 "created_objects": state.created_objects,
-                "iterations": state.iteration
+                "iterations": state.iteration,
             }
             logger.save_summary(True, state.iteration, final_state)
             return True, final_state
@@ -633,15 +647,17 @@ What's your first action?"""
             state.known_structs[package_id] = structs
 
             if structs:
-                struct_info = "\n".join([
-                    f"  {s['module']}::{s['name']}: fields={s['fields']}, abilities={s['abilities']}"
-                    for s in structs[:10]
-                ])
+                struct_info = "\n".join(
+                    [
+                        f"  {s['module']}::{s['name']}: fields={s['fields']}, abilities={s['abilities']}"
+                        for s in structs[:10]
+                    ]
+                )
                 result_msg = f"""Struct definitions for {package_id}:
 
 {struct_info}
 
-{'(showing first 10 of ' + str(len(structs)) + ')' if len(structs) > 10 else ''}
+{"(showing first 10 of " + str(len(structs)) + ")" if len(structs) > 10 else ""}
 
 Now you know the exact struct layout. What's your next action?"""
             else:
@@ -722,14 +738,16 @@ Check the object type and fields and try again. What's your next action?"""
                 if isinstance(cmd, dict):
                     # Convert LLM command format to sandbox format
                     if cmd.get("type") == "move_call":
-                        ptb_commands.append({
-                            "type": "move_call",
-                            "package": cmd.get("package", ""),
-                            "module": cmd.get("module", ""),
-                            "function": cmd.get("function", ""),
-                            "type_args": cmd.get("type_args", []),
-                            "args": cmd.get("args", []),
-                        })
+                        ptb_commands.append(
+                            {
+                                "type": "move_call",
+                                "package": cmd.get("package", ""),
+                                "module": cmd.get("module", ""),
+                                "function": cmd.get("function", ""),
+                                "type_args": cmd.get("type_args", []),
+                                "args": cmd.get("args", []),
+                            }
+                        )
 
             # Execute via real sandbox
             success, output, error_info = sandbox.execute_ptb(ptb_inputs, ptb_commands)
@@ -759,7 +777,7 @@ Type inhabitation achieved. Declare SUCCESS with your summary."""
 
                 result_msg = f"""❌ PTB Execution FAILED
 
-{chr(10).join(error_details) if error_details else 'Unknown error'}
+{chr(10).join(error_details) if error_details else "Unknown error"}
 
 Raw output (last 1500 chars):
 {output[-1500:]}
@@ -772,7 +790,12 @@ Analyze the error and take corrective action. What's your next step?"""
         else:
             print(f"⚠️ Unknown action: {action_type}")
             messages.append({"role": "assistant", "content": response})
-            messages.append({"role": "user", "content": "Unknown action. Use: INSPECT_STRUCT, WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP"})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Unknown action. Use: INSPECT_STRUCT, WRITE_MOVE_MODULE, CREATE_OBJECT, EXECUTE_PTB, SUCCESS, GIVE_UP",
+                }
+            )
 
     print("\n⏰ Max iterations reached")
     final_state = {"max_iterations_reached": True}
@@ -784,12 +807,16 @@ Analyze the error and take corrective action. What's your next step?"""
 # Main Entry Point
 # =============================================================================
 
+
 async def main():
     parser = argparse.ArgumentParser(description="Production LLM Sandbox Integration")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Model (default: {DEFAULT_MODEL})")
     parser.add_argument("--max-iterations", type=int, default=10, help="Max iterations")
-    parser.add_argument("--target-package", default="0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1",
-                        help="Target package ID")
+    parser.add_argument(
+        "--target-package",
+        default="0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1",
+        help="Target package ID",
+    )
     parser.add_argument("--target-module", default="pool", help="Target module")
     parser.add_argument("--target-function", default="swap", help="Target function")
     args = parser.parse_args()
@@ -813,7 +840,10 @@ async def main():
         "package": args.target_package,
         "module": args.target_module,
         "function": args.target_function,
-        "type_args": ["0x2::sui::SUI", "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"],
+        "type_args": [
+            "0x2::sui::SUI",
+            "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        ],
         "args": ["Pool<SUI, USDC>", "Coin<SUI>", "u64", "bool"],
     }
 
@@ -823,9 +853,7 @@ async def main():
     sandbox = RealSandbox(logger)
 
     try:
-        success, final_state = await run_production_loop(
-            target_info, llm, sandbox, logger, args.max_iterations
-        )
+        success, final_state = await run_production_loop(target_info, llm, sandbox, logger, args.max_iterations)
 
         print("\n" + "=" * 60)
         print("📊 FINAL RESULT")

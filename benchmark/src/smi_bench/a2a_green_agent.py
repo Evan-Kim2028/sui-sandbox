@@ -45,8 +45,13 @@ from smi_bench.utils import (
 
 logger = logging.getLogger(__name__)
 
-# A2A Protocol version this implementation supports
-A2A_PROTOCOL_VERSION = "0.3.0"
+# Import centralized constants
+# Import shared middleware
+from .a2a_middleware import A2AVersionMiddleware
+from .constants import (
+    A2A_PROTOCOL_VERSION,
+    DEFAULT_RPC_URL,
+)
 
 # Supported content types (for future content validation)
 SUPPORTED_CONTENT_TYPES = {"application/json", "text/plain"}
@@ -1295,16 +1300,7 @@ class SmiBenchGreenExecutor(AgentExecutor):
             logger.warning(f"Error terminating process: {e}")
 
 
-class A2AVersionMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware to add A2A-Version header to all responses.
-    Implements A2A protocol version signaling per spec section 14.2.1.
-    """
-
-    async def dispatch(self, request: Request, call_next: Any) -> Response:
-        response = await call_next(request)
-        response.headers["A2A-Version"] = A2A_PROTOCOL_VERSION
-        return response
+# A2AVersionMiddleware is now imported from a2a_middleware.py
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):

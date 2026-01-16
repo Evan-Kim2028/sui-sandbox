@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from smi_bench.constants import FRAMEWORK_ADDRESSES, HELPER_PACKAGE_ADDRESS
 from smi_bench.inhabit.evaluation import (
     AbortInfo,
     ErrorCode,
@@ -125,18 +126,6 @@ def extract_inhabitation_metrics(
     entry_functions_called: set[str] = set()
     modules_accessed: set[str] = set()
 
-    # Helper package address (always 0x0 in the local benchmark)
-    HELPER_PKG = "0x0000000000000000000000000000000000000000000000000000000000000000"
-    # Framework addresses to exclude
-    FRAMEWORK_PREFIXES = (
-        "0x1",
-        "0x2",
-        "0x3",
-        "0x0000000000000000000000000000000000000000000000000000000000000001",
-        "0x0000000000000000000000000000000000000000000000000000000000000002",
-        "0x0000000000000000000000000000000000000000000000000000000000000003",
-    )
-
     for entry in accepted:
         if not isinstance(entry, dict):
             continue
@@ -145,11 +134,11 @@ def extract_inhabitation_metrics(
         pkg = parsed["target_package"]
 
         # Skip helper package
-        if pkg == HELPER_PKG:
+        if pkg == HELPER_PACKAGE_ADDRESS:
             continue
 
         # Skip framework packages
-        if pkg.startswith(FRAMEWORK_PREFIXES):
+        if pkg in FRAMEWORK_ADDRESSES:
             continue
 
         status = parsed["status"]
@@ -379,18 +368,6 @@ def compute_scoring_criteria(
     has_target_type_created = False
     has_clean_execution = False
 
-    # Helper package address (always 0x0 in the local benchmark)
-    HELPER_PKG = "0x0000000000000000000000000000000000000000000000000000000000000000"
-    # Framework addresses to exclude
-    FRAMEWORK_PREFIXES = (
-        "0x1",
-        "0x2",
-        "0x3",
-        "0x0000000000000000000000000000000000000000000000000000000000000001",
-        "0x0000000000000000000000000000000000000000000000000000000000000002",
-        "0x0000000000000000000000000000000000000000000000000000000000000003",
-    )
-
     for entry in accepted:
         if not isinstance(entry, dict):
             continue
@@ -400,11 +377,11 @@ def compute_scoring_criteria(
         status = parsed["status"]
 
         # Skip helper package
-        if pkg == HELPER_PKG:
+        if pkg == HELPER_PACKAGE_ADDRESS:
             continue
 
         # Skip framework packages
-        if pkg.startswith(FRAMEWORK_PREFIXES):
+        if pkg in FRAMEWORK_ADDRESSES:
             continue
 
         # Any non-helper, non-framework package is a target

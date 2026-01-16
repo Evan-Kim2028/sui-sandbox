@@ -48,6 +48,7 @@ DEFAULT_MODEL = "openai/gpt-5.2"
 @dataclass
 class CachedTransaction:
     """Represents a cached mainnet transaction."""
+
     digest: str
     sender: str
     commands: list[dict]
@@ -106,7 +107,7 @@ class CachedTransaction:
             func = cmd.get("function", "")
             type_args = cmd.get("type_arguments", [])
             args = cmd.get("arguments", [])
-            lines.append(f"  {i+1}. {pkg}::{module}::{func}")
+            lines.append(f"  {i + 1}. {pkg}::{module}::{func}")
             if type_args:
                 lines.append(f"      Type args: {type_args}")
             lines.append(f"      Args: {len(args)} arguments")
@@ -114,7 +115,9 @@ class CachedTransaction:
         lines.append("")
         lines.append("Available Packages:")
         for pkg_id, modules in pkg_modules.items():
-            lines.append(f"  {pkg_id[:16]}...: {len(modules)} modules ({', '.join(modules[:3])}{'...' if len(modules) > 3 else ''})")
+            lines.append(
+                f"  {pkg_id[:16]}...: {len(modules)} modules ({', '.join(modules[:3])}{'...' if len(modules) > 3 else ''})"
+            )
 
         return "\n".join(lines)
 
@@ -174,12 +177,16 @@ class SandboxRunner:
             # We run it with --limit 1 and it processes cached transactions
             # For a specific digest, we'd need to ensure only that tx is in cache
             result = subprocess.run(
-                [str(self.binary), "ptb-eval",
-                 "--verbose",
-                 "--enable-fetching",
-                 "--limit", "200"  # Process all cached including our target
+                [
+                    str(self.binary),
+                    "ptb-eval",
+                    "--verbose",
+                    "--enable-fetching",
+                    "--limit",
+                    "200",  # Process all cached including our target
                 ],
-                check=False, capture_output=True,
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(Path(__file__).parent.parent),
@@ -197,13 +204,9 @@ class SandboxRunner:
         try:
             cache_dir = Path(__file__).parent.parent / ".tx-cache"
             result = subprocess.run(
-                [str(self.binary), "tx-replay",
-                 "--from-cache",
-                 "--cache-dir", str(cache_dir),
-                 "--replay",
-                 "--verbose"
-                ],
-                check=False, capture_output=True,
+                [str(self.binary), "tx-replay", "--from-cache", "--cache-dir", str(cache_dir), "--replay", "--verbose"],
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=300,
                 cwd=str(Path(__file__).parent.parent),
@@ -220,10 +223,9 @@ class SandboxRunner:
         """Run local benchmark for a transaction."""
         try:
             result = subprocess.run(
-                [str(self.binary), "benchmark-local",
-                 "--tx-digest", tx_digest,
-                 "--verbose"],
-                check=False, capture_output=True,
+                [str(self.binary), "benchmark-local", "--tx-digest", tx_digest, "--verbose"],
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=120,
                 cwd=str(Path(__file__).parent.parent),
@@ -292,10 +294,12 @@ Input details:
 Provide your analysis as JSON."""
 
     print("\n📤 Sending to LLM for analysis...")
-    response = await llm.chat([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ])
+    response = await llm.chat(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
 
     # Try to parse JSON from response
     try:
@@ -312,11 +316,7 @@ Provide your analysis as JSON."""
         return {"raw_response": response, "parse_error": True}
 
 
-async def run_llm_helper_generation(
-    tx: CachedTransaction,
-    analysis: dict,
-    llm: LLMClient
-) -> str:
+async def run_llm_helper_generation(tx: CachedTransaction, analysis: dict, llm: LLMClient) -> str:
     """Have LLM generate helper code for type inhabitation."""
 
     system_prompt = """You are an expert Sui Move developer. Generate helper code that would allow
@@ -341,20 +341,17 @@ Transaction commands:
 Generate the Move helper module code. Focus on the hardest functions identified."""
 
     print("\n📤 Generating helper code...")
-    response = await llm.chat([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ])
+    response = await llm.chat(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
 
     return response
 
 
-async def run_llm_fix_iteration(
-    tx: CachedTransaction,
-    error_output: str,
-    attempt: int,
-    llm: LLMClient
-) -> str:
+async def run_llm_fix_iteration(tx: CachedTransaction, error_output: str, attempt: int, llm: LLMClient) -> str:
     """Have LLM analyze error and suggest fixes."""
 
     system_prompt = """You are an expert in Sui Move smart contracts debugging.
@@ -381,10 +378,12 @@ What specific action should we take to fix this?
 Respond with JSON: {{"diagnosis": "...", "fix_type": "set_sender|set_timestamp|create_object|fetch_object", "fix_params": {{...}}, "explanation": "..."}}"""
 
     print(f"\n📤 Asking LLM for fix suggestion (attempt {attempt})...")
-    response = await llm.chat([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ])
+    response = await llm.chat(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
 
     return response
 

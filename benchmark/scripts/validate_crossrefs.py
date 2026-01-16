@@ -93,7 +93,8 @@ def check_external_link(url: str, timeout: int = 5) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["curl", "-sI", "-o", "/dev/null", "-w", "%{http_code}", url],
-            check=False, timeout=timeout,
+            check=False,
+            timeout=timeout,
             capture_output=True,
             text=True,
         )
