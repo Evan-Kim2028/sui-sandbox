@@ -7,13 +7,131 @@
 //! ## Key Functions
 //!
 //! - [`format_type_tag`] - Convert a TypeTag to its canonical string representation
-//! - [`parse_type_string`] - Parse a type string into a TypeTag
+//! - [`parse_type_string`] - Parse a type string into a TypeTag (returns `Option`)
+//! - [`parse_type_tag`] - Parse a type string into a TypeTag (returns `Result`, with caching)
 //! - [`parse_type_args`] - Parse comma-separated type arguments
 //! - [`normalize_address`] - Normalize an address to canonical form (0x-prefixed, lowercase)
+//!
+//! ## Caching
+//!
+//! The [`parse_type_tag`] function uses a thread-local cache to avoid re-parsing
+//! the same type strings repeatedly. This provides significant speedup for batch
+//! operations and PTB execution where the same types are referenced many times.
+//!
+//! Cache management functions:
+//! - [`clear_type_cache`] - Clear the cache (useful for testing or memory pressure)
+//! - [`type_cache_size`] - Get the current cache size
+//! - [`type_cache_stats`] - Get cache hit/miss statistics
 
+use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+// =============================================================================
+// Type Parsing Cache
+// =============================================================================
+
+// Thread-local cache for parsed TypeTags.
+// This significantly speeds up repeated parsing of the same type strings,
+// which is common during PTB execution and transaction replay.
+thread_local! {
+    static TYPE_TAG_CACHE: RefCell<TypeCache> = RefCell::new(TypeCache::new());
+}
+
+/// Maximum cache size before clearing (to prevent unbounded memory growth)
+const TYPE_TAG_CACHE_MAX_SIZE: usize = 2048;
+
+/// Cache statistics for monitoring
+#[derive(Debug, Clone, Default)]
+pub struct TypeCacheStats {
+    /// Number of cache hits
+    pub hits: u64,
+    /// Number of cache misses
+    pub misses: u64,
+    /// Current cache size
+    pub size: usize,
+}
+
+impl TypeCacheStats {
+    /// Get the cache hit rate (0.0 to 1.0)
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+}
+
+/// Internal cache structure
+struct TypeCache {
+    cache: HashMap<String, TypeTag>,
+    hits: u64,
+    misses: u64,
+}
+
+impl TypeCache {
+    fn new() -> Self {
+        Self {
+            cache: HashMap::with_capacity(256),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<TypeTag> {
+        if let Some(tag) = self.cache.get(key) {
+            self.hits += 1;
+            Some(tag.clone())
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    fn insert(&mut self, key: String, value: TypeTag) {
+        // Clear cache if it's too large
+        if self.cache.len() >= TYPE_TAG_CACHE_MAX_SIZE {
+            self.cache.clear();
+        }
+        self.cache.insert(key, value);
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    fn stats(&self) -> TypeCacheStats {
+        TypeCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+            size: self.cache.len(),
+        }
+    }
+}
+
+/// Clear the type tag cache.
+///
+/// Useful for testing or when memory pressure is high.
+pub fn clear_type_cache() {
+    TYPE_TAG_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+/// Get the current cache size.
+pub fn type_cache_size() -> usize {
+    TYPE_TAG_CACHE.with(|cache| cache.borrow().cache.len())
+}
+
+/// Get cache statistics for monitoring.
+pub fn type_cache_stats() -> TypeCacheStats {
+    TYPE_TAG_CACHE.with(|cache| cache.borrow().stats())
+}
 
 // =============================================================================
 // Type Formatting
@@ -60,6 +178,93 @@ pub fn format_struct_tag(s: &StructTag) -> String {
         result.push_str(&format!("<{}>", params.join(", ")));
     }
     result
+}
+
+// =============================================================================
+// Common Type Constructors
+// =============================================================================
+
+/// The canonical SUI coin type string.
+pub const SUI_TYPE_STR: &str = "0x2::sui::SUI";
+
+/// The canonical Coin<SUI> type string.
+pub const COIN_SUI_TYPE_STR: &str = "0x2::coin::Coin<0x2::sui::SUI>";
+
+/// Create a TypeTag for the SUI type (0x2::sui::SUI).
+///
+/// This is a commonly used type throughout the codebase. Using this function
+/// ensures consistency and avoids duplicate StructTag construction.
+///
+/// # Example
+/// ```ignore
+/// let sui = sui_type();
+/// assert_eq!(format_type_tag(&sui), "0x2::sui::SUI");
+/// ```
+pub fn sui_type() -> TypeTag {
+    TypeTag::Struct(Box::new(StructTag {
+        address: AccountAddress::from_hex_literal("0x2").unwrap(),
+        module: Identifier::new("sui").unwrap(),
+        name: Identifier::new("SUI").unwrap(),
+        type_params: vec![],
+    }))
+}
+
+/// Create a TypeTag for Coin<T> with a given inner type.
+///
+/// # Arguments
+/// * `inner` - The inner type for the Coin (e.g., SUI type for Coin<SUI>)
+///
+/// # Example
+/// ```ignore
+/// let coin_sui = coin_type(sui_type());
+/// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
+/// ```
+pub fn coin_type(inner: TypeTag) -> TypeTag {
+    TypeTag::Struct(Box::new(StructTag {
+        address: AccountAddress::from_hex_literal("0x2").unwrap(),
+        module: Identifier::new("coin").unwrap(),
+        name: Identifier::new("Coin").unwrap(),
+        type_params: vec![inner],
+    }))
+}
+
+/// Create a TypeTag for Coin<SUI> (0x2::coin::Coin<0x2::sui::SUI>).
+///
+/// This is a convenience function that combines `coin_type` and `sui_type`.
+/// It's the most common coin type used throughout the codebase.
+///
+/// # Example
+/// ```ignore
+/// let coin_sui = coin_sui_type();
+/// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
+/// ```
+pub fn coin_sui_type() -> TypeTag {
+    coin_type(sui_type())
+}
+
+/// Create a StructTag for the SUI type (0x2::sui::SUI).
+///
+/// Use this when you need a StructTag directly rather than a TypeTag.
+pub fn sui_struct_tag() -> StructTag {
+    StructTag {
+        address: AccountAddress::from_hex_literal("0x2").unwrap(),
+        module: Identifier::new("sui").unwrap(),
+        name: Identifier::new("SUI").unwrap(),
+        type_params: vec![],
+    }
+}
+
+/// Create a StructTag for Coin<T> with a given inner type.
+///
+/// # Arguments
+/// * `inner` - The inner type for the Coin as a TypeTag
+pub fn coin_struct_tag(inner: TypeTag) -> StructTag {
+    StructTag {
+        address: AccountAddress::from_hex_literal("0x2").unwrap(),
+        module: Identifier::new("coin").unwrap(),
+        name: Identifier::new("Coin").unwrap(),
+        type_params: vec![inner],
+    }
 }
 
 // =============================================================================
@@ -192,6 +397,165 @@ pub fn parse_type_args(args_str: &str) -> Vec<TypeTag> {
     }
 
     args
+}
+
+// =============================================================================
+// Cached Type Parsing (Result-returning)
+// =============================================================================
+
+/// Parse a type string into a TypeTag with caching and error reporting.
+///
+/// This is the **preferred function** for parsing type strings in production code.
+/// It uses a thread-local cache to avoid re-parsing the same type strings,
+/// providing significant speedup for batch operations.
+///
+/// Unlike [`parse_type_string`] which returns `Option`, this function returns
+/// `Result` with detailed error messages for invalid input.
+///
+/// # Performance
+///
+/// - Primitives (u8, u64, bool, etc.) are handled immediately without cache lookup
+/// - Complex types (structs, vectors, generics) are cached after first parse
+/// - Cache auto-clears at 2048 entries to prevent unbounded memory growth
+///
+/// # Examples
+///
+/// ```ignore
+/// use crate::benchmark::types::parse_type_tag;
+///
+/// let tag = parse_type_tag("u64")?;
+/// assert_eq!(tag, TypeTag::U64);
+///
+/// let coin = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>")?;
+/// // Second call hits cache:
+/// let coin2 = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>")?;
+/// ```
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The type string is malformed (e.g., mismatched angle brackets)
+/// - The address is invalid (not valid hex)
+/// - The module or struct name is invalid
+pub fn parse_type_tag(s: &str) -> Result<TypeTag> {
+    let s = s.trim();
+
+    // Fast path for primitives - no caching needed
+    match s {
+        "u8" => return Ok(TypeTag::U8),
+        "u16" => return Ok(TypeTag::U16),
+        "u32" => return Ok(TypeTag::U32),
+        "u64" => return Ok(TypeTag::U64),
+        "u128" => return Ok(TypeTag::U128),
+        "u256" => return Ok(TypeTag::U256),
+        "bool" => return Ok(TypeTag::Bool),
+        "address" => return Ok(TypeTag::Address),
+        "signer" => return Ok(TypeTag::Signer),
+        _ => {}
+    }
+
+    // Check cache for complex types
+    let cached = TYPE_TAG_CACHE.with(|cache| cache.borrow_mut().get(s));
+    if let Some(type_tag) = cached {
+        return Ok(type_tag);
+    }
+
+    // Parse the type
+    let type_tag = parse_type_tag_uncached(s)?;
+
+    // Cache the result
+    TYPE_TAG_CACHE.with(|cache| {
+        cache.borrow_mut().insert(s.to_string(), type_tag.clone());
+    });
+
+    Ok(type_tag)
+}
+
+/// Internal uncached implementation of type tag parsing with error reporting.
+fn parse_type_tag_uncached(s: &str) -> Result<TypeTag> {
+    // Handle vector<T>
+    if s.starts_with("vector<") && s.ends_with('>') {
+        let inner = &s[7..s.len() - 1];
+        let inner_type = parse_type_tag(inner)?;
+        return Ok(TypeTag::Vector(Box::new(inner_type)));
+    }
+
+    // Handle struct types: address::module::name or address::module::name<type_args>
+    let (base, type_args_str) = if let Some(idx) = s.find('<') {
+        if !s.ends_with('>') {
+            return Err(anyhow!("Malformed type string (unmatched '<'): {}", s));
+        }
+        (&s[..idx], Some(&s[idx + 1..s.len() - 1]))
+    } else {
+        (s, None)
+    };
+
+    // Parse base: address::module::name
+    let parts: Vec<&str> = base.split("::").collect();
+    if parts.len() != 3 {
+        return Err(anyhow!(
+            "Invalid type format '{}': expected ADDRESS::MODULE::NAME",
+            s
+        ));
+    }
+
+    let address = AccountAddress::from_hex_literal(parts[0])
+        .map_err(|e| anyhow!("Invalid address '{}': {}", parts[0], e))?;
+    let module = Identifier::new(parts[1].to_string())
+        .map_err(|e| anyhow!("Invalid module name '{}': {:?}", parts[1], e))?;
+    let name = Identifier::new(parts[2].to_string())
+        .map_err(|e| anyhow!("Invalid struct name '{}': {:?}", parts[2], e))?;
+
+    // Parse type arguments if present
+    let type_params = if let Some(args_str) = type_args_str {
+        parse_type_args_result(args_str)?
+    } else {
+        vec![]
+    };
+
+    Ok(TypeTag::Struct(Box::new(StructTag {
+        address,
+        module,
+        name,
+        type_params,
+    })))
+}
+
+/// Parse comma-separated type arguments with error reporting.
+///
+/// Like [`parse_type_args`] but returns `Result` instead of silently skipping invalid entries.
+pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
+    let trimmed = args_str.trim();
+    if trimmed.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+
+    for (i, c) in trimmed.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                let arg = trimmed[start..i].trim();
+                if !arg.is_empty() {
+                    result.push(parse_type_tag(arg)?);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    // Don't forget the last argument
+    let last = trimmed[start..].trim();
+    if !last.is_empty() {
+        result.push(parse_type_tag(last)?);
+    }
+
+    Ok(result)
 }
 
 // =============================================================================
@@ -554,5 +918,109 @@ mod tests {
         let formatted = format_type_tag(&original);
         let parsed = parse_type_string(&formatted).unwrap();
         assert!(type_tags_equal(&original, &parsed));
+    }
+
+    // =========================================================================
+    // Tests for Cached parse_type_tag
+    // =========================================================================
+
+    #[test]
+    fn test_parse_type_tag_primitives() {
+        clear_type_cache();
+        assert_eq!(parse_type_tag("u8").unwrap(), TypeTag::U8);
+        assert_eq!(parse_type_tag("u64").unwrap(), TypeTag::U64);
+        assert_eq!(parse_type_tag("bool").unwrap(), TypeTag::Bool);
+        assert_eq!(parse_type_tag("address").unwrap(), TypeTag::Address);
+        assert_eq!(parse_type_tag("  u64  ").unwrap(), TypeTag::U64);
+        // Primitives don't use cache
+        assert_eq!(type_cache_size(), 0);
+    }
+
+    #[test]
+    fn test_parse_type_tag_struct() {
+        clear_type_cache();
+        let parsed = parse_type_tag("0x2::sui::SUI").unwrap();
+        if let TypeTag::Struct(s) = parsed {
+            assert_eq!(s.module.as_str(), "sui");
+            assert_eq!(s.name.as_str(), "SUI");
+        } else {
+            panic!("Expected struct");
+        }
+        // Struct should be cached
+        assert_eq!(type_cache_size(), 1);
+    }
+
+    #[test]
+    fn test_parse_type_tag_caching() {
+        clear_type_cache();
+
+        // First parse - cache miss
+        let _ = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
+        let stats1 = type_cache_stats();
+        assert!(stats1.misses > 0);
+
+        // Second parse - cache hit
+        let _ = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
+        let stats2 = type_cache_stats();
+        assert!(stats2.hits > stats1.hits);
+    }
+
+    #[test]
+    fn test_parse_type_tag_cache_hit_rate() {
+        clear_type_cache();
+
+        // Parse same type multiple times
+        for _ in 0..10 {
+            let _ = parse_type_tag("0x2::sui::SUI").unwrap();
+        }
+
+        let stats = type_cache_stats();
+        // First call is a miss, rest are hits
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 9);
+        assert!(stats.hit_rate() > 0.8);
+    }
+
+    #[test]
+    fn test_parse_type_tag_error_messages() {
+        let result = parse_type_tag("invalid");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("ADDRESS::MODULE::NAME"));
+
+        let result = parse_type_tag("0x2::coin::Coin<");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unmatched"));
+    }
+
+    #[test]
+    fn test_parse_type_args_result() {
+        let args = parse_type_args_result("u64, bool").unwrap();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], TypeTag::U64);
+        assert_eq!(args[1], TypeTag::Bool);
+
+        let args = parse_type_args_result("").unwrap();
+        assert!(args.is_empty());
+
+        let result = parse_type_args_result("u64, invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clear_type_cache() {
+        // Populate cache
+        let _ = parse_type_tag("0x2::sui::SUI").unwrap();
+        assert!(type_cache_size() > 0);
+
+        // Clear
+        clear_type_cache();
+        assert_eq!(type_cache_size(), 0);
+
+        // Stats should also be reset
+        let stats = type_cache_stats();
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
     }
 }

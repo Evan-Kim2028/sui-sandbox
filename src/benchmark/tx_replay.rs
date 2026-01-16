@@ -24,113 +24,71 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
+use move_core_types::language_storage::TypeTag;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 use crate::benchmark::ptb::{Argument, Command, InputValue, ObjectInput};
 use crate::benchmark::vm::VMHarness;
+use crate::grpc::{GrpcClient, GrpcOwner};
 
-/// Parse a type string like "0x2::sui::SUI" or "vector<u64>" into a TypeTag.
+// Re-export type parsing functions from the canonical location (types module)
+// This maintains backwards compatibility while centralizing the implementation.
+pub use crate::benchmark::types::{
+    clear_type_cache as clear_type_tag_cache, parse_type_tag,
+    type_cache_size as type_tag_cache_size,
+};
+
+// =============================================================================
+// RPC Helper Functions
+// =============================================================================
+
+/// Execute a JSON-RPC request to a Sui endpoint.
 ///
-/// Supported formats:
-/// - Primitives: "u8", "u16", "u32", "u64", "u128", "u256", "bool", "address"
-/// - Structs: "0x2::sui::SUI", "0x2::coin::Coin<0x2::sui::SUI>"
-/// - Vectors: "vector<u64>", "vector<0x2::sui::SUI>"
-pub fn parse_type_tag(s: &str) -> Result<TypeTag> {
-    let s = s.trim();
+/// This is the canonical way to make RPC calls throughout the codebase.
+/// Handles request formatting, error checking, and result extraction.
+///
+/// # Arguments
+/// * `endpoint` - The RPC endpoint URL
+/// * `method` - The JSON-RPC method name (e.g., "sui_getObject")
+/// * `params` - The method parameters as a JSON value
+///
+/// # Returns
+/// The "result" field from the RPC response, or an error if the request failed.
+fn rpc_request(
+    endpoint: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let request_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params
+    });
 
-    // Handle primitives
-    match s {
-        "u8" => return Ok(TypeTag::U8),
-        "u16" => return Ok(TypeTag::U16),
-        "u32" => return Ok(TypeTag::U32),
-        "u64" => return Ok(TypeTag::U64),
-        "u128" => return Ok(TypeTag::U128),
-        "u256" => return Ok(TypeTag::U256),
-        "bool" => return Ok(TypeTag::Bool),
-        "address" => return Ok(TypeTag::Address),
-        "signer" => return Ok(TypeTag::Signer),
-        _ => {}
+    let response: serde_json::Value = ureq::post(endpoint)
+        .set("Content-Type", "application/json")
+        .send_json(&request_body)
+        .map_err(|e| anyhow!("RPC request failed: {}", e))?
+        .into_json()
+        .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
+
+    // Check for RPC error
+    if let Some(error) = response.get("error") {
+        return Err(anyhow!(
+            "RPC error: {}",
+            error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown")
+        ));
     }
 
-    // Handle vector<T>
-    if s.starts_with("vector<") && s.ends_with(">") {
-        let inner = &s[7..s.len() - 1];
-        let inner_type = parse_type_tag(inner)?;
-        return Ok(TypeTag::Vector(Box::new(inner_type)));
-    }
-
-    // Handle struct types: address::module::name or address::module::name<type_args>
-    // Format: 0x2::sui::SUI or 0x2::coin::Coin<0x2::sui::SUI>
-    let (base, type_args_str) = if let Some(idx) = s.find('<') {
-        if !s.ends_with('>') {
-            return Err(anyhow!("Malformed type string: {}", s));
-        }
-        (&s[..idx], Some(&s[idx + 1..s.len() - 1]))
-    } else {
-        (s, None)
-    };
-
-    // Parse base: address::module::name
-    let parts: Vec<&str> = base.split("::").collect();
-    if parts.len() != 3 {
-        return Err(anyhow!("Invalid struct type format: {}", s));
-    }
-
-    let address = AccountAddress::from_hex_literal(parts[0])
-        .map_err(|e| anyhow!("Invalid address '{}': {}", parts[0], e))?;
-    let module = Identifier::new(parts[1].to_string())
-        .map_err(|e| anyhow!("Invalid module name '{}': {:?}", parts[1], e))?;
-    let name = Identifier::new(parts[2].to_string())
-        .map_err(|e| anyhow!("Invalid struct name '{}': {:?}", parts[2], e))?;
-
-    // Parse type arguments if present
-    let type_params = if let Some(args_str) = type_args_str {
-        parse_type_args_list(args_str)?
-    } else {
-        vec![]
-    };
-
-    Ok(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
-}
-
-/// Parse a comma-separated list of type arguments, handling nested generics.
-fn parse_type_args_list(s: &str) -> Result<Vec<TypeTag>> {
-    if s.trim().is_empty() {
-        return Ok(vec![]);
-    }
-
-    let mut result = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                let arg = s[start..i].trim();
-                if !arg.is_empty() {
-                    result.push(parse_type_tag(arg)?);
-                }
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-
-    // Don't forget the last argument
-    let last = s[start..].trim();
-    if !last.is_empty() {
-        result.push(parse_type_tag(last)?);
-    }
-
-    Ok(result)
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| anyhow!("No result in RPC response"))
 }
 
 /// Object ID type (32-byte address)
@@ -310,6 +268,11 @@ pub struct TransactionEffectsSummary {
 
     /// Events emitted
     pub events_count: usize,
+
+    /// Shared object versions at transaction time (object_id -> version)
+    /// This is extracted from effects.sharedObjects for historical replay.
+    #[serde(default)]
+    pub shared_object_versions: std::collections::HashMap<String, u64>,
 }
 
 /// Transaction execution status.
@@ -479,6 +442,14 @@ pub struct FetchedObject {
 pub struct TransactionFetcher {
     /// RPC endpoint URL
     endpoint: String,
+    /// Archive endpoint for historical object lookups via JSON-RPC (optional, legacy)
+    archive_endpoint: Option<String>,
+    /// gRPC archive endpoint URL for historical lookups (preferred)
+    grpc_archive_endpoint: Option<String>,
+    /// Lazily initialized gRPC client for archive lookups
+    grpc_client: OnceLock<GrpcClient>,
+    /// Tokio runtime for executing async gRPC calls in sync context
+    runtime: OnceLock<tokio::runtime::Runtime>,
 }
 
 impl TransactionFetcher {
@@ -486,6 +457,10 @@ impl TransactionFetcher {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            archive_endpoint: None,
+            grpc_archive_endpoint: None,
+            grpc_client: OnceLock::new(),
+            runtime: OnceLock::new(),
         }
     }
 
@@ -494,9 +469,75 @@ impl TransactionFetcher {
         Self::new("https://fullnode.mainnet.sui.io:443")
     }
 
+    /// Create a fetcher for Sui mainnet with gRPC archive support.
+    ///
+    /// Uses `archive.mainnet.sui.io:443` for historical object lookups via gRPC.
+    /// This is the recommended way to fetch historical objects as the JSON-RPC
+    /// archive endpoints are unreliable.
+    pub fn mainnet_with_archive() -> Self {
+        Self {
+            endpoint: "https://fullnode.mainnet.sui.io:443".to_string(),
+            archive_endpoint: None,
+            grpc_archive_endpoint: Some("https://archive.mainnet.sui.io:443".to_string()),
+            grpc_client: OnceLock::new(),
+            runtime: OnceLock::new(),
+        }
+    }
+
     /// Create a fetcher for Sui testnet.
     pub fn testnet() -> Self {
         Self::new("https://fullnode.testnet.sui.io:443")
+    }
+
+    /// Set the JSON-RPC archive endpoint for historical lookups (legacy).
+    /// Prefer `with_grpc_archive_endpoint` for more reliable historical lookups.
+    pub fn with_archive_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.archive_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Set the gRPC archive endpoint for historical lookups (recommended).
+    ///
+    /// The gRPC archive at `archive.mainnet.sui.io:443` provides reliable
+    /// historical object lookups via the LedgerService.
+    pub fn with_grpc_archive_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.grpc_archive_endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Get or initialize the tokio runtime for async operations.
+    fn get_runtime(&self) -> Result<&tokio::runtime::Runtime> {
+        self.runtime.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime")
+        });
+        self.runtime
+            .get()
+            .ok_or_else(|| anyhow!("Runtime not initialized"))
+    }
+
+    /// Get or initialize the gRPC client for archive lookups.
+    fn get_grpc_client(&self) -> Result<&GrpcClient> {
+        let endpoint = self
+            .grpc_archive_endpoint
+            .as_ref()
+            .ok_or_else(|| anyhow!("No gRPC archive endpoint configured"))?;
+
+        // Ensure runtime is initialized first
+        let runtime = self.get_runtime()?;
+
+        // Initialize client if needed
+        if self.grpc_client.get().is_none() {
+            let client = runtime.block_on(async { GrpcClient::new(endpoint).await })?;
+            // Ignore if another thread beat us to it
+            let _ = self.grpc_client.set(client);
+        }
+
+        self.grpc_client
+            .get()
+            .ok_or_else(|| anyhow!("gRPC client not initialized"))
     }
 
     /// Get the endpoint URL.
@@ -509,12 +550,10 @@ impl TransactionFetcher {
     /// This is an async operation that makes an HTTP request to the RPC endpoint.
     /// For now, returns a placeholder; actual implementation requires async runtime.
     pub fn fetch_transaction_sync(&self, digest: &str) -> Result<FetchedTransaction> {
-        // For synchronous usage, we'll use ureq or similar
-        let request_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sui_getTransactionBlock",
-            "params": [
+        let result = rpc_request(
+            &self.endpoint,
+            "sui_getTransactionBlock",
+            serde_json::json!([
                 digest,
                 {
                     "showInput": true,
@@ -523,54 +562,23 @@ impl TransactionFetcher {
                     "showObjectChanges": true,
                     "showBalanceChanges": false
                 }
-            ]
-        });
+            ]),
+        )?;
 
-        let response: serde_json::Value = ureq::post(&self.endpoint)
-            .set("Content-Type", "application/json")
-            .send_json(&request_body)
-            .map_err(|e| anyhow!("RPC request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-        // Check for RPC error
-        if let Some(error) = response.get("error") {
-            return Err(anyhow!(
-                "RPC error: {}",
-                error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
-        }
-
-        let result = response
-            .get("result")
-            .ok_or_else(|| anyhow!("No result in RPC response"))?;
-
-        parse_transaction_response(digest, result)
+        parse_transaction_response(digest, &result)
     }
 
     /// Fetch recent transactions from a checkpoint.
     pub fn fetch_recent_transactions(&self, limit: usize) -> Result<Vec<TransactionDigest>> {
         // Get the latest checkpoint
-        let request_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sui_getLatestCheckpointSequenceNumber",
-            "params": []
-        });
+        let checkpoint_result = rpc_request(
+            &self.endpoint,
+            "sui_getLatestCheckpointSequenceNumber",
+            serde_json::json!([]),
+        )?;
 
-        let response: serde_json::Value = ureq::post(&self.endpoint)
-            .set("Content-Type", "application/json")
-            .send_json(&request_body)
-            .map_err(|e| anyhow!("RPC request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-        let checkpoint = response
-            .get("result")
-            .and_then(|r| r.as_str())
+        let checkpoint = checkpoint_result
+            .as_str()
             .and_then(|s| s.parse::<u64>().ok())
             .ok_or_else(|| anyhow!("Failed to get latest checkpoint"))?;
 
@@ -579,25 +587,13 @@ impl TransactionFetcher {
         let mut current_checkpoint = checkpoint;
 
         while digests.len() < limit && current_checkpoint > 0 {
-            let request_body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "sui_getCheckpoint",
-                "params": [current_checkpoint.to_string()]
-            });
+            let result = rpc_request(
+                &self.endpoint,
+                "sui_getCheckpoint",
+                serde_json::json!([current_checkpoint.to_string()]),
+            )?;
 
-            let response: serde_json::Value = ureq::post(&self.endpoint)
-                .set("Content-Type", "application/json")
-                .send_json(&request_body)
-                .map_err(|e| anyhow!("RPC request failed: {}", e))?
-                .into_json()
-                .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-            if let Some(txs) = response
-                .get("result")
-                .and_then(|r| r.get("transactions"))
-                .and_then(|t| t.as_array())
-            {
+            if let Some(txs) = result.get("transactions").and_then(|t| t.as_array()) {
                 for tx in txs {
                     if let Some(digest) = tx.as_str() {
                         digests.push(TransactionDigest::new(digest));
@@ -623,11 +619,10 @@ impl TransactionFetcher {
 
     /// Fetch full object data including type, ownership, and BCS bytes.
     pub fn fetch_object_full(&self, object_id: &str) -> Result<FetchedObject> {
-        let request_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sui_getObject",
-            "params": [
+        let result = rpc_request(
+            &self.endpoint,
+            "sui_getObject",
+            serde_json::json!([
                 object_id,
                 {
                     "showType": true,
@@ -635,29 +630,8 @@ impl TransactionFetcher {
                     "showContent": true,
                     "showBcs": true
                 }
-            ]
-        });
-
-        let response: serde_json::Value = ureq::post(&self.endpoint)
-            .set("Content-Type", "application/json")
-            .send_json(&request_body)
-            .map_err(|e| anyhow!("RPC request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-        if let Some(error) = response.get("error") {
-            return Err(anyhow!(
-                "RPC error: {}",
-                error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
-        }
-
-        let result = response
-            .get("result")
-            .ok_or_else(|| anyhow!("No result in RPC response"))?;
+            ]),
+        )?;
 
         // Check if object exists
         if result.get("error").is_some() {
@@ -711,12 +685,44 @@ impl TransactionFetcher {
     }
 
     /// Fetch object data at a specific version (for historical replay).
+    /// Uses the archive endpoint if available, otherwise falls back to regular endpoint.
     pub fn fetch_object_at_version(&self, object_id: &str, version: u64) -> Result<Vec<u8>> {
-        let request_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sui_tryGetPastObject",
-            "params": [
+        let fetched = self.fetch_object_at_version_full(object_id, version)?;
+        Ok(fetched.bcs_bytes)
+    }
+
+    /// Fetch full object data at a specific version (for historical replay).
+    ///
+    /// Tries methods in order of reliability:
+    /// 1. gRPC archive (most reliable for historical data)
+    /// 2. JSON-RPC archive endpoint (legacy)
+    /// 3. Regular JSON-RPC endpoint (fallback)
+    pub fn fetch_object_at_version_full(
+        &self,
+        object_id: &str,
+        version: u64,
+    ) -> Result<FetchedObject> {
+        // Try gRPC archive first (most reliable)
+        if self.grpc_archive_endpoint.is_some() {
+            match self.fetch_object_at_version_grpc(object_id, Some(version)) {
+                Ok(obj) => return Ok(obj),
+                Err(e) => {
+                    // Log but continue to fallbacks
+                    eprintln!(
+                        "gRPC archive lookup failed for {}@{}: {}",
+                        object_id, version, e
+                    );
+                }
+            }
+        }
+
+        // Try JSON-RPC archive endpoint if available
+        let endpoint = self.archive_endpoint.as_ref().unwrap_or(&self.endpoint);
+
+        let result = rpc_request(
+            endpoint,
+            "sui_tryGetPastObject",
+            serde_json::json!([
                 object_id,
                 version,
                 {
@@ -725,29 +731,32 @@ impl TransactionFetcher {
                     "showContent": true,
                     "showBcs": true
                 }
-            ]
-        });
+            ]),
+        );
 
-        let response: serde_json::Value = ureq::post(&self.endpoint)
-            .set("Content-Type", "application/json")
-            .send_json(&request_body)
-            .map_err(|e| anyhow!("RPC request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-        if let Some(error) = response.get("error") {
-            return Err(anyhow!(
-                "RPC error: {}",
-                error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
-        }
-
-        let result = response
-            .get("result")
-            .ok_or_else(|| anyhow!("No result in RPC response"))?;
+        // If archive failed and we have a fallback, try regular endpoint
+        let result = match result {
+            Ok(r) => r,
+            Err(e) if self.archive_endpoint.is_some() => {
+                // Try regular endpoint as fallback
+                rpc_request(
+                    &self.endpoint,
+                    "sui_tryGetPastObject",
+                    serde_json::json!([
+                        object_id,
+                        version,
+                        {
+                            "showType": true,
+                            "showOwner": true,
+                            "showContent": true,
+                            "showBcs": true
+                        }
+                    ]),
+                )
+                .map_err(|_| e)?
+            }
+            Err(e) => return Err(e),
+        };
 
         // Check status
         let status = result
@@ -771,11 +780,70 @@ impl TransactionFetcher {
             .ok_or_else(|| anyhow!("No BCS data in past object"))?;
 
         use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
+        let bcs_bytes = base64::engine::general_purpose::STANDARD
             .decode(bcs_base64)
             .map_err(|e| anyhow!("Failed to decode BCS: {}", e))?;
 
-        Ok(bytes)
+        // Get type string
+        let type_string = details
+            .get("type")
+            .or_else(|| details.get("bcs").and_then(|b| b.get("type")))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+
+        // Get ownership info
+        let owner = details.get("owner");
+        let is_shared = owner.and_then(|o| o.get("Shared")).is_some();
+        let is_immutable = owner
+            .and_then(|o| o.as_str())
+            .map(|s| s == "Immutable")
+            .unwrap_or(false);
+
+        Ok(FetchedObject {
+            bcs_bytes,
+            type_string,
+            is_shared,
+            is_immutable,
+            version,
+        })
+    }
+
+    /// Fetch object at version using gRPC archive.
+    ///
+    /// This is the most reliable method for historical object lookups as
+    /// the archive at `archive.mainnet.sui.io:443` has full history.
+    fn fetch_object_at_version_grpc(
+        &self,
+        object_id: &str,
+        version: Option<u64>,
+    ) -> Result<FetchedObject> {
+        let client = self.get_grpc_client()?;
+        let runtime = self.get_runtime()?;
+
+        let grpc_obj: Option<crate::grpc::GrpcObject> =
+            runtime.block_on(async { client.get_object_at_version(object_id, version).await })?;
+
+        let obj = grpc_obj.ok_or_else(|| anyhow!("Object not found via gRPC: {}", object_id))?;
+
+        // Extract BCS bytes
+        let bcs_bytes = obj
+            .bcs
+            .ok_or_else(|| anyhow!("No BCS data in gRPC response for {}", object_id))?;
+
+        // Determine ownership
+        let (is_shared, is_immutable) = match &obj.owner {
+            GrpcOwner::Shared { .. } => (true, false),
+            GrpcOwner::Immutable => (false, true),
+            _ => (false, false),
+        };
+
+        Ok(FetchedObject {
+            bcs_bytes,
+            type_string: obj.type_string,
+            is_shared,
+            is_immutable,
+            version: obj.version,
+        })
     }
 
     /// Fetch all input objects for a transaction.
@@ -922,39 +990,17 @@ impl TransactionFetcher {
     /// Fetch package bytecode modules from the RPC.
     /// Returns a vector of (module_name, module_bytes) pairs.
     pub fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-        let request_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "sui_getObject",
-            "params": [
+        let result = rpc_request(
+            &self.endpoint,
+            "sui_getObject",
+            serde_json::json!([
                 package_id,
                 {
                     "showBcs": true,
                     "showContent": true
                 }
-            ]
-        });
-
-        let response: serde_json::Value = ureq::post(&self.endpoint)
-            .set("Content-Type", "application/json")
-            .send_json(&request_body)
-            .map_err(|e| anyhow!("RPC request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-        if let Some(error) = response.get("error") {
-            return Err(anyhow!(
-                "RPC error: {}",
-                error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
-        }
-
-        let result = response
-            .get("result")
-            .ok_or_else(|| anyhow!("No result in RPC response"))?;
+            ]),
+        )?;
 
         let data = result
             .get("data")
@@ -1073,6 +1119,298 @@ impl TransactionFetcher {
 
         Ok(packages)
     }
+
+    /// Fetch dynamic field children of an object (or wrapped UID) via JSON-RPC.
+    ///
+    /// This uses the `suix_getDynamicFields` RPC method which works for both:
+    /// - Top-level objects (like Tables)
+    /// - Wrapped UIDs (like skip_list nodes inside a Pool)
+    ///
+    /// Returns a list of dynamic field info including object IDs and types.
+    pub fn fetch_dynamic_fields(&self, parent_id: &str) -> Result<Vec<DynamicFieldEntry>> {
+        let mut all_fields = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let params = match &cursor {
+                Some(c) => serde_json::json!([parent_id, c, 50]),
+                None => serde_json::json!([parent_id, null, 50]),
+            };
+
+            let result = rpc_request(&self.endpoint, "suix_getDynamicFields", params)?;
+
+            let data = result
+                .get("data")
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            for entry in data {
+                // Parse the dynamic field entry
+                let name_value = entry.get("name");
+                let name_type = name_value
+                    .and_then(|n| n.get("type"))
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let name_json = name_value.and_then(|n| n.get("value")).cloned();
+
+                // BCS-encoded name
+                let name_bcs = entry.get("bcsName").and_then(|b| b.as_str()).and_then(|s| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.decode(s).ok()
+                });
+
+                let object_id = entry
+                    .get("objectId")
+                    .and_then(|o| o.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+
+                let object_type = entry
+                    .get("objectType")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string());
+
+                let version = entry.get("version").and_then(|v| v.as_u64());
+
+                let digest = entry
+                    .get("digest")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string());
+
+                all_fields.push(DynamicFieldEntry {
+                    name_type,
+                    name_json,
+                    name_bcs,
+                    object_id,
+                    object_type,
+                    version,
+                    digest,
+                });
+            }
+
+            // Check for more pages
+            let has_next = result
+                .get("hasNextPage")
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+
+            if has_next {
+                cursor = result
+                    .get("nextCursor")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+
+        Ok(all_fields)
+    }
+
+    /// Recursively fetch dynamic fields and all their nested children.
+    /// This is useful for structures like skip_lists that have nested UIDs.
+    ///
+    /// # Arguments
+    /// * `parent_id` - The parent object/UID to start from
+    /// * `max_depth` - Maximum recursion depth (0 = just direct children)
+    /// * `max_total` - Maximum total entries to fetch
+    pub fn fetch_dynamic_fields_recursive(
+        &self,
+        parent_id: &str,
+        max_depth: usize,
+        max_total: usize,
+    ) -> Result<Vec<DynamicFieldEntry>> {
+        let mut all_fields = Vec::new();
+        let mut queue = vec![(parent_id.to_string(), 0usize)];
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(parent_id.to_string());
+
+        while let Some((current_id, depth)) = queue.pop() {
+            if all_fields.len() >= max_total {
+                break;
+            }
+
+            // Fetch children of this ID
+            match self.fetch_dynamic_fields(&current_id) {
+                Ok(fields) => {
+                    for field in fields {
+                        if all_fields.len() >= max_total {
+                            break;
+                        }
+
+                        all_fields.push(field.clone());
+
+                        // If we haven't reached max depth, queue child objects for scanning
+                        if depth < max_depth && !visited.contains(&field.object_id) {
+                            visited.insert(field.object_id.clone());
+                            queue.push((field.object_id.clone(), depth + 1));
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Log but continue - some UIDs may not have children
+                    eprintln!(
+                        "Warning: Failed to fetch dynamic fields for {}: {}",
+                        current_id, e
+                    );
+                }
+            }
+        }
+
+        Ok(all_fields)
+    }
+
+    /// Fetch a dynamic field object at a specific version.
+    /// This is useful for historical replay where we need the dynamic field
+    /// state at a specific transaction version.
+    ///
+    /// # Arguments
+    /// * `object_id` - The dynamic field object ID
+    /// * `version` - The version to fetch (usually from DynamicFieldEntry.version)
+    ///
+    /// # Returns
+    /// The BCS bytes of the dynamic field wrapper object
+    pub fn fetch_dynamic_field_at_version(
+        &self,
+        object_id: &str,
+        version: u64,
+    ) -> Result<FetchedObject> {
+        self.fetch_object_at_version_full(object_id, version)
+    }
+
+    /// Fetch multiple dynamic field objects at their historical versions.
+    /// Uses the archive endpoint for historical lookups.
+    ///
+    /// # Arguments
+    /// * `entries` - List of (object_id, version) pairs to fetch
+    ///
+    /// # Returns
+    /// Map from object_id to FetchedObject
+    pub fn fetch_dynamic_fields_at_versions(
+        &self,
+        entries: &[(String, u64)],
+    ) -> Result<std::collections::HashMap<String, FetchedObject>> {
+        let mut result = std::collections::HashMap::new();
+
+        for (object_id, version) in entries {
+            match self.fetch_dynamic_field_at_version(object_id, *version) {
+                Ok(fetched) => {
+                    result.insert(object_id.clone(), fetched);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to fetch dynamic field {} at version {}: {}",
+                        object_id, version, e
+                    );
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+/// Entry for a dynamic field child (from JSON-RPC `suix_getDynamicFields`).
+#[derive(Debug, Clone)]
+pub struct DynamicFieldEntry {
+    /// Type of the key/name (e.g., "u64", "0x2::object::ID")
+    pub name_type: String,
+    /// JSON value of the key/name
+    pub name_json: Option<serde_json::Value>,
+    /// BCS-encoded key bytes
+    pub name_bcs: Option<Vec<u8>>,
+    /// Object ID of the dynamic field wrapper
+    pub object_id: String,
+    /// Full type of the stored value
+    pub object_type: Option<String>,
+    /// Version of the wrapper object
+    pub version: Option<u64>,
+    /// Digest of the wrapper object
+    pub digest: Option<String>,
+}
+
+// ============================================================================
+// Dynamic Field ID Derivation
+// ============================================================================
+
+/// Derive the object ID for a dynamic field given the parent UID, key type, and key value.
+///
+/// This implements the same formula as Sui's `dynamic_field::derive_dynamic_field_id`:
+/// ```text
+/// Blake2b256(0xf0 || parent || len(key_bytes) || key_bytes || bcs(key_type_tag))
+/// ```
+///
+/// Where:
+/// - `0xf0` is the `HashingIntentScope::ChildObjectId` prefix
+/// - `parent` is the 32-byte parent UID address
+/// - `len(key_bytes)` is the length as 8-byte little-endian (usize)
+/// - `key_bytes` is the BCS-serialized key value
+/// - `bcs(key_type_tag)` is the BCS-serialized TypeTag of the key
+///
+/// # Arguments
+/// * `parent` - The parent object's UID address (32 bytes)
+/// * `key_type_tag` - The Move TypeTag of the key (e.g., TypeTag::U64)
+/// * `key_bytes` - The BCS-serialized key value
+///
+/// # Returns
+/// The derived ObjectID (32 bytes) as an AccountAddress
+///
+/// # Example
+/// ```ignore
+/// use move_core_types::language_storage::TypeTag;
+///
+/// let parent = AccountAddress::from_hex_literal("0x6dd50d...").unwrap();
+/// let key: u64 = 481316;
+/// let key_bytes = bcs::to_bytes(&key).unwrap();
+/// let obj_id = derive_dynamic_field_id(parent, &TypeTag::U64, &key_bytes).unwrap();
+/// ```
+pub fn derive_dynamic_field_id(
+    parent: AccountAddress,
+    key_type_tag: &TypeTag,
+    key_bytes: &[u8],
+) -> Result<AccountAddress> {
+    use fastcrypto::hash::{Blake2b256, HashFunction};
+
+    // HashingIntentScope::ChildObjectId = 0xf0
+    const CHILD_OBJECT_ID_SCOPE: u8 = 0xf0;
+
+    // BCS-serialize the type tag
+    let type_tag_bytes = bcs::to_bytes(key_type_tag)
+        .map_err(|e| anyhow!("Failed to BCS-serialize type tag: {}", e))?;
+
+    // Build the input: scope || parent || len(key) || key || type_tag
+    let mut input = Vec::with_capacity(1 + 32 + 8 + key_bytes.len() + type_tag_bytes.len());
+    input.push(CHILD_OBJECT_ID_SCOPE);
+    input.extend_from_slice(parent.as_ref());
+    input.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+    input.extend_from_slice(key_bytes);
+    input.extend_from_slice(&type_tag_bytes);
+
+    // Hash with Blake2b-256
+    let hash = Blake2b256::digest(&input);
+
+    // Convert to AccountAddress (hash.digest is [u8; 32])
+    Ok(AccountAddress::new(hash.digest))
+}
+
+/// Derive the object ID for a dynamic field with a u64 key.
+///
+/// Convenience wrapper around `derive_dynamic_field_id` for the common case
+/// of u64 keys (used by skip_list, table, etc.).
+///
+/// # Arguments
+/// * `parent` - The parent object's UID address
+/// * `key` - The u64 key value
+///
+/// # Returns
+/// The derived ObjectID as an AccountAddress
+pub fn derive_dynamic_field_id_u64(parent: AccountAddress, key: u64) -> Result<AccountAddress> {
+    let key_bytes =
+        bcs::to_bytes(&key).map_err(|e| anyhow!("Failed to BCS-serialize u64 key: {}", e))?;
+    derive_dynamic_field_id(parent, &TypeTag::U64, &key_bytes)
 }
 
 // ============================================================================
@@ -2305,6 +2643,24 @@ fn parse_effects(effects: &serde_json::Value) -> Result<TransactionEffectsSummar
         })
         .unwrap_or_default();
 
+    // Parse shared object versions from effects.sharedObjects
+    // Format: [{ "objectId": "0x...", "version": 123, "digest": "..." }, ...]
+    let shared_object_versions = effects
+        .get("sharedObjects")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let object_id = item.get("objectId")?.as_str()?.to_string();
+                    let version = item
+                        .get("version")
+                        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))?;
+                    Some((object_id, version))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(TransactionEffectsSummary {
         status,
         created,
@@ -2314,6 +2670,7 @@ fn parse_effects(effects: &serde_json::Value) -> Result<TransactionEffectsSummar
         unwrapped,
         gas_used,
         events_count: 0, // Events not parsed for now
+        shared_object_versions,
     })
 }
 
@@ -3033,5 +3390,71 @@ mod tests {
 
         let testnet = TransactionFetcher::testnet();
         assert!(testnet.endpoint().contains("testnet"));
+    }
+
+    #[test]
+    fn test_fetcher_with_grpc_archive() {
+        let fetcher = TransactionFetcher::mainnet_with_archive();
+        assert!(fetcher.endpoint().contains("mainnet"));
+        assert!(fetcher.grpc_archive_endpoint.is_some());
+        assert!(fetcher
+            .grpc_archive_endpoint
+            .as_ref()
+            .unwrap()
+            .contains("archive"));
+
+        // Test builder pattern
+        let fetcher2 = TransactionFetcher::mainnet()
+            .with_grpc_archive_endpoint("https://custom-archive.example.com");
+        assert_eq!(
+            fetcher2.grpc_archive_endpoint.as_ref().unwrap(),
+            "https://custom-archive.example.com"
+        );
+    }
+
+    #[test]
+    fn test_derive_dynamic_field_id() {
+        // Test case from Cetus Pool's skip_list:
+        // Parent UID: 0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3
+        // Key type: u64
+        // Key value: 481316
+        // Expected object ID: 0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704
+
+        let parent = AccountAddress::from_hex_literal(
+            "0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3",
+        )
+        .unwrap();
+
+        let key: u64 = 481316;
+
+        let derived = super::derive_dynamic_field_id_u64(parent, key).unwrap();
+
+        let expected = AccountAddress::from_hex_literal(
+            "0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704",
+        )
+        .unwrap();
+
+        assert_eq!(
+            derived,
+            expected,
+            "Derived ID mismatch:\n  got:      {}\n  expected: {}",
+            derived.to_hex_literal(),
+            expected.to_hex_literal()
+        );
+
+        // Test another key value (key=0 for historical skip_list head)
+        let key_0_derived = super::derive_dynamic_field_id_u64(parent, 0).unwrap();
+        let key_0_expected = AccountAddress::from_hex_literal(
+            "0x364f5bc3735b4aadfe4ff299163c407c8058ab7f014308ec62550a5306a1fb7f",
+        )
+        .unwrap();
+
+        assert_eq!(
+            key_0_derived,
+            key_0_expected,
+            "Derived ID for key=0 mismatch:\n  got:      {}\n  expected: {}",
+            key_0_derived.to_hex_literal(),
+            key_0_expected.to_hex_literal()
+        );
     }
 }

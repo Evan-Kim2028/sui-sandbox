@@ -78,6 +78,11 @@ use move_vm_types::values::{GlobalValue, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+/// Callback type for on-demand child object fetching.
+/// Takes (child_object_id) and returns Option<(type_tag, bcs_bytes)>.
+/// This is called when a child object is requested but not found in the preloaded set.
+pub type ChildFetcherFn = Box<dyn Fn(AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
+
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
 pub const E_FIELD_DOES_NOT_EXIST: u64 = 1;
@@ -777,6 +782,9 @@ pub struct SharedObjectRuntime {
     /// Local ObjectRuntime for this session - initialized from shared state
     /// and synced back after execution
     local: ObjectRuntime,
+    /// Optional callback for on-demand child fetching from network/archive.
+    /// Called when a child object is requested but not found in shared state.
+    child_fetcher: Option<Arc<ChildFetcherFn>>,
 }
 
 // Mark as a native extension
@@ -793,7 +801,31 @@ impl SharedObjectRuntime {
         Self {
             shared_state,
             local,
+            child_fetcher: None,
         }
+    }
+
+    /// Create a SharedObjectRuntime with an on-demand child fetcher.
+    /// The fetcher is called when a child object is not found in the preloaded set.
+    pub fn with_child_fetcher(
+        shared_state: Arc<Mutex<ObjectRuntimeState>>,
+        fetcher: ChildFetcherFn,
+    ) -> Self {
+        Self {
+            shared_state,
+            local: ObjectRuntime::new(),
+            child_fetcher: Some(Arc::new(fetcher)),
+        }
+    }
+
+    /// Set the child fetcher callback.
+    pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
+        self.child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Get the child fetcher if set.
+    pub fn child_fetcher(&self) -> Option<&Arc<ChildFetcherFn>> {
+        self.child_fetcher.as_ref()
     }
 
     /// Get access to the shared state for external queries.
@@ -820,6 +852,20 @@ impl SharedObjectRuntime {
             return state.has_child(parent, child_id);
         }
         false
+    }
+
+    /// Try to fetch a child object on-demand if a fetcher is configured.
+    /// Returns Some((type_tag, bytes)) if successfully fetched, None otherwise.
+    pub fn try_fetch_child(&self, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+        if let Some(fetcher) = &self.child_fetcher {
+            eprintln!(
+                "[SharedObjectRuntime] on-demand fetching child {}",
+                child_id.to_hex_literal()
+            );
+            fetcher(child_id)
+        } else {
+            None
+        }
     }
 }
 

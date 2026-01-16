@@ -34,75 +34,10 @@
 //! - Errors report what happened without prescribing fixes
 //! - The goal is 1:1 parity with mainnet execution semantics
 //!
-//! ## Full-Node Embedding Considerations
+//! ## Extensibility
 //!
-//! This simulation environment is designed to be embeddable into a Sui full node
-//! for production use cases like:
-//!
-//! - **Transaction Preview**: Dry-run transactions before submission
-//! - **State Exploration**: Query "what-if" scenarios without affecting chain state
-//! - **LLM Integration**: Allow AI agents to safely explore transaction outcomes
-//!
-//! ### Architecture for Full-Node Integration
-//!
-//! To embed this sandbox into a full node, the following adaptations are needed:
-//!
-//! 1. **State Source Adapter**: Replace `LocalModuleResolver` with a trait that can
-//!    read from the node's RocksDB store. The interface is simple:
-//!    ```ignore
-//!    trait StateSource {
-//!        fn get_module(&self, id: &ModuleId) -> Option<Vec<u8>>;
-//!        fn get_object(&self, id: ObjectID) -> Option<Object>;
-//!        fn get_dynamic_field(&self, parent: ObjectID, key: &[u8]) -> Option<Object>;
-//!    }
-//!    ```
-//!
-//! 2. **Transaction Replay**: Use `TransactionFetcher` to hydrate historical state
-//!    from the node's transaction log rather than RPC calls.
-//!
-//! 3. **Consensus Ordering**: For realistic shared object simulation, inject the
-//!    node's consensus ordering when acquiring locks. The lamport clock can be
-//!    replaced with the actual sequencer output.
-//!
-//! 4. **Gas Metering**: The current gas estimation uses simplified constants.
-//!    For production, use the node's `GasCharger` with actual gas schedules.
-//!
-//! 5. **Event Emission**: Events are captured in `EmittedEvent` structs. For node
-//!    integration, these should be indexed and queryable like on-chain events.
-//!
-//! ### Recommended Integration Points
-//!
-//! ```ignore
-//! // In sui-core's AuthorityState:
-//! impl AuthorityState {
-//!     pub fn create_simulation_env(&self) -> Result<SimulationEnvironment> {
-//!         let resolver = self.store.as_module_resolver();
-//!         SimulationEnvironment::with_resolver(resolver)
-//!     }
-//!
-//!     pub fn simulate_transaction(
-//!         &self,
-//!         tx: &Transaction,
-//!     ) -> Result<TransactionEffects> {
-//!         let mut env = self.create_simulation_env()?;
-//!         env.replay_transaction(tx)
-//!     }
-//! }
-//! ```
-//!
-//! ### What's Portable vs Node-Specific
-//!
-//! | Component | Portable | Node-Specific |
-//! |-----------|----------|---------------|
-//! | Move VM execution | Yes | No |
-//! | PTB command handling | Yes | No |
-//! | Native function mocks | Yes | Replace with real natives |
-//! | Module resolution | Partial | Need RocksDB adapter |
-//! | Object store | Partial | Need RocksDB adapter |
-//! | Gas metering | Partial | Need real GasCharger |
-//! | Event capture | Yes | No |
-//! | Shared object locking | Yes | Replace with consensus |
-//! | Epoch/timestamp | Yes | Get from node state |
+//! The `StateSource` trait allows plugging in different backends for module/object
+//! resolution. See [`state_source`](super::state_source) for details.
 //!
 //! ## Example Usage
 //!
@@ -136,6 +71,7 @@ use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 
+use crate::benchmark::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::benchmark::resolver::LocalModuleResolver;
 
 // ============================================================================
@@ -1012,6 +948,28 @@ impl SimulationEnvironment {
             .map_err(|e| anyhow!("Invalid package address: {}", e))
     }
 
+    /// Deploy a package with pre-fetched modules at a specific address.
+    /// This is used by the mainnet import feature when modules are already fetched
+    /// via DataFetcher.
+    pub fn deploy_package_at_address(
+        &mut self,
+        package_id: &str,
+        modules: Vec<(String, Vec<u8>)>,
+    ) -> Result<AccountAddress> {
+        let target_addr = AccountAddress::from_hex_literal(package_id)
+            .map_err(|e| anyhow!("Invalid package address: {}", e))?;
+
+        let (count, _) = self
+            .resolver
+            .add_package_modules_at(modules, Some(target_addr))?;
+
+        if count == 0 {
+            return Err(anyhow!("No modules loaded for package {}", package_id));
+        }
+
+        Ok(target_addr)
+    }
+
     /// Create a new object with the given type and BCS bytes.
     pub fn create_object(
         &mut self,
@@ -1081,7 +1039,9 @@ impl SimulationEnvironment {
 
         // Parse the object ID
         let id = AccountAddress::from_hex_literal(object_id)
-            .map_err(|e| anyhow!("Invalid object ID {}: {}", object_id, e))?;
+            .with_phase_context(Phase::Synthesis, || {
+                format!("parsing object ID '{}'", object_id)
+            })?;
 
         let obj = SimulatedObject {
             id,
@@ -1157,7 +1117,9 @@ impl SimulationEnvironment {
         let obj = self
             .objects
             .get_mut(&id)
-            .ok_or_else(|| anyhow!("Object {} not found", id.to_hex_literal()))?;
+            .ok_or_phase_with(Phase::Execution, || {
+                format!("object {} not found", id.to_hex_literal())
+            })?;
         obj.bcs_bytes = bytes;
         obj.version += 1;
         Ok(())
@@ -1273,6 +1235,10 @@ impl SimulationEnvironment {
     }
 
     /// Parse a type string like "0x2::coin::Coin<0x2::sui::SUI>" into a TypeTag.
+    ///
+    /// Delegates to the canonical implementation in the types module.
+    /// Uses caching for improved performance on repeated calls.
+    ///
     /// Supports:
     /// - Simple types: "0x2::sui::SUI"
     /// - Single generics: "0x2::coin::Coin<0x2::sui::SUI>"
@@ -1280,114 +1246,7 @@ impl SimulationEnvironment {
     /// - Nested generics: "0x2::option::Option<0x2::coin::Coin<0x2::sui::SUI>>"
     /// - Primitive types: "u8", "u64", "bool", "address", "vector<u8>"
     pub fn parse_type_string(type_str: &str) -> Option<TypeTag> {
-        let trimmed = type_str.trim();
-
-        // Handle primitive types
-        match trimmed {
-            "u8" => return Some(TypeTag::U8),
-            "u16" => return Some(TypeTag::U16),
-            "u32" => return Some(TypeTag::U32),
-            "u64" => return Some(TypeTag::U64),
-            "u128" => return Some(TypeTag::U128),
-            "u256" => return Some(TypeTag::U256),
-            "bool" => return Some(TypeTag::Bool),
-            "address" => return Some(TypeTag::Address),
-            "signer" => return Some(TypeTag::Signer),
-            _ => {}
-        }
-
-        // Handle vector<T>
-        if trimmed.starts_with("vector<") && trimmed.ends_with('>') {
-            let inner = &trimmed[7..trimmed.len() - 1];
-            let inner_type = Self::parse_type_string(inner)?;
-            return Some(TypeTag::Vector(Box::new(inner_type)));
-        }
-
-        // Handle generic struct types
-        if let Some(angle_pos) = trimmed.find('<') {
-            let base = &trimmed[..angle_pos];
-            let params_str = &trimmed[angle_pos + 1..trimmed.len() - 1]; // Remove < and >
-
-            // Parse base type (ADDRESS::MODULE::STRUCT)
-            let parts: Vec<&str> = base.split("::").collect();
-            if parts.len() != 3 {
-                return None;
-            }
-
-            let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-            let module = Identifier::new(parts[1]).ok()?;
-            let name = Identifier::new(parts[2]).ok()?;
-
-            // Parse type parameters - handle multiple and nested params
-            let type_params = Self::parse_type_params(params_str)?;
-
-            Some(TypeTag::Struct(Box::new(StructTag {
-                address,
-                module,
-                name,
-                type_params,
-            })))
-        } else {
-            // Non-generic struct type
-            let parts: Vec<&str> = trimmed.split("::").collect();
-            if parts.len() != 3 {
-                return None;
-            }
-
-            let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-            let module = Identifier::new(parts[1]).ok()?;
-            let name = Identifier::new(parts[2]).ok()?;
-
-            Some(TypeTag::Struct(Box::new(StructTag {
-                address,
-                module,
-                name,
-                type_params: vec![],
-            })))
-        }
-    }
-
-    /// Parse comma-separated type parameters, respecting nested angle brackets.
-    /// E.g., "0x2::sui::SUI, 0x2::usdc::USDC" or "0x2::coin::Coin<0x2::sui::SUI>, 0x2::usdc::USDC"
-    fn parse_type_params(params_str: &str) -> Option<Vec<TypeTag>> {
-        let trimmed = params_str.trim();
-        if trimmed.is_empty() {
-            return Some(vec![]);
-        }
-
-        let mut params = Vec::new();
-        let mut current = String::new();
-        let mut depth = 0;
-
-        for ch in trimmed.chars() {
-            match ch {
-                '<' => {
-                    depth += 1;
-                    current.push(ch);
-                }
-                '>' => {
-                    depth -= 1;
-                    current.push(ch);
-                }
-                ',' if depth == 0 => {
-                    // Top-level comma - end of current parameter
-                    let param = Self::parse_type_string(current.trim())?;
-                    params.push(param);
-                    current.clear();
-                }
-                _ => {
-                    current.push(ch);
-                }
-            }
-        }
-
-        // Don't forget the last parameter
-        if !current.trim().is_empty() {
-            let param = Self::parse_type_string(current.trim())?;
-            params.push(param);
-        }
-
-        Some(params)
+        crate::benchmark::types::parse_type_string(type_str)
     }
 
     /// Format a TypeTag back to a string (for debugging/display).

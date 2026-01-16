@@ -35,7 +35,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use crate::benchmark::natives::{build_native_function_table, EmittedEvent, MockNativeState};
-use crate::benchmark::object_runtime::{ObjectRuntimeState, SharedObjectRuntime};
+use crate::benchmark::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
 use crate::benchmark::resolver::LocalModuleResolver;
 
 /// Configuration for the simulation sandbox.
@@ -966,6 +966,9 @@ pub struct VMHarness<'a> {
     /// Shared dynamic field state that persists across VM sessions.
     /// Used to track Table/Bag entries throughout PTB execution.
     shared_df_state: Arc<Mutex<ObjectRuntimeState>>,
+    /// Optional callback for on-demand child object fetching.
+    /// Used for fetching dynamic field children from network/archive when not preloaded.
+    child_fetcher: Option<Arc<ChildFetcherFn>>,
 }
 
 impl<'a> VMHarness<'a> {
@@ -995,7 +998,21 @@ impl<'a> VMHarness<'a> {
             trace,
             config,
             shared_df_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
+            child_fetcher: None,
         })
+    }
+
+    /// Set a callback for on-demand child object fetching.
+    /// This callback is called when a dynamic field child is requested but not found
+    /// in the preloaded set. It receives the child object ID and should return
+    /// the object's type and BCS bytes if available.
+    pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
+        self.child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Clear the child fetcher callback.
+    pub fn clear_child_fetcher(&mut self) {
+        self.child_fetcher = None;
     }
 
     /// Get the current simulation configuration.
@@ -1092,7 +1109,14 @@ impl<'a> VMHarness<'a> {
     fn create_extensions(&self) -> NativeContextExtensions<'static> {
         let mut extensions = NativeContextExtensions::default();
         // Use SharedObjectRuntime to sync with our persistent dynamic field state
-        let shared_runtime = SharedObjectRuntime::new(self.shared_df_state.clone());
+        let mut shared_runtime = SharedObjectRuntime::new(self.shared_df_state.clone());
+
+        // If we have a child fetcher, clone the Arc and wrap it in a new Box for the runtime
+        if let Some(fetcher_arc) = &self.child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            shared_runtime.set_child_fetcher(Box::new(move |child_id| fetcher_clone(child_id)));
+        }
+
         extensions.add(shared_runtime);
         extensions
     }

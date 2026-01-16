@@ -1,3 +1,57 @@
+//! # Module Resolution
+//!
+//! This module provides abstractions for loading and resolving Move bytecode modules
+//! from various sources (local files, RPC, cache).
+//!
+//! ## Purpose
+//!
+//! The module resolution system enables:
+//! - **Unified loading**: Load modules from files, memory, or remote sources
+//! - **Address resolution**: Map module names to their deployed addresses
+//! - **Dependency tracking**: Resolve module dependencies for VM execution
+//!
+//! ## Key Components
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | [`ModuleProvider`] | Trait for unified module loading across sources |
+//! | [`LocalModuleResolver`] | Implementation that loads from local bytecode files |
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌─────────────────────┐
+//! │   ModuleProvider    │  ◄── Trait interface
+//! └──────────┬──────────┘
+//!            │
+//!            ▼
+//! ┌─────────────────────┐
+//! │ LocalModuleResolver │  ◄── File-based implementation
+//! │  - modules: BTreeMap│
+//! │  - bytecode cache   │
+//! └─────────────────────┘
+//!            │
+//!            ▼
+//!     CompiledModule
+//! ```
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! use sui_move_interface_extractor::benchmark::resolver::{ModuleProvider, LocalModuleResolver};
+//!
+//! let mut resolver = LocalModuleResolver::new();
+//!
+//! // Load modules from bytecode
+//! let modules = vec![("my_module".to_string(), bytecode_bytes)];
+//! let package_addr = resolver.load_package(modules)?;
+//!
+//! // Query modules
+//! if resolver.has_module(&module_id) {
+//!     let bytes = resolver.get_module_bytes(&module_id);
+//! }
+//! ```
+
 use anyhow::{anyhow, Context, Result};
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
