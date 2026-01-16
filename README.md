@@ -177,11 +177,10 @@ This enables a feedback loop: LLM builds transaction → sandbox executes → st
 
 Fetch on-chain data from Sui mainnet/testnet with multiple backends:
 
-| Backend | Best For | Tradeoff |
-|---------|----------|----------|
-| **gRPC Streaming** | Real-time monitoring, high throughput | Limited effects data |
-| **GraphQL** | Queries, packages, replay verification | Polling only |
-| **JSON-RPC** | Legacy fallback | Deprecated April 2026 |
+| Backend | Best For |
+|---------|----------|
+| **GraphQL** | Queries, packages, objects, transaction replay verification |
+| **gRPC Streaming** | Real-time checkpoint monitoring, high throughput, historical object versions |
 
 ```rust
 use sui_move_interface_extractor::data_fetcher::DataFetcher;
