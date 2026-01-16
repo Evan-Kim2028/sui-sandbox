@@ -3,6 +3,9 @@ name = "sui_move_interface_extractor"
 version = "0.4.0"
 edition = "2021"
 
+[workspace]
+members = ["crates/pyo3-bindings"]
+
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -56,6 +59,12 @@ sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet
 # move-stdlib-natives provides vector, bcs, hash, string, type_name natives
 move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-stdlib-natives" }
 
+# Cryptographic primitives for real native function implementations
+# fastcrypto is Mysten Labs' crypto library used by Sui - provides 1:1 compatibility
+# Using same git rev as sui-types to ensure compatibility
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
+fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
+
 # VM extension support for dynamic field simulation
 # better_any allows non-'static lifetime in extension types
 # IMPORTANT: Must match the version used by move-vm-runtime (0.1)
@@ -65,8 +74,19 @@ dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# gRPC support for real-time transaction streaming
+tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
+prost = "0.13"
+prost-types = "0.13"
+tokio-stream = "0.1"
+futures = "0.3"
+
 # NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
 # This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION
+
+[build-dependencies]
+tonic-build = "0.12"
+prost-build = "0.13"
 
 [dev-dependencies]
 assert_cmd = "2.0"
