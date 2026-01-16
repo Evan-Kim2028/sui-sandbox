@@ -4,7 +4,12 @@
 //! - **Cache**: Local transaction cache (fastest, no network)
 //! - **gRPC**: Real-time streaming (push-based, ~30-40 tx/sec)
 //! - **GraphQL**: Rich queries with complete data
-//! - **JSON-RPC**: Legacy fallback
+//!
+//! # Deprecation Notice
+//!
+//! **JSON-RPC support is deprecated and will be removed in a future version.**
+//! Sui is deprecating JSON-RPC in April 2026. Please migrate to GraphQL for queries
+//! and gRPC for streaming. All JSON-RPC functionality can be replaced with GraphQL.
 //!
 //! # Choosing a Backend
 //!
@@ -182,7 +187,10 @@ pub struct FetchedObjectData {
 pub enum DataSource {
     /// Local transaction cache (fastest, no network)
     Cache,
-    /// JSON-RPC endpoint (legacy, deprecated April 2026)
+    /// JSON-RPC endpoint.
+    ///
+    /// **Deprecated:** JSON-RPC is deprecated and will be removed in a future version.
+    /// Sui is deprecating JSON-RPC in April 2026. Migrate to [`GraphQL`](Self::GraphQL).
     JsonRpc,
     /// GraphQL endpoint (recommended for queries)
     GraphQL,
@@ -357,6 +365,14 @@ impl DataFetcher {
 
     /// Set whether to prefer GraphQL over JSON-RPC.
     /// Default is true (prefer GraphQL for reliability).
+    ///
+    /// # Deprecated
+    /// JSON-RPC fallback is deprecated and will be removed in a future version.
+    /// GraphQL is now the recommended (and only maintained) query backend.
+    #[deprecated(
+        since = "0.5.0",
+        note = "JSON-RPC is deprecated. GraphQL is always preferred. This method will be removed."
+    )]
     pub fn with_prefer_graphql(mut self, prefer: bool) -> Self {
         self.prefer_graphql = prefer;
         self
@@ -758,6 +774,14 @@ impl DataFetcher {
     }
 
     /// Get access to the underlying JSON-RPC fetcher (for legacy compatibility).
+    ///
+    /// # Deprecated
+    /// JSON-RPC support is deprecated and will be removed in a future version.
+    /// Sui is deprecating JSON-RPC in April 2026. Use [`graphql()`](Self::graphql) instead.
+    #[deprecated(
+        since = "0.5.0",
+        note = "JSON-RPC is deprecated. Use graphql() instead. Sui deprecates JSON-RPC April 2026."
+    )]
     pub fn json_rpc(&self) -> &TransactionFetcher {
         &self.json_rpc
     }
