@@ -14,8 +14,7 @@ ignore-revert-commits=true
 ignore-fixup-commits=true
 ignore-squash-commits=true
 
-# Regex for ignored commit messages (e.g., release commits)
-ignore-by-title=^(Merge|Release|Revert)
+# Note: ignore-by-title removed as not supported in all gitlint versions
 
 [title-max-length]
 # P1: Enforce 72 character subject line limit (git best practice)
