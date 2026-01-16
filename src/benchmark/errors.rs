@@ -1384,6 +1384,127 @@ fn context_stack_is_empty(stack: &ContextStack) -> bool {
 }
 
 // =============================================================================
+// Error Extension Traits for Consistent Error Handling
+// =============================================================================
+
+/// Extension trait for adding phase context to `anyhow::Result`.
+///
+/// This trait provides a consistent way to add phase and context information
+/// to errors throughout the codebase, ensuring all error messages follow
+/// the same format: `[phase] operation: details`
+///
+/// # Example
+///
+/// ```ignore
+/// use crate::benchmark::errors::{Phase, PhaseResultExt};
+///
+/// fn load_module(path: &str) -> anyhow::Result<Module> {
+///     let bytes = std::fs::read(path)
+///         .with_phase(Phase::Build, "reading module file")?;
+///     // ...
+/// }
+/// ```
+pub trait PhaseResultExt<T> {
+    /// Add phase context to an error.
+    ///
+    /// Transforms the error message to: `[phase] context: original_error`
+    fn with_phase(self, phase: Phase, context: &str) -> anyhow::Result<T>;
+
+    /// Add phase context with formatted message.
+    fn with_phase_context<F>(self, phase: Phase, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> String;
+}
+
+impl<T, E: Into<anyhow::Error>> PhaseResultExt<T> for Result<T, E> {
+    fn with_phase(self, phase: Phase, context: &str) -> anyhow::Result<T> {
+        self.map_err(|e| {
+            let err = e.into();
+            anyhow::anyhow!("[{}] {}: {}", phase.short_name(), context, err)
+        })
+    }
+
+    fn with_phase_context<F>(self, phase: Phase, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> String,
+    {
+        self.map_err(|e| {
+            let err = e.into();
+            anyhow::anyhow!("[{}] {}: {}", phase.short_name(), f(), err)
+        })
+    }
+}
+
+/// Extension trait for Option types to add phase context.
+pub trait PhaseOptionExt<T> {
+    /// Convert None to an error with phase context.
+    fn ok_or_phase(self, phase: Phase, context: &str) -> anyhow::Result<T>;
+
+    /// Convert None to an error with formatted phase context.
+    fn ok_or_phase_with<F>(self, phase: Phase, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> String;
+}
+
+impl<T> PhaseOptionExt<T> for Option<T> {
+    fn ok_or_phase(self, phase: Phase, context: &str) -> anyhow::Result<T> {
+        self.ok_or_else(|| anyhow::anyhow!("[{}] {}", phase.short_name(), context))
+    }
+
+    fn ok_or_phase_with<F>(self, phase: Phase, f: F) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> String,
+    {
+        self.ok_or_else(|| anyhow::anyhow!("[{}] {}", phase.short_name(), f()))
+    }
+}
+
+/// Create an error with phase context.
+///
+/// # Example
+///
+/// ```ignore
+/// use crate::benchmark::errors::{Phase, phase_error};
+///
+/// return Err(phase_error(Phase::Execution, "VM crashed during execution"));
+/// ```
+#[inline]
+pub fn phase_error(phase: Phase, message: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("[{}] {}", phase.short_name(), message)
+}
+
+/// Create an error with phase context and formatted message.
+#[macro_export]
+macro_rules! phase_err {
+    ($phase:expr, $($arg:tt)*) => {
+        $crate::benchmark::errors::phase_error($phase, format!($($arg)*))
+    };
+}
+
+/// Bail with phase context.
+#[macro_export]
+macro_rules! phase_bail {
+    ($phase:expr, $($arg:tt)*) => {
+        return Err($crate::phase_err!($phase, $($arg)*))
+    };
+}
+
+/// Ensure a condition is true, or bail with phase context.
+#[macro_export]
+macro_rules! phase_ensure {
+    ($cond:expr, $phase:expr, $($arg:tt)*) => {
+        if !$cond {
+            $crate::phase_bail!($phase, $($arg)*);
+        }
+    };
+}
+
+// Re-export macros at module level for convenience
+pub use crate::phase_bail;
+pub use crate::phase_ensure;
+pub use crate::phase_err;
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1806,9 +1927,11 @@ mod tests {
 
     #[test]
     fn test_evaluation_result_with_trace() {
-        let mut trace = ExecutionTrace::default();
-        trace.execution_attempted = true;
-        trace.duration_ms = Some(150);
+        let trace = ExecutionTrace {
+            execution_attempted: true,
+            duration_ms: Some(150),
+            ..Default::default()
+        };
         let result = EvaluationResult::success().with_trace(trace);
         assert!(result.execution_trace.is_some());
         assert_eq!(result.execution_trace.unwrap().duration_ms, Some(150));
@@ -1823,12 +1946,14 @@ mod tests {
             target_types_inhabited: 5,
             ..Default::default()
         };
-        let mut trace = ExecutionTrace::default();
-        trace.abort_info = Some(AbortInfo::from_move_abort(
-            42,
-            Some("0x1::test".to_string()),
-            "assert failed".to_string(),
-        ));
+        let trace = ExecutionTrace {
+            abort_info: Some(AbortInfo::from_move_abort(
+                42,
+                Some("0x1::test".to_string()),
+                "assert failed".to_string(),
+            )),
+            ..Default::default()
+        };
 
         let result =
             EvaluationResult::failed_with_details(failure, criteria, Some(metrics), Some(trace));
@@ -1856,12 +1981,14 @@ mod tests {
     #[test]
     fn test_evaluation_result_serialization_with_abort() {
         let failure = Failure::new(ErrorCode::TargetAborted, "abort");
-        let mut trace = ExecutionTrace::default();
-        trace.abort_info = Some(AbortInfo::from_move_abort(
-            E_NOT_SUPPORTED,
-            None,
-            "unsupported".to_string(),
-        ));
+        let trace = ExecutionTrace {
+            abort_info: Some(AbortInfo::from_move_abort(
+                E_NOT_SUPPORTED,
+                None,
+                "unsupported".to_string(),
+            )),
+            ..Default::default()
+        };
         let result = EvaluationResult::failed(failure).with_trace(trace);
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"abort_info\""));
@@ -2051,5 +2178,95 @@ mod tests {
 
         let execution = ContextFrame::execution("executing function");
         assert_eq!(execution.phase, Phase::Execution);
+    }
+
+    // =========================================================================
+    // Tests for Error Extension Traits
+    // =========================================================================
+
+    #[test]
+    fn test_phase_result_ext_with_phase() {
+        let result: Result<(), std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
+
+        let with_phase = result.with_phase(Phase::Build, "loading module");
+        assert!(with_phase.is_err());
+
+        let err_msg = with_phase.unwrap_err().to_string();
+        assert!(err_msg.contains("[build]"));
+        assert!(err_msg.contains("loading module"));
+        assert!(err_msg.contains("file not found"));
+    }
+
+    #[test]
+    fn test_phase_result_ext_with_phase_context() {
+        let result: Result<(), std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "parsing failed",
+        ));
+
+        let with_phase = result.with_phase_context(Phase::TypeCheck, || {
+            format!("parsing type {}", "0x2::coin::Coin")
+        });
+        assert!(with_phase.is_err());
+
+        let err_msg = with_phase.unwrap_err().to_string();
+        assert!(err_msg.contains("[typecheck]"));
+        assert!(err_msg.contains("0x2::coin::Coin"));
+    }
+
+    #[test]
+    fn test_phase_option_ext_ok_or_phase() {
+        let none: Option<i32> = None;
+        let result = none.ok_or_phase(Phase::Resolution, "module not found");
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("[resolution]"));
+        assert!(err_msg.contains("module not found"));
+    }
+
+    #[test]
+    fn test_phase_option_ext_ok_or_phase_with() {
+        let none: Option<i32> = None;
+        let module_name = "0x2::coin";
+        let result = none.ok_or_phase_with(Phase::Resolution, || {
+            format!("module {} not found", module_name)
+        });
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("[resolution]"));
+        assert!(err_msg.contains("0x2::coin"));
+    }
+
+    #[test]
+    fn test_phase_option_ext_some_case() {
+        let some: Option<i32> = Some(42);
+        let result = some.ok_or_phase(Phase::Execution, "should not see this");
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_phase_error_function() {
+        let err = phase_error(Phase::Synthesis, "constructor not found");
+        let err_msg = err.to_string();
+
+        assert!(err_msg.contains("[synthesis]"));
+        assert!(err_msg.contains("constructor not found"));
+    }
+
+    #[test]
+    fn test_phase_err_macro() {
+        let type_name = "Coin<SUI>";
+        let err = phase_err!(Phase::TypeCheck, "unknown type: {}", type_name);
+        let err_msg = err.to_string();
+
+        assert!(err_msg.contains("[typecheck]"));
+        assert!(err_msg.contains("unknown type: Coin<SUI>"));
     }
 }

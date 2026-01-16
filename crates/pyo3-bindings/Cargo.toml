@@ -1,0 +1,28 @@
+[package]
+name = "sui_sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "Native Python bindings for Sui Move simulation sandbox"
+license = "MIT"
+
+[lib]
+name = "sui_sandbox"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+serde_json = "1.0"
+
+# Reference the main extractor crate
+sui_move_interface_extractor = { path = "../.." }
+
+# These are needed for type conversions
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-core-types" }
+bcs = "0.1"
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[dev-dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }

@@ -1,3 +1,8 @@
+//! Corpus analysis for validating bytecode extraction across many packages.
+//!
+//! Analyzes a directory of local bytecode packages, optionally comparing against
+//! RPC-normalized interfaces and BCS module bytes.
+
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
@@ -28,6 +33,23 @@ use crate::utils::{
     fnv1a64, git_head_metadata_for_path, git_metadata_for_path, now_unix_seconds,
     write_canonical_json,
 };
+
+/// Create an error CorpusRow with the given message. All counts are zeroed.
+fn error_corpus_row(package_id: String, package_dir: String, error: String) -> CorpusRow {
+    CorpusRow {
+        package_id,
+        package_dir,
+        local: LocalBytecodeCounts::default(),
+        local_vs_bcs: ModuleSetDiff::default(),
+        local_bytes_check: None,
+        local_bytes_check_error: None,
+        rpc: None,
+        rpc_vs_local: None,
+        interface_compare: None,
+        interface_compare_sample: None,
+        error: Some(error),
+    }
+}
 
 pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<()> {
     let Some(root) = args.bytecode_corpus_root.as_ref() else {
@@ -213,89 +235,27 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
                     Ok(names) => {
                         let counts = LocalBytecodeCounts {
                             modules: names.len(),
-                            structs: 0,
-                            functions_total: 0,
-                            functions_public: 0,
-                            functions_friend: 0,
-                            functions_private: 0,
-                            functions_native: 0,
-                            entry_functions: 0,
-                            public_entry_functions: 0,
-                            friend_entry_functions: 0,
-                            private_entry_functions: 0,
-                            key_structs: 0,
+                            ..Default::default()
                         };
                         (names, counts)
                     }
                     Err(e) => {
-                        return Ok(CorpusRow {
-                            package_id: package_id_str,
-                            package_dir: dir_str,
-                            local: LocalBytecodeCounts {
-                                modules: 0,
-                                structs: 0,
-                                functions_total: 0,
-                                functions_public: 0,
-                                functions_friend: 0,
-                                functions_private: 0,
-                                functions_native: 0,
-                                entry_functions: 0,
-                                public_entry_functions: 0,
-                                friend_entry_functions: 0,
-                                private_entry_functions: 0,
-                                key_structs: 0,
-                            },
-                            local_vs_bcs: ModuleSetDiff {
-                                left_count: 0,
-                                right_count: 0,
-                                missing_in_right: vec![],
-                                extra_in_right: vec![],
-                            },
-                            local_bytes_check: None,
-                            local_bytes_check_error: None,
-                            rpc: None,
-                            rpc_vs_local: None,
-                            interface_compare: None,
-                            interface_compare_sample: None,
-                            error: Some(format!("local module name scan failed: {:#}", e)),
-                        });
+                        return Ok(error_corpus_row(
+                            package_id_str,
+                            dir_str,
+                            format!("local module name scan failed: {:#}", e),
+                        ));
                     }
                 }
             } else {
                 match analyze_local_bytecode_package(&package_dir) {
                     Ok(v) => v,
                     Err(e) => {
-                        return Ok(CorpusRow {
-                            package_id: package_id_str,
-                            package_dir: dir_str,
-                            local: LocalBytecodeCounts {
-                                modules: 0,
-                                structs: 0,
-                                functions_total: 0,
-                                functions_public: 0,
-                                functions_friend: 0,
-                                functions_private: 0,
-                                functions_native: 0,
-                                entry_functions: 0,
-                                public_entry_functions: 0,
-                                friend_entry_functions: 0,
-                                private_entry_functions: 0,
-                                key_structs: 0,
-                            },
-                            local_vs_bcs: ModuleSetDiff {
-                                left_count: 0,
-                                right_count: 0,
-                                missing_in_right: vec![],
-                                extra_in_right: vec![],
-                            },
-                            local_bytes_check: None,
-                            local_bytes_check_error: None,
-                            rpc: None,
-                            rpc_vs_local: None,
-                            interface_compare: None,
-                            interface_compare_sample: None,
-                            error: Some(format!("local analysis failed: {:#}", e)),
-                        });
+                        return Ok(error_corpus_row(
+                            package_id_str,
+                            dir_str,
+                            format!("local analysis failed: {:#}", e),
+                        ));
                     }
                 }
             };
@@ -424,68 +384,16 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
     while let Some(res) = join_set.join_next().await {
         match res {
             Ok(Ok(row)) => rows.push(row),
-            Ok(Err(e)) => rows.push(CorpusRow {
-                package_id: "<join_error>".to_string(),
-                package_dir: "<unknown>".to_string(),
-                local: LocalBytecodeCounts {
-                    modules: 0,
-                    structs: 0,
-                    functions_total: 0,
-                    functions_public: 0,
-                    functions_friend: 0,
-                    functions_private: 0,
-                    functions_native: 0,
-                    entry_functions: 0,
-                    public_entry_functions: 0,
-                    friend_entry_functions: 0,
-                    private_entry_functions: 0,
-                    key_structs: 0,
-                },
-                local_vs_bcs: ModuleSetDiff {
-                    left_count: 0,
-                    right_count: 0,
-                    missing_in_right: vec![],
-                    extra_in_right: vec![],
-                },
-                local_bytes_check: None,
-                local_bytes_check_error: None,
-                rpc: None,
-                rpc_vs_local: None,
-                interface_compare: None,
-                interface_compare_sample: None,
-                error: Some(format!("{:#}", e)),
-            }),
-            Err(e) => rows.push(CorpusRow {
-                package_id: "<panic>".to_string(),
-                package_dir: "<unknown>".to_string(),
-                local: LocalBytecodeCounts {
-                    modules: 0,
-                    structs: 0,
-                    functions_total: 0,
-                    functions_public: 0,
-                    functions_friend: 0,
-                    functions_private: 0,
-                    functions_native: 0,
-                    entry_functions: 0,
-                    public_entry_functions: 0,
-                    friend_entry_functions: 0,
-                    private_entry_functions: 0,
-                    key_structs: 0,
-                },
-                local_vs_bcs: ModuleSetDiff {
-                    left_count: 0,
-                    right_count: 0,
-                    missing_in_right: vec![],
-                    extra_in_right: vec![],
-                },
-                local_bytes_check: None,
-                local_bytes_check_error: None,
-                rpc: None,
-                rpc_vs_local: None,
-                interface_compare: None,
-                interface_compare_sample: None,
-                error: Some(format!("join error: {}", e)),
-            }),
+            Ok(Err(e)) => rows.push(error_corpus_row(
+                "<join_error>".to_string(),
+                "<unknown>".to_string(),
+                format!("{:#}", e),
+            )),
+            Err(e) => rows.push(error_corpus_row(
+                "<panic>".to_string(),
+                "<unknown>".to_string(),
+                format!("join error: {}", e),
+            )),
         }
     }
 

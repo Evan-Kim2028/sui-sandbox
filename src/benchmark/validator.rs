@@ -1,3 +1,42 @@
+//! # Move Bytecode Validator
+//!
+//! This module provides validation utilities for Move bytecode, ensuring that
+//! target functions exist, are callable, and have resolvable type layouts.
+//!
+//! ## Purpose
+//!
+//! The `Validator` struct acts as a bridge between the module resolver and the
+//! type system, enabling:
+//! - **Target validation**: Verify that a function exists and is public/entry
+//! - **Type layout resolution**: Convert TypeTags to MoveTypeLayouts for BCS serialization
+//! - **Struct field introspection**: Resolve struct definitions to their field layouts
+//!
+//! ## Architecture
+//!
+//! ```text
+//! LocalModuleResolver ──► Validator ──► MoveTypeLayout
+//!        │                    │
+//!        │                    ├── validate_target()
+//!        │                    ├── resolve_type_layout()
+//!        │                    └── resolve_struct_layout()
+//!        │
+//!        └── CompiledModule bytecode
+//! ```
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! let resolver = LocalModuleResolver::new();
+//! // ... load modules into resolver ...
+//! let validator = Validator::new(&resolver);
+//!
+//! // Validate a target function exists and is callable
+//! let module = validator.validate_target(addr, "my_module", "my_function")?;
+//!
+//! // Resolve type layouts for BCS serialization
+//! let layout = validator.resolve_type_layout(&type_tag)?;
+//! ```
+
 use anyhow::{anyhow, Context, Result};
 use move_binary_format::file_format::{
     CompiledModule, DatatypeHandleIndex, SignatureToken, StructFieldInformation, Visibility,

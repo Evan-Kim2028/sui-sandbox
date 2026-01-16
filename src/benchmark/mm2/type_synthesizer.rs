@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn test_validator_count_constant() {
         // Ensure we have a non-zero validator count to avoid division by zero
-        assert!(DEFAULT_VALIDATOR_COUNT > 0);
+        const { assert!(DEFAULT_VALIDATOR_COUNT > 0) };
         assert_eq!(DEFAULT_VALIDATOR_COUNT, 10);
     }
 
@@ -1535,7 +1535,7 @@ mod tests {
         );
 
         let result = result.unwrap();
-        assert!(result.bytes.len() > 0, "StakingPool should have data");
+        assert!(!result.bytes.is_empty(), "StakingPool should have data");
         assert!(result.is_stub, "Should be marked as stub");
     }
 
@@ -1643,7 +1643,7 @@ mod tests {
     #[test]
     fn test_nested_generic_type_synthesis() {
         let model = create_test_model();
-        let mut synthesizer = TypeSynthesizer::new(&model);
+        let _synthesizer = TypeSynthesizer::new(&model);
 
         // Test that nested generics are parsed correctly
         let args = TypeSynthesizer::parse_type_args(

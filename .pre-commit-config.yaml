@@ -1,5 +1,26 @@
 repos:
+  # ============================================================================
+  # P0: Commit message linting (conventional commits)
+  # ============================================================================
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert]
+
+  # ============================================================================
+  # P1: Commit message length/format validation
+  # ============================================================================
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
+    hooks:
+      - id: gitlint
+        stages: [commit-msg]
+
+  # ============================================================================
   # Rust checks
+  # ============================================================================
   - repo: local
     hooks:
       - id: cargo-fmt
@@ -24,7 +45,9 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+  # ============================================================================
   # Python checks
+  # ============================================================================
   - repo: local
     hooks:
       - id: ruff-fix
@@ -41,6 +64,14 @@ repos:
         types: [python]
         pass_filenames: false
 
+      # P1: Python type checking
+      - id: python-typecheck
+        name: python type check (ty)
+        entry: bash -c 'cd benchmark && uv run ty check src/'
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: pytest-unit
         name: pytest (unit tests)
         entry: bash -c 'cd benchmark && uv run pytest -x -q -m "not integration and not docker" --tb=short'
@@ -49,7 +80,9 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+  # ============================================================================
   # Documentation checks
+  # ============================================================================
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.43.0
     hooks:
@@ -60,7 +93,7 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        args: ["--skip", "*.lock,target/*,*.json", "--ignore-words-list", "crate,sui"]
+        args: ["--skip", "*.lock,target/*,*.json,*.proto", "--ignore-words-list", "crate,sui,ser,implementors"]
 
   - repo: local
     hooks:
@@ -72,7 +105,9 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+  # ============================================================================
   # Docker validation (pre-commit only, not in CI)
+  # ============================================================================
   - repo: local
     hooks:
       - id: docker-compose-validate

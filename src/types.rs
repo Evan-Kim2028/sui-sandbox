@@ -124,7 +124,8 @@ pub struct BytecodeModuleCheck {
     pub extra_in_bcs: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+/// Bytecode-level counts for a package's modules, structs, and functions.
+#[derive(Debug, Serialize, Clone, Copy, Default)]
 pub struct LocalBytecodeCounts {
     pub modules: usize,
     pub structs: usize,
@@ -146,7 +147,8 @@ pub struct CorpusIndexRow {
     pub package_dir: String,
 }
 
-#[derive(Debug, Serialize)]
+/// Difference between two sets of modules (e.g., local vs BCS, RPC vs local).
+#[derive(Debug, Serialize, Default)]
 pub struct ModuleSetDiff {
     pub left_count: usize,
     pub right_count: usize,

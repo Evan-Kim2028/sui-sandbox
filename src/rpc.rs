@@ -1,3 +1,8 @@
+//! Sui JSON-RPC client helpers for fetching package data.
+//!
+//! Provides functions for resolving package addresses, fetching BCS module bytes,
+//! and building normalized interface JSON from on-chain packages.
+
 use crate::args::RetryConfig;
 use crate::types::PackageInterfaceJson;
 use crate::utils::{canonicalize_json_value, with_retries};

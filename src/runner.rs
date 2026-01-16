@@ -1,3 +1,8 @@
+//! Package interface extraction runner.
+//!
+//! Handles single-package and batch processing modes for extracting
+//! Move module interfaces from on-chain packages or local bytecode.
+
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fs::{self, File};

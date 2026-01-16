@@ -1,0 +1,37 @@
+# Gitlint configuration for commit message validation
+# https://jorisroovers.com/gitlint/configuration/
+
+[general]
+# Ignore certain rules (comma-separated list)
+# ignore=T3
+
+# Enable community contributed rules
+contrib=contrib-title-conventional-commits
+
+# Ignore commits from bots or merge commits
+ignore-merge-commits=true
+ignore-revert-commits=true
+ignore-fixup-commits=true
+ignore-squash-commits=true
+
+# Regex for ignored commit messages (e.g., release commits)
+ignore-by-title=^(Merge|Release|Revert)
+
+[title-max-length]
+# P1: Enforce 72 character subject line limit (git best practice)
+line-length=72
+
+[title-min-length]
+min-length=10
+
+[title-must-not-contain-word]
+# Prevent WIP commits from being pushed
+words=WIP,wip,TODO,FIXME,DEBUG
+
+[body-max-line-length]
+# Allow longer lines in body for URLs, etc.
+line-length=120
+
+[contrib-title-conventional-commits]
+# Types allowed (should match conventional-pre-commit args)
+types=feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert

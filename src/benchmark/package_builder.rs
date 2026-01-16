@@ -95,7 +95,9 @@ impl FrameworkCache {
                 "--filter=blob:none",
                 "--sparse",
                 git_url,
-                temp_clone.to_str().unwrap(),
+                temp_clone
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Temp path contains invalid UTF-8"))?,
             ])
             .status()?;
 
@@ -147,11 +149,9 @@ impl FrameworkCache {
     }
 }
 
-impl Default for FrameworkCache {
-    fn default() -> Self {
-        Self::new().expect("Failed to create framework cache")
-    }
-}
+// Note: Default is intentionally not implemented for FrameworkCache
+// because FrameworkCache::new() can fail (e.g., if home directory is unavailable).
+// Use FrameworkCache::new()? instead.
 
 /// Recursively copy a directory
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
@@ -370,7 +370,7 @@ impl PackageBuilder {
         match build_config.build(package_dir) {
             Ok(compiled) => {
                 // Extract compiled modules
-                let modules: Vec<(String, Vec<u8>)> = compiled
+                let modules: Result<Vec<(String, Vec<u8>)>> = compiled
                     .package
                     .root_compiled_units
                     .iter()
@@ -380,14 +380,14 @@ impl PackageBuilder {
                         let module = &unit.unit.module;
                         module
                             .serialize_with_version(module.version, &mut bytes)
-                            .unwrap();
-                        (name, bytes)
+                            .map_err(|e| anyhow!("Failed to serialize module {}: {}", name, e))?;
+                        Ok((name, bytes))
                     })
                     .collect();
 
                 Ok(CompilationResult {
                     success: true,
-                    modules,
+                    modules: modules?,
                     diagnostics: String::new(),
                     digest: compiled.published_at.ok().map(|id| id.to_string()),
                 })

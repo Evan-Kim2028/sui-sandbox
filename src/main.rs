@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::sync::Arc;
 use std::time::Duration;
@@ -315,10 +315,14 @@ fn run_tx_replay_with_transactions(
     eprintln!("Processing {} transactions...\n", transactions.len());
 
     // Setup output
-    let mut writer: Option<BufWriter<File>> = args.output.as_ref().map(|path| {
-        let file = File::create(path).expect("Failed to create output file");
-        BufWriter::new(file)
-    });
+    let mut writer: Option<BufWriter<File>> = match args.output.as_ref() {
+        Some(path) => {
+            let file = File::create(path)
+                .with_context(|| format!("Failed to create output file: {}", path.display()))?;
+            Some(BufWriter::new(file))
+        }
+        None => None,
+    };
 
     // Initialize module resolver for replay
     let mut resolver = LocalModuleResolver::with_sui_framework()?;
@@ -499,12 +503,9 @@ fn run_tx_replay_with_transactions(
         );
     }
 
-    if let Some(ref mut w) = writer {
+    if let Some((ref mut w, path)) = writer.as_mut().zip(args.output.as_ref()) {
         w.flush()?;
-        eprintln!(
-            "Results written to {}",
-            args.output.as_ref().unwrap().display()
-        );
+        eprintln!("Results written to {}", path.display());
     }
 
     Ok(())

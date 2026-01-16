@@ -812,7 +812,7 @@ mod tests {
         // Verify we can load it back
         let loaded = logger.load_package_log(&pkg_dir).unwrap();
         assert_eq!(loaded.package_name, "test_package");
-        assert_eq!(loaded.success, true);
+        assert!(loaded.success);
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
