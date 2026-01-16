@@ -31,6 +31,74 @@ echo '{"action": "list_functions", "package_id": "0x2", "module": "coin"}' | \
   ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
+## Getting Started: Cetus DEX Swap Replay
+
+This walkthrough demonstrates replaying a real Cetus DEX swap transaction locally. This is a complete end-to-end example that verifies your setup works correctly.
+
+**Transaction:** `7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp` (LEIA → SUI swap)
+
+### Step 1: Build and Verify
+
+```bash
+# Clone and build
+git clone https://github.com/anthropics/sui-move-interface-extractor.git
+cd sui-move-interface-extractor
+cargo build --release
+
+# Verify the binary works
+./target/release/sui_move_interface_extractor --help
+```
+
+### Step 2: Run the Cetus Swap Replay Test
+
+The repository includes a pre-cached Cetus swap transaction and a comprehensive integration test:
+
+```bash
+# Run the Cetus swap replay test (fetches historical state from gRPC archive)
+cargo test --test execute_cetus_swap test_replay_cetus_with_grpc_archive_data -- --nocapture
+```
+
+**Expected output:**
+
+```text
+✓ TRANSACTION REPLAYED SUCCESSFULLY WITH gRPC ARCHIVE DATA!
+test test_replay_cetus_with_grpc_archive_data ... ok
+```
+
+### Step 3: Verify Your Setup (One Command)
+
+Run the quickstart validation test to confirm everything works:
+
+```bash
+cargo test --test quickstart_validation -- --nocapture
+```
+
+This test validates:
+
+- The cached transaction data exists and loads correctly
+- gRPC archive connectivity (fetches historical object state)
+- Package loading and address aliasing
+- Dynamic field resolution (skip_list nodes)
+- Full PTB execution with Move VM
+
+### What's Happening Under the Hood
+
+1. **Load cached transaction** from `.tx-cache/7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp.json`
+2. **Fetch historical Pool state** from Sui's gRPC archive at the transaction-time version
+3. **Pre-load dynamic field children** (skip_list nodes for tick management)
+4. **Execute the PTB locally** with the real Move VM
+5. **Verify success** - the swap executes identically to mainnet
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `SKIP: No cache available` | The `.tx-cache/` directory should be included in the repo |
+| `gRPC connection failed` | Check network connectivity to `archive.mainnet.sui.io:443` |
+| `Package version check failed` | The test uses upgraded packages with address aliasing |
+
+For detailed technical documentation, see [Case Study: Cetus LEIA/SUI Swap](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md).
+
 ## What's Real vs Simulated
 
 | Component | Implementation |
@@ -213,7 +281,7 @@ cargo build --release
 | **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) |
 | **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) · [PTB Schema](docs/reference/PTB_SCHEMA.md) |
 | **Case Studies** | [Cetus Swap Replay](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md) · [Complex TX Replay](docs/defi-case-study/03_COMPLEX_TX_REPLAY.md) |
-| **Design** | [A2A Protocol](docs/A2A_PROTOCOL.md) · [Architecture](ARCHITECTURE.md) |
+| **Design** | [Architecture](ARCHITECTURE.md) |
 
 ## Limitations
 
