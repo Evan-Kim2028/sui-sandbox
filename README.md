@@ -10,6 +10,7 @@ This tool runs the **real Sui Move VM** locally, letting you:
 - **Test with real crypto** - Same cryptographic library as Sui validators (fastcrypto)
 - **Replay mainnet transactions** - Verify your understanding of on-chain behavior
 - **Explore contracts interactively** - Introspect modules, functions, and types
+- **Stream real-time data** - gRPC streaming and GraphQL for mainnet data fetching
 
 Think of it as a local Move execution sandbox with mainnet-grade fidelity.
 
@@ -104,6 +105,53 @@ The sandbox provides structured JSON errors that are easy for LLMs to parse and 
 
 This enables a feedback loop: LLM builds transaction → sandbox executes → structured error → LLM adjusts → repeat.
 
+## Data Fetching
+
+Fetch on-chain data from Sui mainnet/testnet with multiple backends:
+
+| Backend | Best For | Tradeoff |
+|---------|----------|----------|
+| **gRPC Streaming** | Real-time monitoring, high throughput | Limited effects data |
+| **GraphQL** | Queries, packages, replay verification | Polling only |
+| **JSON-RPC** | Legacy fallback | Deprecated April 2026 |
+
+```rust
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
+
+// Fetch from mainnet
+let fetcher = DataFetcher::mainnet();
+let pkg = fetcher.fetch_package("0x2")?;  // Sui framework
+let txs = fetcher.fetch_recent_ptb_transactions(25)?;
+```
+
+### Real-Time Streaming
+
+Subscribe to checkpoints as they're finalized:
+
+```bash
+# Stream transactions via gRPC
+cargo run --bin stream_transactions -- --duration 60 --output stream.jsonl
+
+# Poll via GraphQL
+cargo run --bin poll_transactions -- --duration 600 --interval 1500 --output txs.jsonl
+```
+
+See [Data Fetching Guide](docs/guides/DATA_FETCHING.md) for details.
+
+## Python Integration
+
+Native Python bindings via PyO3 for simulation and benchmarking:
+
+```python
+from sui_sandbox import SuiSandbox
+
+sandbox = SuiSandbox()
+sandbox.load_package("0x2")
+result = sandbox.execute_ptb(commands=[...])
+```
+
+The `benchmark/` directory contains the `smi_bench` Python package for LLM evaluation and type inhabitation benchmarks.
+
 ## CLI Commands
 
 | Command | Purpose |
@@ -112,10 +160,12 @@ This enables a feedback loop: LLM builds transaction → sandbox executes → st
 | `tx-replay` | Replay mainnet transactions locally |
 | `ptb-eval` | Evaluate PTB with automatic dependency fetching |
 | `benchmark-local` | Test type synthesis capabilities |
+| `stream_transactions` | gRPC real-time transaction streaming |
+| `poll_transactions` | GraphQL transaction polling |
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │                    Your Application                          │
 │              (CLI, Scripts, LLM Orchestrator)                │
@@ -134,11 +184,13 @@ This enables a feedback loop: LLM builds transaction → sandbox executes → st
 │        Object store, PTB execution, effects tracking         │
 └─────────────────────────────────────────────────────────────┘
                               │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Move VM (Real)                             │
-│     Bytecode execution, type checking, BCS, crypto           │
-└─────────────────────────────────────────────────────────────┘
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│   Move VM (Real) │ │  Data Fetching   │ │  Transaction     │
+│   Bytecode exec  │ │  GraphQL/gRPC    │ │  Caching         │
+│   Type checking  │ │  Mainnet data    │ │  .tx-cache/      │
+└──────────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
 ## Installation
@@ -157,15 +209,17 @@ cargo build --release
 
 | Category | Documents |
 |----------|-----------|
-| **Getting Started** | [Quickstart](docs/getting-started/QUICKSTART.md) |
-| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) |
-| **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) |
+| **Getting Started** | [Quickstart](docs/getting-started/QUICKSTART.md) · [Troubleshooting](docs/getting-started/TROUBLESHOOTING.md) |
+| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) |
+| **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) · [PTB Schema](docs/reference/PTB_SCHEMA.md) |
+| **Case Studies** | [Cetus Swap Replay](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md) · [Complex TX Replay](docs/defi-case-study/03_COMPLEX_TX_REPLAY.md) |
+| **Design** | [A2A Protocol](docs/A2A_PROTOCOL.md) · [Architecture](ARCHITECTURE.md) |
 
 ## Limitations
 
 - **Gas estimation is approximate** - Use `sui_dryRunTransactionBlock` RPC for exact gas
 - **Randomness is deterministic** - For reproducibility, not real VRF
-- **No network operations** - This is offline execution only
+- **No network operations in sandbox** - Offline execution only (use DataFetcher separately)
 - **VRF not implemented** - `ecvrf::*` operations are mocked
 
 ## Contributing
