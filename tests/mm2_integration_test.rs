@@ -588,7 +588,6 @@ fn test_ptb_transfer_objects() {
 #[test]
 fn test_cross_ptb_transfer_receive() {
     use move_core_types::account_address::AccountAddress;
-    use move_core_types::language_storage::TypeTag;
     use sui_move_interface_extractor::benchmark::ptb::{
         Argument, Command, InputValue, ObjectChange, ObjectInput,
     };
@@ -732,7 +731,7 @@ fn test_receive_without_transfer_fails() {
         result
             .raw_error
             .as_ref()
-            .map_or(false, |e| e.contains("not found in pending receives")),
+            .is_some_and(|e| e.contains("not found in pending receives")),
         "Error should mention pending receives: {:?}",
         result.raw_error
     );

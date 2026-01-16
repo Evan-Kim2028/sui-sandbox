@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! Comprehensive tests for vm.rs - Execution engine, gas metering, configuration
 //!
 //! Test coverage areas:
@@ -9,7 +10,7 @@
 //! - PTBSession: persistent state across calls
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+// use std::sync::{Arc, Mutex};
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
@@ -326,6 +327,7 @@ mod gas_costs_tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_gas_costs_defined() {
         // Just verify the constants exist and have reasonable values
         assert!(gas_costs::FUNCTION_CALL_BASE > 0);

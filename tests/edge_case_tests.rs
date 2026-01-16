@@ -13,7 +13,7 @@ use std::thread;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
+use move_core_types::language_storage::TypeTag;
 use move_core_types::u256::U256;
 
 use sui_move_interface_extractor::benchmark::natives::{MockClock, MockNativeState, MockRandom};

@@ -590,9 +590,7 @@ mod crypto_mock_behavior_tests {
         // execution to complete, not to verify cryptographic correctness.
 
         // The actual native functions are tested through VM execution in vm_tests.rs
-        // This test serves as documentation.
-
-        assert!(true, "Crypto mocks intentionally return success values");
+        // This test serves as documentation - no assertions needed.
     }
 }
 

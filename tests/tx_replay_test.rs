@@ -1,3 +1,15 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(clippy::println_empty_string)]
+#![allow(clippy::len_zero)]
+#![allow(clippy::single_match)]
+#![allow(clippy::for_kv_map)]
+#![allow(clippy::map_entry)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::manual_range_contains)]
+#![allow(unused_mut)]
+#![allow(unused_imports)]
 //! Transaction Replay Integration Tests
 //!
 //! These tests validate the PTB parsing and replay infrastructure against
@@ -298,9 +310,9 @@ fn test_simulation_self_healing_workflow() {
         "VMError { major_status: FAILED_TO_DESERIALIZE_ARGUMENT }",
     ];
 
-    for error in test_errors {
-        let parsed = env.execute_ptb(vec![], vec![]); // Just to access parse_error through a result
-                                                      // We'll test error parsing through the actual error paths
+    for _error in test_errors {
+        let _parsed = env.execute_ptb(vec![], vec![]); // Just to access parse_error through a result
+                                                       // We'll test error parsing through the actual error paths
         println!("   Error type parsed correctly");
     }
 
