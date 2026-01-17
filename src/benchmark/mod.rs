@@ -45,6 +45,7 @@
 pub mod bytecode_analyzer;
 pub mod constructor_map;
 pub mod errors;
+pub mod fetcher;
 pub mod mm2;
 pub mod natives;
 pub mod object_runtime;
@@ -57,6 +58,7 @@ pub mod resolver;
 pub mod runner;
 pub mod sandbox;
 pub mod sandbox_exec;
+pub mod session;
 pub mod simulation;
 pub mod state_layer;
 pub mod state_source;

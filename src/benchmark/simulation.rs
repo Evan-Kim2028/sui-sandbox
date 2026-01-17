@@ -113,6 +113,8 @@ pub struct CoinMetadata {
     /// Full type tag (e.g., "0x2::sui::SUI")
     pub type_tag: String,
 }
+use crate::benchmark::fetcher::{FetchedObjectData, Fetcher, GrpcFetcher};
+use crate::benchmark::object_runtime::ChildFetcherFn;
 use crate::benchmark::ptb::{Command, InputValue, ObjectInput, TransactionEffects};
 use crate::benchmark::vm::VMHarness;
 
@@ -411,6 +413,35 @@ pub struct SerializedModule {
     pub bytecode_b64: String,
 }
 
+/// Serializable dynamic field for persistence.
+/// Dynamic fields are used by Table, Bag, and other collection types.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedDynamicField {
+    /// Parent object ID (hex string).
+    pub parent_id: String,
+    /// Child object ID (hex string).
+    pub child_id: String,
+    /// Type tag as string (e.g., "0x2::dynamic_field::Field<u64, 0x2::coin::Coin<0x2::sui::SUI>>").
+    pub type_tag: String,
+    /// BCS-serialized field value (base64 encoded).
+    pub value_b64: String,
+}
+
+/// Serializable pending receive for persistence.
+/// Pending receives are objects that have been transferred to another object
+/// and are waiting to be received via `transfer::receive`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedPendingReceive {
+    /// Recipient object ID (hex string).
+    pub recipient_id: String,
+    /// Sent object ID (hex string).
+    pub sent_id: String,
+    /// Object type tag as string.
+    pub type_tag: String,
+    /// BCS-serialized object bytes (base64 encoded).
+    pub object_bytes_b64: String,
+}
+
 /// Persistent sandbox state that can be saved to/loaded from a file.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PersistentState {
@@ -428,11 +459,116 @@ pub struct PersistentState {
     pub id_counter: u64,
     /// Timestamp in milliseconds.
     pub timestamp_ms: Option<u64>,
+    /// Dynamic fields (Table/Bag entries) - added in v2.
+    #[serde(default)]
+    pub dynamic_fields: Vec<SerializedDynamicField>,
+    /// Pending receives (send-to-object pattern) - added in v2.
+    #[serde(default)]
+    pub pending_receives: Vec<SerializedPendingReceive>,
+    /// Simulation configuration (epoch, gas, clock, etc.) - added in v3.
+    #[serde(default)]
+    pub config: Option<crate::benchmark::vm::SimulationConfig>,
+    /// State file metadata - added in v3.
+    #[serde(default)]
+    pub metadata: Option<StateMetadata>,
+    /// Fetcher configuration for mainnet data access - added in v4.
+    /// When present, the fetcher will be auto-reconnected on state load.
+    #[serde(default)]
+    pub fetcher_config: Option<FetcherConfig>,
+}
+
+/// Metadata for state files - helps organize multiple simulation scenarios.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct StateMetadata {
+    /// Human-readable description of this simulation state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// When this state was created (ISO 8601 timestamp).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When this state was last modified (ISO 8601 timestamp).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    /// Tags for categorization (e.g., ["defi", "cetus", "testnet"]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+/// Configuration for data fetching - persisted separately from TransactionFetcher
+/// because the fetcher itself contains non-serializable runtime state (gRPC clients, tokio runtime).
+///
+/// This allows save/load to remember that mainnet fetching was enabled and auto-reconnect
+/// when the state is restored.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct FetcherConfig {
+    /// Whether mainnet fetching is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Network to fetch from: "mainnet" or "testnet".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Custom endpoint URL (if not using default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Whether to use archive endpoint for historical data.
+    #[serde(default)]
+    pub use_archive: bool,
+}
+
+impl FetcherConfig {
+    /// Create a config for mainnet fetching.
+    pub fn mainnet() -> Self {
+        Self {
+            enabled: true,
+            network: Some("mainnet".to_string()),
+            endpoint: None,
+            use_archive: false,
+        }
+    }
+
+    /// Create a config for mainnet with archive support.
+    pub fn mainnet_with_archive() -> Self {
+        Self {
+            enabled: true,
+            network: Some("mainnet".to_string()),
+            endpoint: None,
+            use_archive: true,
+        }
+    }
+
+    /// Create a config for testnet fetching.
+    pub fn testnet() -> Self {
+        Self {
+            enabled: true,
+            network: Some("testnet".to_string()),
+            endpoint: None,
+            use_archive: false,
+        }
+    }
+
+    /// Create a config with a custom endpoint.
+    pub fn custom(endpoint: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            network: None,
+            endpoint: Some(endpoint.into()),
+            use_archive: false,
+        }
+    }
+
+    /// Check if this config represents no fetching (disabled).
+    pub fn is_disabled(&self) -> bool {
+        !self.enabled
+    }
 }
 
 impl PersistentState {
     /// Current state format version.
-    pub const CURRENT_VERSION: u32 = 1;
+    /// v1: Initial version (objects, modules, coins, sender, id_counter, timestamp)
+    /// v2: Added dynamic_fields and pending_receives for Table/Bag persistence
+    /// v3: Added config (SimulationConfig) and metadata (description, timestamps, tags)
+    /// v4: Added fetcher_config for persistent mainnet fetching configuration
+    pub const CURRENT_VERSION: u32 = 4;
 }
 
 // ============================================================================
@@ -619,8 +755,14 @@ pub struct SimulationEnvironment {
     /// Counter for generating fresh object IDs.
     id_counter: u64,
 
-    /// Transaction fetcher for on-demand mainnet fetching.
-    fetcher: Option<crate::benchmark::tx_replay::TransactionFetcher>,
+    /// Data fetcher for on-demand mainnet/testnet data loading.
+    /// Uses the Fetcher trait for abstraction over data sources.
+    fetcher: Option<Box<dyn Fetcher>>,
+
+    /// Fetcher configuration (serializable, persisted across save/load).
+    /// This is kept separate from `fetcher` because the fetcher contains
+    /// non-serializable runtime state (gRPC clients, tokio runtime).
+    fetcher_config: FetcherConfig,
 
     /// Transaction sender address for TxContext.
     sender: AccountAddress,
@@ -668,6 +810,10 @@ pub struct SimulationEnvironment {
 
     /// Events from the last PTB execution only.
     last_tx_events: Vec<EmittedEvent>,
+
+    /// Optional callback for on-demand child object fetching during execution.
+    /// This is called when a dynamic field child is requested but not found in preloaded state.
+    child_fetcher: Option<std::sync::Arc<ChildFetcherFn>>,
 }
 
 impl SimulationEnvironment {
@@ -700,6 +846,7 @@ impl SimulationEnvironment {
             objects: BTreeMap::new(),
             id_counter: 0,
             fetcher: None,
+            fetcher_config: FetcherConfig::default(),
             sender: AccountAddress::ZERO,
             timestamp_ms: None,
             coin_registry,
@@ -713,6 +860,7 @@ impl SimulationEnvironment {
             consensus_sequence: 0,
             all_events: Vec::new(),
             last_tx_events: Vec::new(),
+            child_fetcher: None,
         };
 
         // Initialize the Clock object (0x6)
@@ -867,8 +1015,58 @@ impl SimulationEnvironment {
 
     /// Enable mainnet fetching for on-demand package/object loading.
     pub fn with_mainnet_fetching(mut self) -> Self {
-        self.fetcher = Some(crate::benchmark::tx_replay::TransactionFetcher::mainnet());
+        self.fetcher = Some(Box::new(GrpcFetcher::mainnet()));
+        self.fetcher_config = FetcherConfig::mainnet();
         self
+    }
+
+    /// Enable mainnet fetching with archive support for historical data.
+    pub fn with_mainnet_archive_fetching(mut self) -> Self {
+        self.fetcher = Some(Box::new(GrpcFetcher::mainnet_with_archive()));
+        self.fetcher_config = FetcherConfig::mainnet_with_archive();
+        self
+    }
+
+    /// Enable fetching with a specific configuration.
+    pub fn with_fetcher_config(mut self, config: FetcherConfig) -> Self {
+        self.fetcher_config = config.clone();
+        if let Some(fetcher) = Self::create_fetcher_from_config(&config) {
+            self.fetcher = Some(fetcher);
+        }
+        self
+    }
+
+    /// Enable fetching with a custom fetcher implementation.
+    ///
+    /// This allows using custom data sources (cached files, mocks, etc.)
+    /// instead of the default gRPC-based fetcher.
+    pub fn with_fetcher(mut self, fetcher: Box<dyn Fetcher>, config: FetcherConfig) -> Self {
+        self.fetcher = Some(fetcher);
+        self.fetcher_config = config;
+        self
+    }
+
+    /// Create a boxed Fetcher from a FetcherConfig.
+    fn create_fetcher_from_config(config: &FetcherConfig) -> Option<Box<dyn Fetcher>> {
+        GrpcFetcher::from_config(config).map(|f| Box::new(f) as Box<dyn Fetcher>)
+    }
+
+    /// Get the current fetcher configuration.
+    pub fn fetcher_config(&self) -> &FetcherConfig {
+        &self.fetcher_config
+    }
+
+    /// Check if mainnet fetching is enabled.
+    pub fn is_fetching_enabled(&self) -> bool {
+        self.fetcher.is_some() && self.fetcher_config.enabled
+    }
+
+    /// Get the network name of the current fetcher (for logging/debugging).
+    pub fn fetcher_network(&self) -> &str {
+        self.fetcher
+            .as_ref()
+            .map(|f| f.network_name())
+            .unwrap_or("none")
     }
 
     /// Reset the environment state while preserving the loaded modules.
@@ -894,9 +1092,30 @@ impl SimulationEnvironment {
         Ok(())
     }
 
+    /// Get the current transaction sender address.
+    pub fn sender(&self) -> AccountAddress {
+        self.sender
+    }
+
     /// Set the transaction sender address for TxContext.
     pub fn set_sender(&mut self, sender: AccountAddress) {
         self.sender = sender;
+    }
+
+    /// Set a callback for on-demand child object fetching during execution.
+    /// This callback is called when a dynamic field child is requested but not found
+    /// in the preloaded set. It receives the child object ID and should return
+    /// the object's type and BCS bytes if available.
+    ///
+    /// This is useful for replaying historical transactions where dynamic fields
+    /// need to be fetched on-demand from an archive or RPC endpoint.
+    pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
+        self.child_fetcher = Some(std::sync::Arc::new(fetcher));
+    }
+
+    /// Clear the child fetcher callback.
+    pub fn clear_child_fetcher(&mut self) {
+        self.child_fetcher = None;
     }
 
     /// Set the transaction timestamp for TxContext.
@@ -968,6 +1187,53 @@ impl SimulationEnvironment {
         }
 
         Ok(target_addr)
+    }
+
+    /// Get mutable access to the resolver for advanced operations.
+    ///
+    /// This is useful for session management where the session needs to load
+    /// modules directly into the resolver.
+    pub fn resolver_mut(&mut self) -> &mut LocalModuleResolver {
+        &mut self.resolver
+    }
+
+    /// Load an object from fetched data into the environment.
+    ///
+    /// This is a convenience method for loading objects from external sources
+    /// (e.g., from a Fetcher or cached data).
+    pub fn load_object_from_data(
+        &mut self,
+        object_id: &str,
+        bcs_bytes: Vec<u8>,
+        type_string: Option<&str>,
+        is_shared: bool,
+        is_immutable: bool,
+        version: u64,
+    ) -> Result<AccountAddress> {
+        let id = AccountAddress::from_hex_literal(object_id)?;
+
+        let type_tag = if let Some(type_str) = type_string {
+            Self::parse_type_string(type_str).ok_or_else(|| {
+                anyhow!(
+                    "Failed to parse type string '{}' for object {}",
+                    type_str,
+                    object_id
+                )
+            })?
+        } else {
+            TypeTag::Address
+        };
+
+        let obj = SimulatedObject {
+            id,
+            type_tag,
+            bcs_bytes,
+            is_shared,
+            is_immutable,
+            version,
+        };
+        self.objects.insert(id, obj);
+        Ok(id)
     }
 
     /// Create a new object with the given type and BCS bytes.
@@ -1210,7 +1476,19 @@ impl SimulationEnvironment {
             .as_ref()
             .ok_or_else(|| anyhow!("Mainnet fetching not enabled"))?;
 
-        let fetched = fetcher.fetch_object_full(object_id)?;
+        let fetched = fetcher.fetch_object(object_id)?;
+        self.load_fetched_object(object_id, fetched)
+    }
+
+    /// Load a fetched object into the simulation environment.
+    ///
+    /// This is a helper method that converts FetchedObjectData to SimulatedObject
+    /// and inserts it into the object store.
+    fn load_fetched_object(
+        &mut self,
+        object_id: &str,
+        fetched: FetchedObjectData,
+    ) -> Result<AccountAddress> {
         let id = AccountAddress::from_hex_literal(object_id)?;
 
         // Parse type string into TypeTag if available
@@ -1655,6 +1933,12 @@ impl SimulationEnvironment {
                 };
             }
         };
+
+        // Set up on-demand child fetcher if configured
+        if let Some(ref fetcher_arc) = self.child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            harness.set_child_fetcher(Box::new(move |child_id| fetcher_clone(child_id)));
+        }
 
         // Preload dynamic field state from the environment.
         // This makes existing Table/Bag entries available to MoveCall functions.
@@ -3372,6 +3656,37 @@ impl SimulationEnvironment {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // Export dynamic fields (Table/Bag entries)
+        let dynamic_fields: Vec<SerializedDynamicField> = self
+            .dynamic_fields
+            .iter()
+            .map(
+                |((parent_id, child_id), (type_tag, bytes))| SerializedDynamicField {
+                    parent_id: parent_id.to_hex_literal(),
+                    child_id: child_id.to_hex_literal(),
+                    type_tag: format!("{}", type_tag),
+                    value_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            )
+            .collect();
+
+        // Export pending receives (send-to-object pattern)
+        let pending_receives: Vec<SerializedPendingReceive> = self
+            .pending_receives
+            .iter()
+            .map(
+                |((recipient_id, sent_id), (bytes, type_tag))| SerializedPendingReceive {
+                    recipient_id: recipient_id.to_hex_literal(),
+                    sent_id: sent_id.to_hex_literal(),
+                    type_tag: format!("{}", type_tag),
+                    object_bytes_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            )
+            .collect();
+
+        // Get current timestamp for metadata
+        let now = chrono::Utc::now().to_rfc3339();
+
         PersistentState {
             version: PersistentState::CURRENT_VERSION,
             objects,
@@ -3380,12 +3695,54 @@ impl SimulationEnvironment {
             sender: self.sender.to_hex_literal(),
             id_counter: self.id_counter,
             timestamp_ms: self.timestamp_ms,
+            dynamic_fields,
+            pending_receives,
+            config: Some(self.config.clone()),
+            metadata: Some(StateMetadata {
+                description: None,
+                created_at: Some(now.clone()),
+                modified_at: Some(now),
+                tags: Vec::new(),
+            }),
+            fetcher_config: if self.fetcher_config.enabled {
+                Some(self.fetcher_config.clone())
+            } else {
+                None
+            },
         }
+    }
+
+    /// Export state with custom metadata.
+    pub fn export_state_with_metadata(
+        &self,
+        description: Option<String>,
+        tags: Vec<String>,
+    ) -> PersistentState {
+        let mut state = self.export_state();
+        if let Some(ref mut metadata) = state.metadata {
+            metadata.description = description;
+            metadata.tags = tags;
+        }
+        state
     }
 
     /// Save the current state to a file.
     pub fn save_state(&self, path: &std::path::Path) -> Result<()> {
         let state = self.export_state();
+        let json = serde_json::to_string_pretty(&state)
+            .map_err(|e| anyhow!("Failed to serialize state: {}", e))?;
+        std::fs::write(path, json).map_err(|e| anyhow!("Failed to write state file: {}", e))?;
+        Ok(())
+    }
+
+    /// Save the current state to a file with custom metadata.
+    pub fn save_state_with_metadata(
+        &self,
+        path: &std::path::Path,
+        description: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<()> {
+        let state = self.export_state_with_metadata(description, tags);
         let json = serde_json::to_string_pretty(&state)
             .map_err(|e| anyhow!("Failed to serialize state: {}", e))?;
         std::fs::write(path, json).map_err(|e| anyhow!("Failed to write state file: {}", e))?;
@@ -3456,6 +3813,52 @@ impl SimulationEnvironment {
         // Load timestamp
         if state.timestamp_ms.is_some() {
             self.timestamp_ms = state.timestamp_ms;
+        }
+
+        // Load dynamic fields (Table/Bag entries) - v2+
+        for df in &state.dynamic_fields {
+            let parent_id = AccountAddress::from_hex_literal(&df.parent_id)
+                .map_err(|e| anyhow!("Invalid parent ID {}: {}", df.parent_id, e))?;
+            let child_id = AccountAddress::from_hex_literal(&df.child_id)
+                .map_err(|e| anyhow!("Invalid child ID {}: {}", df.child_id, e))?;
+            let type_tag = crate::benchmark::tx_replay::parse_type_tag(&df.type_tag)
+                .map_err(|e| anyhow!("Invalid type tag {}: {}", df.type_tag, e))?;
+            let value = base64::engine::general_purpose::STANDARD
+                .decode(&df.value_b64)
+                .map_err(|e| anyhow!("Failed to decode dynamic field value: {}", e))?;
+
+            self.dynamic_fields
+                .insert((parent_id, child_id), (type_tag, value));
+        }
+
+        // Load pending receives (send-to-object pattern) - v2+
+        for pr in &state.pending_receives {
+            let recipient_id = AccountAddress::from_hex_literal(&pr.recipient_id)
+                .map_err(|e| anyhow!("Invalid recipient ID {}: {}", pr.recipient_id, e))?;
+            let sent_id = AccountAddress::from_hex_literal(&pr.sent_id)
+                .map_err(|e| anyhow!("Invalid sent ID {}: {}", pr.sent_id, e))?;
+            let type_tag = crate::benchmark::tx_replay::parse_type_tag(&pr.type_tag)
+                .map_err(|e| anyhow!("Invalid type tag {}: {}", pr.type_tag, e))?;
+            let object_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&pr.object_bytes_b64)
+                .map_err(|e| anyhow!("Failed to decode pending receive bytes: {}", e))?;
+
+            self.pending_receives
+                .insert((recipient_id, sent_id), (object_bytes, type_tag));
+        }
+
+        // Load simulation config - v3+
+        if let Some(config) = state.config {
+            self.config = config;
+        }
+
+        // Load and restore fetcher config - v4+
+        // If the saved state had fetching enabled, we auto-reconnect
+        if let Some(fetcher_config) = state.fetcher_config {
+            if fetcher_config.enabled {
+                self.fetcher_config = fetcher_config.clone();
+                self.fetcher = Self::create_fetcher_from_config(&fetcher_config);
+            }
         }
 
         Ok(())

@@ -785,6 +785,9 @@ pub struct SharedObjectRuntime {
     /// Optional callback for on-demand child fetching from network/archive.
     /// Called when a child object is requested but not found in shared state.
     child_fetcher: Option<Arc<ChildFetcherFn>>,
+    /// Track all child object IDs that were accessed during execution (for tracing).
+    /// This is used to discover which children need to be fetched for historical replay.
+    accessed_children: Arc<Mutex<HashSet<AccountAddress>>>,
 }
 
 // Mark as a native extension
@@ -802,6 +805,7 @@ impl SharedObjectRuntime {
             shared_state,
             local,
             child_fetcher: None,
+            accessed_children: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -815,12 +819,49 @@ impl SharedObjectRuntime {
             shared_state,
             local: ObjectRuntime::new(),
             child_fetcher: Some(Arc::new(fetcher)),
+            accessed_children: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Create a SharedObjectRuntime with shared access tracking.
+    /// The accessed_children Arc will be updated whenever a child is accessed.
+    pub fn with_access_tracking(
+        shared_state: Arc<Mutex<ObjectRuntimeState>>,
+        accessed_children: Arc<Mutex<HashSet<AccountAddress>>>,
+    ) -> Self {
+        Self {
+            shared_state,
+            local: ObjectRuntime::new(),
+            child_fetcher: None,
+            accessed_children,
         }
     }
 
     /// Set the child fetcher callback.
     pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
         self.child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Get the set of child object IDs that were accessed during execution.
+    /// This is useful for tracing which children need to be fetched for replay.
+    pub fn get_accessed_children(&self) -> Vec<AccountAddress> {
+        if let Ok(accessed) = self.accessed_children.lock() {
+            accessed.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Record that a child was accessed (for tracing).
+    pub fn record_child_access(&self, child_id: AccountAddress) {
+        if let Ok(mut accessed) = self.accessed_children.lock() {
+            accessed.insert(child_id);
+        }
+    }
+
+    /// Get the Arc for accessed children (to share with child fetcher).
+    pub fn accessed_children_arc(&self) -> Arc<Mutex<HashSet<AccountAddress>>> {
+        self.accessed_children.clone()
     }
 
     /// Get the child fetcher if set.
@@ -856,7 +897,11 @@ impl SharedObjectRuntime {
 
     /// Try to fetch a child object on-demand if a fetcher is configured.
     /// Returns Some((type_tag, bytes)) if successfully fetched, None otherwise.
+    /// Also records the child access for tracing purposes.
     pub fn try_fetch_child(&self, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+        // Always record the access for tracing
+        self.record_child_access(child_id);
+
         if let Some(fetcher) = &self.child_fetcher {
             eprintln!(
                 "[SharedObjectRuntime] on-demand fetching child {}",
@@ -871,7 +916,12 @@ impl SharedObjectRuntime {
 
 impl Default for SharedObjectRuntime {
     fn default() -> Self {
-        Self::new(Arc::new(Mutex::new(ObjectRuntimeState::new())))
+        Self {
+            shared_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
+            local: ObjectRuntime::new(),
+            child_fetcher: None,
+            accessed_children: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 }
 

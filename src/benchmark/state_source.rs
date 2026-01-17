@@ -31,6 +31,113 @@ use move_core_types::language_storage::{ModuleId, TypeTag};
 use std::sync::Arc;
 
 // =============================================================================
+// Version Metadata (P1 Fix)
+// =============================================================================
+
+/// Source of object data for provenance tracking (P1 fix).
+///
+/// Tracks where object data came from for debugging version mismatches.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ObjectSource {
+    /// From gRPC mainnet fullnode
+    GrpcMainnet,
+    /// From gRPC testnet fullnode
+    GrpcTestnet,
+    /// From gRPC archive (historical data)
+    GrpcArchive,
+    /// From Surflux (has unchanged_loaded_runtime_objects)
+    Surflux,
+    /// From local cache
+    Cache,
+    /// Locally synthesized (for testing)
+    #[default]
+    Local,
+    /// Unknown source
+    Unknown,
+}
+
+impl std::fmt::Display for ObjectSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObjectSource::GrpcMainnet => write!(f, "grpc:mainnet"),
+            ObjectSource::GrpcTestnet => write!(f, "grpc:testnet"),
+            ObjectSource::GrpcArchive => write!(f, "grpc:archive"),
+            ObjectSource::Surflux => write!(f, "surflux"),
+            ObjectSource::Cache => write!(f, "cache"),
+            ObjectSource::Local => write!(f, "local"),
+            ObjectSource::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// Version metadata for tracking object provenance and validation (P1 fix).
+///
+/// This metadata helps debug version mismatch issues during transaction replay.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectVersionMetadata {
+    /// Expected version (from transaction effects)
+    pub expected_version: Option<u64>,
+    /// Whether the version matches expectations
+    pub version_valid: bool,
+    /// Source of this data
+    pub source: ObjectSource,
+    /// Fetch timestamp (when we retrieved this data)
+    pub fetched_at_ms: Option<u64>,
+    /// Digest for validation
+    pub digest: Option<String>,
+}
+
+impl ObjectVersionMetadata {
+    /// Create new metadata with version validation.
+    pub fn new(expected_version: Option<u64>, actual_version: u64, source: ObjectSource) -> Self {
+        let version_valid = expected_version
+            .map(|ev| ev == actual_version)
+            .unwrap_or(true);
+        Self {
+            expected_version,
+            version_valid,
+            source,
+            fetched_at_ms: Some(current_timestamp_ms()),
+            digest: None,
+        }
+    }
+
+    /// Create metadata for locally created objects.
+    pub fn local() -> Self {
+        Self {
+            expected_version: None,
+            version_valid: true,
+            source: ObjectSource::Local,
+            fetched_at_ms: Some(current_timestamp_ms()),
+            digest: None,
+        }
+    }
+
+    /// Validate that version matches expected.
+    pub fn validate_version(&self, actual_version: u64) -> Result<()> {
+        if let Some(expected) = self.expected_version {
+            if expected != actual_version {
+                return Err(anyhow::anyhow!(
+                    "Version mismatch: expected {}, got {} (source: {})",
+                    expected,
+                    actual_version,
+                    self.source
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Get current timestamp in milliseconds.
+fn current_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+// =============================================================================
 // Core State Source Trait
 // =============================================================================
 

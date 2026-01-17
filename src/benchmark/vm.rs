@@ -42,7 +42,7 @@ use crate::benchmark::resolver::LocalModuleResolver;
 ///
 /// This allows customization of how the sandbox behaves, particularly
 /// for mocked natives and system state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimulationConfig {
     /// Mock crypto natives always pass verification (default: true).
     /// When true, signature verification, hash checks, etc. always succeed.
@@ -161,6 +161,25 @@ impl SimulationConfig {
     /// Builder method: enable/disable immutability enforcement.
     pub fn with_immutability_enforcement(mut self, enforce: bool) -> Self {
         self.enforce_immutability = enforce;
+        self
+    }
+
+    /// Builder method: set sender address for transaction context.
+    /// This address is used in TxContext and for ownership validation.
+    pub fn with_sender(mut self, sender: [u8; 32]) -> Self {
+        self.sender_address = sender;
+        self
+    }
+
+    /// Builder method: set sender address from AccountAddress.
+    pub fn with_sender_address(mut self, sender: AccountAddress) -> Self {
+        self.sender_address = sender.into_bytes();
+        self
+    }
+
+    /// Builder method: set transaction timestamp in milliseconds.
+    pub fn with_tx_timestamp(mut self, timestamp_ms: u64) -> Self {
+        self.tx_timestamp_ms = Some(timestamp_ms);
         self
     }
 
@@ -969,6 +988,9 @@ pub struct VMHarness<'a> {
     /// Optional callback for on-demand child object fetching.
     /// Used for fetching dynamic field children from network/archive when not preloaded.
     child_fetcher: Option<Arc<ChildFetcherFn>>,
+    /// Track all child object IDs accessed during execution (for tracing).
+    /// This persists across multiple sessions for the lifetime of the harness.
+    accessed_children: Arc<Mutex<std::collections::HashSet<AccountAddress>>>,
 }
 
 impl<'a> VMHarness<'a> {
@@ -983,8 +1005,12 @@ impl<'a> VMHarness<'a> {
         restricted: bool,
         config: SimulationConfig,
     ) -> Result<Self> {
-        // Create mock native state for Sui natives
-        let native_state = Arc::new(MockNativeState::new());
+        // Create mock native state for Sui natives with configured sender
+        let mut native_state = MockNativeState::new();
+        native_state.sender = AccountAddress::new(config.sender_address);
+        native_state.epoch = config.epoch;
+        native_state.epoch_timestamp_ms = config.tx_timestamp_ms.unwrap_or(config.clock_base_ms);
+        let native_state = Arc::new(native_state);
 
         // Build native function table with move-stdlib + mock Sui natives
         let natives = build_native_function_table(native_state.clone());
@@ -999,6 +1025,7 @@ impl<'a> VMHarness<'a> {
             config,
             shared_df_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
             child_fetcher: None,
+            accessed_children: Arc::new(Mutex::new(std::collections::HashSet::new())),
         })
     }
 
@@ -1013,6 +1040,23 @@ impl<'a> VMHarness<'a> {
     /// Clear the child fetcher callback.
     pub fn clear_child_fetcher(&mut self) {
         self.child_fetcher = None;
+    }
+
+    /// Get all child object IDs that were accessed during execution.
+    /// This is useful for tracing which children need to be fetched for replay.
+    pub fn get_accessed_children(&self) -> Vec<AccountAddress> {
+        if let Ok(accessed) = self.accessed_children.lock() {
+            accessed.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Clear the accessed children tracking (call before a new trace run).
+    pub fn clear_accessed_children(&mut self) {
+        if let Ok(mut accessed) = self.accessed_children.lock() {
+            accessed.clear();
+        }
     }
 
     /// Get the current simulation configuration.
@@ -1108,8 +1152,11 @@ impl<'a> VMHarness<'a> {
     /// This allows dynamic field operations to persist across multiple MoveCall executions.
     fn create_extensions(&self) -> NativeContextExtensions<'static> {
         let mut extensions = NativeContextExtensions::default();
-        // Use SharedObjectRuntime to sync with our persistent dynamic field state
-        let mut shared_runtime = SharedObjectRuntime::new(self.shared_df_state.clone());
+        // Use SharedObjectRuntime with shared access tracking
+        let mut shared_runtime = SharedObjectRuntime::with_access_tracking(
+            self.shared_df_state.clone(),
+            self.accessed_children.clone(),
+        );
 
         // If we have a child fetcher, clone the Arc and wrap it in a new Box for the runtime
         if let Some(fetcher_arc) = &self.child_fetcher {

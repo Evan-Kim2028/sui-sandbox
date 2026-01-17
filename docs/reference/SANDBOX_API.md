@@ -570,6 +570,112 @@ Reset sandbox to initial state.
 {"action": "reset"}
 ```
 
+### save_state
+
+Save the current simulation state to a file. This enables "save game" functionality where you can persist your setup (imported packages, objects, custom modules) and resume later.
+
+```json
+{
+  "action": "save_state",
+  "path": "./my-simulation.json",
+  "description": "Cetus pool setup with 1000 SUI",
+  "tags": ["defi", "cetus"]
+}
+```
+
+**What gets saved:**
+
+- All objects (BCS bytes + metadata)
+- User-deployed modules (bytecode)
+- Coin registry (custom coins)
+- Dynamic fields (Table/Bag data)
+- Pending receives (send-to-object pattern)
+- Simulation config (epoch, gas budget, clock settings)
+- Sender address, ID counter, timestamp
+- Metadata (description, tags, timestamps)
+- **Fetcher config** (network, endpoint, archive mode) - auto-reconnects on load
+
+**What does NOT get saved:**
+
+- Framework modules (0x1, 0x2, 0x3) - always reloaded
+- Active RPC connections - recreated from fetcher config on load
+- Transaction counters - reset on load
+
+**Auto-reconnection:** If the saved state had mainnet/testnet fetching enabled, loading the state will automatically re-establish the connection with the same settings.
+
+### load_state
+
+Load a previously saved simulation state from a file.
+
+```json
+{
+  "action": "load_state",
+  "path": "./my-simulation.json"
+}
+```
+
+**Note:** Loading state merges with current state. To start fresh from a save file, use `reset` first or start a new session.
+
+### set_sender
+
+Set the sender address for subsequent transactions. Useful for multi-user scenarios.
+
+```json
+{
+  "action": "set_sender",
+  "address": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+}
+```
+
+### get_sender
+
+Get the current sender address.
+
+```json
+{"action": "get_sender"}
+```
+
+---
+
+## State Persistence (CLI)
+
+The sandbox supports persistent state via CLI flags, enabling "save game" workflows:
+
+```bash
+# Ephemeral mode (default) - state lost on exit
+sui-move-interface-extractor sandbox-exec --interactive
+
+# Persistent mode - auto-loads and auto-saves state
+sui-move-interface-extractor sandbox-exec --interactive --state-file ./my-sim.json
+
+# Read-only mode - loads state but doesn't save changes
+sui-move-interface-extractor sandbox-exec --interactive --state-file ./my-sim.json --no-save-state
+```
+
+### Typical Workflow
+
+#### Session 1: Set up simulation with mainnet state
+
+```bash
+sandbox-exec --interactive --state-file ./defi-sim.json --enable-fetching
+```
+
+```json
+{"action": "import_package_from_mainnet", "package_id": "0x...cetus"}
+{"action": "import_object_from_mainnet", "object_id": "0x...pool"}
+{"action": "compile_move", "package_name": "strategy", "module_name": "my_strategy", "source": "module strategy::my_strategy { ... }"}
+```
+
+Exit - state saved automatically.
+
+#### Session 2: Resume where you left off
+
+```bash
+sandbox-exec --interactive --state-file ./defi-sim.json
+```
+
+All packages, objects, and custom modules are restored.
+
 ---
 
 ## Module Analysis

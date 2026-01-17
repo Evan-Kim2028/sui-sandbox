@@ -1602,7 +1602,14 @@ impl CachedTransaction {
             base64::engine::general_purpose::STANDARD
                 .decode(&df.bcs_base64)
                 .ok()
-                .map(|bytes| (df.parent_id.clone(), df.type_string.clone(), bytes, df.version))
+                .map(|bytes| {
+                    (
+                        df.parent_id.clone(),
+                        df.type_string.clone(),
+                        bytes,
+                        df.version,
+                    )
+                })
         })
     }
 
