@@ -5,13 +5,14 @@ This document is the single source of truth for understanding the sui-move-inter
 ## What This Is
 
 A **Move VM sandbox** that allows:
+
 1. Executing Move code locally without a blockchain
 2. Evaluating LLM-generated transactions in a controlled environment
 3. Replaying mainnet transactions for regression testing
 
 ## System Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         External System                              │
 │                   (LLM Orchestrator / Test Runner)                   │
@@ -81,13 +82,15 @@ sui-move-interface-extractor sandbox-exec --interactive
 ```
 
 **Characteristics:**
+
 - Stateful across requests (objects persist)
 - No limits on requests/attempts (orchestrator's responsibility)
 - No automatic dependency fetching (LLM must explicitly request)
 - Errors are detailed and actionable
 
 **Workflow:**
-```
+
+```text
 LLM builds PTB
     ↓
 execute_ptb()
@@ -112,13 +115,15 @@ sui-move-interface-extractor ptb-eval --cache-dir .tx-cache/
 ```
 
 **Characteristics:**
+
 - Replays cached mainnet transactions
 - Has retry logic with automatic dependency fetching
 - Measures sandbox fidelity (% of transactions that replay correctly)
 - Not for LLM evaluation
 
 **Workflow:**
-```
+
+```text
 Load cached transaction from mainnet
     ↓
 Execute in sandbox

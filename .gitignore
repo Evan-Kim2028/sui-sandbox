@@ -48,6 +48,7 @@ benchmark/corpus/
 
 # Transaction cache and experiment data
 .tx-cache/
+deepbook_cache/
 *.jsonl
 benchmark/experiments/
 benchmark/llm_logs/
