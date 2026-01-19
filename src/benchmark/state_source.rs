@@ -45,8 +45,6 @@ pub enum ObjectSource {
     GrpcTestnet,
     /// From gRPC archive (historical data)
     GrpcArchive,
-    /// From Surflux (has unchanged_loaded_runtime_objects)
-    Surflux,
     /// From local cache
     Cache,
     /// Locally synthesized (for testing)
@@ -62,7 +60,6 @@ impl std::fmt::Display for ObjectSource {
             ObjectSource::GrpcMainnet => write!(f, "grpc:mainnet"),
             ObjectSource::GrpcTestnet => write!(f, "grpc:testnet"),
             ObjectSource::GrpcArchive => write!(f, "grpc:archive"),
-            ObjectSource::Surflux => write!(f, "surflux"),
             ObjectSource::Cache => write!(f, "cache"),
             ObjectSource::Local => write!(f, "local"),
             ObjectSource::Unknown => write!(f, "unknown"),

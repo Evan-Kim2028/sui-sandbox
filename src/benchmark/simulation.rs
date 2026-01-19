@@ -4,6 +4,7 @@
 //! - Interactive PTB building and execution
 //! - LLM-driven transaction construction
 //! - Debugging and testing Move transactions
+#![allow(deprecated)] // GrpcFetcher alias is deprecated but still used for backwards compatibility
 //!
 //! This module provides an interactive simulation environment that allows an LLM to:
 //! 1. Deploy Move packages (bytecode)

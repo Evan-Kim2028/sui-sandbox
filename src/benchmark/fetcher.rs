@@ -2,7 +2,7 @@
 //!
 //! This module provides the `Fetcher` trait for abstracting data fetching operations.
 //! This allows the simulation environment to work with different data sources:
-//! - Real mainnet/testnet via gRPC
+//! - Real mainnet/testnet via GraphQL
 //! - Cached data for offline replay
 //! - Mock data for testing
 //!
@@ -33,7 +33,7 @@ pub struct FetchedObjectData {
 /// ## Implementation Notes
 ///
 /// Implementations should be stateless where possible. Connection state
-/// (gRPC clients, etc.) should use lazy initialization to allow the
+/// (GraphQL clients, etc.) should use lazy initialization to allow the
 /// fetcher to be cloned or serialized if needed.
 pub trait Fetcher: Send + Sync {
     /// Fetch all modules from a deployed package.
@@ -83,52 +83,53 @@ impl Fetcher for NoopFetcher {
     }
 }
 
-/// Adapter that wraps TransactionFetcher to implement the Fetcher trait.
+/// Network fetcher that uses GraphQL for all queries.
 ///
-/// This provides backward compatibility with existing code while enabling
-/// the new trait-based abstraction.
-pub struct GrpcFetcher {
-    inner: crate::benchmark::tx_replay::TransactionFetcher,
+/// This replaces the old TransactionFetcher-based implementation with
+/// the unified DataFetcher which uses GraphQL as the primary backend.
+pub struct NetworkFetcher {
+    inner: crate::data_fetcher::DataFetcher,
     network: String,
 }
 
-impl GrpcFetcher {
-    /// Create a new gRPC fetcher for mainnet.
+/// Type alias for backwards compatibility.
+#[deprecated(since = "0.6.0", note = "Renamed to NetworkFetcher")]
+pub type GrpcFetcher = NetworkFetcher;
+
+impl NetworkFetcher {
+    /// Create a new fetcher for mainnet.
     pub fn mainnet() -> Self {
         Self {
-            inner: crate::benchmark::tx_replay::TransactionFetcher::mainnet(),
+            inner: crate::data_fetcher::DataFetcher::mainnet(),
             network: "mainnet".to_string(),
         }
     }
 
-    /// Create a new gRPC fetcher for mainnet with archive support.
+    /// Create a new fetcher for mainnet with archive support.
+    /// Note: Archive support is now handled automatically by GraphQL.
     pub fn mainnet_with_archive() -> Self {
-        Self {
-            inner: crate::benchmark::tx_replay::TransactionFetcher::mainnet_with_archive(),
-            network: "mainnet".to_string(),
-        }
+        // GraphQL handles historical queries automatically
+        Self::mainnet()
     }
 
-    /// Create a new gRPC fetcher for testnet.
+    /// Create a new fetcher for testnet.
     pub fn testnet() -> Self {
         Self {
-            inner: crate::benchmark::tx_replay::TransactionFetcher::new(
-                "https://fullnode.testnet.sui.io:443",
-            ),
+            inner: crate::data_fetcher::DataFetcher::testnet(),
             network: "testnet".to_string(),
         }
     }
 
-    /// Create a new gRPC fetcher with a custom endpoint.
+    /// Create a new fetcher with a custom GraphQL endpoint.
     pub fn custom(endpoint: impl Into<String>) -> Self {
         let endpoint = endpoint.into();
         Self {
-            inner: crate::benchmark::tx_replay::TransactionFetcher::new(&endpoint),
+            inner: crate::data_fetcher::DataFetcher::new(&endpoint),
             network: format!("custom({})", endpoint),
         }
     }
 
-    /// Create a gRPC fetcher from a FetcherConfig.
+    /// Create a fetcher from a FetcherConfig.
     pub fn from_config(config: &crate::benchmark::simulation::FetcherConfig) -> Option<Self> {
         if !config.enabled {
             return None;
@@ -139,36 +140,33 @@ impl GrpcFetcher {
         } else if let Some(network) = &config.network {
             match network.as_str() {
                 "testnet" => Self::testnet(),
-                _ => {
-                    if config.use_archive {
-                        Self::mainnet_with_archive()
-                    } else {
-                        Self::mainnet()
-                    }
-                }
+                _ => Self::mainnet(),
             }
-        } else if config.use_archive {
-            Self::mainnet_with_archive()
         } else {
             Self::mainnet()
         })
     }
 
-    /// Get the underlying TransactionFetcher for advanced operations.
-    pub fn inner(&self) -> &crate::benchmark::tx_replay::TransactionFetcher {
+    /// Get the underlying DataFetcher for advanced operations.
+    pub fn inner(&self) -> &crate::data_fetcher::DataFetcher {
         &self.inner
     }
 }
 
-impl Fetcher for GrpcFetcher {
+impl Fetcher for NetworkFetcher {
     fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-        self.inner.fetch_package_modules(package_id)
+        let pkg = self.inner.fetch_package(package_id)?;
+        Ok(pkg
+            .modules
+            .into_iter()
+            .map(|m| (m.name, m.bytecode))
+            .collect())
     }
 
     fn fetch_object(&self, object_id: &str) -> Result<FetchedObjectData> {
-        let fetched = self.inner.fetch_object_full(object_id)?;
+        let fetched = self.inner.fetch_object(object_id)?;
         Ok(FetchedObjectData {
-            bcs_bytes: fetched.bcs_bytes,
+            bcs_bytes: fetched.bcs_bytes.unwrap_or_default(),
             type_string: fetched.type_string,
             is_shared: fetched.is_shared,
             is_immutable: fetched.is_immutable,
@@ -177,11 +175,9 @@ impl Fetcher for GrpcFetcher {
     }
 
     fn fetch_object_at_version(&self, object_id: &str, version: u64) -> Result<FetchedObjectData> {
-        let fetched = self
-            .inner
-            .fetch_object_at_version_full(object_id, version)?;
+        let fetched = self.inner.fetch_object_at_version(object_id, version)?;
         Ok(FetchedObjectData {
-            bcs_bytes: fetched.bcs_bytes,
+            bcs_bytes: fetched.bcs_bytes.unwrap_or_default(),
             type_string: fetched.type_string,
             is_shared: fetched.is_shared,
             is_immutable: fetched.is_immutable,
@@ -208,22 +204,22 @@ mod tests {
     }
 
     #[test]
-    fn test_grpc_fetcher_from_config_disabled() {
+    fn test_network_fetcher_from_config_disabled() {
         let config = crate::benchmark::simulation::FetcherConfig::default();
-        assert!(GrpcFetcher::from_config(&config).is_none());
+        assert!(NetworkFetcher::from_config(&config).is_none());
     }
 
     #[test]
-    fn test_grpc_fetcher_from_config_mainnet() {
+    fn test_network_fetcher_from_config_mainnet() {
         let config = crate::benchmark::simulation::FetcherConfig::mainnet();
-        let fetcher = GrpcFetcher::from_config(&config).unwrap();
+        let fetcher = NetworkFetcher::from_config(&config).unwrap();
         assert_eq!(fetcher.network_name(), "mainnet");
     }
 
     #[test]
-    fn test_grpc_fetcher_from_config_testnet() {
+    fn test_network_fetcher_from_config_testnet() {
         let config = crate::benchmark::simulation::FetcherConfig::testnet();
-        let fetcher = GrpcFetcher::from_config(&config).unwrap();
+        let fetcher = NetworkFetcher::from_config(&config).unwrap();
         assert_eq!(fetcher.network_name(), "testnet");
     }
 }

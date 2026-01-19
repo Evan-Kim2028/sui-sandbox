@@ -1461,6 +1461,8 @@ fn add_dynamic_field_natives(
         "dynamic_field",
         "hash_type_and_key",
         make_native(|ctx, mut ty_args, mut args| {
+            use crate::benchmark::object_runtime::SharedObjectRuntime;
+
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
@@ -1474,6 +1476,18 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
 
             let key_tag = ctx.type_to_type_tag(&key_ty)?;
+
+            // CRITICAL: Rewrite the type tag to use RUNTIME addresses instead of BYTECODE addresses.
+            // This is necessary for upgraded packages where:
+            // - Bytecode references the original package address (e.g., 0xefe8b36d...)
+            // - But runtime types use the current package address (e.g., 0xd384ded6...)
+            // Dynamic field keys are stored with RUNTIME addresses, so hash must match.
+            let key_tag = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
+            {
+                shared.rewrite_type_tag(key_tag)
+            } else {
+                key_tag
+            };
 
             let key_layout = match ctx.type_to_type_layout(&key_ty) {
                 Ok(Some(layout)) => layout,

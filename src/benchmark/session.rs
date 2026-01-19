@@ -2,6 +2,7 @@
 //!
 //! This module provides `SimulationSession` - a wrapper that separates runtime concerns
 //! from persistent state. This enables cleaner save/load semantics where:
+#![allow(deprecated)] // GrpcFetcher alias is deprecated but still used for backwards compatibility
 //!
 //! - `SimulationEnvironment` holds the persistent state (objects, modules, coins, config)
 //! - `SimulationSession` holds runtime components (fetcher, callbacks) plus the environment

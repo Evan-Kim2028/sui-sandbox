@@ -2,14 +2,8 @@
 //!
 //! Provides a unified interface for fetching blockchain data with:
 //! - **Cache**: Local transaction cache (fastest, no network)
+//! - **GraphQL**: Rich queries with complete data (primary backend)
 //! - **gRPC**: Real-time streaming (push-based, ~30-40 tx/sec)
-//! - **GraphQL**: Rich queries with complete data
-//!
-//! # Deprecation Notice
-//!
-//! **JSON-RPC support is deprecated and will be removed in a future version.**
-//! Sui is deprecating JSON-RPC in April 2026. Please migrate to GraphQL for queries
-//! and gRPC for streaming. All JSON-RPC functionality can be replaced with GraphQL.
 //!
 //! # Choosing a Backend
 //!
@@ -59,7 +53,7 @@
 //! # Usage
 //!
 //! ```ignore
-//! // Basic queries with cache (GraphQL primary, JSON-RPC fallback)
+//! // Basic queries with cache
 //! let fetcher = DataFetcher::mainnet()
 //!     .with_cache(".tx-cache")?;
 //! let obj = fetcher.fetch_object("0x...")?;
@@ -87,7 +81,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::benchmark::tx_replay::TransactionFetcher;
 use crate::graphql::{GraphQLClient, GraphQLObject, GraphQLTransaction, ObjectOwner};
 use crate::grpc::{CheckpointStream, GrpcCheckpoint, GrpcClient, GrpcTransaction, ServiceInfo};
 
@@ -148,23 +141,19 @@ pub use crate::grpc::{
     ServiceInfo as StreamingServiceInfo,
 };
 
-/// Unified data fetcher with cache-first strategy and fallback support.
+/// Unified data fetcher with cache-first strategy.
 ///
 /// The DataFetcher provides a unified interface for fetching blockchain data with:
 /// - **Cache**: Check local cache first (fastest, no network)
-/// - **Network**: Fall back to GraphQL or JSON-RPC
+/// - **GraphQL**: Primary network backend for all queries
+/// - **gRPC**: Optional streaming and batch operations
 /// - **Write-through**: Automatically cache network fetches
 pub struct DataFetcher {
-    json_rpc: TransactionFetcher,
     graphql: GraphQLClient,
     /// Optional gRPC client for streaming (requires provider endpoint)
     grpc: Option<GrpcClient>,
     /// Unified cache manager (replaces legacy tx_cache)
     cache: Option<std::sync::Arc<std::sync::RwLock<crate::cache::CacheManager>>>,
-    /// Whether to use the other source as fallback when primary fails
-    use_fallback: bool,
-    /// Whether to prefer GraphQL over JSON-RPC (default: true)
-    prefer_graphql: bool,
     /// Whether to write network fetches back to cache (default: true)
     write_through: bool,
 }
@@ -187,11 +176,6 @@ pub struct FetchedObjectData {
 pub enum DataSource {
     /// Local transaction cache (fastest, no network)
     Cache,
-    /// JSON-RPC endpoint.
-    ///
-    /// **Deprecated:** JSON-RPC is deprecated and will be removed in a future version.
-    /// Sui is deprecating JSON-RPC in April 2026. Migrate to [`GraphQL`](Self::GraphQL).
-    JsonRpc,
     /// GraphQL endpoint (recommended for queries)
     GraphQL,
     /// gRPC endpoint (recommended for streaming)
@@ -216,46 +200,37 @@ pub struct FetchedModuleData {
 }
 
 impl DataFetcher {
-    /// Create a fetcher for mainnet with default settings (prefers GraphQL).
+    /// Create a fetcher for mainnet with default settings.
     /// gRPC is not enabled by default (requires provider endpoint).
     /// Cache is not enabled by default - use `with_cache` to add it.
     pub fn mainnet() -> Self {
         Self {
-            json_rpc: TransactionFetcher::mainnet(),
             graphql: GraphQLClient::mainnet(),
             grpc: None,
             cache: None,
-            use_fallback: true,
-            prefer_graphql: true,
             write_through: true,
         }
     }
 
-    /// Create a fetcher for testnet (prefers GraphQL).
+    /// Create a fetcher for testnet.
     /// gRPC is not enabled by default (requires provider endpoint).
     /// Cache is not enabled by default - use `with_cache` to add it.
     pub fn testnet() -> Self {
         Self {
-            json_rpc: TransactionFetcher::testnet(),
             graphql: GraphQLClient::testnet(),
             grpc: None,
             cache: None,
-            use_fallback: true,
-            prefer_graphql: true,
             write_through: true,
         }
     }
 
-    /// Create with custom endpoints (prefers GraphQL by default).
+    /// Create with a custom GraphQL endpoint.
     /// gRPC and cache are not enabled by default.
-    pub fn new(json_rpc_endpoint: &str, graphql_endpoint: &str) -> Self {
+    pub fn new(graphql_endpoint: &str) -> Self {
         Self {
-            json_rpc: TransactionFetcher::new(json_rpc_endpoint),
             graphql: GraphQLClient::new(graphql_endpoint),
             grpc: None,
             cache: None,
-            use_fallback: true,
-            prefer_graphql: true,
             write_through: true,
         }
     }
@@ -336,9 +311,9 @@ impl DataFetcher {
 
     /// Add gRPC client for real-time streaming capabilities.
     ///
-    /// Note: Sui's public fullnodes don't expose gRPC. You need a provider like:
-    /// - QuickNode: `https://your-endpoint.sui-mainnet.quiknode.pro:9000`
-    /// - Dwellir: Contact for access
+    /// Note: Sui's public fullnodes now support gRPC:
+    /// - `https://fullnode.mainnet.sui.io:443`
+    /// - `https://archive.mainnet.sui.io:443` (historical queries, no streaming)
     ///
     /// Once added, you can use `subscribe_checkpoints()` for real-time data.
     pub async fn with_grpc_endpoint(mut self, endpoint: &str) -> Result<Self> {
@@ -355,27 +330,6 @@ impl DataFetcher {
     /// Check if gRPC streaming is available.
     pub fn has_grpc(&self) -> bool {
         self.grpc.is_some()
-    }
-
-    /// Enable or disable fallback to alternate source.
-    pub fn with_fallback(mut self, enabled: bool) -> Self {
-        self.use_fallback = enabled;
-        self
-    }
-
-    /// Set whether to prefer GraphQL over JSON-RPC.
-    /// Default is true (prefer GraphQL for reliability).
-    ///
-    /// # Deprecated
-    /// JSON-RPC fallback is deprecated and will be removed in a future version.
-    /// GraphQL is now the recommended (and only maintained) query backend.
-    #[deprecated(
-        since = "0.5.0",
-        note = "JSON-RPC is deprecated. GraphQL is always preferred. This method will be removed."
-    )]
-    pub fn with_prefer_graphql(mut self, prefer: bool) -> Self {
-        self.prefer_graphql = prefer;
-        self
     }
 
     // ========== gRPC Streaming Methods ==========
@@ -399,7 +353,7 @@ impl DataFetcher {
     /// ## Example
     /// ```ignore
     /// let fetcher = DataFetcher::mainnet()
-    ///     .with_grpc_endpoint("https://your-provider:9000")
+    ///     .with_grpc_endpoint("https://fullnode.mainnet.sui.io:443")
     ///     .await?;
     ///
     /// let mut stream = fetcher.subscribe_checkpoints().await?;
@@ -461,30 +415,13 @@ impl DataFetcher {
         self.grpc.as_ref()
     }
 
-    // ========== Internal Helpers ==========
-
-    /// Try primary source, then fallback if enabled.
-    /// Returns the result from whichever source succeeded.
-    fn try_with_fallback<T, F1, F2>(&self, primary: F1, fallback: F2) -> Result<T>
-    where
-        F1: FnOnce() -> Result<T>,
-        F2: FnOnce() -> Result<T>,
-    {
-        match primary() {
-            Ok(result) => Ok(result),
-            Err(_) if self.use_fallback => fallback(),
-            Err(e) => Err(e),
-        }
-    }
-
     // ========== Object Fetching ==========
 
-    /// Fetch an object by address, with cache-first strategy and automatic fallback.
+    /// Fetch an object by address, with cache-first strategy.
     ///
     /// The lookup order is:
     /// 1. Check cache (fastest, no network)
-    /// 2. Try primary network source (GraphQL by default)
-    /// 3. Fall back to secondary source (JSON-RPC)
+    /// 2. Fetch from GraphQL
     ///
     /// If write-through is enabled (default), network fetches are cached for future use.
     pub fn fetch_object(&self, address: &str) -> Result<FetchedObjectData> {
@@ -505,18 +442,9 @@ impl DataFetcher {
             }
         }
 
-        // Fall back to network
-        let result = if self.prefer_graphql {
-            self.try_with_fallback(
-                || self.fetch_object_graphql(address),
-                || self.fetch_object_json_rpc(address),
-            )
-        } else {
-            self.try_with_fallback(
-                || self.fetch_object_json_rpc(address),
-                || self.fetch_object_graphql(address),
-            )
-        }?;
+        // Fetch from GraphQL
+        let obj = self.graphql.fetch_object(address)?;
+        let result = graphql_object_to_fetched(obj)?;
 
         // Write-through: cache the network result
         if self.write_through {
@@ -537,65 +465,8 @@ impl DataFetcher {
         Ok(result)
     }
 
-    /// Fetch object using JSON-RPC only.
-    fn fetch_object_json_rpc(&self, address: &str) -> Result<FetchedObjectData> {
-        let fetched = self.json_rpc.fetch_object_full(address)?;
-
-        Ok(FetchedObjectData {
-            address: address.to_string(),
-            version: fetched.version,
-            type_string: fetched.type_string,
-            bcs_bytes: Some(fetched.bcs_bytes),
-            is_shared: fetched.is_shared,
-            is_immutable: fetched.is_immutable,
-            source: DataSource::JsonRpc,
-        })
-    }
-
-    /// Fetch object using GraphQL only.
-    fn fetch_object_graphql(&self, address: &str) -> Result<FetchedObjectData> {
-        let obj = self.graphql.fetch_object(address)?;
-        graphql_object_to_fetched(obj)
-    }
-
     /// Fetch object at a specific version.
     pub fn fetch_object_at_version(
-        &self,
-        address: &str,
-        version: u64,
-    ) -> Result<FetchedObjectData> {
-        if self.prefer_graphql {
-            self.try_with_fallback(
-                || self.fetch_object_at_version_graphql(address, version),
-                || self.fetch_object_at_version_json_rpc(address, version),
-            )
-        } else {
-            self.try_with_fallback(
-                || self.fetch_object_at_version_json_rpc(address, version),
-                || self.fetch_object_at_version_graphql(address, version),
-            )
-        }
-    }
-
-    fn fetch_object_at_version_json_rpc(
-        &self,
-        address: &str,
-        version: u64,
-    ) -> Result<FetchedObjectData> {
-        let bcs_bytes = self.json_rpc.fetch_object_at_version(address, version)?;
-
-        Ok(FetchedObjectData {
-            address: address.to_string(),
-            version,
-            type_string: None, // JSON-RPC tryGetPastObject doesn't always return type
-            bcs_bytes: Some(bcs_bytes),
-            is_shared: false,
-            is_immutable: false,
-            source: DataSource::JsonRpc,
-        })
-    }
-
-    fn fetch_object_at_version_graphql(
         &self,
         address: &str,
         version: u64,
@@ -604,12 +475,11 @@ impl DataFetcher {
         graphql_object_to_fetched(obj)
     }
 
-    /// Fetch a package by address, with cache-first strategy and automatic fallback.
+    /// Fetch a package by address, with cache-first strategy.
     ///
     /// The lookup order is:
     /// 1. Check cache (fastest, no network)
-    /// 2. Try primary network source (GraphQL by default)
-    /// 3. Fall back to secondary source (JSON-RPC)
+    /// 2. Fetch from GraphQL
     ///
     /// If write-through is enabled (default), network fetches are cached for future use.
     /// Returns module names and their bytecode.
@@ -632,58 +502,7 @@ impl DataFetcher {
             }
         }
 
-        // Fall back to network
-        let result = if self.prefer_graphql {
-            self.try_with_fallback(
-                || self.fetch_package_graphql(address),
-                || self.fetch_package_json_rpc(address),
-            )
-        } else {
-            self.try_with_fallback(
-                || self.fetch_package_json_rpc(address),
-                || self.fetch_package_graphql(address),
-            )
-        }?;
-
-        // Write-through: cache the network result
-        if self.write_through {
-            if let Some(ref cache_lock) = self.cache {
-                if let Ok(mut cache) = cache_lock.write() {
-                    let modules: Vec<(String, Vec<u8>)> = result
-                        .modules
-                        .iter()
-                        .map(|m| (m.name.clone(), m.bytecode.clone()))
-                        .collect();
-                    let _ = cache.put_package(&result.address, result.version, modules);
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
-    fn fetch_package_json_rpc(&self, address: &str) -> Result<FetchedPackageData> {
-        let modules = self.json_rpc.fetch_package_modules(address)?;
-
-        if modules.is_empty() {
-            return Err(anyhow!("No modules found in package {}", address));
-        }
-
-        Ok(FetchedPackageData {
-            address: address.to_string(),
-            version: 1, // JSON-RPC doesn't provide version, assume 1
-            modules: modules
-                .into_iter()
-                .map(|(name, bytes)| FetchedModuleData {
-                    name,
-                    bytecode: bytes,
-                })
-                .collect(),
-            source: DataSource::JsonRpc,
-        })
-    }
-
-    fn fetch_package_graphql(&self, address: &str) -> Result<FetchedPackageData> {
+        // Fetch from GraphQL
         let pkg = self.graphql.fetch_package(address)?;
 
         use base64::Engine;
@@ -708,15 +527,31 @@ impl DataFetcher {
             ));
         }
 
-        Ok(FetchedPackageData {
+        let result = FetchedPackageData {
             address: pkg.address,
             version: pkg.version,
             modules,
             source: DataSource::GraphQL,
-        })
+        };
+
+        // Write-through: cache the network result
+        if self.write_through {
+            if let Some(ref cache_lock) = self.cache {
+                if let Ok(mut cache) = cache_lock.write() {
+                    let modules: Vec<(String, Vec<u8>)> = result
+                        .modules
+                        .iter()
+                        .map(|m| (m.name.clone(), m.bytecode.clone()))
+                        .collect();
+                    let _ = cache.put_package(&result.address, result.version, modules);
+                }
+            }
+        }
+
+        Ok(result)
     }
 
-    /// Search for objects by type (GraphQL only - not available in JSON-RPC).
+    /// Search for objects by type (GraphQL only).
     pub fn search_objects_by_type(
         &self,
         type_filter: &str,
@@ -728,11 +563,10 @@ impl DataFetcher {
 
     // ========== Transaction Fetching ==========
 
-    /// Fetch a transaction by digest with full PTB details (GraphQL only).
+    /// Fetch a transaction by digest with full PTB details.
     ///
     /// GraphQL provides complete transaction data including effects with
-    /// created/mutated/deleted arrays. JSON-RPC uses a different format
-    /// and is not supported for this method.
+    /// created/mutated/deleted arrays.
     pub fn fetch_transaction(&self, digest: &str) -> Result<GraphQLTransaction> {
         self.graphql.fetch_transaction(digest)
     }
@@ -742,13 +576,7 @@ impl DataFetcher {
     /// For complete data, prefer [`fetch_recent_transactions_full`] which
     /// fetches transactions with full PTB data in a single query.
     pub fn fetch_recent_transactions(&self, limit: usize) -> Result<Vec<String>> {
-        self.try_with_fallback(
-            || self.graphql.fetch_recent_transactions(limit),
-            || {
-                let digests = self.json_rpc.fetch_recent_transactions(limit)?;
-                Ok(digests.into_iter().map(|d| d.0).collect())
-            },
-        )
+        self.graphql.fetch_recent_transactions(limit)
     }
 
     /// Fetch recent transactions with full PTB data in a single GraphQL query.
@@ -773,22 +601,101 @@ impl DataFetcher {
         self.graphql.fetch_recent_ptb_transactions(limit)
     }
 
-    /// Get access to the underlying JSON-RPC fetcher (for legacy compatibility).
-    ///
-    /// # Deprecated
-    /// JSON-RPC support is deprecated and will be removed in a future version.
-    /// Sui is deprecating JSON-RPC in April 2026. Use [`graphql()`](Self::graphql) instead.
-    #[deprecated(
-        since = "0.5.0",
-        note = "JSON-RPC is deprecated. Use graphql() instead. Sui deprecates JSON-RPC April 2026."
-    )]
-    pub fn json_rpc(&self) -> &TransactionFetcher {
-        &self.json_rpc
-    }
-
     /// Get access to the underlying GraphQL client.
     pub fn graphql(&self) -> &GraphQLClient {
         &self.graphql
+    }
+
+    /// Extract all package IDs referenced in a transaction's MoveCall commands.
+    ///
+    /// This is useful for determining which packages need to be fetched
+    /// before replaying a transaction.
+    pub fn extract_package_ids(tx: &GraphQLTransaction) -> Vec<String> {
+        use crate::graphql::GraphQLCommand;
+        use std::collections::BTreeSet;
+        let mut packages = BTreeSet::new();
+        for cmd in &tx.commands {
+            if let GraphQLCommand::MoveCall { package, .. } = cmd {
+                packages.insert(package.clone());
+            }
+        }
+        packages.into_iter().collect()
+    }
+
+    /// Fetch all input objects for a transaction.
+    ///
+    /// Returns a map of object_id -> BCS bytes for all OwnedObject and SharedObject
+    /// inputs in the transaction. Pure inputs are skipped as they don't require fetching.
+    ///
+    /// For SharedObject inputs, fetches at their initial_shared_version.
+    /// For OwnedObject inputs, fetches at their specified version.
+    pub fn fetch_transaction_inputs(
+        &self,
+        tx: &GraphQLTransaction,
+    ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+        use crate::graphql::GraphQLTransactionInput;
+        use std::collections::HashMap;
+        let mut objects = HashMap::new();
+
+        for input in &tx.inputs {
+            match input {
+                GraphQLTransactionInput::OwnedObject {
+                    address, version, ..
+                } => {
+                    let obj = self.fetch_object_at_version(address, *version)?;
+                    if let Some(bcs) = obj.bcs_bytes {
+                        objects.insert(address.clone(), bcs);
+                    }
+                }
+                GraphQLTransactionInput::SharedObject {
+                    address,
+                    initial_shared_version,
+                    ..
+                } => {
+                    let obj = self.fetch_object_at_version(address, *initial_shared_version)?;
+                    if let Some(bcs) = obj.bcs_bytes {
+                        objects.insert(address.clone(), bcs);
+                    }
+                }
+                GraphQLTransactionInput::Receiving {
+                    address, version, ..
+                } => {
+                    let obj = self.fetch_object_at_version(address, *version)?;
+                    if let Some(bcs) = obj.bcs_bytes {
+                        objects.insert(address.clone(), bcs);
+                    }
+                }
+                GraphQLTransactionInput::Pure { .. } => {
+                    // Pure inputs don't need fetching
+                }
+            }
+        }
+
+        Ok(objects)
+    }
+
+    /// Fetch all packages referenced in a transaction.
+    ///
+    /// Returns a map of package_id -> Vec<(module_name, module_bytecode)>.
+    pub fn fetch_transaction_packages(
+        &self,
+        tx: &GraphQLTransaction,
+    ) -> Result<std::collections::HashMap<String, Vec<(String, Vec<u8>)>>> {
+        use std::collections::HashMap;
+        let package_ids = Self::extract_package_ids(tx);
+        let mut packages = HashMap::new();
+
+        for pkg_id in package_ids {
+            let pkg = self.fetch_package(&pkg_id)?;
+            let modules: Vec<(String, Vec<u8>)> = pkg
+                .modules
+                .into_iter()
+                .map(|m| (m.name, m.bytecode))
+                .collect();
+            packages.insert(pkg_id, modules);
+        }
+
+        Ok(packages)
     }
 
     // ========== Dynamic Field Fetching ==========
@@ -900,13 +807,10 @@ mod tests {
         // Just test that we can create fetchers without panicking
         let _mainnet = DataFetcher::mainnet();
         let _testnet = DataFetcher::testnet();
-        let _custom = DataFetcher::new(
-            "https://fullnode.mainnet.sui.io:443",
-            "https://graphql.mainnet.sui.io/graphql",
-        );
+        let _custom = DataFetcher::new("https://graphql.mainnet.sui.io/graphql");
     }
 
-    /// Test unified package fetching with automatic fallback
+    /// Test unified package fetching
     /// Run with: cargo test test_unified_package_fetch -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -915,7 +819,6 @@ mod tests {
 
         println!("=== Testing Unified Package Fetching ===\n");
 
-        // These packages failed with JSON-RPC but work with GraphQL
         let test_packages = [
             (
                 "Artipedia",
@@ -925,7 +828,7 @@ mod tests {
                 "Campaign",
                 "0x9f6de0f9c1333cecfafed4fd51ecf445d237a6295bd6ae88754821c8f8189789",
             ),
-            ("Sui Framework", "0x2"), // Should work with JSON-RPC
+            ("Sui Framework", "0x2"),
         ];
 
         for (name, addr) in test_packages {

@@ -330,6 +330,34 @@ pub struct BenchmarkLocalArgs {
 }
 
 impl BenchmarkLocalArgs {
+    /// Validate benchmark arguments for conflicts and requirements.
+    pub fn validate(&self) -> Result<(), String> {
+        // max_chain_depth must be at least 1
+        if self.max_chain_depth == 0 {
+            return Err("--max-chain-depth must be at least 1".to_string());
+        }
+
+        // static_only is incompatible with tier_a_only (tier_a_only implies execution)
+        if self.static_only && self.tier_a_only {
+            return Err(
+                "--static-only and --tier-a-only are incompatible (static-only skips all execution)"
+                    .to_string(),
+            );
+        }
+
+        // Validate random_seed is valid hex if provided
+        if let Some(seed) = &self.random_seed {
+            if seed.len() > 64 {
+                return Err("--random-seed must be at most 64 hex characters".to_string());
+            }
+            if !seed.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("--random-seed must be a valid hex string".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get effective MM2 setting (respects --no-mm2 override).
     #[allow(deprecated)]
     pub fn effective_use_mm2(&self) -> bool {
@@ -568,6 +596,25 @@ pub struct SandboxExecArgs {
     pub interactive: bool,
 }
 
+impl SandboxExecArgs {
+    /// Validate sandbox execution arguments for conflicts and requirements.
+    pub fn validate(&self) -> Result<(), String> {
+        // interactive mode uses stdin/stdout, so custom input/output files are ignored
+        if self.interactive {
+            let input_str = self.input.to_string_lossy();
+            let output_str = self.output.to_string_lossy();
+            if input_str != "-" || output_str != "-" {
+                return Err(
+                    "--interactive mode uses stdin/stdout; --input and --output are ignored"
+                        .to_string(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct RetryConfig {
     pub retries: usize,
@@ -620,6 +667,27 @@ impl Args {
             return Err("--concurrency must be at least 1".to_string());
         }
 
+        // corpus_local_bytes_check requires bytecode_corpus_root
+        if self.corpus_local_bytes_check && self.bytecode_corpus_root.is_none() {
+            return Err("--corpus-local-bytes-check requires --bytecode-corpus-root".to_string());
+        }
+
+        // emit_submission_summary requires bytecode_corpus_root (corpus mode)
+        if self.emit_submission_summary.is_some() && self.bytecode_corpus_root.is_none() {
+            return Err(
+                "--emit-submission-summary is only valid in corpus mode (requires --bytecode-corpus-root)".to_string(),
+            );
+        }
+
+        // bytecode_package_dir is single-package mode, conflicts with batch modes
+        if self.bytecode_package_dir.is_some()
+            && (self.out_dir.is_some() || self.bytecode_corpus_root.is_some())
+        {
+            return Err(
+                "--bytecode-package-dir is single-package mode; do not use with --out-dir/--bytecode-corpus-root".to_string(),
+            );
+        }
+
         Ok(())
     }
 }
@@ -662,5 +730,266 @@ impl PtbEvalArgs {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ==================== BenchmarkLocalArgs validation tests ====================
+
+    fn default_benchmark_args() -> BenchmarkLocalArgs {
+        BenchmarkLocalArgs {
+            target_corpus: PathBuf::from("/tmp/corpus"),
+            output: PathBuf::from("/tmp/output.jsonl"),
+            tier_a_only: false,
+            restricted_state: false,
+            use_mm2: true,
+            no_mm2: false,
+            static_only: false,
+            max_chain_depth: 5,
+            phase_errors: true,
+            no_phase_errors: false,
+            error_distribution: false,
+            function_filter: None,
+            module_filter: None,
+            use_ptb: true,
+            no_ptb: false,
+            strict_crypto: false,
+            clock_base_ms: None,
+            random_seed: None,
+        }
+    }
+
+    #[test]
+    fn test_benchmark_args_valid() {
+        let args = default_benchmark_args();
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_benchmark_args_max_chain_depth_zero() {
+        let mut args = default_benchmark_args();
+        args.max_chain_depth = 0;
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max-chain-depth"));
+    }
+
+    #[test]
+    fn test_benchmark_args_static_only_with_tier_a_only() {
+        let mut args = default_benchmark_args();
+        args.static_only = true;
+        args.tier_a_only = true;
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("static-only"));
+    }
+
+    #[test]
+    fn test_benchmark_args_random_seed_too_long() {
+        let mut args = default_benchmark_args();
+        args.random_seed = Some("a".repeat(65)); // 65 chars, max is 64
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("64"));
+    }
+
+    #[test]
+    fn test_benchmark_args_random_seed_invalid_hex() {
+        let mut args = default_benchmark_args();
+        args.random_seed = Some("xyz123".to_string()); // 'x', 'y', 'z' are not hex
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hex"));
+    }
+
+    #[test]
+    fn test_benchmark_args_random_seed_valid() {
+        let mut args = default_benchmark_args();
+        args.random_seed = Some("deadbeef".to_string());
+        assert!(args.validate().is_ok());
+    }
+
+    // ==================== SandboxExecArgs validation tests ====================
+
+    fn default_sandbox_args() -> SandboxExecArgs {
+        SandboxExecArgs {
+            input: PathBuf::from("-"),
+            output: PathBuf::from("-"),
+            enable_fetching: false,
+            verbose: false,
+            bytecode_dir: None,
+            state_file: None,
+            no_save_state: false,
+            interactive: false,
+        }
+    }
+
+    #[test]
+    fn test_sandbox_args_valid() {
+        let args = default_sandbox_args();
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_sandbox_args_interactive_with_custom_input() {
+        let mut args = default_sandbox_args();
+        args.interactive = true;
+        args.input = PathBuf::from("/tmp/input.json");
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("interactive"));
+    }
+
+    #[test]
+    fn test_sandbox_args_interactive_with_custom_output() {
+        let mut args = default_sandbox_args();
+        args.interactive = true;
+        args.output = PathBuf::from("/tmp/output.json");
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("interactive"));
+    }
+
+    #[test]
+    fn test_sandbox_args_interactive_with_stdin_stdout() {
+        let mut args = default_sandbox_args();
+        args.interactive = true;
+        // input and output are already "-" (stdin/stdout)
+        assert!(args.validate().is_ok());
+    }
+
+    // ==================== TxReplayArgs validation tests ====================
+
+    fn default_tx_replay_args() -> TxReplayArgs {
+        TxReplayArgs {
+            digest: None,
+            recent: None,
+            rpc_url: None,
+            testnet: false,
+            output: None,
+            bytecode_corpus: None,
+            summary_only: false,
+            validate: false,
+            replay: false,
+            fetch_objects: false,
+            framework_only: false,
+            cache_dir: None,
+            download_only: false,
+            from_cache: false,
+            parallel: false,
+            threads: None,
+            clear_cache: false,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn test_tx_replay_args_valid_with_digest() {
+        let mut args = default_tx_replay_args();
+        args.digest = Some("abc123".to_string());
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tx_replay_args_valid_with_recent() {
+        let mut args = default_tx_replay_args();
+        args.recent = Some(10);
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tx_replay_args_valid_from_cache() {
+        let mut args = default_tx_replay_args();
+        args.from_cache = true;
+        args.cache_dir = Some(PathBuf::from("/tmp/cache"));
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tx_replay_args_no_source() {
+        let args = default_tx_replay_args();
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("digest"));
+    }
+
+    #[test]
+    fn test_tx_replay_args_from_cache_without_cache_dir() {
+        let mut args = default_tx_replay_args();
+        args.from_cache = true;
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cache-dir"));
+    }
+
+    #[test]
+    fn test_tx_replay_args_parallel_without_cache_dir() {
+        let mut args = default_tx_replay_args();
+        args.parallel = true;
+        args.from_cache = true;
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cache-dir"));
+    }
+
+    #[test]
+    fn test_tx_replay_args_parallel_without_from_cache() {
+        let mut args = default_tx_replay_args();
+        args.parallel = true;
+        args.cache_dir = Some(PathBuf::from("/tmp/cache"));
+        args.digest = Some("abc".to_string());
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("from-cache"));
+    }
+
+    // ==================== PtbEvalArgs validation tests ====================
+
+    fn default_ptb_eval_args() -> PtbEvalArgs {
+        PtbEvalArgs {
+            cache_dir: PathBuf::from(".tx-cache"),
+            output: None,
+            max_retries: 3,
+            enable_fetching: false,
+            framework_only: false,
+            third_party_only: false,
+            limit: None,
+            verbose: false,
+            show_healing: false,
+        }
+    }
+
+    #[test]
+    fn test_ptb_eval_args_valid() {
+        let args = default_ptb_eval_args();
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ptb_eval_args_framework_only() {
+        let mut args = default_ptb_eval_args();
+        args.framework_only = true;
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ptb_eval_args_third_party_only() {
+        let mut args = default_ptb_eval_args();
+        args.third_party_only = true;
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_ptb_eval_args_mutually_exclusive() {
+        let mut args = default_ptb_eval_args();
+        args.framework_only = true;
+        args.third_party_only = true;
+        let result = args.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("mutually exclusive"));
     }
 }

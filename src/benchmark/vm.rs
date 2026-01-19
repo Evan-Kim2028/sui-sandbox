@@ -991,6 +991,9 @@ pub struct VMHarness<'a> {
     /// Track all child object IDs accessed during execution (for tracing).
     /// This persists across multiple sessions for the lifetime of the harness.
     accessed_children: Arc<Mutex<std::collections::HashSet<AccountAddress>>>,
+    /// Address aliases for package upgrades (bytecode address -> runtime/storage address).
+    /// These are passed to SharedObjectRuntime for type tag rewriting in dynamic field ops.
+    address_aliases: std::collections::HashMap<AccountAddress, AccountAddress>,
 }
 
 impl<'a> VMHarness<'a> {
@@ -1026,7 +1029,18 @@ impl<'a> VMHarness<'a> {
             shared_df_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
             child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            address_aliases: std::collections::HashMap::new(),
         })
+    }
+
+    /// Set address aliases for package upgrades.
+    /// Maps bytecode addresses to runtime/storage addresses, enabling correct
+    /// type tag rewriting in dynamic field operations for upgraded packages.
+    pub fn set_address_aliases(
+        &mut self,
+        aliases: std::collections::HashMap<AccountAddress, AccountAddress>,
+    ) {
+        self.address_aliases = aliases;
     }
 
     /// Set a callback for on-demand child object fetching.
@@ -1162,6 +1176,12 @@ impl<'a> VMHarness<'a> {
         if let Some(fetcher_arc) = &self.child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
             shared_runtime.set_child_fetcher(Box::new(move |child_id| fetcher_clone(child_id)));
+        }
+
+        // Pass address aliases to enable type tag rewriting for upgraded packages.
+        // This is critical for correct dynamic field hash computation.
+        if !self.address_aliases.is_empty() {
+            shared_runtime.set_address_aliases(self.address_aliases.clone());
         }
 
         extensions.add(shared_runtime);

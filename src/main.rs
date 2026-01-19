@@ -1,3 +1,5 @@
+#![allow(deprecated)] // TransactionFetcher is deprecated but still used in CLI
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::sync::Arc;
@@ -16,40 +18,33 @@ use sui_move_interface_extractor::runner::{run_batch, run_single, run_single_loc
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    if let Some(Command::BenchmarkLocal(bench_args)) = &args.command {
-        return run_benchmark(bench_args);
-    }
+    // Validate global arguments
+    args.validate().map_err(|e| anyhow!(e))?;
 
-    if let Some(Command::TxReplay(replay_args)) = &args.command {
-        return run_tx_replay(replay_args);
-    }
-
-    if let Some(Command::PtbEval(eval_args)) = &args.command {
-        return run_ptb_eval(eval_args);
-    }
-
-    if let Some(Command::SandboxExec(exec_args)) = &args.command {
-        return run_sandbox_exec(exec_args);
-    }
-
-    if args.corpus_local_bytes_check && args.bytecode_corpus_root.is_none() {
-        return Err(anyhow!(
-            "--corpus-local-bytes-check requires --bytecode-corpus-root"
-        ));
-    }
-
-    if args.emit_submission_summary.is_some() && args.bytecode_corpus_root.is_none() {
-        return Err(anyhow!(
-            "--emit-submission-summary is only valid in corpus mode (requires --bytecode-corpus-root)"
-        ));
-    }
-
-    if args.bytecode_package_dir.is_some() {
-        if args.out_dir.is_some() || args.bytecode_corpus_root.is_some() {
-            return Err(anyhow!(
-                "--bytecode-package-dir is single-package mode; do not use with --out-dir/--bytecode-corpus-root"
-            ));
+    // Handle subcommands
+    if let Some(ref command) = args.command {
+        match command {
+            Command::BenchmarkLocal(bench_args) => {
+                bench_args.validate().map_err(|e| anyhow!(e))?;
+                return run_benchmark(bench_args);
+            }
+            Command::TxReplay(replay_args) => {
+                replay_args.validate().map_err(|e| anyhow!(e))?;
+                return run_tx_replay(replay_args);
+            }
+            Command::PtbEval(eval_args) => {
+                eval_args.validate().map_err(|e| anyhow!(e))?;
+                return run_ptb_eval(eval_args);
+            }
+            Command::SandboxExec(exec_args) => {
+                exec_args.validate().map_err(|e| anyhow!(e))?;
+                return run_sandbox_exec(exec_args);
+            }
         }
+    }
+
+    // Default mode: interface extraction
+    if args.bytecode_package_dir.is_some() {
         return run_single_local_bytecode_dir(&args).await;
     }
 

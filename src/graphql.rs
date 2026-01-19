@@ -678,6 +678,118 @@ impl GraphQLClient {
         })
     }
 
+    /// Fetch a package at a specific checkpoint (for historical replay).
+    pub fn fetch_package_at_checkpoint(
+        &self,
+        address: &str,
+        checkpoint: u64,
+    ) -> Result<GraphQLPackage> {
+        let query = r#"
+            query GetPackageAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
+                checkpoint(sequenceNumber: $checkpoint) {
+                    sequenceNumber
+                }
+                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                    address
+                    version
+                    asMovePackage {
+                        modules {
+                            nodes {
+                                name
+                                bytes
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        // Try alternative query format if @snapshot doesn't work
+        let alt_query = r#"
+            query GetPackageAtCheckpoint($address: SuiAddress!) {
+                object(address: $address) {
+                    address
+                    version
+                    asMovePackage {
+                        modules {
+                            nodes {
+                                name
+                                bytes
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": address,
+            "checkpoint": checkpoint
+        });
+
+        // Try with checkpoint first, fall back to current if not supported
+        let data = match self.query(query, Some(variables.clone())) {
+            Ok(d) => d,
+            Err(_) => {
+                // Fallback to simple query (no checkpoint support)
+                let simple_vars = serde_json::json!({ "address": address });
+                self.query(alt_query, Some(simple_vars))?
+            }
+        };
+
+        let obj = data.get("object").ok_or_else(|| {
+            anyhow!(
+                "Package not found at checkpoint {}: {}",
+                checkpoint,
+                address
+            )
+        })?;
+
+        if obj.is_null() {
+            return Err(anyhow!(
+                "Package not found at checkpoint {}: {}",
+                checkpoint,
+                address
+            ));
+        }
+
+        let pkg = obj
+            .get("asMovePackage")
+            .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
+
+        let modules_nodes = pkg
+            .get("modules")
+            .and_then(|m| m.get("nodes"))
+            .and_then(|n| n.as_array())
+            .map(|arr| arr.to_vec())
+            .unwrap_or_default();
+
+        let modules: Vec<GraphQLModule> = modules_nodes
+            .iter()
+            .map(|m| GraphQLModule {
+                name: m
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                bytecode_base64: m
+                    .get("bytes")
+                    .and_then(|b| b.as_str())
+                    .map(|s| s.to_string()),
+            })
+            .collect();
+
+        Ok(GraphQLPackage {
+            address: obj
+                .get("address")
+                .and_then(|a| a.as_str())
+                .unwrap_or(address)
+                .to_string(),
+            version: obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1),
+            modules,
+        })
+    }
+
     /// Fetch a transaction by digest with full PTB details.
     pub fn fetch_transaction(&self, digest: &str) -> Result<GraphQLTransaction> {
         // Note: GraphQL uses "transaction" not "transactionBlock"

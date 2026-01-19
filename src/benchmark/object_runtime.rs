@@ -788,6 +788,8 @@ pub struct SharedObjectRuntime {
     /// Track all child object IDs that were accessed during execution (for tracing).
     /// This is used to discover which children need to be fetched for historical replay.
     accessed_children: Arc<Mutex<HashSet<AccountAddress>>>,
+    /// Address aliases for package upgrades (bytecode address -> runtime/storage address).
+    address_aliases: HashMap<AccountAddress, AccountAddress>,
 }
 
 // Mark as a native extension
@@ -806,6 +808,7 @@ impl SharedObjectRuntime {
             local,
             child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
+            address_aliases: HashMap::new(),
         }
     }
 
@@ -820,6 +823,7 @@ impl SharedObjectRuntime {
             local: ObjectRuntime::new(),
             child_fetcher: Some(Arc::new(fetcher)),
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
+            address_aliases: HashMap::new(),
         }
     }
 
@@ -834,12 +838,47 @@ impl SharedObjectRuntime {
             local: ObjectRuntime::new(),
             child_fetcher: None,
             accessed_children,
+            address_aliases: HashMap::new(),
         }
     }
 
     /// Set the child fetcher callback.
     pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
         self.child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Set address aliases for package upgrades.
+    pub fn set_address_aliases(&mut self, aliases: HashMap<AccountAddress, AccountAddress>) {
+        self.address_aliases = aliases;
+    }
+
+    /// Rewrite a TypeTag to use runtime addresses instead of bytecode addresses.
+    /// This is essential for dynamic field hash computation in upgraded packages.
+    ///
+    /// Note: The address_aliases map is stored as runtime -> bytecode (for module resolution).
+    /// This function inverts the lookup: given a bytecode address, find the runtime address.
+    pub fn rewrite_type_tag(&self, tag: TypeTag) -> TypeTag {
+        match tag {
+            TypeTag::Struct(s) => {
+                let mut s = *s;
+                // address_aliases is runtime -> bytecode, so we need to find which runtime
+                // maps to this bytecode address (inverted lookup)
+                for (runtime_addr, bytecode_addr) in &self.address_aliases {
+                    if *bytecode_addr == s.address {
+                        s.address = *runtime_addr;
+                        break;
+                    }
+                }
+                s.type_params = s
+                    .type_params
+                    .into_iter()
+                    .map(|t| self.rewrite_type_tag(t))
+                    .collect();
+                TypeTag::Struct(Box::new(s))
+            }
+            TypeTag::Vector(inner) => TypeTag::Vector(Box::new(self.rewrite_type_tag(*inner))),
+            other => other,
+        }
     }
 
     /// Get the set of child object IDs that were accessed during execution.
@@ -921,6 +960,7 @@ impl Default for SharedObjectRuntime {
             local: ObjectRuntime::new(),
             child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
+            address_aliases: HashMap::new(),
         }
     }
 }

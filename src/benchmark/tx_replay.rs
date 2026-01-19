@@ -2,6 +2,7 @@
 //!
 //! This module provides functionality to fetch and replay mainnet Sui transactions
 //! in the local Move VM sandbox. This enables:
+#![allow(deprecated)] // TransactionFetcher is deprecated but still used internally
 //!
 //! 1. **Validation**: Compare local execution with on-chain effects
 //! 2. **Training Data**: Generate input/output pairs for LLM training
@@ -439,6 +440,10 @@ pub struct FetchedObject {
 }
 
 /// Fetches transactions from a Sui RPC endpoint.
+#[deprecated(
+    since = "0.5.0",
+    note = "JSON-RPC is deprecated by Sui (April 2026). Use DataFetcher with GraphQL instead."
+)]
 pub struct TransactionFetcher {
     /// RPC endpoint URL
     endpoint: String,
@@ -1752,7 +1757,10 @@ pub struct ParallelReplayResult {
 }
 
 /// Build address alias map by examining the bytecode self-addresses.
-/// Returns a map: on-chain package ID -> bytecode self-address
+/// Returns a map: on-chain package ID (runtime) -> bytecode self-address
+/// This allows module resolution: when looking for runtime address, fall back to bytecode.
+///
+/// Note: For hash rewriting (bytecode -> runtime), callers should build an inverted map.
 fn build_address_aliases(
     cached: &CachedTransaction,
 ) -> std::collections::HashMap<AccountAddress, AccountAddress> {
@@ -1762,21 +1770,22 @@ fn build_address_aliases(
 
     for pkg_id in cached.packages.keys() {
         if let Some(modules) = cached.get_package_modules(pkg_id) {
-            // Get the target address (on-chain package ID)
-            let target_addr = match AccountAddress::from_hex_literal(pkg_id) {
+            // Get the runtime address (on-chain package ID)
+            let runtime_addr = match AccountAddress::from_hex_literal(pkg_id) {
                 Ok(addr) => addr,
                 Err(_) => continue,
             };
 
-            // Find the source address from bytecode
+            // Find the bytecode address from the module
             for (_name, bytes) in &modules {
                 if bytes.is_empty() {
                     continue;
                 }
                 if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
-                    let source_addr = *module.self_id().address();
-                    if source_addr != target_addr {
-                        aliases.insert(target_addr, source_addr);
+                    let bytecode_addr = *module.self_id().address();
+                    if bytecode_addr != runtime_addr {
+                        // Map runtime address -> bytecode address (for module resolution)
+                        aliases.insert(runtime_addr, bytecode_addr);
                     }
                     break; // All modules in a package have the same address
                 }
