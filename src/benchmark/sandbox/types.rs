@@ -496,6 +496,46 @@ pub enum SandboxRequest {
     },
 
     // ========================================================================
+    // Sender Management
+    // ========================================================================
+    /// Set the transaction sender address.
+    /// This address is used as the sender in TxContext for all subsequent operations.
+    #[serde(rename = "set_sender")]
+    SetSender {
+        /// Sender address (hex string, e.g., "0x123...").
+        address: String,
+    },
+
+    /// Get the current transaction sender address.
+    #[serde(rename = "get_sender")]
+    GetSender,
+
+    // ========================================================================
+    // State Persistence
+    // ========================================================================
+    /// Save the current sandbox state to a file.
+    /// This creates a JSON snapshot that can be loaded later.
+    #[serde(rename = "save_state")]
+    SaveState {
+        /// Path to save the state file.
+        path: String,
+        /// Optional description for the saved state.
+        #[serde(default)]
+        description: Option<String>,
+        /// Optional tags for categorizing the saved state.
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+    },
+
+    /// Load a previously saved sandbox state from a file.
+    /// This replaces the current state with the loaded state.
+    #[serde(rename = "load_state")]
+    LoadState {
+        /// Path to the state file to load.
+        path: String,
+    },
+
+    // ========================================================================
     // Meta / Discovery Tools
     // ========================================================================
     /// List all available sandbox tools and their schemas.

@@ -294,5 +294,17 @@ pub fn execute_request(
 
         // Meta operations
         SandboxRequest::ListAvailableTools => state::execute_list_available_tools(verbose),
+
+        // Sender operations
+        SandboxRequest::SetSender { address } => state::execute_set_sender(env, address, verbose),
+        SandboxRequest::GetSender => state::execute_get_sender(env, verbose),
+
+        // State persistence operations
+        SandboxRequest::SaveState {
+            path,
+            description,
+            tags,
+        } => state::execute_save_state(env, path, description.as_deref(), tags.as_deref(), verbose),
+        SandboxRequest::LoadState { path } => state::execute_load_state(env, path, verbose),
     }
 }

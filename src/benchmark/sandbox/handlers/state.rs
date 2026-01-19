@@ -1,9 +1,12 @@
 //! State management sandbox handlers.
 //!
-//! Handles get_state, reset, get_lamport_clock, advance_lamport_clock, and list_available_tools operations.
+//! Handles get_state, reset, get_lamport_clock, advance_lamport_clock, set_sender, get_sender,
+//! save_state, load_state, and list_available_tools operations.
 
 use crate::benchmark::sandbox::types::SandboxResponse;
 use crate::benchmark::simulation::SimulationEnvironment;
+use move_core_types::account_address::AccountAddress;
+use std::path::Path;
 
 /// Get current sandbox state (loaded modules, objects).
 pub fn execute_get_state(env: &mut SimulationEnvironment, verbose: bool) -> SandboxResponse {
@@ -65,6 +68,110 @@ pub fn execute_advance_lamport_clock(
     }))
 }
 
+/// Set the transaction sender address.
+pub fn execute_set_sender(
+    env: &mut SimulationEnvironment,
+    address: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Setting sender to: {}", address);
+    }
+
+    // Parse the address
+    let addr = match AccountAddress::from_hex_literal(address) {
+        Ok(a) => a,
+        Err(e) => {
+            return SandboxResponse::error(format!("Invalid address '{}': {}", address, e));
+        }
+    };
+
+    env.set_sender(addr);
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "sender": addr.to_hex_literal()
+    }))
+}
+
+/// Get the current transaction sender address.
+pub fn execute_get_sender(env: &SimulationEnvironment, verbose: bool) -> SandboxResponse {
+    let sender = env.sender();
+
+    if verbose {
+        eprintln!("Current sender: {}", sender.to_hex_literal());
+    }
+
+    SandboxResponse::success_with_data(serde_json::json!({
+        "sender": sender.to_hex_literal()
+    }))
+}
+
+/// Save the current sandbox state to a file.
+pub fn execute_save_state(
+    env: &SimulationEnvironment,
+    path: &str,
+    description: Option<&str>,
+    tags: Option<&[String]>,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Saving state to: {}", path);
+    }
+
+    let path = Path::new(path);
+
+    // Use save_state_with_metadata if we have metadata, otherwise use save_state
+    let result = if description.is_some() || tags.is_some() {
+        env.save_state_with_metadata(
+            path,
+            description.map(String::from),
+            tags.map(|t| t.to_vec()).unwrap_or_default(),
+        )
+    } else {
+        env.save_state(path)
+    };
+
+    match result {
+        Ok(_) => {
+            // Get some stats about what was saved
+            let state = env.get_state_summary();
+            SandboxResponse::success_with_data(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "version": 4,  // Current state format version
+                "objects_count": state.object_count,
+                "modules_count": state.loaded_modules.len(),
+            }))
+        }
+        Err(e) => SandboxResponse::error(format!("Failed to save state: {}", e)),
+    }
+}
+
+/// Load a previously saved sandbox state from a file.
+pub fn execute_load_state(
+    env: &mut SimulationEnvironment,
+    path: &str,
+    verbose: bool,
+) -> SandboxResponse {
+    if verbose {
+        eprintln!("Loading state from: {}", path);
+    }
+
+    let path = Path::new(path);
+
+    match env.load_state(path) {
+        Ok(_) => {
+            let state = env.get_state_summary();
+            SandboxResponse::success_with_data(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "objects_count": state.object_count,
+                "modules_count": state.loaded_modules.len(),
+                "sender": state.sender,
+            }))
+        }
+        Err(e) => SandboxResponse::error(format!("Failed to load state: {}", e)),
+    }
+}
+
 /// Generate unified schema of all available sandbox tools.
 /// This is the single source of truth for LLM tool discovery.
 pub fn execute_list_available_tools(verbose: bool) -> SandboxResponse {
@@ -90,6 +197,38 @@ pub fn execute_list_available_tools(verbose: bool) -> SandboxResponse {
                         "description": "Get current sandbox state summary (loaded modules, objects, coins).",
                         "params": {},
                         "example": {"action": "get_state"}
+                    },
+                    {
+                        "action": "set_sender",
+                        "description": "Set the transaction sender address for TxContext.",
+                        "params": {
+                            "address": "string - sender address (hex, e.g., '0x123...')"
+                        },
+                        "example": {"action": "set_sender", "address": "0x123..."}
+                    },
+                    {
+                        "action": "get_sender",
+                        "description": "Get the current transaction sender address.",
+                        "params": {},
+                        "example": {"action": "get_sender"}
+                    },
+                    {
+                        "action": "save_state",
+                        "description": "Save the current sandbox state to a file for later restoration.",
+                        "params": {
+                            "path": "string - file path to save state",
+                            "description": "string (optional) - description of the saved state",
+                            "tags": "array (optional) - tags for categorizing the state"
+                        },
+                        "example": {"action": "save_state", "path": "/tmp/state.json"}
+                    },
+                    {
+                        "action": "load_state",
+                        "description": "Load a previously saved sandbox state from a file.",
+                        "params": {
+                            "path": "string - path to the state file"
+                        },
+                        "example": {"action": "load_state", "path": "/tmp/state.json"}
                     }
                 ]
             },
