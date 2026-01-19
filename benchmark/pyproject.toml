@@ -58,9 +58,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-n auto"
+testpaths = ["tests"]
 markers = [
     "regression: marks regression tests for critical behavior",
     "unit: marks fast unit tests",
+    "integration: marks integration tests that require external services",
+    "docker: marks tests that require Docker",
 ]
 filterwarnings = [
     "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
