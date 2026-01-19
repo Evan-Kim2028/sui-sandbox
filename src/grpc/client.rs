@@ -29,6 +29,7 @@ use super::generated::sui_rpc_v2::{
 pub struct GrpcClient {
     endpoint: String,
     channel: Channel,
+    api_key: Option<String>,
 }
 
 impl GrpcClient {
@@ -64,6 +65,12 @@ impl GrpcClient {
 
     /// Create a client with a custom endpoint.
     pub async fn new(endpoint: &str) -> Result<Self> {
+        Self::with_api_key(endpoint, None).await
+    }
+
+    /// Create a client with a custom endpoint and API key.
+    /// The API key is included as an `x-api-key` header on all requests.
+    pub async fn with_api_key(endpoint: &str, api_key: Option<String>) -> Result<Self> {
         // Configure TLS for HTTPS endpoints
         let channel = if endpoint.starts_with("https://") {
             Channel::from_shared(endpoint.to_string())?
@@ -81,7 +88,19 @@ impl GrpcClient {
         Ok(Self {
             endpoint: endpoint.to_string(),
             channel,
+            api_key,
         })
+    }
+
+    /// Wrap a request with the API key header if configured.
+    fn wrap_request<T>(&self, req: T) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(req);
+        if let Some(ref key) = self.api_key {
+            if let Ok(value) = key.parse() {
+                request.metadata_mut().insert("x-api-key", value);
+            }
+        }
+        request
     }
 
     /// Get the endpoint URL.
@@ -98,7 +117,7 @@ impl GrpcClient {
         let mut client = LedgerServiceClient::new(self.channel.clone());
 
         let response = client
-            .get_service_info(proto::GetServiceInfoRequest {})
+            .get_service_info(self.wrap_request(proto::GetServiceInfoRequest {}))
             .await
             .map_err(|e| anyhow!("gRPC error: {}", e))?;
 
@@ -131,7 +150,7 @@ impl GrpcClient {
         };
 
         let response = client
-            .subscribe_checkpoints(request)
+            .subscribe_checkpoints(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC subscription error: {}", e))?;
 
@@ -172,12 +191,13 @@ impl GrpcClient {
                     "owner".to_string(),
                     "bcs".to_string(),      // Full object BCS (includes type tag)
                     "contents".to_string(), // Move struct BCS (starts with UID)
+                    "package".to_string(),  // Package info including modules
                 ],
             }),
         };
 
         let response = client
-            .get_object(request)
+            .get_object(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC error fetching object: {}", e))?;
 
@@ -206,7 +226,7 @@ impl GrpcClient {
         };
 
         let response = client
-            .batch_get_objects(request)
+            .batch_get_objects(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC batch error: {}", e))?;
 
@@ -241,7 +261,7 @@ impl GrpcClient {
         };
 
         let response = client
-            .get_transaction(request)
+            .get_transaction(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC error fetching transaction: {}", e))?;
 
@@ -264,7 +284,7 @@ impl GrpcClient {
         };
 
         let response = client
-            .batch_get_transactions(request)
+            .batch_get_transactions(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC batch error: {}", e))?;
 
@@ -301,12 +321,30 @@ impl GrpcClient {
         };
 
         let response = client
-            .get_checkpoint(request)
+            .get_checkpoint(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC error fetching checkpoint: {}", e))?;
 
         let inner = response.into_inner();
         Ok(inner.checkpoint.map(GrpcCheckpoint::from_proto))
+    }
+
+    /// Fetch a package's modules at a specific version.
+    ///
+    /// This is useful for historical transaction replay where you need the exact
+    /// bytecode that was deployed at the time of the transaction.
+    pub async fn get_package_modules_at_version(
+        &self,
+        package_id: &str,
+        version: Option<u64>,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let obj = self
+            .get_object_at_version(package_id, version)
+            .await?
+            .ok_or_else(|| anyhow!("Package not found: {}", package_id))?;
+
+        obj.package_modules
+            .ok_or_else(|| anyhow!("Object {} is not a package", package_id))
     }
 
     /// Fetch the latest checkpoint.
@@ -321,7 +359,7 @@ impl GrpcClient {
         };
 
         let response = client
-            .get_checkpoint(request)
+            .get_checkpoint(self.wrap_request(request))
             .await
             .map_err(|e| anyhow!("gRPC error fetching latest checkpoint: {}", e))?;
 
@@ -410,6 +448,15 @@ pub struct GrpcTransaction {
     pub inputs: Vec<GrpcInput>,
     pub commands: Vec<GrpcCommand>,
     pub status: Option<String>,
+    /// Dynamic field children loaded but not modified during execution.
+    /// Format: (object_id, version)
+    pub unchanged_loaded_runtime_objects: Vec<(String, u64)>,
+    /// Objects modified during execution with their INPUT versions (before tx).
+    /// Format: (object_id, input_version) - only includes objects that existed before tx.
+    pub changed_objects: Vec<(String, u64)>,
+    /// Objects created during execution.
+    /// Format: (object_id, output_version)
+    pub created_objects: Vec<(String, u64)>,
 }
 
 impl GrpcTransaction {
@@ -447,6 +494,63 @@ impl GrpcTransaction {
             }
         });
 
+        // Extract unchanged_loaded_runtime_objects from effects
+        let unchanged_loaded_runtime_objects = effects
+            .map(|e| {
+                e.unchanged_loaded_runtime_objects
+                    .iter()
+                    .filter_map(|obj_ref| {
+                        let object_id = obj_ref.object_id.clone()?;
+                        let version = obj_ref.version?;
+                        Some((object_id, version))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Extract changed_objects with their INPUT versions (before tx)
+        // These are objects that were MODIFIED during execution
+        let changed_objects = effects
+            .map(|e| {
+                use super::generated::sui_rpc_v2::changed_object::InputObjectState;
+                e.changed_objects
+                    .iter()
+                    .filter_map(|obj| {
+                        let object_id = obj.object_id.clone()?;
+                        // Only include objects that existed before the transaction
+                        let input_state = obj.input_state?;
+                        if input_state == InputObjectState::Exists as i32 {
+                            let input_version = obj.input_version?;
+                            Some((object_id, input_version))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Extract created_objects (objects that didn't exist before tx)
+        let created_objects = effects
+            .map(|e| {
+                use super::generated::sui_rpc_v2::changed_object::InputObjectState;
+                e.changed_objects
+                    .iter()
+                    .filter_map(|obj| {
+                        let object_id = obj.object_id.clone()?;
+                        let input_state = obj.input_state?;
+                        // Objects that didn't exist before the transaction
+                        if input_state == InputObjectState::DoesNotExist as i32 {
+                            let output_version = obj.output_version?;
+                            Some((object_id, output_version))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             digest: proto.digest.unwrap_or_default(),
             sender: tx.and_then(|t| t.sender.clone()).unwrap_or_default(),
@@ -457,6 +561,9 @@ impl GrpcTransaction {
             inputs,
             commands,
             status,
+            unchanged_loaded_runtime_objects,
+            changed_objects,
+            created_objects,
         }
     }
 
@@ -662,6 +769,9 @@ pub struct GrpcObject {
     pub bcs: Option<Vec<u8>>,
     /// Full object BCS (includes type tag prefix) - for debugging
     pub bcs_full: Option<Vec<u8>>,
+    /// Package modules (if this object is a package)
+    /// Each tuple is (module_name, module_bytecode)
+    pub package_modules: Option<Vec<(String, Vec<u8>)>>,
 }
 
 impl GrpcObject {
@@ -690,6 +800,18 @@ impl GrpcObject {
             .and_then(|full_bcs| extract_move_struct_from_object_bcs(full_bcs, &object_id))
             .or(contents); // Fall back to contents only if extraction fails
 
+        // Extract package modules if this is a package
+        let package_modules = proto.package.as_ref().map(|pkg| {
+            pkg.modules
+                .iter()
+                .filter_map(|m| {
+                    let name = m.name.clone()?;
+                    let contents = m.contents.clone()?;
+                    Some((name, contents))
+                })
+                .collect()
+        });
+
         Self {
             object_id,
             version: proto.version.unwrap_or(0),
@@ -698,6 +820,7 @@ impl GrpcObject {
             owner,
             bcs,
             bcs_full,
+            package_modules,
         }
     }
 }
