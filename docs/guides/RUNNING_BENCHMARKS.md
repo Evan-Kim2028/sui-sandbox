@@ -16,6 +16,7 @@ Both paths use the **SimulationEnvironment** for offline Move VM execution. See 
 ## Quick start (5 minutes)
 
 1. **Setup dependencies and corpus:**
+
 ```bash
 cd benchmark
 uv sync --group dev --frozen
@@ -25,6 +26,7 @@ cp .env.example .env
 ```
 
 2. **Run a high-signal Phase II sample (Gemini 3 Flash):**
+
 ```bash
 ./scripts/run_model.sh --env-file .env --model google/gemini-3-flash-preview \
   --scan-samples 100 --run-samples 5 --per-package-timeout-seconds 90
@@ -83,6 +85,7 @@ Evaluate with automatic recovery from missing packages/objects:
 ```
 
 Self-healing actions:
+
 - **DeployPackage**: Fetch and deploy missing package from mainnet
 - **CreateObject**: Synthesize missing object with appropriate type
 - **SetupSharedObject**: Initialize shared object state
@@ -175,6 +178,7 @@ cd benchmark
 ```
 
 **Notes:**
+
 - Start with `--parallel 1` to avoid RPC rate limits; increase gradually.
 
 ---
@@ -184,6 +188,7 @@ cd benchmark
 Use this when you want to run benchmarks on curated package lists.
 
 **Quick iteration with top-25 dataset:**
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -194,6 +199,7 @@ uv run smi-inhabit \
 ```
 
 **Standard Phase II benchmark:**
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -204,12 +210,14 @@ uv run smi-inhabit \
 ```
 
 **Available datasets:**
+
 - `type_inhabitation_top25` - 25 packages for fast iteration
 - `packages_with_keys` - Packages with key structs (variable count)
 - `standard_phase2_benchmark` - Primary Phase II benchmark (292 packages)
 
 **Custom manifest files:**
 For custom package lists, use `--package-ids-file` with the full path:
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -227,12 +235,14 @@ uv run smi-inhabit \
 The Phase II output JSON contains per-package rows and an aggregate summary.
 
 Key fields to watch first:
+
 - `aggregate.errors` and per-package `error` (harness/runtime failures)
 - `packages[*].timed_out` (timeouts)
 - `packages[*].dry_run_ok` and `packages[*].dry_run_effects_error` (execution success vs failure class)
 - `packages[*].score.created_hits` (task success; may be 0 for inventory-constrained packages)
 
 **Key distinction:**
+
 - `dry_run_ok`: Transaction executed without aborting (runtime success)
 - `created_hits`: Target types were actually created (task success)
 
@@ -254,7 +264,6 @@ python scripts/phase2_leaderboard.py results/run_a.json results/run_b.json
 
 - Rate limits (RPC/OpenRouter): reduce `--parallel` (multi-model) and/or lower `--run-samples`.
 - "No requests": confirm you used the exact model id shown in `./scripts/run_model.sh --help`.
-- Port conflicts (A2A): check ports 9999 (Green) / 9998 (Purple).
 
 ---
 
@@ -265,6 +274,7 @@ The benchmark system uses a separation between **oracle** (answer key) and **eva
 ### Oracle
 
 The oracle provides ground truth for type inhabitation:
+
 - Extracts interfaces from bytecode
 - Identifies target types that can be inhabited
 - Provides constructor chains for complex types
@@ -272,6 +282,7 @@ The oracle provides ground truth for type inhabitation:
 ### Evaluator
 
 The evaluator scores LLM-generated solutions:
+
 - Validates PTB structure
 - Executes in SimulationEnvironment
 - Compares created types against targets
@@ -322,10 +333,9 @@ The `ptb-eval` command implements a self-healing evaluation loop:
 
 ## Related documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and data flows
-- **[CLI_REFERENCE.md](CLI_REFERENCE.md)** - Complete CLI command reference
+- **[ARCHITECTURE.md](../../ARCHITECTURE.md)** - System architecture and data flows
+- **[CLI_REFERENCE.md](../reference/CLI_REFERENCE.md)** - Complete CLI command reference
 - **[LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md)** - Sandbox internals
-- **[Insights & Reward](INSIGHTS.md)** - High-value takeaways and research value proposition
-- **[Methodology](METHODOLOGY.md)** - Scoring rules and extraction logic
-- **[A2A Protocol](A2A_PROTOCOL.md)** - Protocol implementation and examples
-- **[Datasets Guide](DATASETS.md)** - Creating and using curated package lists
+- **[Insights & Reward](../INSIGHTS.md)** - High-value takeaways and research value proposition
+- **[Methodology](../METHODOLOGY.md)** - Scoring rules and extraction logic
+- **[Datasets Guide](../../benchmark/DATASETS.md)** - Creating and using curated package lists

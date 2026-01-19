@@ -145,11 +145,13 @@ Fields:
 - `exact_match_modules`: number of modules whose `len` and `sha256` match
 - `mismatches_total`: total mismatching modules (includes missing modules)
 - `missing_in_bcs`, `missing_in_mv`: module name lists
-## 7) Evaluation Bundle JSON (A2A Layer)
 
-The A2A layer produces a standardized evaluation bundle. See the JSON Schema at `docs/schemas/evaluation_bundle.schema.json`.
+## 7) Evaluation Bundle JSON
+
+The benchmark harness produces a standardized evaluation bundle. See the JSON Schema at `docs/schemas/evaluation_bundle.schema.json`.
 
 Top-level object:
+
 - `schema_version`: `1`
 - `benchmark`: `"phase2_inhabit"`
 - `metrics`: Object containing `avg_hit_rate`, `errors`, `packages_total`, etc.

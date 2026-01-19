@@ -153,7 +153,7 @@ Optionally maintain a human-readable snapshot log here:
   - `--corpus-local-bytes-check`
 
 For schema details and determinism rules, see **[JSON Schema](SCHEMA.md)**.
-For benchmark execution, see **[Benchmark Guide](BENCHMARK_GUIDE.md)**.
+For benchmark execution, see **[Running Benchmarks](../guides/RUNNING_BENCHMARKS.md)**.
 
 ## Local Type Inhabitation Benchmark (`benchmark-local`)
 
@@ -196,6 +196,7 @@ See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](NO_CHAIN_TYPE_INHABITATION_SPEC.md) for
 The benchmark runs a multi-stage validation pipeline:
 
 **Tier A (Preflight Validation)** - Deterministic checks without execution:
+
 - **A1**: Bytecode-resolved call target (module/function exists, visibility)
 - **A2**: Full type/layout resolution (struct definitions, abilities)
 - **A3**: BCS validity for pure args (encode/decode roundtrip)
@@ -203,6 +204,7 @@ The benchmark runs a multi-stage validation pipeline:
 - **A5**: Transaction consistency (type args, argument kinds)
 
 **Tier B (VM Execution)** - Local Move VM harness:
+
 - **B1**: Synthetic state harness (mock objects for common types)
 - **B2**: Execution harness (success vs abort, abort code/location)
 
@@ -231,6 +233,7 @@ Each line in the output file is a JSON object:
 ```
 
 **Status Values:**
+
 - `tier_a_hit`: Passed Tier A validation (preflight only)
 - `tier_b_hit`: Passed both Tier A and Tier B (full validation)
 - `miss`: Failed at some stage
@@ -269,7 +272,7 @@ The `--emit-bytecode-json` flag deserializes Move bytecode (.mv files) into a de
 
 The Rust extractor reads compiled Move bytecode and extracts type information through the following process:
 
-1. **Read Binary Module:** 
+1. **Read Binary Module:**
    - Loads `.mv` files from `bytecode_modules/` directory
    - Uses `CompiledModule::deserialize_with_defaults()` to parse binary format
 
@@ -291,6 +294,7 @@ The Rust extractor reads compiled Move bytecode and extracts type information th
 **Process:** Rust deserializes binary Move VM format into structured JSON
 
 **Output:**
+
 ```json
 {
   "schema_version": 1,
@@ -361,6 +365,7 @@ For each module, the interface JSON provides:
 ### Why Bytecode-First?
 
 This approach ensures ground truth is independent of:
+
 - **Source code formatting** (whitespace, comments, style)
 - **Compilation artifacts** (temporary locals, optimizer transformations)
 - **RPC availability** (works offline, no network dependencies)
@@ -370,6 +375,7 @@ The extracted JSON represents exactly what the Move VM will execute on-chain.
 ### Reference Implementation
 
 See `src/bytecode.rs` for the deserialization logic:
+
 - `read_local_compiled_modules()`: Loads .mv files
 - `build_bytecode_module_json()`: Extracts struct/function tables
 - `build_bytecode_interface_value_from_compiled_modules()`: Builds complete package interface
@@ -435,6 +441,7 @@ sui_move_interface_extractor tx-replay \
 ### Output
 
 Parallel replay shows summary statistics:
+
 ```
 PARALLEL REPLAY RESULTS
 ========================================
@@ -553,6 +560,7 @@ sui_move_interface_extractor sandbox-exec \
 #### Available Actions
 
 **Module Introspection:**
+
 - `list_modules` - List all loaded modules
 - `list_functions` - List functions in a module
 - `list_structs` - List structs in a module
@@ -560,6 +568,7 @@ sui_move_interface_extractor sandbox-exec \
 - `get_struct_info` - Get struct definition
 
 **Type Operations:**
+
 - `validate_type` - Check if a type is valid
 - `encode_bcs` - Encode value to BCS bytes
 - `decode_bcs` - Decode BCS bytes to value
@@ -567,16 +576,19 @@ sui_move_interface_extractor sandbox-exec \
 - `search_functions` - Search for functions by pattern
 
 **Execution:**
+
 - `execute_ptb` - Execute Programmable Transaction Block
 - `call_function` - Call a single function
 - `create_object` - Create an object with given fields
 
 **Package Management:**
+
 - `load_module` - Load bytecode module
 - `compile_move` - Compile Move source code
 - `deploy_package` - Deploy a package
 
 **State:**
+
 - `get_state` - Get current sandbox state
 - `reset_state` - Reset to initial state
 
@@ -660,6 +672,6 @@ The SimulationEnvironment can be configured via CLI flags on `benchmark-local`:
 
 ## See Also
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture overview
-- [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) - Sandbox internals
-- [BENCHMARK_GUIDE.md](BENCHMARK_GUIDE.md) - Benchmark execution guide
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) - System architecture overview
+- [LOCAL_BYTECODE_SANDBOX.md](../guides/LOCAL_BYTECODE_SANDBOX.md) - Sandbox internals
+- [Running Benchmarks](../guides/RUNNING_BENCHMARKS.md) - Benchmark execution guide

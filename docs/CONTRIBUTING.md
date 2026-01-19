@@ -184,8 +184,8 @@ All documentation must be executable, verifiable, and maintainable.
 **Validation:**
 
 ```bash
-# Test A2A documentation examples
-python benchmark/scripts/test_doc_examples.py docs/BENCHMARK_GUIDE.md docs/A2A_PROTOCOL.md
+# Test documentation examples
+python benchmark/scripts/test_doc_examples.py
 ```
 
 ### Cross-Reference Validation
@@ -211,9 +211,8 @@ python benchmark/scripts/validate_crossrefs.py
 When `benchmark/docs/evaluation_bundle.schema.json` changes:
 
 1. Update all documentation examples
-2. Update `benchmark/docs/A2A_EXAMPLES.md` reference payloads
-3. Update `benchmark/docs/ARCHITECTURE.md` invariants section
-4. Add migration notes if breaking changes
+2. Update `benchmark/docs/ARCHITECTURE.md` invariants section
+3. Add migration notes if breaking changes
 
 **Reference:** See `benchmark/docs/TESTING.md` for complete testing procedures.
 
@@ -238,6 +237,5 @@ Before merging any doc changes:
 
 **Related documentation:**
 
-- **[Testing](TESTING.md)** - Complete testing guide.
-- **[A2A Protocol](A2A_PROTOCOL.md)** - Request/response examples.
-- **[Benchmark Guide](BENCHMARK_GUIDE.md)** - Canonical benchmark entrypoint.
+- **[Testing](benchmark/docs/TESTING.md)** - Complete testing guide.
+- **[Benchmark Guide](benchmark/GETTING_STARTED.md)** - Canonical benchmark entrypoint.

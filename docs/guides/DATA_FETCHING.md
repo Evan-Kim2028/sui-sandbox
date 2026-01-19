@@ -4,19 +4,17 @@ This guide covers how to fetch on-chain data (objects, packages, transactions) f
 
 ## Overview
 
-The data fetching system provides a unified interface with three backends:
+The data fetching system provides a unified interface with two backends:
 
 | Backend | Best For | Tradeoff |
 |---------|----------|----------|
 | **gRPC Streaming** | Real-time monitoring, high throughput | Limited effects data (no created/mutated/deleted) |
 | **GraphQL** | Queries, packages, replay verification | Polling only, may miss transactions |
-| **JSON-RPC** | Legacy fallback | Deprecated April 2026 |
 
 **Key features:**
 
 - **gRPC streaming** - Subscribe to checkpoints as they're finalized (no polling gaps)
-- **GraphQL-first queries** - Complete data including full effects for replay
-- **Automatic fallback** - Falls back to JSON-RPC when GraphQL fails
+- **GraphQL queries** - Complete data including full effects for replay
 - **Automatic pagination** - Handles cursor-based pagination transparently
 - **Transaction parsing** - Full PTB (Programmable Transaction Block) structure
 
@@ -54,14 +52,14 @@ fn main() -> anyhow::Result<()> {
 ### Creating a Fetcher
 
 ```rust
-// For mainnet (GraphQL primary, JSON-RPC fallback)
+// For mainnet (uses GraphQL)
 let fetcher = DataFetcher::mainnet();
 
 // For testnet
 let fetcher = DataFetcher::testnet();
 
-// Disable fallback (GraphQL only)
-let fetcher = DataFetcher::mainnet().with_fallback(false);
+// Custom GraphQL endpoint
+let fetcher = DataFetcher::new("https://graphql.mainnet.sui.io/graphql");
 ```
 
 ### Fetching Objects
@@ -76,7 +74,7 @@ let obj = fetcher.fetch_object("0x...")?;
 // - bcs_bytes: Option<Vec<u8>>
 // - is_shared: bool
 // - is_immutable: bool
-// - source: DataSource (GraphQL or JsonRpc)
+// - source: DataSource (GraphQL, Grpc, or Cache)
 ```
 
 ### Fetching Packages
@@ -271,17 +269,17 @@ fn fetch_data() -> Result<()> {
 }
 ```
 
-## GraphQL vs JSON-RPC
+## GraphQL Features
 
-| Feature | GraphQL | JSON-RPC |
-|---------|---------|----------|
-| Package bytecode | ✅ Always available | ⚠️ Sometimes "No BCS data" |
-| Transaction PTB details | ✅ Full structure | ✅ Full structure |
-| Pagination | ✅ Cursor-based | ✅ Cursor-based |
-| Object BCS | ✅ Available | ✅ Available |
-| Historical data | ✅ Good | ⚠️ Limited |
+| Feature | Support |
+|---------|---------|
+| Package bytecode | ✅ Always available |
+| Transaction PTB details | ✅ Full structure |
+| Pagination | ✅ Cursor-based |
+| Object BCS | ✅ Available |
+| Historical data | ✅ Good |
 
-**Recommendation:** Use `DataFetcher` which automatically prefers GraphQL with JSON-RPC fallback.
+**Recommendation:** Use `DataFetcher` which uses GraphQL for all queries.
 
 ## Example: Analyzing Recent Transactions
 
@@ -412,7 +410,7 @@ if tx.is_ptb() {
 |----------|---------------------|
 | Real-time monitoring | gRPC streaming |
 | Fetching specific package | GraphQL |
-| Fetching specific object | GraphQL (with JSON-RPC fallback) |
+| Fetching specific object | GraphQL |
 | Historical transaction analysis | GraphQL |
 | High-volume batch fetching | gRPC batch methods |
 | One-time script | GraphQL (simpler setup) |
@@ -562,6 +560,64 @@ Both tools save to JSONL with compatible formats:
 | **Analyzing transaction patterns** | Either | Both have complete PTB structure |
 | **Fetching historical transactions** | GraphQL | Better for point queries |
 | **Building a block explorer** | Both | gRPC for live feed, GraphQL for details |
+
+## Transaction Simulation via gRPC
+
+For transaction simulation (equivalent to `dry_run` or `dev_inspect`), use the gRPC `SimulateTransaction` API:
+
+```rust
+use sui_move_interface_extractor::grpc::{
+    GrpcClient, ProtoTransaction, ProtoTransactionKind,
+    ProtoProgrammableTransaction, ProtoCommand, ProtoMoveCall,
+};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let client = GrpcClient::new("https://fullnode.mainnet.sui.io:443").await?;
+
+    // Build a transaction (example: simple Move call)
+    let transaction = ProtoTransaction {
+        sender: Some("0x...".to_string()),
+        kind: Some(ProtoTransactionKind {
+            kind: Some(/* TransactionKindType::ProgrammableTransaction */),
+            data: Some(/* ProgrammableTransaction */),
+        }),
+        // ... other fields
+        ..Default::default()
+    };
+
+    // Dev-inspect mode (no ownership checks)
+    let result = client.dev_inspect(transaction.clone()).await?;
+    println!("Success: {}, Created types: {:?}", result.success, result.created_object_types);
+
+    // Dry-run mode (full validation)
+    let result = client.dry_run(transaction, true /* do_gas_selection */).await?;
+    if !result.success {
+        println!("Error: {:?}", result.error);
+    }
+
+    Ok(())
+}
+```
+
+### Simulation Modes
+
+| Mode | Ownership Checks | Gas Selection | Use Case |
+|------|------------------|---------------|----------|
+| `dev_inspect` | ❌ No | ❌ No | Testing "what would happen?" |
+| `dry_run` | ✅ Yes | ✅ Optional | Pre-flight validation |
+
+### SimulationResult Fields
+
+```rust
+pub struct SimulationResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub transaction: Option<GrpcTransaction>,
+    pub command_outputs: Vec<CommandResultOutput>,
+    pub created_object_types: Vec<String>,
+}
+```
 
 ## See Also
 

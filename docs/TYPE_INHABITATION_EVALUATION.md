@@ -4,7 +4,7 @@
 
 This document describes the evaluation framework for testing LLM capability to achieve **type inhabitation** in Sui Move packages. The framework uses the **Local Bytecode Sandbox** to enable LLMs to generate helper Move code that compiles against and executes with real package bytecode, all without requiring mainnet deployment or gas.
 
-See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for the sandbox architecture.
+See [LOCAL_BYTECODE_SANDBOX.md](guides/LOCAL_BYTECODE_SANDBOX.md) for the sandbox architecture.
 
 ## Target Package
 
@@ -13,6 +13,7 @@ See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for the sandbox archi
 **Original Package ID**: `0xc35ee7fee75782806890cf8ed8536b52b4ba0ace0fb46b944f1155cc5945baa3`
 
 **Modules**:
+
 - `cell` - Generic container type `Cell<T>` with `new`, `get`, `set`, `destroy` operations
 - `fees` - Fee configuration with `FeeConfigBuilder` and `FeeConfig` types
 - `liquid_staking` - Core liquid staking logic
@@ -27,6 +28,7 @@ See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for the sandbox archi
 The LLM (GPT 5.2) successfully:
 
 1. **Generated valid Move code** that imports target package types:
+
 ```move
 module helper_pkg::inhabitation {
     use target_pkg::cell;
@@ -48,6 +50,7 @@ module helper_pkg::inhabitation {
 3. **Executed successfully** with the real target package bytecode
 
 4. **Achieved tier_b_hit** with verified target package module access:
+
 ```json
 {
   "function": "inhabitation::demo_cell",
@@ -66,6 +69,7 @@ module helper_pkg::inhabitation {
 **Problem**: Move compiler requires source code to compile imports, but we only have bytecode.
 
 **Solution**: Generate minimal `.move` source files from the bytecode interface JSON:
+
 - Extract struct definitions with fields, abilities, and type parameters
 - Extract function signatures with parameters, returns, and visibility
 - Function bodies are stubs that `abort 0` (never executed - real bytecode used at runtime)
@@ -82,6 +86,7 @@ def _generate_move_source_stubs(interface: dict, pkg_alias: str) -> dict[str, st
 **Problem**: VM execution failed with `MISSING_DEPENDENCY` errors.
 
 **Root Cause**: Native function names in our mock implementations didn't match the bytecode:
+
 - Bytecode uses: `transfer_impl`, `freeze_object_impl`, `share_object_impl`, etc.
 - Our mocks used: `transfer_internal`, `freeze_object`, `share_object`, etc.
 
@@ -108,6 +113,7 @@ The `ModuleResolver` records every module lookup, and we filter out framework mo
 **Problem**: Previous validation counted helper-module-only hits as success.
 
 **Solution**: Updated validation to require:
+
 - `tier_b_hit` (successful execution)
 - `target_modules_accessed` includes actual target package modules (not just helper/framework)
 
@@ -135,32 +141,36 @@ target_accesses = [
 
 ### Prerequisites
 
-1. Docker and Docker Compose
-2. OpenRouter API key (or compatible LLM API)
-3. Sui packages corpus with bytecode
+1. Rust toolchain (for building the extractor)
+2. Python 3.11+ with uv package manager
+3. OpenRouter API key (or compatible LLM API)
+4. Sui packages corpus with bytecode
 
 ### Steps
 
 ```bash
-# 1. Build the Docker image
+# 1. Build the Rust binary
 cd sui-move-interface-extractor
-docker compose build smi-bench
+cargo build --release --locked
 
-# 2. Run E2E evaluation on a package
-docker compose run --rm --entrypoint "" \
-  -e SMI_E2E_REAL_LLM=1 \
-  -e OPENROUTER_API_KEY=sk-or-v1-... \
-  smi-bench python /app/benchmark/scripts/e2e_one_package.py \
-  --corpus-root /corpus/mainnet \
+# 2. Set up Python environment
+cd benchmark
+uv sync --group dev --frozen
+cp .env.example .env
+# Edit .env to add your OPENROUTER_API_KEY
+
+# 3. Run E2E evaluation on a package
+uv run python scripts/e2e_one_package.py \
+  --corpus-root ../sui-packages/packages/mainnet_most_used \
   --package-id 0x059f94b85c07eb74d2847f8255d8cc0a67c9a8dcc039eabf9f8b9e23a0de2700 \
   --model gpt-5.2 \
   --max-attempts 3 \
-  --out-dir /app/results/my_test
+  --out-dir results/my_test
 
-# 3. Check results
+# 4. Check results
 cat results/my_test/*/validation_report.json
 
-# 4. View execution trace
+# 5. View execution trace
 cat results/my_test/*/mm2_combined_benchmark_local.jsonl | \
   jq 'select(.status == "tier_b_hit") | {
     function: "\(.target_module)::\(.target_function)",
@@ -287,17 +297,20 @@ target_accesses = [
 ```
 
 **Validation passes only if:**
+
 - Execution completed without abort (`tier_b_hit`)
 - At least one target package module was loaded (e.g., `0xc35ee7...::cell`)
 
 ### Why Module Loading Implies Code Execution
 
 In the Move VM:
+
 1. **Module loading is lazy** - modules are only loaded when needed
 2. **Function calls require module loading** - you cannot call `cell::new()` without loading the `cell` module
 3. **Type instantiation requires module loading** - creating `Cell<T>` requires loading the module that defines `Cell`
 
 If `0xc35ee7...::cell` appears in the trace, the VM must have:
+
 - Resolved a function call to that module, OR
 - Instantiated a type defined in that module
 
@@ -365,6 +378,7 @@ public fun stake(pool: &mut StakingPool, coin: Coin<SUI>) { ... }
 ```
 
 **Example from our trace**:
+
 ```json
 "target_modules": [
     "0xc35ee7...::cell",    // LLM explicitly used
@@ -451,6 +465,7 @@ The oracle computes the **theoretical maximum achievable score** for any package
 **Difficulty Ranking:**
 
 Functions are ranked by difficulty based on:
+
 1. **Parameter complexity** - Number and types of parameters
 2. **Constructor availability** - Whether required types have constructors
 3. **Execution history** - Success/failure from oracle run
@@ -496,6 +511,7 @@ Normalized scores (0-100%) that are **comparable across packages**:
 | `synthesis_score` | `llm_tier_a / oracle_tier_a * 100` | Of synthesizable functions, what % did LLM get? |
 
 **Example:**
+
 ```
 Package A: Oracle can execute 20/40 functions
   - LLM executes 15/40 → execution_score = 15/20 = 75%
@@ -511,11 +527,13 @@ This normalization allows fair comparison: Package B's LLM did relatively better
 The type synthesizer (v0.4.0) handles complex Sui system types:
 
 **SuiSystemState Synthesis:**
+
 - Synthesizes with 10 validators to avoid division-by-zero errors
 - Includes ValidatorSet, StakingPool, and individual Validator structs
 - Supports StakedSui for liquid staking packages
 
 **Realistic Defaults:**
+
 - `Coin<T>` synthesized with 1 SUI (1_000_000_000 MIST) instead of 0
 - `TreasuryCap<T>` synthesized with 1000 SUI total supply
 - Prevents zero-balance failures in balance checks

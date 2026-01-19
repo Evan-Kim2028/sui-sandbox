@@ -1,68 +1,96 @@
-# Troubleshooting A2A & Benchmarks
+# Troubleshooting Benchmarks
 
-This guide covers common issues encountered when running the `smi-bench` A2A orchestration and local benchmarks.
+This guide covers common issues encountered when running `smi-bench` benchmarks.
 
-## 1. Port Conflicts (9999 or 9998)
+## 1. Missing Credentials
 
-**Issue**: The Green or Purple agent fails to start because the port is already in use.
+**Issue**: Benchmark starts but fails to make LLM calls or RPC requests.
+
 **Diagnostic**:
-```bash
-uv run smi-agentbeats-scenario scenario_smi --status
-```
-If `listening=True` but you don't have a running scenario manager, a stale process is holding the port.
 
-**Solution**:
-Run the enhanced kill command:
 ```bash
-uv run smi-agentbeats-scenario scenario_smi --kill
-```
-If that fails, manually kill the process (Darwin/Linux):
-```bash
-lsof -ti:9999 | xargs kill -9
-lsof -ti:9998 | xargs kill -9
+uv run smi-bench-doctor
 ```
 
-## 2. Missing Credentials
-
-**Issue**: Agent starts but fails to make LLM calls or RPC requests.
-**Diagnostic**:
-Check the `--status` output for credential status:
-```bash
-uv run smi-agentbeats-scenario scenario_smi --status
-```
 **Solution**:
 Ensure `benchmark/.env` exists and contains:
+
 - `OPENROUTER_API_KEY` (for most agents)
 - `SMI_API_KEY` (if using `real-openai-compatible`)
 
-## 3. Timeout Exceeded
+## 2. Timeout Exceeded
 
 **Issue**: Benchmark logs show `per-call timeout exceeded` or `sim_attempts: 0`.
+
 **Explanation**:
-Phase II has a hard wall-clock budget per package (`--per-package-timeout-seconds`). If the LLM "Thinking" time plus the simulation time exceeds this, the package fails.
+Phase II has a hard wall-clock budget per package (`--per-package-timeout-seconds`). If the LLM response time plus the simulation time exceeds this, the package fails.
 
 **Solution**:
+
 1. Increase the timeout: `--per-package-timeout-seconds 600`.
 2. Disable "Thinking" models if using OpenRouter to reduce latency.
 3. Check network latency to the Sui RPC URL.
 
-## 4. JSON-RPC Parse Errors
+## 3. JSON Parse Errors
 
-**Issue**: The agent returns a parse error or `EvaluationBundle` is empty.
+**Issue**: The agent returns a parse error or results are empty.
+
 **Diagnostic**:
 Check the events log for raw model output:
+
 ```bash
 tail -f benchmark/logs/<run_id>/events.jsonl
 ```
+
 **Solution**:
-Often caused by the LLM returning malformed JSON or including markdown blocks (```json ... ```) when not expected. Ensure the agent prompt logic is stable.
+Often caused by the LLM returning malformed JSON or including markdown blocks (```json ...```) when not expected. The harness includes normalization logic to handle common formatting issues.
 
-## 5. Bytecode Extraction Failures
+## 4. Bytecode Extraction Failures
 
-**Issue**: Errors related to `smi-extractor` not found or failing.
+**Issue**: Errors related to `sui_move_interface_extractor` not found or failing.
+
 **Solution**:
 The benchmark relies on the Rust binary. Ensure it is built in release mode:
+
 ```bash
 cargo build --release --locked
 ```
-The Python scripts expect the binary at `target/release/sui-move-interface-extractor`.
+
+The Python scripts expect the binary at `target/release/sui_move_interface_extractor`.
+
+## 5. Corpus Not Found
+
+**Issue**: Benchmark fails with "corpus not found" or similar error.
+
+**Solution**:
+Clone the sui-packages repository:
+
+```bash
+git clone --depth 1 https://github.com/MystenLabs/sui-packages.git ../sui-packages
+```
+
+Then specify the corpus root:
+
+```bash
+--corpus-root ../sui-packages/packages/mainnet_most_used
+```
+
+## 6. gRPC Connection Failures
+
+**Issue**: Transaction replay fails with gRPC connection errors.
+
+**Solution**:
+
+1. Check network connectivity to `archive.mainnet.sui.io:443`
+2. Verify no firewall is blocking gRPC traffic
+3. Try the GraphQL endpoint as fallback if available
+
+## 7. Rate Limiting
+
+**Issue**: OpenRouter or RPC endpoint returns rate limit errors.
+
+**Solution**:
+
+1. Reduce `--parallel` to 1 for multi-model runs
+2. Lower `--run-samples` to reduce request volume
+3. Add delays between runs with `--per-package-timeout-seconds`

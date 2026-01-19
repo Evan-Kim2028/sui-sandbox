@@ -128,18 +128,6 @@ from smi_bench.constants import (
 
 ## API Changes
 
-### A2AVersionMiddleware
-
-The `A2AVersionMiddleware` class has been moved to a shared module:
-
-```python
-# Before
-from smi_bench.a2a_green_agent import A2AVersionMiddleware
-
-# After
-from smi_bench.a2a_middleware import A2AVersionMiddleware
-```
-
 ### Framework Address Constants
 
 Framework addresses are now available as a centralized constant:

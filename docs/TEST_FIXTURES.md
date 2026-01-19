@@ -34,6 +34,7 @@ tests/fixture/
 1. **Location**: `tests/fixture/build/fixture/sources/*.move`
 2. **Naming**: `{package_name}_{module_name}.move` (e.g., `test_module.move`)
 3. **Structure**:
+
    ```move
    module fixture::module_name;
 
@@ -216,6 +217,7 @@ public fun create_container<T: drop>(value: T): Container<T> {
 **Error**: `module not found: 0x...::module_name`
 
 **Solution**:
+
 1. Check `Move.toml` address configuration
 2. Verify module name in source header matches test expectations
 3. Ensure `.mv` file exists in `bytecode_modules/` directory
@@ -225,6 +227,7 @@ public fun create_container<T: drop>(value: T): Container<T> {
 **Error**: Move compiler fails
 
 **Solution**:
+
 1. Check Move syntax (semicolons, braces, etc.)
 2. Verify imports and dependencies
 3. Ensure struct/function visibility keywords are correct
@@ -234,6 +237,7 @@ public fun create_container<T: drop>(value: T): Container<T> {
 **Error**: `BCS roundtrip mismatch`
 
 **Solution**:
+
 1. Verify Move struct fields match layout expectations
 2. Check for missing or extra fields
 3. Ensure field types match signature
@@ -247,6 +251,6 @@ public fun create_container<T: drop>(value: T): Container<T> {
 
 ## Related Documentation
 
-- [QUICK_START_GUIDE.md](QUICK_START_GUIDE.md) - Quick start guide
+- [Getting Started](getting-started/QUICKSTART.md) - Quick start guide
 - [NO_CHAIN_TYPE_INHABITATION_SPEC.md](NO_CHAIN_TYPE_INHABITATION_SPEC.md) - Benchmark spec
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues and fixes
+- [TROUBLESHOOTING.md](getting-started/TROUBLESHOOTING.md) - Common issues and fixes

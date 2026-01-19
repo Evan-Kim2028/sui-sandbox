@@ -4,7 +4,7 @@
 
 Provide a robust, repeatable benchmark for **type inhabitation / call construction** on Sui Move packages **without publishing** to any network (mainnet/testnet/devnet) and without requiring funded accounts.
 
-This specification describes the **Local Bytecode Sandbox**—a deterministic, offline Move VM environment. See [LOCAL_BYTECODE_SANDBOX.md](LOCAL_BYTECODE_SANDBOX.md) for architecture overview.
+This specification describes the **Local Bytecode Sandbox**—a deterministic, offline Move VM environment. See [LOCAL_BYTECODE_SANDBOX.md](guides/LOCAL_BYTECODE_SANDBOX.md) for architecture overview.
 
 The benchmark should:
 
@@ -155,6 +155,7 @@ Provide minimal state required for common invocation patterns.
 To minimize complexity, Tier B will initially support only a restricted set of mock objects. This ensures deterministic behavior and simplifies state generation.
 
 Supported initial types:
+
 - `0x2::coin::Coin<T>`: A standard coin object with a specific value.
 - `0x2::object::UID`: Always required for any object.
 
