@@ -38,6 +38,7 @@ This walkthrough demonstrates replaying a real Cetus DEX swap transaction locall
 **Transaction:** `7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp` (LEIA → SUI swap)
 
 **Prerequisites:**
+
 - Rust 1.75+ installed
 - Network access to `archive.mainnet.sui.io:443` (for fetching historical state)
 
@@ -264,6 +265,44 @@ The `benchmark/` directory contains the `smi_bench` Python package for LLM evalu
 └──────────────────┘ └──────────────────┘ └──────────────────┘
 ```
 
+### Transaction Replay Pipeline
+
+For newcomers wanting to understand local transaction replay, here's how the system reconstructs and re-executes mainnet transactions:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TRANSACTION REPLAY FLOW                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+1. FETCH                    2. CONVERT                   3. RESOLVE
+   ─────────────────────       ─────────────────────       ─────────────────────
+   Sui gRPC (Surflux)          GrpcTransaction             FetchedTransaction
+   ↓                           ↓                           ↓
+   • Transaction by digest     • Extract sender, gas       • Fetch input objects
+   • Historical objects        • Parse commands            • Get historical versions
+   • Package bytecode          • Convert inputs            • Load package bytecode
+
+4. TRANSFORM                5. EXECUTE                   6. COMPARE
+   ─────────────────────       ─────────────────────       ─────────────────────
+   to_ptb_commands()           PTBExecutor                 EffectsComparison
+   ↓                           ↓                           ↓
+   • InputValue enum           • VMHarness runs Move VM    • Created objects
+   • Command enum              • Track mutations           • Mutated objects
+   • Type argument parsing     • Handle mutable refs       • Deleted objects
+```
+
+**Key modules:**
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `tx_replay` | `src/benchmark/tx_replay.rs` | Transaction fetching, conversion, and replay orchestration |
+| `ptb` | `src/benchmark/ptb.rs` | PTB command execution with result chaining |
+| `vm` | `src/benchmark/vm.rs` | Move VM harness for sandboxed bytecode execution |
+
+**The critical insight:** Replaying requires fetching objects at their *input* versions (before the transaction modified them), not their current versions. The `unchanged_loaded_runtime_objects` field from Surflux gRPC provides this information.
+
+For detailed module documentation, see the doc comments in each source file.
+
 ## Installation
 
 ```bash
@@ -276,15 +315,34 @@ cargo build --release
 ./target/release/sui_move_interface_extractor --help
 ```
 
+## Upgrading Sui Version
+
+When Sui releases a new mainnet version, update this project:
+
+```bash
+# Automated upgrade (updates Cargo.toml, version constants, fetches new protos)
+./scripts/update-sui-version.sh mainnet-v1.70.0
+
+# Then manually:
+# 1. Update Dockerfile SUI_VERSION
+# 2. cargo build
+# 3. Rebuild framework bytecode (see script output)
+# 4. cargo test
+```
+
+See [src/grpc/README.md](src/grpc/README.md) for detailed version management docs.
+
 ## Documentation
 
 | Category | Documents |
 |----------|-----------|
 | **Getting Started** | [Quickstart](docs/getting-started/QUICKSTART.md) · [Troubleshooting](docs/getting-started/TROUBLESHOOTING.md) |
-| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) |
-| **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) · [PTB Schema](docs/reference/PTB_SCHEMA.md) |
-| **Case Studies** | [Cetus Swap Replay](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md) · [Complex TX Replay](docs/defi-case-study/03_COMPLEX_TX_REPLAY.md) |
-| **Design** | [Architecture](ARCHITECTURE.md) |
+| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) · [Local Sandbox](docs/guides/LOCAL_BYTECODE_SANDBOX.md) |
+| **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) · [PTB Schema](docs/reference/PTB_SCHEMA.md) · [JSON Schema](docs/reference/SCHEMA.md) |
+| **Methodology** | [Methodology](docs/METHODOLOGY.md) · [Insights](docs/INSIGHTS.md) · [Type Inhabitation Spec](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) |
+| **Case Studies** | [Cetus Swap Replay](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md) · [Jackson SUI Swap](docs/defi-case-study/02_CETUS_SWAP_JACKSON_SUI.md) · [Complex TX Replay](docs/defi-case-study/03_COMPLEX_TX_REPLAY.md) |
+| **Design** | [Architecture](ARCHITECTURE.md) · [Contributing](docs/CONTRIBUTING.md) · [Migration](docs/MIGRATION.md) |
+| **Benchmark** | [Getting Started](benchmark/GETTING_STARTED.md) · [Datasets](benchmark/DATASETS.md) · [Architecture](benchmark/docs/ARCHITECTURE.md) |
 
 ## Limitations
 
@@ -298,8 +356,6 @@ cargo build --release
 ```bash
 cargo fmt && cargo clippy && cargo test
 ```
-
-See [AGENTS.md](AGENTS.md) for development guidelines.
 
 ## License
 
