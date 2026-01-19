@@ -1,9 +1,0 @@
-# CI-specific overrides for docker-compose.yml
-# Used in GitHub Actions to provide mock corpus path
-services:
-  smi-bench:
-    volumes:
-      # Override the corpus mount for CI environment
-      - ./ci-corpus:/corpus:ro
-      - ./results:/app/results
-      - ./logs:/app/logs
