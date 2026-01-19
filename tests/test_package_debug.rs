@@ -2,6 +2,7 @@ use sui_move_interface_extractor::grpc::GrpcClient;
 
 /// Debug package BCS structure in detail
 #[tokio::test]
+#[ignore] // Requires network access to gRPC archive
 async fn test_debug_package_structure() {
     let client = GrpcClient::archive().await.expect("Failed to connect");
 

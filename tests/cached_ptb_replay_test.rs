@@ -45,6 +45,7 @@ struct TransactionEffects {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires .tx-cache with valid mainnet transaction data
 fn test_load_cached_transactions() {
     let cache_dir = Path::new(".tx-cache");
     if !cache_dir.exists() {

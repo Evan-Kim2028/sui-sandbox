@@ -63,6 +63,7 @@ fn test_debug_partner_bcs() {
 }
 
 #[test]
+#[ignore] // Requires .tx-cache with specific transaction data
 fn test_debug_global_config_bcs() {
     // GlobalConfig object bytes from cache
     let cache_file = ".tx-cache/7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp.json";
@@ -94,6 +95,7 @@ fn test_debug_global_config_bcs() {
 }
 
 #[test]
+#[ignore] // Requires .tx-cache with specific transaction data
 fn test_debug_pool_bcs() {
     // Pool object bytes from cache
     let cache_file = ".tx-cache/7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp.json";

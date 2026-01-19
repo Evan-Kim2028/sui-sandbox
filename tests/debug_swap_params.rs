@@ -6,6 +6,7 @@ use sui_move_interface_extractor::cache::CacheManager;
 const CETUS_ROUTER: &str = "0x47a7b90756fba96fe649c2aaa10ec60dec6b8cb8545573d621310072721133aa";
 
 #[test]
+#[ignore] // Requires .tx-cache with Cetus package data
 fn test_debug_swap_params() {
     let cache = CacheManager::new(".tx-cache").expect("No cache");
 
