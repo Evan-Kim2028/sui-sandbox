@@ -4,20 +4,18 @@ This guide is the canonical entrypoint for running the Phase II (Type Inhabitati
 
 ## Quick start (5 minutes)
 
-### Option A: Docker (Recommended)
-The easiest way to get started. Handles dependencies, binaries, and environment automatically.
-```bash
-./scripts/docker_quickstart.sh
-```
+### Option A: Top 25 Dataset (Full Run)
 
-### Option B: Top 25 Dataset (Full Run)
 Runs a full benchmark on the curated Top 25 dataset using GPT-5.2.
+
 ```bash
 ./scripts/top25_quickstart.sh
 ```
 
-### Option C: E2E One-Package (LLM Pipeline)
+### Option B: E2E One-Package (LLM Pipeline)
+
 Complete LLM-driven evaluation: Target → Helper Generation → Build → Simulation.
+
 ```bash
 cd benchmark
 
@@ -39,17 +37,22 @@ uv run python scripts/e2e_one_package.py \
 ```
 
 ### Option D: Local Benchmark (No-Chain)
+
 Validate type inhabitation offline using the Rust `benchmark-local` command.
+
 ```bash
 ./target/release/sui_move_interface_extractor benchmark-local \
     --target-corpus /path/to/bytecode_modules \
     --output results.jsonl \
     --restricted-state
 ```
+
 See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for details.
 
-### Option E: Local Setup
+### Option E: Local Setup (Development)
+
 For developers working directly on the Python/Rust source code.
+
 ```bash
 cd benchmark
 uv sync --group dev --frozen
@@ -112,24 +115,7 @@ If your near-term goal is **framework stability**, prioritize `dry_run_ok` and t
 
 ## 2) Choose your entrypoint
 
-### A) Docker Quickstart (Recommended for new users)
-
-Use this if you have Docker installed and want the easiest possible setup. It automatically configures your environment, builds the image, and runs a sample benchmark.
-
-```bash
-# From the repository root
-./scripts/docker_quickstart.sh
-```
-
-**What this does:**
-1. Prompts for your `OPENROUTER_API_KEY` (if not set).
-2. Builds the `smi-bench` Docker image.
-3. Sets up a minimal test corpus (if the real one is missing).
-4. Runs a 1-package benchmark to verify the full stack.
-
----
-
-### B) Fast local run (single model)
+### A) Fast local run (single model)
 
 Use this when you want to quickly iterate on benchmarking and see a JSON output file.
 
@@ -159,15 +145,17 @@ cd benchmark
 ```
 
 **Notes:**
+
 - Start with `--parallel 1` to avoid RPC rate limits; increase gradually.
 
 ---
 
-### D) Using Datasets
+### C) Using Datasets
 
 Use this when you want to run benchmarks on curated package lists.
 
 **Quick iteration with top-25 dataset:**
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -178,6 +166,7 @@ uv run smi-inhabit \
 ```
 
 **Standard Phase II benchmark:**
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -188,12 +177,14 @@ uv run smi-inhabit \
 ```
 
 **Available datasets:**
+
 - `type_inhabitation_top25` - 25 packages for fast iteration
 - `packages_with_keys` - Packages with key structs (variable count)
 - `standard_phase2_benchmark` - Primary Phase II benchmark (292 packages)
 
 **Custom manifest files:**
 For custom package lists, use `--package-ids-file` with the full path:
+
 ```bash
 uv run smi-inhabit \
   --corpus-root ../../sui-packages/packages/mainnet_most_used \
@@ -206,106 +197,19 @@ uv run smi-inhabit \
 
 ---
 
-## 2E) Docker Multi-Model Workflow
-
-Use this when running multiple models in production: single container, model switching via API, zero restart overhead.
-
-### Start container once
-
-```bash
-cd benchmark
-docker compose up -d --wait
-```
-
-Or with docker run:
-
-```bash
-docker build -t smi-bench:latest .
-docker run -d --name smi-bench -p 9999:9999 \
-  --env-file .env \
-  smi-bench:latest
-```
-
-### Run benchmarks with model override
-
-Using the enhanced `run_docker_benchmark.sh` script:
-
-```bash
-# Run with model A (default from env var)
-./scripts/run_docker_benchmark.sh google/gemini-3-flash-preview 25 9999
-
-# Run with model B (override via API, no restart)
-./scripts/run_docker_benchmark.sh openai/gpt-4-turbo 25 9999 --model-override anthropic/claude-3.5-sonnet
-
-# Check container status
-./scripts/run_docker_benchmark.sh "" 0 9999 --status
-
-# Cleanup when done
-./scripts/run_docker_benchmark.sh "" 0 9999 --cleanup
-```
-
-### Batch multi-model runs
-
-Using `run_multi_model.sh` for sequential model testing:
-
-```bash
-# Create models file
-cat > models.txt <<EOF
-google/gemini-3-flash-preview
-openai/gpt-4-turbo
-anthropic/claude-3.5-sonnet
-EOF
-
-# Run all models
-./scripts/run_multi_model.sh models.txt 25 9999
-
-# Cleanup after batch
-./scripts/run_multi_model.sh models.txt 25 9999 --cleanup-after
-```
-
-### Model override in direct API calls
-
-For manual API testing, include `model` in config:
-
-```bash
-curl -X POST http://localhost:9999/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "message/send",
-    "params": {
-      "message": {
-        "messageId": "test-run",
-        "role": "user",
-        "parts": [{
-          "text": "{\"config\": {\"corpus_root\": \"/app/corpus\", \"package_ids_file\": \"/app/manifest.txt\", \"agent\": \"real-openai-compatible\", \"samples\": 25, \"model\": \"openai/gpt-4\"}, \"out_dir\": \"/app/results\"}"
-        }]
-      }
-    }
-  }'
-```
-
-**Model precedence:**
-1. API payload `config.model` (highest)
-2. Environment variable `SMI_MODEL`
-3. Default from agent configuration
-
-See [docs/A2A_EXAMPLES.md](docs/A2A_EXAMPLES.md#model-override-per-request-model-switching) for detailed examples.
-
----
-
 ## 3) Results-first: what to look at
 
 The Phase II output JSON contains per-package rows and an aggregate summary.
 
 Key fields to watch first:
+
 - `aggregate.errors` and per-package `error` (harness/runtime failures)
 - `packages[*].timed_out` (timeouts)
 - `packages[*].dry_run_ok` and `packages[*].dry_run_effects_error` (execution success vs failure class)
 - `packages[*].score.created_hits` (task success; may be 0 for inventory-constrained packages)
 
 **Key distinction:**
+
 - `dry_run_ok`: Transaction executed without aborting (runtime success)
 - `created_hits`: Target types were actually created (task success)
 
@@ -358,6 +262,7 @@ uv run python scripts/e2e_one_package.py \
 ### Output Artifacts
 
 Each run creates a directory with:
+
 - `validation_report.json` - Overall success/failure with error details
 - `mm2_mapping.json` - Function mapping results (accepted/rejected)
 - `txsim_source.json` - Transaction simulation input
@@ -383,7 +288,6 @@ Each run creates a directory with:
 
 - Rate limits (RPC/OpenRouter): reduce `--parallel` (multi-model) and/or lower `--run-samples`.
 - "No requests": confirm you used the exact model id shown in `./scripts/run_model.sh --help`.
-- Port conflicts (A2A): check ports 9999 (Green) / 9998 (Purple).
 - "dataset not found": Check `manifests/datasets/<name>.txt` exists.
 - "benchmark-local failed": Run `cargo build --release` to build Rust binary.
 
@@ -392,5 +296,4 @@ Each run creates a directory with:
 ## Related documentation
 
 - `../docs/METHODOLOGY.md` - Scoring rules and extraction logic.
-- `docs/A2A_COMPLIANCE.md` - Protocol implementation details.
-- `docs/A2A_EXAMPLES.md` - Concrete JSON-RPC request/response examples.
+- `docs/ARCHITECTURE.md` - Maintainers' map of harness internals.

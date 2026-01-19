@@ -9,9 +9,6 @@ This document covers multi-model integration testing and analyzing benchmark run
 ```bash
 cd benchmark
 
-# Start the Docker API
-docker compose up -d smi-bench
-
 # Run multi-model tests
 uv run python scripts/test_multi_model_integration.py \
   --corpus-root <CORPUS_ROOT> \
@@ -86,6 +83,7 @@ Key Metrics:
 ### Customizing Tests
 
 Edit `scripts/test_multi_model_integration.py` to:
+
 - Add/remove models in `TEST_CONFIGS`
 - Change package IDs in `SAMPLE_PACKAGES`
 - Modify test scenarios in `run_all_tests()`
@@ -98,11 +96,11 @@ Edit `scripts/test_multi_model_integration.py` to:
 
 ```
 logs/
-├── a2a_phase2_1234567890/
+├── phase2_1234567890/
 │   ├── run_metadata.json       # Run configuration & timing
 │   └── events.jsonl            # Streaming event log
-results/a2a/
-└── a2a_phase2_1234567890.json  # Final results with aggregate metrics
+results/
+└── phase2_1234567890.json      # Final results with aggregate metrics
 ```
 
 ### Searchable Fields
@@ -176,8 +174,8 @@ uv run python scripts/query_benchmark_logs.py list --model gpt-4o | grep gpt-4o
 
 ```bash
 # Get run IDs for two different models
-RUN_GPT4O_MINI=$(ls results/a2a/ | grep gpt4o_mini | head -1 | sed 's/.json//')
-RUN_GPT4O=$(ls results/a2a/ | grep gpt4o | grep -v mini | head -1 | sed 's/.json//')
+RUN_GPT4O_MINI=$(ls results/ | grep gpt4o_mini | head -1 | sed 's/.json//')
+RUN_GPT4O=$(ls results/ | grep gpt4o | grep -v mini | head -1 | sed 's/.json//')
 
 # Compare
 uv run python scripts/query_benchmark_logs.py compare $RUN_GPT4O_MINI $RUN_GPT4O
@@ -188,11 +186,11 @@ uv run python scripts/query_benchmark_logs.py compare $RUN_GPT4O_MINI $RUN_GPT4O
 ```bash
 # Find all runs from today
 TODAY=$(date +%Y-%m-%d)
-cd results/a2a
+cd results
 
 for run in *.json; do
   RUN_ID=$(basename $run .json)
-  uv run python ../../scripts/query_benchmark_logs.py cost $RUN_ID
+  uv run python ../scripts/query_benchmark_logs.py cost $RUN_ID
 done | jq -s 'map(.total_cost_usd) | add'
 ```
 
@@ -228,18 +226,21 @@ smi_bench_http_request_duration_seconds_sum{method="GET",endpoint="/info"} 0.023
 Example queries:
 
 **Average Task Duration by Model:**
+
 ```promql
 rate(smi_bench_task_duration_seconds_sum[5m]) / 
 rate(smi_bench_task_duration_seconds_count[5m])
 ```
 
 **Task Success Rate:**
+
 ```promql
 sum(rate(smi_bench_task_requests_total{status="success"}[5m])) / 
 sum(rate(smi_bench_task_requests_total[5m]))
 ```
 
 **Active Tasks:**
+
 ```promql
 smi_bench_active_tasks
 ```

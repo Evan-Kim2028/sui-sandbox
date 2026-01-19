@@ -30,6 +30,7 @@ Datasets are curated lists of Sui Move package IDs used for benchmark evaluation
 ### Dataset Locations
 
 All dataset files are stored in:
+
 ```
 benchmark/manifests/datasets/
 ```
@@ -118,32 +119,38 @@ Before creating a dataset, define:
 #### Step 2: Choose Generation Method
 
 **Option A: Manual Curation**
+
 - Use for small datasets (<10 packages)
 - Use when you want specific packages
 - Use for smoke tests or regression testing
 
 **Option B: Scripted Generation**
+
 - Use for medium-to-large datasets (10+ packages)
 - Use for metric-based selection
 - Use when reproducibility is important
 
 **Option C: Existing Dataset Filtering**
+
 - Use when creating a subset of an existing dataset
 - Use for progressive evaluation (small → medium → large)
 
 #### Step 3: Create Dataset File
 
 Place your dataset file at:
+
 ```
 benchmark/manifests/datasets/<dataset_name>.txt
 ```
 
 **Naming Convention:**
+
 ```
 <purpose>_<size>_<optional_suffix>.txt
 ```
 
 Examples:
+
 - `type_inhabitation_top25.txt`
 - `quick_smoke_5.txt`
 - `high_complexity_50.txt`
@@ -213,10 +220,12 @@ uv run smi-inhabit \
 ```
 
 **Generation:**
+
 ```bash
 cd benchmark
 python scripts/generate_<dataset_name>.py
 ```
+
 ```
 
 #### Step 6: Verify Integration
@@ -234,6 +243,7 @@ uv run smi-inhabit \
 ```
 
 Expected output:
+
 - No errors
 - Progress bar completes
 - Output JSON is generated
@@ -322,6 +332,7 @@ if __name__ == "__main__":
 ```
 
 **Key components:**
+
 1. Load corpus report JSONL
 2. Compute scores with custom metrics
 3. Sort by score (descending)
@@ -374,6 +385,7 @@ if __name__ == "__main__":
 ```
 
 **Key components:**
+
 1. Load results JSON
 2. Filter by metric threshold
 3. Write package IDs (no header for pure filtered lists)
@@ -469,6 +481,7 @@ echo "Wrote dataset: ${OUT_DATASET}"
 ```
 
 **When to use Bash:**
+
 - Simple workflows (scan + filter)
 - Calling existing CLI tools
 - No complex data manipulation
@@ -487,6 +500,7 @@ echo "Wrote dataset: ${OUT_DATASET}"
 **Purpose:** Validate file format, count, and basic structure
 
 **What to test:**
+
 - File exists
 - Header comments present
 - Package count matches expected
@@ -495,6 +509,7 @@ echo "Wrote dataset: ${OUT_DATASET}"
 - No trailing whitespace
 
 **Example:**
+
 ```python
 def test_my_dataset_exists() -> None:
     p = Path("manifests/datasets/my_dataset.txt")
@@ -518,11 +533,13 @@ def test_my_dataset_exists() -> None:
 **Purpose:** Ensure all packages exist in corpus and are valid
 
 **What to test:**
+
 - All packages exist in corpus directory structure
 - All packages have valid metadata
 - For Phase II datasets: all packages are inhabitable
 
 **Example:**
+
 ```python
 def test_my_dataset_packages_in_corpus() -> None:
     from smi_bench.dataset import collect_packages
@@ -552,12 +569,14 @@ def test_my_dataset_packages_in_corpus() -> None:
 **Purpose:** Verify dataset works with benchmark CLI end-to-end
 
 **What to test:**
+
 - `--dataset` flag resolves correctly
 - Dataset loads without errors
 - Benchmark runs successfully with dataset
 - Output is valid JSON
 
 **Example:**
+
 ```python
 from pathlib import Path
 import tempfile
@@ -603,11 +622,13 @@ def test_my_dataset_runs_with_mock_agent() -> None:
 **Purpose:** Verify `--dataset` flag behavior
 
 **What to test:**
+
 - Flag resolves to correct path (`manifests/datasets/<name>.txt`)
 - Error on non-existent dataset
 - Mutually exclusive with `--package-ids-file`
 
 **Example:**
+
 ```python
 def test_dataset_flag_resolves_path() -> None:
     """Test that --dataset flag resolves to correct path."""
@@ -638,6 +659,7 @@ All new datasets must have:
 4. ✅ All tests passing
 
 **Test all dataset tests:**
+
 ```bash
 cd benchmark
 pytest tests/test_datasets.py tests/test_dataset_integration.py tests/test_inhabit_dataset_cli.py -v
@@ -677,10 +699,12 @@ uv run smi-inhabit \
 ```
 
 **Generation:**
+
 ```bash
 cd benchmark
 python scripts/generate_<dataset_name>.py
 ```
+
 ```
 
 #### 2. Generation Script Documentation
@@ -713,8 +737,8 @@ def main() -> None:
 #### 3. Reference in Main Documentation
 
 If dataset is widely used, add reference to:
+
 - `benchmark/GETTING_STARTED.md` - Add to dataset examples
-- `benchmark/docs/A2A_EXAMPLES.md` - Add to A2A usage examples
 - Root `README.md` - Add to documentation map if major
 
 ---
@@ -724,11 +748,13 @@ If dataset is widely used, add reference to:
 Before committing a new dataset, verify:
 
 ### File Structure
+
 - [ ] Dataset file in `manifests/datasets/`
 - [ ] Naming convention followed (`<purpose>_<size>_<suffix>.txt`)
 - [ ] File tracked in git (not in `.gitignore`)
 
 ### File Format
+
 - [ ] Header comments present (purpose + timestamp)
 - [ ] Package IDs start with `0x`
 - [ ] No duplicate IDs
@@ -736,6 +762,7 @@ Before committing a new dataset, verify:
 - [ ] Sorted by interest/score (if applicable)
 
 ### Code Quality
+
 - [ ] Generation script follows patterns (if scripted)
 - [ ] Type hints on all functions
 - [ ] Docstrings on all public functions
@@ -743,6 +770,7 @@ Before committing a new dataset, verify:
 - [ ] Error messages are clear and actionable
 
 ### Testing
+
 - [ ] Unit test added to `tests/test_datasets.py`
 - [ ] Validation test added (corpus membership)
 - [ ] Integration test added to `tests/test_dataset_integration.py`
@@ -750,12 +778,14 @@ Before committing a new dataset, verify:
 - [ ] All tests passing
 
 ### Documentation
+
 - [ ] Section added to `manifests/README.md`
 - [ ] Generation instructions included
 - [ ] Usage examples provided
 - [ ] Cross-references to related datasets
 
 ### Integration
+
 - [ ] Works with `--dataset` flag
 - [ ] Works with `--package-ids-file` flag
 - [ ] Tested with mock-empty agent
@@ -763,6 +793,7 @@ Before committing a new dataset, verify:
 - [ ] No errors in manual verification
 
 ### Performance
+
 - [ ] Runtime documented (e.g., "runs in ~5 minutes")
 - [ ] Timeout recommendations provided
 - [ ] Appropriate for intended use case (fast iteration vs comprehensive)
@@ -776,11 +807,13 @@ Before committing a new dataset, verify:
 **Problem:** Same package ID appears multiple times
 
 **Solution:** Use set to deduplicate when generating:
+
 ```python
 package_ids = list(set(package_ids))
 ```
 
 **Detection:** Test checks for duplicates:
+
 ```python
 assert len(package_ids) == len(set(package_ids))
 ```
@@ -790,11 +823,13 @@ assert len(package_ids) == len(set(package_ids))
 **Problem:** Package IDs without `0x` prefix cause loading errors
 
 **Solution:** Always include prefix when writing:
+
 ```python
 package_id = pkg_id if pkg_id.startswith("0x") else f"0x{pkg_id}"
 ```
 
 **Detection:** Test validates prefix:
+
 ```python
 assert all(line.startswith("0x") for line in package_lines)
 ```
@@ -804,12 +839,14 @@ assert all(line.startswith("0x") for line in package_lines)
 **Problem:** Dataset contains IDs that don't exist in corpus
 
 **Solution:** Verify corpus membership:
+
 ```python
 corpus_ids = {p.package_id for p in collect_packages(corpus_root)}
 assert dataset_ids.issubset(corpus_ids)
 ```
 
 **Detection:** Validation test checks membership:
+
 ```python
 missing = dataset_ids - corpus_ids
 assert len(missing) == 0, f"Packages not in corpus: {missing}"
@@ -820,6 +857,7 @@ assert len(missing) == 0, f"Packages not in corpus: {missing}"
 **Problem:** Using `--package-ids-file` with full path instead of `--dataset`
 
 **Solution:** Use `--dataset` flag (shorter, validates existence):
+
 ```bash
 # Wrong:
 smi-inhabit --package-ids-file /full/path/to/manifests/datasets/my_dataset.txt
@@ -833,6 +871,7 @@ smi-inhabit --dataset my_dataset
 **Problem:** Dataset file lacks purpose and timestamp documentation
 
 **Solution:** Always include header:
+
 ```python
 from datetime import datetime
 header = f"# <Purpose> Dataset ({len(selected)} packages)\n"
@@ -845,6 +884,7 @@ content = header + "\n".join(package_ids) + "\n"
 **Problem:** Empty lines or trailing spaces cause parsing issues
 
 **Solution:** Strip whitespace when writing:
+
 ```python
 lines = [line.strip() for line in content if line.strip()]
 content = "\n".join(lines) + "\n"
@@ -855,6 +895,7 @@ content = "\n".join(lines) + "\n"
 **Problem:** Random selection without seed produces different results each run
 
 **Solution:** Always use seed for reproducibility:
+
 ```python
 import random
 random.seed(42)  # Fixed seed
@@ -866,6 +907,7 @@ selected = random.sample(packages, n)
 **Problem:** Dataset too large for intended use case
 
 **Solution:** Define use case and size upfront:
+
 - **Fast iteration:** 5-25 packages
 - **CI/CD:** 25-50 packages
 - **Development:** 50-100 packages
@@ -952,18 +994,21 @@ cat manifests/standard_phase2_benchmark.txt | \
 ## Additional Resources
 
 ### Related Documentation
+
 - `benchmark/manifests/README.md` - Dataset file reference
 - `benchmark/GETTING_STARTED.md` - Benchmark usage guide
 - `benchmark/docs/ARCHITECTURE.md` - Code architecture
 - `benchmark/docs/TESTING.md` - Testing standards
 
 ### Scripts Reference
+
 - `scripts/generate_top25_dataset.py` - Score-based selection example
 - `scripts/filter_packages_by_hit_rate.py` - Filter-based selection example
 - `scripts/generate_dataset_packages_with_keys.sh` - Shell script example
 - `scripts/manifest_remaining_from_jsonl.py` - Manifest utilities
 
 ### Code Utilities
+
 - `smi_bench/dataset.py` - Corpus utilities (`collect_packages`, `sample_packages`)
 - `smi_bench/manifest_filter.py` - CLI tool for filtering manifests
 
@@ -972,26 +1017,31 @@ cat manifests/standard_phase2_benchmark.txt | \
 ## Quick Reference
 
 ### Dataset File Locations
+
 ```
 benchmark/manifests/datasets/<dataset_name>.txt
 ```
 
 ### CLI Usage
+
 ```bash
 smi-inhabit --dataset <dataset_name> --samples <n>
 ```
 
 ### Test Location
+
 ```
 tests/test_datasets.py
 ```
 
 ### Documentation Location
+
 ```
 benchmark/manifests/README.md
 ```
 
 ### Generation Script Location
+
 ```
 benchmark/scripts/generate_<dataset_name>.py
 ```

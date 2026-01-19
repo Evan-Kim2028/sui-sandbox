@@ -17,8 +17,6 @@ import pytest
     [
         (["uv", "run", "smi-inhabit", "--help"], "Phase II"),
         (["uv", "run", "smi-phase1", "--help"], "Key-struct"),
-        (["uv", "run", "smi-a2a-smoke", "--help"], "Run local A2A smoke"),
-        (["uv", "run", "smi-agentbeats-scenario", "--help"], "Run an AgentBeats scenario"),
     ],
 )
 def test_cli_help_commands_match_documentation(cmd: list[str], expected_keyword: str) -> None:

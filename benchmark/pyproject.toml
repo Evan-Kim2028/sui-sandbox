@@ -5,15 +5,9 @@ description = "Benchmark harness for sui-move-interface-extractor (key-struct ta
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "agentbeats>=1.2.6",
     "httpx>=0.27.0",
     "rich>=14.2.0",
     "markdown>=3.6",
-]
-
-[project.optional-dependencies]
-docker = [
-    "docker>=7.0.0",
 ]
 
 [project.scripts]
@@ -21,17 +15,10 @@ smi-bench = "smi_bench.cli:main"
 smi-phase1 = "smi_bench.runner:main"
 smi-inhabit = "smi_bench.inhabit_runner:main"
 smi-phase2-manifest = "smi_bench.inhabit_manifest:main"
-smi-a2a-green = "smi_bench.a2a_green_agent:main"
-smi-a2a-purple = "smi_bench.a2a_purple_agent:main"
-smi-agentbeats-scenario = "smi_bench.agentbeats_run_scenario:main"
-smi-a2a-smoke = "smi_bench.a2a_smoke:main"
-smi-a2a-validate-bundle = "smi_bench.a2a_validate_bundle:main"
-smi-a2a-preflight = "smi_bench.a2a_preflight:main"
 smi-bench-doctor = "smi_bench.doctor:main"
 smi-phase2-filter-manifest = "smi_bench.manifest_filter:main"
 smi-phase2-targeted-run = "smi_bench.phase2_targeted_run:main"
 smi-openrouter-models = "smi_bench.openrouter_models:main"
-smi-docker-runner = "smi_bench.docker_runner:main"
 
 [dependency-groups]
 dev = [
@@ -72,16 +59,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-n auto"
 markers = [
-    "integration: marks tests as integration tests (slow, requires docker)",
-    "docker: marks tests requiring Docker (deselect with -m 'not docker')",
     "regression: marks regression tests for critical behavior",
     "unit: marks fast unit tests",
 ]
 filterwarnings = [
-    "ignore:The `on_event` decorator is deprecated:DeprecationWarning:starlette.*",
-    "ignore:The `route` decorator is deprecated:DeprecationWarning:starlette.*",
-    "ignore:HTTP_413_REQUEST_ENTITY_TOO_LARGE is deprecated:DeprecationWarning:a2a.*",
-    "ignore:.*is deprecated. Use 'HTTP_413_CONTENT_TOO_LARGE' instead:DeprecationWarning:a2a.*",
     "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
 ]
 

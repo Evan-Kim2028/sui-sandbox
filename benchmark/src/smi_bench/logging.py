@@ -27,7 +27,7 @@ def _safe_filename(s: str) -> str:
 def default_run_id(*, prefix: str) -> str:
     """
     Generate a unique run ID using timestamp, PID, and a random suffix.
-    The random suffix prevents collisions in high-concurrency Docker environments.
+    The random suffix prevents collisions in high-concurrency environments.
     """
     ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     pid = os.getpid()
@@ -89,7 +89,7 @@ class JsonlLogger:
             f.write(line)
 
         if self.use_stdout:
-            sys.stdout.write(f"A2A_EVENT:{line}")
+            sys.stdout.write(f"EVENT:{line}")
             sys.stdout.flush()
 
     def package_row(self, row: dict) -> None:

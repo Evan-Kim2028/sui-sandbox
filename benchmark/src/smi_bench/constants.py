@@ -40,13 +40,6 @@ DEFAULT_PER_PACKAGE_TIMEOUT_SECONDS = 300.0
 # Default maximum plan attempts per package
 DEFAULT_MAX_PLAN_ATTEMPTS = 2
 
-# A2A Protocol version
-A2A_PROTOCOL_VERSION = "0.3.0"
-
-# Default ports for A2A agents
-DEFAULT_GREEN_AGENT_PORT = 9999
-DEFAULT_PURPLE_AGENT_PORT = 9998
-
 # RPC request timeout (seconds)
 RPC_REQUEST_TIMEOUT_SECONDS = 30.0
 
@@ -62,7 +55,7 @@ DEFAULT_RETRY_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_BASE_DELAY = 2.0  # seconds
 DEFAULT_RETRY_MAX_DELAY = 30.0  # seconds
 
-# Infrastructure retry settings (for agent startup, container health, etc.)
+# Infrastructure retry settings
 INFRA_RETRY_MAX_ATTEMPTS = 3
 INFRA_RETRY_DELAY_SECONDS = 5.0
 
@@ -100,11 +93,3 @@ FRAMEWORK_ADDRESSES = frozenset(
 
 # Helper package address (zero address)
 HELPER_PACKAGE_ADDRESS = "0x0000000000000000000000000000000000000000000000000000000000000000"
-
-# =============================================================================
-# Docker Configuration
-# =============================================================================
-
-# Docker container defaults
-DOCKER_DEFAULT_TIMEOUT = 60.0  # seconds
-DOCKER_STOP_TIMEOUT = 30  # seconds

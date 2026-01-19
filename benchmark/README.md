@@ -1,4 +1,15 @@
-# Benchmark Harness (`benchmark/`)
+# Benchmark Harness (`benchmark/`) - DEPRECATED
+
+> **⚠️ DEPRECATED**: This Python benchmark infrastructure is no longer maintained. All active development has moved to the Rust side (`src/benchmark/`, `tests/`). This directory is scheduled for deletion.
+>
+> For current work, see:
+>
+> - `tests/execute_cetus_swap.rs` - Cetus DEX replay case study
+> - `tests/execute_deepbook_swap.rs` - DeepBook replay case study
+> - `docs/defi-case-study/` - DeFi case study documentation
+> - `src/benchmark/` - Rust sandbox implementation
+
+---
 
 This directory contains the automated benchmarking harness for Sui Move packages.
 
@@ -7,7 +18,6 @@ This directory contains the automated benchmarking harness for Sui Move packages
 - **Run Phase II quickly:** `GETTING_STARTED.md`
 - **Single model runner:** `scripts/run_model.sh`
 - **Multi-model runner:** `scripts/run_multi_model.sh`
-- **A2A integration:** `docs/A2A_EXAMPLES.md`
 
 ## Phase overview
 
@@ -17,10 +27,8 @@ This directory contains the automated benchmarking harness for Sui Move packages
 ## Key resources
 
 - `../docs/METHODOLOGY.md` - Detailed scoring rules and extraction logic.
-- `docs/A2A_COMPLIANCE.md` - Protocol implementation and testing strategy.
-- `docs/A2A_EXAMPLES.md` - Concrete JSON-RPC request/response examples.
 - `docs/FEEDBACK_PIPELINE_AUDIT.md` - Framework hardening notes.
-- `docs/ARCHITECTURE.md` - Maintainers’ map of the harness internals.
+- `docs/ARCHITECTURE.md` - Maintainers' map of the harness internals.
 
 ## Quick command reference
 
@@ -31,8 +39,4 @@ cd benchmark
 
 # Multi-model Phase II targeted (start conservative to avoid RPC rate limits)
 ./scripts/run_multi_model.sh --env-file ./.env --models "openai/gpt-5.2,google/gemini-3-flash-preview" --parallel 1
-
-# Local A2A scenario
-uv run smi-agentbeats-scenario scenario_smi --launch-mode current
-uv run smi-a2a-smoke --corpus-root ../sui-packages/packages/mainnet_most_used --samples 1
 ```

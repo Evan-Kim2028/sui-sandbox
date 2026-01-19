@@ -24,18 +24,21 @@ All documentation must be:
 - Include working directory context (e.g., `cd benchmark`)
 
 **Example format:**
+
 ```markdown
 ```bash
 cd benchmark
-uv run smi-a2a-smoke \
+uv run smi-inhabit \
   --corpus-root <CORPUS_ROOT> \
   --samples 1
 ```
 
 Expected output:
+
 ```
 valid
 ```
+
 ```
 
 ### Cross-Reference Validation
@@ -44,7 +47,7 @@ valid
 
 - All `[text](path.md)` links must resolve to existing files
 - All `[text](#section)` anchors must exist in target document
-- Use relative paths: `docs/A2A_EXAMPLES.md` not `../docs/A2A_EXAMPLES.md`
+- Use relative paths: `docs/ARCHITECTURE.md` not `../docs/ARCHITECTURE.md`
 - Link text should be descriptive, not just "here"
 
 **External links:**
@@ -65,10 +68,9 @@ valid
 When `benchmark/docs/evaluation_bundle.schema.json` changes:
 
 1. Update all documentation examples
-2. Update `docs/A2A_EXAMPLES.md` reference payloads
-3. Update `docs/ARCHITECTURE.md` invariants section
-4. Add migration notes if breaking changes
-5. Update all validation scripts if new fields added
+2. Update `docs/ARCHITECTURE.md` invariants section
+3. Add migration notes if breaking changes
+4. Update all validation scripts if new fields added
 
 **Example migration note:**
 ```markdown
@@ -90,12 +92,13 @@ Impact: Old bundles still valid, new bundles recommended to include run_metadata
 - Use current API (no deprecated flags)
 
 **Verification process:**
+
 ```bash
 # Extract command name from doc
-grep "smi-a2a-smoke" docs/*.md
+grep "smi-inhabit" docs/*.md
 
 # Verify it exists in pyproject.toml
-grep "smi-a2a-smoke" benchmark/pyproject.toml
+grep "smi-inhabit" benchmark/pyproject.toml
 ```
 
 ### Reliability Testing
@@ -108,6 +111,7 @@ grep "smi-a2a-smoke" benchmark/pyproject.toml
 - **Input Validation**: Use property-based testing (Hypothesis) to ensure numeric inputs are correctly clamped.
 
 **Example reliability test:**
+
 ```python
 @pytest.mark.anyio
 async def test_subprocess_cleanup():
@@ -155,7 +159,6 @@ jobs:
         run: |
           python benchmark/scripts/validate_crossrefs.py \
             benchmark/GETTING_STARTED.md \
-            benchmark/docs/A2A_EXAMPLES.md \
             benchmark/docs/ARCHITECTURE.md
 
       - name: Test code examples
@@ -185,9 +188,9 @@ Before merging any doc changes, verify:
 
 ### Accessibility
 
-- [ ] Newcomer can complete smoke test from A2A_GETTING_STARTED.md alone
+- [ ] Newcomer can complete smoke test from GETTING_STARTED.md alone
 - [ ] Examples have context and purpose (not just code)
-- [ ] Common use cases are covered in A2A_EXAMPLES.md
+- [ ] Common use cases are covered in documentation
 - [ ] Troubleshooting guidance exists for error conditions
 - [ ] Architecture is explained before diving into details
 
@@ -206,14 +209,16 @@ Before merging any doc changes, verify:
 **Purpose:** Validate documentation code examples
 
 **Checks:**
+
 1. Extracts command blocks from Markdown
 2. Verifies each command exists in `pyproject.toml`
 3. Detects placeholders (all `<...>` documented)
 4. Validates example paths exist (`manifests/`, `results/`)
 
 **Usage:**
+
 ```bash
-# Test all A2A docs
+# Test all docs
 python benchmark/scripts/test_doc_examples.py
 
 # Test specific file
@@ -224,6 +229,7 @@ python benchmark/scripts/test_doc_examples.py --skip-external
 ```
 
 **Exit codes:**
+
 - `0`: All checks passed
 - `1`: Found errors (commands not found, paths missing, placeholders undocumented)
 
@@ -232,12 +238,14 @@ python benchmark/scripts/test_doc_examples.py --skip-external
 **Purpose:** Validate Markdown links
 
 **Checks:**
+
 1. Finds all `[text](url)` links
 2. Resolves internal links against file tree
 3. Checks external links with HTTP HEAD
 4. Reports broken references
 
 **Usage:**
+
 ```bash
 # Test all docs
 python benchmark/scripts/validate_crossrefs.py
@@ -253,6 +261,7 @@ python benchmark/scripts/validate_crossrefs.py --fail-on-warning
 ```
 
 **Exit codes:**
+
 - `0`: All links valid
 - `1`: Found broken links (internal or external)
 
@@ -331,6 +340,7 @@ See [TEST_FIXTURES.md](../../docs/TEST_FIXTURES.md) for complete documentation.
 
 **Solution:**
 Add a "Placeholders" section to the doc:
+
 ```markdown
 **Placeholders:**
 - `<CORPUS_ROOT>` - Path to sui-packages checkout
@@ -343,6 +353,7 @@ Add a "Placeholders" section to the doc:
 
 **Solution:**
 Either:
+
 1. Add the command to `pyproject.toml` `[project.scripts]`, or
 2. Remove/update the example in documentation
 
@@ -351,6 +362,7 @@ Either:
 **Symptom:** `validate_crossrefs.py` reports internal link not found
 
 **Solution:**
+
 1. Check if target file exists
 2. Check if anchor name matches section heading
 3. Update or remove the link
@@ -360,6 +372,7 @@ Either:
 **Symptom:** `validate_crossrefs.py` reports "timeout" on external link
 
 **Solution:**
+
 1. Verify link is correct
 2. If site is down, add `--skip-external` to skip external checks
 3. Consider archiving or finding alternative source
@@ -368,7 +381,7 @@ Either:
 
 - **Testing scripts**: `benchmark/scripts/test_doc_examples.py`, `benchmark/scripts/validate_crossrefs.py`
 - **Schema definition**: `benchmark/docs/evaluation_bundle.schema.json`
-- **Example docs**: `benchmark/GETTING_STARTED.md`, `benchmark/docs/A2A_EXAMPLES.md`
+- **Example docs**: `benchmark/GETTING_STARTED.md`
 - **Architecture docs**: `benchmark/docs/ARCHITECTURE.md`
 - **Test fixtures**: See [TEST_FIXTURES.md](../../docs/TEST_FIXTURES.md) for fixture organization and failure case modules
 - **Local benchmark spec**: See [NO_CHAIN_TYPE_INHABITATION_SPEC.md](../../docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) for Tier A/B validation stages

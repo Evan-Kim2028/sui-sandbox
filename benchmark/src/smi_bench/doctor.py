@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -130,65 +129,6 @@ def check_env_file() -> tuple[bool, str, str | None]:
         )
 
     return False, ".env file not found and no .env.example available.", None
-
-
-def check_docker() -> tuple[bool, str, str | None]:
-    """Check if Docker is available and running."""
-    docker_bin = shutil.which("docker")
-    if not docker_bin:
-        return False, "Docker not found. Required for containerized benchmarks.", "Install Docker Desktop"
-
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            check=False,
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return True, "Docker is running", None
-        return False, "Docker installed but not running. Start Docker daemon.", "docker info"
-    except subprocess.TimeoutExpired:
-        return False, "Docker command timed out. Docker may be unresponsive.", None
-    except (OSError, FileNotFoundError) as e:
-        return False, f"Docker check failed: {e}", None
-
-
-def check_port(port: int) -> tuple[bool, str, str | None]:
-    """Check if a port is available."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        result = s.connect_ex(("127.0.0.1", port))
-        if result != 0:
-            return True, f"Port {port} is available", None
-
-    # Port in use - try to identify what's using it
-    try:
-        result = subprocess.run(
-            ["lsof", "-i", f":{port}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            lines = result.stdout.strip().split("\n")
-            if len(lines) > 1:
-                # Parse process name from lsof output
-                parts = lines[1].split()
-                proc_name = parts[0] if parts else "unknown"
-                return (
-                    False,
-                    f"Port {port} in use by {proc_name}. Stop the process or use a different port.",
-                    f"lsof -i :{port}  # to see what's using it",
-                )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
-
-    return (
-        False,
-        f"Port {port} is already in use. This may cause Docker or A2A agent conflicts.",
-        f"docker ps  # check for containers using port {port}",
-    )
 
 
 def check_corpus(corpus_root: Path | None) -> tuple[bool, str, str | None]:
@@ -318,16 +258,10 @@ def run_checks(
     ok, msg, fix = check_python_deps()
     results.append(("Python Deps", ok, msg, fix))
 
-    # Port checks
-    ok, msg, fix = check_port(9999)
-    results.append(("Port 9999 (A2A)", ok, msg, fix))
-
     # Optional checks
     if full:
         ok, msg, fix = check_sui_cli()
         results.append(("Sui CLI", ok, msg, fix))
-        ok, msg, fix = check_docker()
-        results.append(("Docker", ok, msg, fix))
         ok, msg, fix = check_corpus(corpus_root)
         results.append(("Corpus", ok, msg, fix))
         if manifest and corpus_root:
@@ -421,7 +355,7 @@ def main(argv: list[str] | None = None) -> None:
         epilog="""
 Examples:
   smi-bench-doctor              # Quick environment check
-  smi-bench-doctor --full       # Full check including corpus and Docker
+  smi-bench-doctor --full       # Full check including corpus and Sui CLI
   smi-bench-doctor --fix        # Attempt to fix common issues
   smi-bench-doctor --corpus-root ../sui-packages/packages/mainnet_most_used
         """,
@@ -429,7 +363,7 @@ Examples:
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Run full checks including corpus, Docker, and Sui CLI",
+        help="Run full checks including corpus and Sui CLI",
     )
     parser.add_argument(
         "--fix",

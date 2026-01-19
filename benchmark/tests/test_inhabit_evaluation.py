@@ -9,7 +9,6 @@ from smi_bench.inhabit.evaluation import (
     AbortCategory,
     AbortInfo,
     ErrorCode,
-    ErrorSource,
     EvaluationResult,
     ExecutionTrace,
     Failure,
@@ -92,36 +91,6 @@ class TestErrorCode:
         # Validation phase
         assert ErrorCode.NO_TARGET_MODULES_ACCESSED.phase == Phase.VALIDATION
 
-    def test_expected_limitations(self):
-        assert ErrorCode.UNSUPPORTED_NATIVE.is_expected_limitation is True
-        assert ErrorCode.CHAIN_TOO_DEEP.is_expected_limitation is True
-        assert ErrorCode.UNSUPPORTED_CONSTRUCTOR_PARAM.is_expected_limitation is True
-        assert ErrorCode.TYPE_MISMATCH.is_expected_limitation is False
-
-    def test_default_error_source(self):
-        # Build errors -> LLM error
-        assert ErrorCode.TYPE_SYNTAX_ERROR.default_error_source == ErrorSource.LLM_ERROR
-
-        # Infrastructure limitations
-        assert ErrorCode.UNSUPPORTED_NATIVE.default_error_source == ErrorSource.INFRASTRUCTURE_LIMITATION
-        assert ErrorCode.RECURSIVE_TYPE.default_error_source == ErrorSource.INFRASTRUCTURE_LIMITATION
-
-        # Unknown/context-dependent
-        assert ErrorCode.NO_CONSTRUCTOR.default_error_source == ErrorSource.UNKNOWN
-
-
-# =============================================================================
-# ErrorSource Tests
-# =============================================================================
-
-
-class TestErrorSource:
-    def test_counts_against_llm(self):
-        assert ErrorSource.LLM_ERROR.counts_against_llm is True
-        assert ErrorSource.INFRASTRUCTURE_LIMITATION.counts_against_llm is False
-        assert ErrorSource.TARGET_PACKAGE_LIMITATION.counts_against_llm is False
-        assert ErrorSource.UNKNOWN.counts_against_llm is False
-
 
 # =============================================================================
 # Failure Tests
@@ -134,8 +103,6 @@ class TestFailure:
         assert failure.phase == Phase.TYPECHECK
         assert failure.code == ErrorCode.TYPE_MISMATCH
         assert failure.message == "expected u64, got bool"
-        assert failure.is_expected_limitation is False
-        assert failure.error_source == ErrorSource.LLM_ERROR
 
     def test_with_context(self):
         ctx = FailureContext(
@@ -148,19 +115,12 @@ class TestFailure:
         assert failure.context.module == "0x1::test"
         assert failure.context.param_index == 0
 
-    def test_set_source(self):
-        failure = Failure.from_code(ErrorCode.NO_CONSTRUCTOR, "no ctor")
-        failure.set_source(ErrorSource.TARGET_PACKAGE_LIMITATION)
-        assert failure.error_source == ErrorSource.TARGET_PACKAGE_LIMITATION
-        assert failure.is_expected_limitation is True
-
     def test_to_dict(self):
         failure = Failure.from_code(ErrorCode.MODULE_NOT_FOUND, "module foo not found")
         d = failure.to_dict()
         assert d["phase"] == "resolution"
         assert d["code"] == "E101"
         assert d["message"] == "module foo not found"
-        assert d["error_source"] == "llm_error"
 
     def test_serialization_roundtrip(self):
         failure = Failure.from_code(ErrorCode.TARGET_ABORTED, "abort at 0x1::test")
@@ -319,13 +279,11 @@ class TestExecutionTrace:
 class TestAbortInfo:
     def test_from_move_abort_unsupported_native(self):
         abort = AbortInfo.from_move_abort(E_NOT_SUPPORTED, "0x2::random", "random not supported")
-        assert abort.is_expected is True
         assert abort.category == AbortCategory.UNSUPPORTED_NATIVE
         assert abort.abort_code == E_NOT_SUPPORTED
 
     def test_from_move_abort_assertion(self):
         abort = AbortInfo.from_move_abort(42, "0x1::test", "assertion failed in test")
-        assert abort.is_expected is False
         assert abort.category == AbortCategory.ASSERTION_FAILED
 
     def test_categorize_abort(self):
@@ -355,7 +313,6 @@ class TestAbortInfo:
         assert d["abort_code"] == E_NOT_SUPPORTED
         assert d["abort_location"] == "0x2::random"
         assert d["category"] == "unsupported_native"
-        assert d["is_expected"] is True
         assert len(d["call_stack"]) == 1
 
 
