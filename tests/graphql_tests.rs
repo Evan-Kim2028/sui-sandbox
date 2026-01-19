@@ -291,20 +291,20 @@ fn test_data_fetcher_recent_ptb_transactions() {
 }
 
 #[test]
-fn test_data_fetcher_fallback_disabled() {
-    let fetcher = DataFetcher::mainnet().with_fallback(false);
+fn test_data_fetcher_graphql_only() {
+    let fetcher = DataFetcher::mainnet();
 
-    // With fallback disabled, this should use only GraphQL
+    // DataFetcher now uses GraphQL exclusively (JSON-RPC removed)
     let result = fetcher.fetch_object("0x2");
 
     match result {
         Ok(obj) => {
-            // When GraphQL succeeds, source should be GraphQL
+            // Source should always be GraphQL now
             assert!(
                 matches!(obj.source, DataSource::GraphQL),
-                "Without fallback, should use GraphQL only"
+                "DataFetcher should use GraphQL exclusively"
             );
-            println!("Fetched via GraphQL only: {:?}", obj.source);
+            println!("Fetched via GraphQL: {:?}", obj.source);
         }
         Err(e) => {
             eprintln!("Note: Could not fetch object (network issue?): {}", e);
