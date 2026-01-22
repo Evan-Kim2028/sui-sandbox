@@ -1,2 +1,0 @@
-# Docker test corpus - minimal test package
-0x00

@@ -1,6 +1,0 @@
-{"t": 1700000000, "event": "run_started", "started_at_unix_seconds": 1700000000, "agent": "mock-empty", "seed": 42}
-{"t": 1700000000, "event": "package_started", "package_id": "0x0000000000000000000000000000000000000000000000000000000000000001", "i": 1}
-{"t": 1700000001, "event": "package_finished", "package_id": "0x0000000000000000000000000000000000000000000000000000000000000001", "elapsed_seconds": 0.5, "f1": 1.0}
-{"t": 1700000001, "event": "package_started", "package_id": "0x0000000000000000000000000000000000000000000000000000000000000002", "i": 2}
-{"t": 1700000002, "event": "package_finished", "package_id": "0x0000000000000000000000000000000000000000000000000000000000000002", "elapsed_seconds": 0.3, "f1": 0.6666666666666666}
-{"t": 1700000002, "event": "run_finished", "finished_at_unix_seconds": 1700000002, "packages_total": 2, "avg_f1": 0.75}
