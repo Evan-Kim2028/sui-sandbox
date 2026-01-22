@@ -2,6 +2,30 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.7.1] - 2026-01-22
+
+### Added
+
+- **Shared Example Helpers Module**: Extracted common helper functions used across examples into `examples/common/mod.rs`, reducing code duplication by ~800 lines
+  - `parse_type_tag_simple()` - Parse Move type strings into TypeTag
+  - `split_type_params()` - Split generic type parameters
+  - `extract_package_ids_from_type()` - Extract package addresses from type strings
+  - `normalize_address()` - Normalize hex addresses with proper padding
+  - `extract_dependencies_from_bytecode()` - Extract module dependencies from compiled bytecode
+  - `is_framework_package()` - Check if a package is a Sui framework package (0x1, 0x2, 0x3)
+
+- **Scallop Deposit Example**: Added `scallop_deposit.rs` example demonstrating lending protocol transaction replay with ObjectPatcher integration
+
+### Fixed
+
+- **Package Version Collision**: Fixed issue where upgraded package bytecode could be overwritten by original package when both have the same bytecode self_id
+  - Packages referenced in MoveCall commands now load first
+  - Bytecode addresses are tracked to prevent duplicate loading
+
+### Known Issues
+
+- **Struct Layout Compatibility**: Some historical transactions may fail with `FAILED_TO_DESERIALIZE_ARGUMENT` if the protocol changed struct layouts between package upgrades. This is a fundamental limitation of BCS deserialization where historical object data must match the bytecode's expected struct layout.
+
 ## [Unreleased]
 
 ### Breaking Changes
