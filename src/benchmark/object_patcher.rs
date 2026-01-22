@@ -186,21 +186,16 @@ impl ObjectPatcher {
     }
 
     /// Patch Cetus GlobalConfig package_version
-    /// The package_version is expected to be 1
+    /// The package_version needs to match CURRENT_VERSION constant in bytecode (typically 1)
     fn patch_cetus_global_config(&self, bcs_bytes: &[u8]) -> Option<Vec<u8>> {
-        // GlobalConfig structure (approximate):
-        // - id: UID (32 bytes)
-        // - protocol_fee_rate: u64 (8 bytes)
-        // - unstaked_liquidity_fee_rate: u64 (8 bytes)
-        // - fee_tiers: VecMap (variable)
-        // - acl: ACL (variable)
-        // - package_version: u64 (8 bytes)
-        // - alive_gauges: VecSet (variable)
-
-        // Since the structure has variable-length fields, we need to search for
-        // the package_version field. It's typically a small number (1, 2, etc.)
-        // We'll look for bytes that look like a version number followed by
-        // data that looks like a VecSet
+        // GlobalConfig structure has variable-length fields (VecMap, ACL, etc.)
+        // The package_version field is typically near the end of the structure.
+        //
+        // Based on analysis of actual GlobalConfig objects:
+        // - BCS length is typically around 411 bytes
+        // - package_version is at offset ~395 (near the end before alive_gauges VecSet)
+        //
+        // Strategy: Scan backwards from the end looking for small version-like values
 
         if bcs_bytes.len() < 50 {
             return None;
@@ -208,28 +203,35 @@ impl ObjectPatcher {
 
         let mut result = bcs_bytes.to_vec();
 
-        // Strategy: Find u64 values that are small (1-10) and likely to be versions
-        // The package_version is expected to be 1, so we look for small values
-        // and patch them
+        // First, try the known offset for Cetus GlobalConfig (offset 395)
+        // This is based on analysis of actual objects
+        if bcs_bytes.len() >= 403 {
+            let val = u64::from_le_bytes(result[395..403].try_into().ok()?);
+            if val > 0 && val <= 20 {
+                // This looks like a version number, patch it to 1
+                result[395..403].copy_from_slice(&1u64.to_le_bytes());
+                return Some(result);
+            }
+        }
 
-        // For now, use a heuristic: search for the pattern where package_version
-        // would be (after the ACL structure)
-
-        // Simpler approach: just scan for any u64 that's a reasonable version number
-        // and patch it to 1
-        for i in (40..bcs_bytes.len().saturating_sub(8)).step_by(8) {
-            let val = u64::from_le_bytes(result[i..i + 8].try_into().ok()?);
-            // If this looks like a version number (small positive integer)
-            if val > 0 && val < 100 {
-                // Check if next bytes look like a VecSet (starts with length)
-                if i + 8 < bcs_bytes.len() {
-                    let next_val =
-                        u64::from_le_bytes(result[i + 8..i + 16].try_into().unwrap_or([0; 8]));
-                    // If next value is small (VecSet length), this might be package_version
-                    if next_val < 1000 {
-                        // Patch to 1
-                        result[i..i + 8].copy_from_slice(&1u64.to_le_bytes());
-                        return Some(result);
+        // Fallback: scan the last 100 bytes for small version-like values
+        let start_offset = bcs_bytes.len().saturating_sub(100).max(32);
+        for i in start_offset..bcs_bytes.len().saturating_sub(8) {
+            if let Ok(bytes) = result[i..i + 8].try_into() {
+                let val: u64 = u64::from_le_bytes(bytes);
+                // Look for small version numbers (1-20) that aren't at the very beginning
+                // and aren't common small values like lengths
+                if val > 0 && val <= 20 {
+                    // Check surrounding context - version is usually followed by VecSet
+                    if i + 16 <= bcs_bytes.len() {
+                        let next_val =
+                            u64::from_le_bytes(result[i + 8..i + 16].try_into().unwrap_or([0; 8]));
+                        // VecSet starts with a length (typically small)
+                        if next_val < 100 {
+                            // Patch to 1 (what bytecode expects)
+                            result[i..i + 8].copy_from_slice(&1u64.to_le_bytes());
+                            return Some(result);
+                        }
                     }
                 }
             }

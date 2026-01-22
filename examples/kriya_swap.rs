@@ -16,9 +16,20 @@
 //! ## Key Techniques
 //!
 //! 1. **Pure gRPC Fetching**: All data fetched via gRPC with Surflux API key
-//! 2. **Multi-Protocol Routing**: Transaction spans Kriya, Bluefin, and framework modules
+//! 2. **Multi-Protocol Routing**: Transaction spans Kriya, Bluefin, Cetus, and framework modules
 //! 3. **Flash Loan Integration**: Uses `borrow_flashloan_quote` / `return_flashloan_quote`
 //! 4. **Package Linkage Resolution**: Automatically follows upgrade chains
+//! 5. **Object Patching**: Automatically fixes version-locked protocols (Cetus GlobalConfig)
+//!
+//! ## Version-Lock Solution
+//!
+//! Cetus CLMM has a `checked_package_version` guard that compares:
+//! - `GlobalConfig.package_version` (stored on-chain, e.g., 5)
+//! - `CURRENT_VERSION` (constant in bytecode, e.g., 1)
+//!
+//! When these don't match, execution aborts. This example uses `ObjectPatcher` to
+//! automatically patch the GlobalConfig's package_version field to match the bytecode,
+//! enabling successful historical replay.
 //!
 //! ## Required Setup
 //!
@@ -33,8 +44,8 @@
 //! |----------|----------------|----------|
 //! | Kriya DEX | `0xa0eba10b...` | `spot_dex::swap_token_y` |
 //! | Flash Loan Pool | `0xcaf6ba05...` | `pool::borrow_flashloan_quote` |
+//! | Cetus CLMM | `0x1eabed72...` | `pool::flash_swap` (via Bluefin adapter) |
 //! | Bluefin CLMM | `0x75b2e9ec...` | `pool::flash_swap` |
-//! | Cetus-style | `0xd075338d...` | `pool::flash_swap` |
 //!
 //! ## Historical Data from gRPC
 //!
@@ -52,6 +63,7 @@ use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
+use sui_move_interface_extractor::benchmark::object_patcher::ObjectPatcher;
 use sui_move_interface_extractor::benchmark::object_runtime::ChildFetcherFn;
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
 use sui_move_interface_extractor::benchmark::tx_replay::{
@@ -78,18 +90,17 @@ fn main() -> anyhow::Result<()> {
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
 
     // Kriya swap transaction - succeeded on-chain
-    // Note: This transaction routes through Cetus-style pools which have version checks.
-    // Local replay may fail due to version-locked contracts - this is expected behavior
-    // and demonstrates the challenge of replaying complex DeFi transactions.
+    // This transaction routes through Cetus-style pools which have version checks.
+    // We use ObjectPatcher to patch GlobalConfig.package_version to match bytecode.
     let tx_digest = KRIYA_SWAP_TX;
     let description = "Kriya Multi-Hop Swap";
-    // Expected to fail locally due to Cetus config::checked_package_version
-    let expected_success = false;
+    // Expected to succeed with object patching
+    let expected_success = true;
 
     println!("\n{}", "=".repeat(74));
     println!("  {} - {}", description, tx_digest);
     println!("  On-chain result: SUCCESS");
-    println!("  Expected local:  FAILURE (version-locked Cetus pools)");
+    println!("  Expected local:  SUCCESS (with object patching)");
     println!("{}\n", "=".repeat(74));
 
     let result = replay_via_grpc_no_cache(tx_digest);
@@ -106,17 +117,18 @@ fn main() -> anyhow::Result<()> {
         "  Local result: {}",
         if local_success { "SUCCESS" } else { "FAILURE" }
     );
-    println!("  Expected:     FAILURE (version-locked)");
+    println!(
+        "  Expected:     {}",
+        if expected_success {
+            "SUCCESS"
+        } else {
+            "FAILURE"
+        }
+    );
     println!("  Match:        {}", if matches { "✓ YES" } else { "✗ NO" });
     if let Some(err) = &error_msg {
-        // Extract the key part of the error
-        if err.contains("checked_package_version") {
-            println!("  Error:        Cetus config::checked_package_version failed");
-            println!("                (version-locked protocol - expected behavior)");
-        } else {
-            let truncated = if err.len() > 80 { &err[..80] } else { err };
-            println!("  Error:        {}...", truncated);
-        }
+        let truncated = if err.len() > 100 { &err[..100] } else { err };
+        println!("  Error:        {}...", truncated);
     }
     println!("  ══════════════════════════════════════════════════════════════");
 
@@ -127,19 +139,24 @@ fn main() -> anyhow::Result<()> {
 
     let status = if matches { "✓" } else { "✗" };
     let local_str = if local_success { "SUCCESS" } else { "FAILURE" };
+    let expected_str = if expected_success {
+        "SUCCESS"
+    } else {
+        "FAILURE"
+    };
     println!(
         "║ {} {:25} | local: {:7} | expected: {:7} ║",
-        status, description, local_str, "FAILURE"
+        status, description, local_str, expected_str
     );
 
     println!("╠══════════════════════════════════════════════════════════════════════╣");
-    if matches {
-        println!("║ ✓ TRANSACTION MATCHES EXPECTED OUTCOME                              ║");
+    if matches && local_success {
+        println!("║ ✓ TRANSACTION REPLAYED SUCCESSFULLY                                 ║");
         println!("║                                                                      ║");
-        println!("║ This demonstrates the version-lock challenge: transactions that     ║");
-        println!("║ route through Cetus pools fail locally due to config version checks.║");
-        println!("║ The infrastructure correctly fetches all data, but the protocol's   ║");
-        println!("║ version verification prevents historical replay.                    ║");
+        println!("║ ObjectPatcher automatically fixed version-locked GlobalConfig        ║");
+        println!("║ by patching package_version to match bytecode's CURRENT_VERSION.    ║");
+    } else if matches {
+        println!("║ ✓ TRANSACTION MATCHES EXPECTED OUTCOME                              ║");
     } else {
         println!("║ ✗ TRANSACTION DID NOT MATCH EXPECTED OUTCOME                        ║");
     }
@@ -265,6 +282,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut package_ids_to_fetch: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
+    // Create object patcher for version-locked protocols (Cetus, Scallop, etc.)
+    let mut object_patcher = ObjectPatcher::with_timestamp(tx_timestamp_ms);
+
     // Extract package IDs from MoveCall commands
     for cmd in &grpc_tx.commands {
         if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
@@ -286,7 +306,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         match result {
             Ok(Some(obj)) => {
                 if let Some(bcs) = &obj.bcs {
-                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(bcs);
+                    // Apply object patching for version-locked protocols
+                    let type_str = obj.type_string.as_deref().unwrap_or("");
+                    let patched_bcs = object_patcher.patch_object(type_str, bcs);
+                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&patched_bcs);
                     objects.insert(obj_id.clone(), bcs_b64);
                     if let Some(type_str) = &obj.type_string {
                         object_types.insert(obj_id.clone(), type_str.clone());
@@ -337,6 +360,15 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         "   ✓ Fetched {} objects ({} failed)",
         fetched_count, failed_count
     );
+
+    // Report patches applied
+    let patch_stats = object_patcher.stats();
+    if !patch_stats.is_empty() {
+        println!("   Object patches applied:");
+        for (pattern, count) in patch_stats {
+            println!("      {} -> {} patches", pattern, count);
+        }
+    }
 
     // =========================================================================
     // Step 5: Fetch packages with transitive dependencies (following linkage tables)

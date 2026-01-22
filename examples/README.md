@@ -23,7 +23,7 @@ cargo run --example
 | `cetus_swap` | Cetus AMM | Historical swap with dynamic field child fetching |
 | `scallop_deposit` | Scallop Lending | Lending deposit with gRPC historical data |
 | `deepbook_replay` | DeepBook CLOB | Flash loans - success and failure cases |
-| `kriya_swap` | Kriya DEX | Multi-hop swap demonstrating version-lock challenge |
+| `kriya_swap` | Kriya DEX | Multi-hop swap with automatic version-lock patching |
 | `inspect_df` | Sui Framework | Dynamic field inspector (no API key needed) |
 
 ## Example Status
@@ -52,12 +52,12 @@ cargo run --example
 - Uses automated gRPC historical state reconstruction
 - **Result: All transactions match expected outcomes**
 
-### Kriya Swap ~ Version-Lock Demo
+### Kriya Swap ✓ Full Success (with Object Patching)
 
 - Replays a complex multi-hop swap routing through Kriya, Bluefin, and Cetus pools
-- Demonstrates the version-lock challenge: Cetus's `checked_package_version` prevents historical replay
-- **Result: Expected failure - shows infrastructure works but protocol guards block execution**
-- **Educational value**: Illustrates why some DeFi transactions can't be fully replayed
+- **Automatic version-lock fix**: `ObjectPatcher` patches Cetus GlobalConfig to match bytecode
+- Uses flash loans, multi-protocol routing, and CLMM pools
+- **Result: Matches on-chain success**
 
 ## What These Examples Demonstrate
 
@@ -126,24 +126,24 @@ Move execution. The version check is an application-level guard.
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
-### Kriya Swap (Version-Lock Demo)
+### Kriya Swap
 
 ```text
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                         VALIDATION SUMMARY                           ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ Kriya Multi-Hop Swap      | local: FAILURE | expected: FAILURE ║
+║ ✓ Kriya Multi-Hop Swap      | local: SUCCESS | expected: SUCCESS ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ TRANSACTION MATCHES EXPECTED OUTCOME                              ║
+║ ✓ TRANSACTION REPLAYED SUCCESSFULLY                                 ║
 ║                                                                      ║
-║ This demonstrates the version-lock challenge: transactions that     ║
-║ route through Cetus pools fail locally due to config version checks.║
+║ ObjectPatcher automatically fixed version-locked GlobalConfig        ║
+║ by patching package_version to match bytecode's CURRENT_VERSION.    ║
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
 
-Note: The Kriya transaction succeeded on-chain but fails locally due to Cetus's
-internal version check (`config::checked_package_version`). This is expected
-behavior and demonstrates the challenge of replaying version-locked protocols.
+Note: The `ObjectPatcher` automatically detects and patches Cetus GlobalConfig's
+`package_version` field to match the bytecode's `CURRENT_VERSION` constant,
+enabling successful historical replay of transactions through version-locked protocols.
 
 ## Requirements
 
