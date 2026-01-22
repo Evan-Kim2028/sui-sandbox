@@ -35,14 +35,16 @@ cargo run --example
 - Uses on-demand skip_list node fetching
 - **Result: Matches on-chain success**
 
-### Scallop Deposit ~ Partial Success
+### Scallop Deposit ~ Partial Success (with Object Patching)
 
 - Demonstrates full sandbox infrastructure working:
   - gRPC connection to Surflux for `unchanged_loaded_runtime_objects`
   - Historical dynamic field preloading at exact versions
   - Address aliasing for upgraded packages
-- Error 513 = application-level version check (not VM issue)
-- **Result: Reaches Move execution, blocked by protocol version guard**
+  - **Object patching** fixes version-lock checks
+- ObjectPatcher successfully patches `::version::Version` object
+- Remaining issue: argument deserialization (struct layout changes)
+- **Result: Version-lock bypassed, blocked by BCS compatibility**
 
 ### DeepBook Replay ✓ Validation Pass
 
@@ -104,13 +106,18 @@ Status match: true
 ### Scallop Deposit
 
 ```text
-=== RESULT ===
-Success: false
-Error: ... version::assert_current_version ... error 513
+Step 4: Fetching objects at historical versions via gRPC...
+   ✓ Fetched 14 objects (0 failed)
+   Object patches applied:
+      ::version::Version -> 1 patches
 
-[PACKAGE VERSION MISMATCH]
-This is a PARTIAL SUCCESS - we got past the linker stage and into
-Move execution. The version check is an application-level guard.
+  Local execution: FAILURE
+  Error: FAILED_TO_DESERIALIZE_ARGUMENT
+
+[PARTIAL SUCCESS]
+ObjectPatcher successfully bypassed version-lock checks by patching
+the Version object. The remaining error is due to BCS format changes
+in the protocol's struct layouts between versions.
 ```
 
 ### DeepBook Replay

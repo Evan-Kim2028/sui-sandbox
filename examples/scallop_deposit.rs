@@ -25,16 +25,21 @@
 //! 2. **Historical Object Versions**: Uses `unchanged_loaded_runtime_objects` for exact versions
 //! 3. **Package Linkage Tables**: Follows upgrade chains to get correct package versions
 //! 4. **Address Aliasing**: Maps storage IDs to bytecode addresses for upgraded packages
+//! 5. **Object Patching**: Automatically fixes version-locked protocols (Scallop, Cetus)
+
+mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use move_binary_format::CompiledModule;
+use common::{
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
+    normalize_address, parse_type_tag_simple,
+};
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
+use sui_move_interface_extractor::benchmark::object_patcher::ObjectPatcher;
 use sui_move_interface_extractor::benchmark::object_runtime::ChildFetcherFn;
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
 use sui_move_interface_extractor::benchmark::tx_replay::{
@@ -73,8 +78,8 @@ fn main() -> anyhow::Result<()> {
     } else {
         println!("║ ✗ TRANSACTION DID NOT MATCH EXPECTED OUTCOME                        ║");
         println!("║                                                                      ║");
-        println!("║ Note: Version-locked protocols may fail verify_version checks if    ║");
-        println!("║ the protocol was upgraded after the original transaction.           ║");
+        println!("║ Note: ObjectPatcher fixed version-lock issues, but this transaction ║");
+        println!("║ has additional compatibility issues (argument deserialization).     ║");
     }
     println!("╚══════════════════════════════════════════════════════════════════════╝");
 
@@ -185,6 +190,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut package_ids_to_fetch: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
+    // Create object patcher for version-locked protocols (Scallop, Cetus, etc.)
+    let mut object_patcher = ObjectPatcher::with_timestamp(tx_timestamp_ms);
+
     for cmd in &grpc_tx.commands {
         if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
             package_ids_to_fetch.insert(package.clone());
@@ -205,7 +213,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         match result {
             Ok(Some(obj)) => {
                 if let Some(bcs) = &obj.bcs {
-                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(bcs);
+                    // Apply object patching for version-locked protocols
+                    let type_str = obj.type_string.as_deref().unwrap_or("");
+                    let patched_bcs = object_patcher.patch_object(type_str, bcs);
+                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&patched_bcs);
                     objects.insert(obj_id.clone(), bcs_b64);
                     if let Some(type_str) = &obj.type_string {
                         object_types.insert(obj_id.clone(), type_str.clone());
@@ -243,6 +254,15 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         "   ✓ Fetched {} objects ({} failed)",
         fetched_count, failed_count
     );
+
+    // Report patches applied
+    let patch_stats = object_patcher.stats();
+    if !patch_stats.is_empty() {
+        println!("   Object patches applied:");
+        for (pattern, count) in patch_stats {
+            println!("      {} -> {} patches", pattern, count);
+        }
+    }
 
     // =========================================================================
     // Step 5: Fetch packages with transitive dependencies
@@ -297,16 +317,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
                         if let Some(linkage) = &obj.package_linkage {
                             for l in linkage {
-                                let is_framework = matches!(
-                                    l.original_id.as_str(),
-                                    "0x0000000000000000000000000000000000000000000000000000000000000001"
-                                        | "0x0000000000000000000000000000000000000000000000000000000000000002"
-                                        | "0x0000000000000000000000000000000000000000000000000000000000000003"
-                                        | "0x1"
-                                        | "0x2"
-                                        | "0x3"
-                                );
-                                if is_framework {
+                                if is_framework_package(&l.original_id) {
                                     continue;
                                 }
 
@@ -561,163 +572,4 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     Ok(result.local_success)
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-//
-// These helper functions are self-contained within this example to demonstrate
-// the complete workflow without external dependencies. They handle:
-//
-// 1. Type parsing - Converting Sui type strings to Move TypeTags
-// 2. Address normalization - Ensuring consistent 66-char address format
-// 3. Dependency extraction - Parsing bytecode to find package dependencies
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Parse a Sui type string into a Move TypeTag.
-fn parse_type_tag_simple(type_str: &str) -> Option<TypeTag> {
-    match type_str {
-        "u8" => return Some(TypeTag::U8),
-        "u64" => return Some(TypeTag::U64),
-        "u128" => return Some(TypeTag::U128),
-        "u256" => return Some(TypeTag::U256),
-        "bool" => return Some(TypeTag::Bool),
-        "address" => return Some(TypeTag::Address),
-        _ => {}
-    }
-
-    if type_str.starts_with("vector<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        return parse_type_tag_simple(inner).map(|t| TypeTag::Vector(Box::new(t)));
-    }
-
-    let (base_type, type_params_str) = if let Some(idx) = type_str.find('<') {
-        (
-            &type_str[..idx],
-            Some(&type_str[idx + 1..type_str.len() - 1]),
-        )
-    } else {
-        (type_str, None)
-    };
-
-    let parts: Vec<&str> = base_type.split("::").collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-    let module = Identifier::new(parts[1]).ok()?;
-    let name = Identifier::new(parts[2]).ok()?;
-
-    let type_params = type_params_str
-        .map(|s| {
-            split_type_params(s)
-                .iter()
-                .filter_map(|t| parse_type_tag_simple(t.trim()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
-}
-
-/// Split type parameters respecting nested angle brackets.
-fn split_type_params(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                result.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-
-    if start < s.len() {
-        result.push(&s[start..]);
-    }
-
-    result
-}
-
-/// Extract package IDs from a type string.
-fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    use std::collections::HashSet;
-    let mut package_ids = HashSet::new();
-
-    let framework_prefixes = [
-        "0x1::",
-        "0x2::",
-        "0x3::",
-        "0x0000000000000000000000000000000000000000000000000000000000000001::",
-        "0x0000000000000000000000000000000000000000000000000000000000000002::",
-        "0x0000000000000000000000000000000000000000000000000000000000000003::",
-    ];
-
-    let mut i = 0;
-    let chars: Vec<char> = type_str.chars().collect();
-
-    while i < chars.len() {
-        if i + 2 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
-            let start = i;
-            i += 2;
-            while i < chars.len() && (chars[i].is_ascii_hexdigit()) {
-                i += 1;
-            }
-            if i + 1 < chars.len() && chars[i] == ':' && chars[i + 1] == ':' {
-                let pkg_id: String = chars[start..i].iter().collect();
-                let full_prefix = format!("{}::", pkg_id);
-                if !framework_prefixes.iter().any(|p| full_prefix == *p) {
-                    package_ids.insert(pkg_id);
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    package_ids.into_iter().collect()
-}
-
-/// Normalize a Sui address to a consistent 66-character format.
-fn normalize_address(addr: &str) -> String {
-    let addr = addr.strip_prefix("0x").unwrap_or(addr);
-    format!("0x{:0>64}", addr)
-}
-
-/// Extract package addresses that a module depends on from its bytecode.
-fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<String> {
-    use std::collections::BTreeSet;
-
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    let mut deps = Vec::new();
-
-    if let Ok(module) = CompiledModule::deserialize_with_defaults(bytecode) {
-        for handle in &module.module_handles {
-            let addr = *module.address_identifier_at(handle.address);
-            if !framework_addrs.contains(&addr) {
-                deps.push(addr.to_hex_literal());
-            }
-        }
-    }
-
-    deps
 }

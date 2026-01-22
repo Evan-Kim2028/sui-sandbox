@@ -83,15 +83,18 @@
 //! - Fetching the exact upgraded package version that was active at transaction time
 //! - Or accepting that some historical transactions cannot be perfectly replayed
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use move_binary_format::CompiledModule;
+use common::{
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
+    normalize_address, parse_type_tag_simple,
+};
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
 use sui_move_interface_extractor::benchmark::object_runtime::ChildFetcherFn;
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
 use sui_move_interface_extractor::benchmark::tx_replay::{
@@ -459,16 +462,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                         // we need to fetch B at the upgraded storage ID, not the original ID
                         if let Some(linkage) = &obj.package_linkage {
                             for l in linkage {
-                                // Skip framework packages (0x1, 0x2, 0x3 in full form only)
-                                // Note: We must check for exact framework IDs, not just prefix!
-                                // User packages can start with 0x3... (e.g., 0x3492c874...)
-                                let is_framework = matches!(l.original_id.as_str(),
-                                    "0x0000000000000000000000000000000000000000000000000000000000000001" |
-                                    "0x0000000000000000000000000000000000000000000000000000000000000002" |
-                                    "0x0000000000000000000000000000000000000000000000000000000000000003" |
-                                    "0x1" | "0x2" | "0x3"
-                                );
-                                if is_framework {
+                                // Skip framework packages (0x1, 0x2, 0x3)
+                                if is_framework_package(&l.original_id) {
                                     continue;
                                 }
 
@@ -769,212 +764,4 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     Ok(result.local_success)
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-//
-// These helper functions are self-contained within this example to demonstrate
-// the complete workflow without external dependencies. They handle:
-//
-// 1. Type parsing - Converting Sui type strings to Move TypeTags
-// 2. Address normalization - Ensuring consistent 66-char address format
-// 3. Dependency extraction - Parsing bytecode to find package dependencies
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Parse a Sui type string into a Move TypeTag.
-///
-/// Handles primitive types (u8, u64, etc.), vectors, and struct types with
-/// nested type parameters. This is needed for the child object fetcher to
-/// correctly deserialize objects by type.
-///
-/// # Examples
-///
-/// ```ignore
-/// parse_type_tag_simple("u64")  // -> Some(TypeTag::U64)
-/// parse_type_tag_simple("0x2::coin::Coin<0x2::sui::SUI>")  // -> Some(TypeTag::Struct(...))
-/// ```
-fn parse_type_tag_simple(type_str: &str) -> Option<TypeTag> {
-    match type_str {
-        "u8" => return Some(TypeTag::U8),
-        "u64" => return Some(TypeTag::U64),
-        "u128" => return Some(TypeTag::U128),
-        "u256" => return Some(TypeTag::U256),
-        "bool" => return Some(TypeTag::Bool),
-        "address" => return Some(TypeTag::Address),
-        _ => {}
-    }
-
-    if type_str.starts_with("vector<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        return parse_type_tag_simple(inner).map(|t| TypeTag::Vector(Box::new(t)));
-    }
-
-    let (base_type, type_params_str) = if let Some(idx) = type_str.find('<') {
-        (
-            &type_str[..idx],
-            Some(&type_str[idx + 1..type_str.len() - 1]),
-        )
-    } else {
-        (type_str, None)
-    };
-
-    let parts: Vec<&str> = base_type.split("::").collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-    let module = Identifier::new(parts[1]).ok()?;
-    let name = Identifier::new(parts[2]).ok()?;
-
-    let type_params = type_params_str
-        .map(|s| {
-            split_type_params(s)
-                .iter()
-                .filter_map(|t| parse_type_tag_simple(t.trim()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
-}
-
-/// Split type parameters respecting nested angle brackets.
-///
-/// Given "A, B<C, D>, E", returns ["A", " B<C, D>", " E"] by tracking bracket depth.
-/// Used by `parse_type_tag_simple` to correctly handle generic types.
-fn split_type_params(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                result.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-
-    if start < s.len() {
-        result.push(&s[start..]);
-    }
-
-    result
-}
-
-/// Extract package IDs from a type string.
-///
-/// Scans a type string like "0xabc::module::Struct<0xdef::m::T, 0xghi::n::U>"
-/// and returns all package addresses found (["0xabc", "0xdef", "0xghi"]).
-/// Framework packages (0x1, 0x2, 0x3) are automatically excluded.
-///
-/// This is used to discover additional packages that need to be fetched based
-/// on the types of objects involved in the transaction.
-fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    use std::collections::HashSet;
-    let mut package_ids = HashSet::new();
-
-    // Framework packages to skip
-    let framework_prefixes = [
-        "0x1::",
-        "0x2::",
-        "0x3::",
-        "0x0000000000000000000000000000000000000000000000000000000000000001::",
-        "0x0000000000000000000000000000000000000000000000000000000000000002::",
-        "0x0000000000000000000000000000000000000000000000000000000000000003::",
-    ];
-
-    // Find all package addresses in the type string
-    // Pattern: 0x followed by hex chars, then ::
-    let mut i = 0;
-    let chars: Vec<char> = type_str.chars().collect();
-
-    while i < chars.len() {
-        if i + 2 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
-            let start = i;
-            i += 2;
-            // Consume hex chars
-            while i < chars.len() && (chars[i].is_ascii_hexdigit()) {
-                i += 1;
-            }
-            // Check if followed by ::
-            if i + 1 < chars.len() && chars[i] == ':' && chars[i + 1] == ':' {
-                let pkg_id: String = chars[start..i].iter().collect();
-                // Skip framework packages
-                let full_prefix = format!("{}::", pkg_id);
-                if !framework_prefixes.iter().any(|p| full_prefix == *p) {
-                    package_ids.insert(pkg_id);
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    package_ids.into_iter().collect()
-}
-
-/// Normalize a Sui address to a consistent 66-character format (0x + 64 hex chars).
-///
-/// Sui addresses can appear in shortened form (0x2) or full form
-/// (0x0000...0002). This function ensures consistent formatting for
-/// HashMap key lookups and address comparisons.
-///
-/// # Examples
-///
-/// ```ignore
-/// normalize_address("0x2")      // -> "0x0000...0002" (64 hex chars)
-/// normalize_address("0x3637")   // -> "0x0000...3637" (64 hex chars)
-/// ```
-fn normalize_address(addr: &str) -> String {
-    let addr = addr.strip_prefix("0x").unwrap_or(addr);
-    // Pad to 64 hex characters
-    format!("0x{:0>64}", addr)
-}
-
-/// Extract package addresses that a module depends on from its bytecode.
-///
-/// Parses the compiled Move bytecode to find all module handles (references to
-/// other modules), and returns the package addresses of non-framework dependencies.
-/// This enables transitive dependency resolution - fetching all packages needed
-/// to execute a transaction.
-///
-/// Framework packages (0x1, 0x2, 0x3) are excluded since they are bundled
-/// with the VM and don't need to be fetched.
-fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<String> {
-    use std::collections::BTreeSet;
-
-    // Framework addresses to skip
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    let mut deps = Vec::new();
-
-    if let Ok(module) = CompiledModule::deserialize_with_defaults(bytecode) {
-        for handle in &module.module_handles {
-            let addr = *module.address_identifier_at(handle.address);
-            // Skip framework modules and self
-            if !framework_addrs.contains(&addr) {
-                deps.push(addr.to_hex_literal());
-            }
-        }
-    }
-
-    deps
 }
