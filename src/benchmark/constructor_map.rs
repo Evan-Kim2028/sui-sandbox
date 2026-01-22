@@ -165,11 +165,17 @@ impl ConstructorMap {
                 }
 
                 // This is a valid OTW type!
+                // struct_name comes from bytecode, so it's already a valid identifier
+                let Ok(name_ident) =
+                    move_core_types::identifier::Identifier::new(struct_name.clone())
+                else {
+                    // Should never happen for well-formed bytecode
+                    continue;
+                };
                 let type_tag = TypeTag::Struct(Box::new(StructTag {
                     address: *module_id.address(),
                     module: module_id.name().to_owned(),
-                    name: move_core_types::identifier::Identifier::new(struct_name.clone())
-                        .unwrap(),
+                    name: name_ident,
                     type_params: vec![],
                 }));
 

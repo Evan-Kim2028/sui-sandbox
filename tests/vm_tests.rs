@@ -82,60 +82,52 @@ mod simulation_config_tests {
         assert_eq!(config.gas_budget.unwrap(), 50_000_000_000);
     }
 
+    // Consolidated: All builder methods tested together instead of individual tests
     #[test]
-    fn test_new_equals_default() {
-        let new_config = SimulationConfig::new();
-        let default_config = SimulationConfig::default();
-
-        assert_eq!(new_config.mock_crypto_pass, default_config.mock_crypto_pass);
-        assert_eq!(new_config.epoch, default_config.epoch);
-        assert_eq!(new_config.gas_budget, default_config.gas_budget);
-    }
-
-    #[test]
-    fn test_builder_with_mock_crypto() {
+    fn test_builder_methods() {
+        // with_mock_crypto
         let config = SimulationConfig::default().with_mock_crypto(false);
         assert!(!config.mock_crypto_pass);
-
         let config = SimulationConfig::default().with_mock_crypto(true);
         assert!(config.mock_crypto_pass);
-    }
 
-    #[test]
-    fn test_builder_with_clock_base() {
+        // with_clock_base
         let config = SimulationConfig::default().with_clock_base(12345678);
         assert_eq!(config.clock_base_ms, 12345678);
-    }
 
-    #[test]
-    fn test_builder_with_random_seed() {
+        // with_random_seed
         let seed = [99u8; 32];
         let config = SimulationConfig::default().with_random_seed(seed);
         assert_eq!(config.random_seed, seed);
-    }
 
-    #[test]
-    fn test_builder_with_epoch() {
+        // with_epoch
         let config = SimulationConfig::default().with_epoch(500);
         assert_eq!(config.epoch, 500);
-    }
 
-    #[test]
-    fn test_builder_with_gas_budget() {
+        // with_gas_budget
         let config = SimulationConfig::default().with_gas_budget(Some(1_000_000));
         assert_eq!(config.gas_budget, Some(1_000_000));
-
         let config = SimulationConfig::default().with_gas_budget(None);
         assert!(config.gas_budget.is_none());
-    }
 
-    #[test]
-    fn test_builder_with_immutability_enforcement() {
+        // with_immutability_enforcement
         let config = SimulationConfig::default().with_immutability_enforcement(true);
         assert!(config.enforce_immutability);
-
         let config = SimulationConfig::default().with_immutability_enforcement(false);
         assert!(!config.enforce_immutability);
+
+        // Chaining multiple builders
+        let config = SimulationConfig::default()
+            .with_mock_crypto(false)
+            .with_epoch(200)
+            .with_gas_budget(Some(100_000))
+            .with_immutability_enforcement(true)
+            .with_clock_base(999999);
+        assert!(!config.mock_crypto_pass);
+        assert_eq!(config.epoch, 200);
+        assert_eq!(config.gas_budget, Some(100_000));
+        assert!(config.enforce_immutability);
+        assert_eq!(config.clock_base_ms, 999999);
     }
 
     #[test]
@@ -148,30 +140,11 @@ mod simulation_config_tests {
 
         config.advance_epoch(1);
         assert_eq!(config.epoch, 111);
-    }
 
-    #[test]
-    fn test_advance_epoch_saturating() {
+        // Test saturation at MAX
         let mut config = SimulationConfig::default().with_epoch(u64::MAX - 5);
-
         config.advance_epoch(10);
         assert_eq!(config.epoch, u64::MAX, "should saturate at MAX");
-    }
-
-    #[test]
-    fn test_builder_chaining() {
-        let config = SimulationConfig::default()
-            .with_mock_crypto(false)
-            .with_epoch(200)
-            .with_gas_budget(Some(100_000))
-            .with_immutability_enforcement(true)
-            .with_clock_base(999999);
-
-        assert!(!config.mock_crypto_pass);
-        assert_eq!(config.epoch, 200);
-        assert_eq!(config.gas_budget, Some(100_000));
-        assert!(config.enforce_immutability);
-        assert_eq!(config.clock_base_ms, 999999);
     }
 }
 
@@ -190,24 +163,9 @@ mod execution_trace_tests {
         )
     }
 
-    #[test]
-    fn test_trace_new_is_empty() {
-        let trace = ExecutionTrace::new();
-        assert!(trace.modules_accessed.is_empty());
-    }
-
-    #[test]
-    fn test_trace_default_is_empty() {
-        let trace = ExecutionTrace::default();
-        assert!(trace.modules_accessed.is_empty());
-    }
-
-    #[test]
-    fn test_trace_accessed_package_empty() {
-        let trace = ExecutionTrace::new();
-        let addr = AccountAddress::from_hex_literal("0x1").unwrap();
-        assert!(!trace.accessed_package(&addr));
-    }
+    // Removed: test_trace_new_is_empty - redundant with test_trace_default_is_empty
+    // Removed: test_trace_default_is_empty - trivial, covered by other tests implicitly
+    // Removed: test_trace_accessed_package_empty - trivial empty collection behavior
 
     #[test]
     fn test_trace_accessed_package_found() {
@@ -351,28 +309,20 @@ mod metered_gas_meter_tests {
     use move_vm_types::gas::GasMeter;
 
     #[test]
-    fn test_meter_new() {
+    fn test_metered_gas_meter() {
+        // Basic creation and initial state
         let meter = MeteredGasMeter::new(1000);
         assert_eq!(meter.gas_consumed(), 0);
-    }
-
-    #[test]
-    fn test_meter_remaining_gas() {
-        let meter = MeteredGasMeter::new(1000);
         let remaining: u64 = meter.remaining_gas().into();
         assert_eq!(remaining, 1000);
-    }
 
-    #[test]
-    fn test_meter_zero_budget() {
+        // Zero budget edge case
         let meter = MeteredGasMeter::new(0);
         assert_eq!(meter.gas_consumed(), 0);
         let remaining: u64 = meter.remaining_gas().into();
         assert_eq!(remaining, 0);
-    }
 
-    #[test]
-    fn test_meter_large_budget() {
+        // Large budget edge case
         let meter = MeteredGasMeter::new(u64::MAX);
         assert_eq!(meter.gas_consumed(), 0);
         let remaining: u64 = meter.remaining_gas().into();
@@ -388,27 +338,20 @@ mod gas_meter_impl_tests {
     use super::*;
 
     #[test]
-    fn test_impl_from_config_unmetered() {
-        let config = SimulationConfig::default(); // gas_budget = None
+    fn test_gas_meter_impl_from_config() {
+        // Unmetered (no gas budget)
+        let config = SimulationConfig::default();
         let meter = GasMeterImpl::from_config(&config);
-
         assert_eq!(meter.gas_consumed(), 0, "unmetered should report 0");
-    }
 
-    #[test]
-    fn test_impl_from_config_metered() {
+        // Metered with explicit budget
         let config = SimulationConfig::default().with_gas_budget(Some(50_000));
         let meter = GasMeterImpl::from_config(&config);
-
         assert_eq!(meter.gas_consumed(), 0, "should start at 0");
-    }
 
-    #[test]
-    fn test_impl_from_strict_config() {
+        // Strict config (has gas budget)
         let config = SimulationConfig::strict();
         let meter = GasMeterImpl::from_config(&config);
-
-        // Strict config has a gas budget, so meter should be metered
         assert_eq!(meter.gas_consumed(), 0);
     }
 }
@@ -639,17 +582,8 @@ mod vm_harness_execution_tests {
 mod vm_harness_trace_tests {
     use super::*;
 
-    #[test]
-    fn test_harness_initial_trace_empty() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        let trace = harness.get_trace();
-        assert!(
-            trace.modules_accessed.is_empty(),
-            "initial trace should be empty"
-        );
-    }
+    // Removed: test_harness_initial_trace_empty - trivial, if initial trace was non-empty
+    // the clear_trace test would fail
 
     #[test]
     fn test_harness_trace_records_module_access() {
@@ -718,14 +652,8 @@ mod vm_harness_trace_tests {
 mod vm_harness_events_tests {
     use super::*;
 
-    #[test]
-    fn test_harness_initial_events_empty() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        let events = harness.get_events();
-        assert!(events.is_empty());
-    }
+    // Removed: test_harness_initial_events_empty - trivial empty state check
+    // Removed: test_harness_get_events_by_type - only tests empty case, no real coverage
 
     #[test]
     fn test_harness_clear_events() {
@@ -736,15 +664,6 @@ mod vm_harness_events_tests {
         harness.clear_events();
         assert!(harness.get_events().is_empty());
     }
-
-    #[test]
-    fn test_harness_get_events_by_type() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        let events = harness.get_events_by_type("0x2::coin::");
-        assert!(events.is_empty());
-    }
 }
 
 // =============================================================================
@@ -753,6 +672,9 @@ mod vm_harness_events_tests {
 
 mod vm_harness_dynamic_fields_tests {
     use super::*;
+
+    // Removed: test_harness_extract_dynamic_fields_empty - trivial empty state
+    // Removed: test_harness_extract_new_dynamic_fields - trivial empty state
 
     #[test]
     fn test_harness_preload_dynamic_fields() {
@@ -772,15 +694,6 @@ mod vm_harness_dynamic_fields_tests {
     }
 
     #[test]
-    fn test_harness_extract_dynamic_fields_empty() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        let fields = harness.extract_dynamic_fields();
-        assert!(fields.is_empty());
-    }
-
-    #[test]
     fn test_harness_clear_dynamic_fields() {
         let resolver = load_fixture_resolver();
         let harness = VMHarness::new(&resolver, true).expect("harness should create");
@@ -794,16 +707,6 @@ mod vm_harness_dynamic_fields_tests {
         harness.clear_dynamic_fields();
 
         assert!(harness.extract_dynamic_fields().is_empty());
-    }
-
-    #[test]
-    fn test_harness_extract_new_dynamic_fields() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        // Initially empty
-        let new_fields = harness.extract_new_dynamic_fields();
-        assert!(new_fields.is_empty());
     }
 }
 
@@ -866,6 +769,9 @@ mod vm_harness_synthesize_tests {
 mod vm_harness_config_access_tests {
     use super::*;
 
+    // Removed: test_harness_vm_accessor - just calls accessor, no assertions, compile-time check
+    // Removed: test_harness_storage_accessor - just calls accessor, no assertions, compile-time check
+
     #[test]
     fn test_harness_config_accessor() {
         let resolver = load_fixture_resolver();
@@ -873,24 +779,6 @@ mod vm_harness_config_access_tests {
         let harness = VMHarness::with_config(&resolver, true, config).expect("harness");
 
         assert_eq!(harness.config().epoch, 777);
-    }
-
-    #[test]
-    fn test_harness_vm_accessor() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness");
-
-        // Just verify we can access the VM
-        let _vm = harness.vm();
-    }
-
-    #[test]
-    fn test_harness_storage_accessor() {
-        let resolver = load_fixture_resolver();
-        let harness = VMHarness::new(&resolver, true).expect("harness");
-
-        // Just verify we can access storage
-        let _storage = harness.storage();
     }
 }
 

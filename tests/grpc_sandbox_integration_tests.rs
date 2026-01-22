@@ -602,3 +602,77 @@ async fn test_grpc_stream_interruption_handling() {
     drop(stream);
     println!("Stream dropped cleanly");
 }
+
+/// Test handling of invalid object ID formats.
+#[tokio::test]
+#[ignore = "requires network access to Sui mainnet"]
+async fn test_grpc_invalid_object_id_handling() {
+    let endpoint = require_grpc_endpoint!();
+    let client = GrpcClient::new(&endpoint).await.expect("connect");
+
+    // Test with obviously invalid object ID
+    let result = client.get_object("not-a-valid-object-id").await;
+
+    // Should not panic - should return None or an error
+    match result {
+        Ok(None) => println!("Invalid ID returned None (expected)"),
+        Ok(Some(_)) => panic!("Should not find object with invalid ID"),
+        Err(e) => println!("Invalid ID returned error (expected): {}", e),
+    }
+}
+
+/// Test handling of non-existent object.
+#[tokio::test]
+#[ignore = "requires network access to Sui mainnet"]
+async fn test_grpc_nonexistent_object_handling() {
+    let endpoint = require_grpc_endpoint!();
+    let client = GrpcClient::new(&endpoint).await.expect("connect");
+
+    // Use a valid-looking but non-existent object ID (all zeros except last byte)
+    let fake_id = "0x0000000000000000000000000000000000000000000000000000000000000099";
+    let result = client.get_object(fake_id).await;
+
+    // Should return None, not an error (object simply doesn't exist)
+    match result {
+        Ok(None) => println!("Non-existent object returned None (expected)"),
+        Ok(Some(_)) => panic!("Should not find non-existent object"),
+        Err(e) => {
+            // Some endpoints may return an error for non-existent objects
+            println!("Non-existent object returned error: {}", e);
+        }
+    }
+}
+
+/// Test handling of invalid transaction digest.
+#[tokio::test]
+#[ignore = "requires network access to Sui mainnet"]
+async fn test_grpc_invalid_transaction_digest_handling() {
+    let endpoint = require_grpc_endpoint!();
+    let client = GrpcClient::new(&endpoint).await.expect("connect");
+
+    // Invalid digest (wrong format)
+    let result = client.get_transaction("invalid-digest-format").await;
+
+    match result {
+        Ok(None) => println!("Invalid digest returned None (expected)"),
+        Ok(Some(_)) => panic!("Should not find transaction with invalid digest"),
+        Err(e) => println!("Invalid digest returned error (expected): {}", e),
+    }
+}
+
+/// Test handling of invalid checkpoint number.
+#[tokio::test]
+#[ignore = "requires network access to Sui mainnet"]
+async fn test_grpc_future_checkpoint_handling() {
+    let endpoint = require_grpc_endpoint!();
+    let client = GrpcClient::new(&endpoint).await.expect("connect");
+
+    // Request a checkpoint far in the future (should not exist)
+    let result = client.get_checkpoint(u64::MAX - 1).await;
+
+    match result {
+        Ok(None) => println!("Future checkpoint returned None (expected)"),
+        Ok(Some(_)) => panic!("Should not find checkpoint that doesn't exist yet"),
+        Err(e) => println!("Future checkpoint returned error (expected): {}", e),
+    }
+}

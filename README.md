@@ -20,10 +20,10 @@ Think of it as a local Move execution sandbox with mainnet-grade fidelity.
 # Build
 cargo build --release
 
-# Replay a recent mainnet transaction locally
-./target/release/sui_move_interface_extractor tx-replay <TRANSACTION_DIGEST>
+# Run a self-contained example (no cache needed!)
+cargo run --example deepbook_replay
 
-# Interactive mode (JSON over stdin/stdout)
+# Interactive sandbox mode (JSON over stdin/stdout)
 ./target/release/sui_move_interface_extractor sandbox-exec --interactive
 
 # List functions in a module
@@ -31,16 +31,94 @@ echo '{"action": "list_functions", "package_id": "0x2", "module": "coin"}' | \
   ./target/release/sui_move_interface_extractor sandbox-exec --input - --output -
 ```
 
-## Getting Started: Cetus DEX Swap Replay
+## Examples (Recommended Starting Point)
 
-This walkthrough demonstrates replaying a real Cetus DEX swap transaction locally. This is a complete end-to-end example that verifies your setup works correctly.
+The `examples/` directory contains **self-contained, cache-free** examples that demonstrate historical transaction replay. These are the best way to get started - they fetch all data fresh via gRPC, require no pre-cached data, and show the complete workflow from transaction fetching to local execution.
 
-**Transaction:** `7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp` (LEIA → SUI swap)
+### Running the Examples
+
+```bash
+# 1. Set up your Surflux API key (get one at https://surflux.dev)
+echo "SURFLUX_API_KEY=your-api-key" > .env
+
+# 2. Run any example
+cargo run --example deepbook_replay    # DeepBook flash loan swaps
+cargo run --example cetus_swap         # Cetus AMM swap
+cargo run --example scallop_deposit    # Scallop lending deposit
+cargo run --example inspect_df         # Framework module inspector (no API key needed)
+```
+
+### Available Examples
+
+| Example | Protocol | Description |
+|---------|----------|-------------|
+| `deepbook_replay` | DeepBook | Flash loan swap transactions - demonstrates success/failure replay |
+| `cetus_swap` | Cetus CLMM | AMM swap with dynamic field children (skip_list nodes) |
+| `scallop_deposit` | Scallop | Lending protocol deposit with version-locked contracts |
+| `inspect_df` | Framework | Diagnostic tool for inspecting dynamic field module bytecode |
+
+### Why Cache-Free Examples?
+
+Each example is **completely self-contained**:
+
+1. **No Cache Required** - Fetches all data fresh via gRPC, no `.tx-cache/` directory needed
+2. **Self-Documenting** - All helper functions are defined locally with documentation
+3. **Portable** - Works on any machine with a Surflux API key
+4. **Robust to Upgrades** - Follows package linkage tables to handle protocol upgrades
+5. **Educational** - Step-by-step output shows exactly what's happening
+
+### Key Techniques Demonstrated
+
+The examples showcase the complete historical replay workflow:
+
+```text
+Step 1: Connect to Surflux gRPC
+Step 2: Fetch transaction via gRPC
+Step 3: Collect historical object versions (unchanged_loaded_runtime_objects)
+Step 4: Fetch objects at exact historical versions
+Step 5: Fetch packages with transitive dependencies (following linkage tables)
+Step 6: Build transaction structure
+Step 7: Build module resolver with address aliasing
+Step 8: Create VM harness with correct timestamp
+Step 9: Set up on-demand child fetcher for dynamic fields
+Step 10: Register input objects
+Step 11: Execute and compare results
+```
+
+### Example Output
+
+```text
+╔══════════════════════════════════════════════════════════════════════╗
+║      DeepBook Flash Loan Replay - Pure gRPC (No Cache)               ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+Step 1: Connecting to Surflux gRPC...
+   ✓ Connected to Surflux gRPC
+
+Step 2: Fetching transaction via gRPC...
+   Digest: DwrqFzBSVHRAqeG4cp1Ri3Gw3m1cDUcBmfzRtWSTYFPs
+   Commands: 17
+   Status: Success
+
+...
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                         VALIDATION SUMMARY                           ║
+╠══════════════════════════════════════════════════════════════════════╣
+║ ✓ Flash Loan Swap           | local: SUCCESS | expected: SUCCESS     ║
+║ ✓ Flash Loan Arb            | local: FAILURE | expected: FAILURE     ║
+╠══════════════════════════════════════════════════════════════════════╣
+║ ✓ ALL TRANSACTIONS MATCH EXPECTED OUTCOMES                           ║
+╚══════════════════════════════════════════════════════════════════════╝
+```
+
+## Getting Started: Local Move Execution
+
+This walkthrough demonstrates the core capabilities of the local Move execution sandbox.
 
 **Prerequisites:**
 
 - Rust 1.75+ installed
-- Network access to `archive.mainnet.sui.io:443` (for fetching historical state)
 
 ### Step 1: Build and Verify
 
@@ -54,45 +132,59 @@ cargo build --release
 ./target/release/sui_move_interface_extractor --help
 ```
 
-### Step 2: Run the Cetus Swap Replay Test
-
-The repository includes a pre-cached Cetus swap transaction and a comprehensive integration test:
+### Step 2: Run the Core Tests
 
 ```bash
-# Run the Cetus swap replay test (fetches historical state from gRPC archive)
-cargo test --test execute_cetus_swap test_replay_cetus_with_grpc_archive_data -- --nocapture
+# Run the sandbox replay integration tests
+cargo test --test sandbox_replay_integration_tests -- --nocapture
+
+# Run the state persistence tests
+cargo test --test state_persistence_tests -- --nocapture
 ```
 
 **Expected output:**
 
 ```text
-✓ TRANSACTION REPLAYED SUCCESSFULLY WITH gRPC ARCHIVE DATA!
-test test_replay_cetus_with_grpc_archive_data ... ok
+test test_simulation_environment_create_coin ... ok
+test test_ptb_split_coins ... ok
+test test_ptb_merge_coins ... ok
+...
+test result: ok. 17 passed; 0 failed; 0 ignored
 ```
 
-### Step 3: Verify Your Setup (One Command)
+### Step 3: Interactive Sandbox
 
-Run the quickstart validation test to confirm everything works:
+Start the interactive sandbox to explore Move modules:
 
 ```bash
-cargo test --test quickstart_validation -- --nocapture
+./target/release/sui_move_interface_extractor sandbox-exec --interactive
 ```
 
-This test validates:
+Then send JSON commands:
 
-- The cached transaction data exists and loads correctly
-- gRPC archive connectivity (fetches historical object state)
-- Package loading and address aliasing
-- Dynamic field resolution (skip_list nodes)
-- Full PTB execution with Move VM
+```json
+{"action": "list_functions", "package_id": "0x2", "module": "coin"}
+{"action": "get_function_info", "package_id": "0x2", "module": "coin", "function": "value"}
+```
 
 ### What's Happening Under the Hood
 
-1. **Load cached transaction** from `.tx-cache/7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp.json`
-2. **Fetch historical Pool state** from Sui's gRPC archive at the transaction-time version
-3. **Pre-load dynamic field children** (skip_list nodes for tick management)
-4. **Execute the PTB locally** with the real Move VM
-5. **Verify success** - the swap executes identically to mainnet
+1. **Load Sui framework** - The real Move bytecode from Sui's standard library
+2. **Create simulation environment** - A local Move VM with configurable state
+3. **Execute PTB commands** - SplitCoins, MergeCoins, MoveCall, TransferObjects
+4. **Track effects** - Objects created, mutated, deleted, and events emitted
+
+### Data Fetching
+
+The library supports fetching data from Sui mainnet via GraphQL:
+
+```rust
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
+
+let fetcher = DataFetcher::mainnet();
+let package = fetcher.fetch_package("0x2")?;  // Sui framework
+let object = fetcher.fetch_object("0x6")?;    // Clock object
+```
 
 ### Troubleshooting
 
@@ -102,7 +194,7 @@ This test validates:
 | `gRPC connection failed` | Check network connectivity to `archive.mainnet.sui.io:443` |
 | `Package version check failed` | The test uses upgraded packages with address aliasing |
 
-For detailed technical documentation, see [Case Study: Cetus LEIA/SUI Swap](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md).
+For detailed technical documentation, see [DeFi Case Studies](docs/defi-case-study/README.md).
 
 ## What's Real vs Simulated
 
@@ -212,17 +304,16 @@ See [Data Fetching Guide](docs/guides/DATA_FETCHING.md) for details.
 
 ## Python Integration
 
-Native Python bindings via PyO3 for simulation and benchmarking:
+Native Python bindings via PyO3:
 
 ```python
-from sui_sandbox import SuiSandbox
+from sui_sandbox import SandboxEnvironment
 
-sandbox = SuiSandbox()
-sandbox.load_package("0x2")
-result = sandbox.execute_ptb(commands=[...])
+env = SandboxEnvironment()
+result = env.execute({"action": "list_modules"})
 ```
 
-The `benchmark/` directory contains the `smi_bench` Python package for LLM evaluation and type inhabitation benchmarks.
+Build with `maturin build --release` from the `crates/pyo3-bindings` directory.
 
 ## CLI Commands
 
@@ -336,13 +427,12 @@ See [src/grpc/README.md](src/grpc/README.md) for detailed version management doc
 
 | Category | Documents |
 |----------|-----------|
-| **Getting Started** | [Quickstart](docs/getting-started/QUICKSTART.md) · [Troubleshooting](docs/getting-started/TROUBLESHOOTING.md) |
-| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) · [Local Sandbox](docs/guides/LOCAL_BYTECODE_SANDBOX.md) |
+| **Getting Started** | [Quickstart](docs/getting-started/QUICKSTART.md) |
+| **Guides** | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) · [LLM Integration](docs/guides/LLM_INTEGRATION.md) · [Data Fetching](docs/guides/DATA_FETCHING.md) · [Local Sandbox](docs/guides/LOCAL_BYTECODE_SANDBOX.md) |
 | **Reference** | [CLI Reference](docs/reference/CLI_REFERENCE.md) · [Sandbox API](docs/reference/SANDBOX_API.md) · [Error Codes](docs/reference/ERROR_CODES.md) · [PTB Schema](docs/reference/PTB_SCHEMA.md) · [JSON Schema](docs/reference/SCHEMA.md) |
-| **Methodology** | [Methodology](docs/METHODOLOGY.md) · [Insights](docs/INSIGHTS.md) · [Type Inhabitation Spec](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) |
-| **Case Studies** | [Cetus Swap Replay](docs/defi-case-study/01_CETUS_SWAP_LEIA_SUI.md) · [Jackson SUI Swap](docs/defi-case-study/02_CETUS_SWAP_JACKSON_SUI.md) · [Complex TX Replay](docs/defi-case-study/03_COMPLEX_TX_REPLAY.md) |
-| **Design** | [Architecture](ARCHITECTURE.md) · [Contributing](docs/CONTRIBUTING.md) · [Migration](docs/MIGRATION.md) |
-| **Benchmark** | [Getting Started](benchmark/GETTING_STARTED.md) · [Datasets](benchmark/DATASETS.md) · [Architecture](benchmark/docs/ARCHITECTURE.md) |
+| **Methodology** | [Methodology](docs/METHODOLOGY.md) · [Type Inhabitation Spec](docs/NO_CHAIN_TYPE_INHABITATION_SPEC.md) |
+| **Case Studies** | [Overview](docs/defi-case-study/README.md) · [Cetus AMM](docs/defi-case-study/CETUS.md) · [DeepBook CLOB](docs/defi-case-study/DEEPBOOK.md) · [Lending Protocols](docs/defi-case-study/LENDING_PROTOCOLS.md) · [Bluefin Perpetuals](docs/defi-case-study/BLUEFIN_PERPETUALS.md) |
+| **Design** | [Architecture](docs/ARCHITECTURE.md) · [Contributing](docs/CONTRIBUTING.md) · [Migration](docs/MIGRATION.md) |
 
 ## Limitations
 

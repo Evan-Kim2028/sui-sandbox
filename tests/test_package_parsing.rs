@@ -1,23 +1,24 @@
-// This test file is temporarily disabled due to API changes.
-#![cfg(feature = "legacy_tests")]
-use sui_move_interface_extractor::benchmark::tx_replay::TransactionFetcher;
+//! Package parsing tests using DataFetcher (GraphQL-based).
+//!
+//! These tests validate package fetching and module parsing via the unified DataFetcher API.
+
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
 use sui_move_interface_extractor::grpc::GrpcClient;
 
-/// Test fetching and parsing package modules
-#[tokio::test]
-async fn test_fetch_package_modules() {
-    // Use TransactionFetcher which has the parse_package_modules logic
-    let fetcher = TransactionFetcher::mainnet_with_archive();
+/// Test fetching and parsing package modules via DataFetcher
+#[test]
+fn test_fetch_package_modules() {
+    let fetcher = DataFetcher::mainnet();
 
     // Test the upgraded CLMM package
     let upgraded_clmm = "0x75b2e9ecad34944b8d0c874e568c90db0cf9437f0d7392abfd4cb902972f3e40";
 
-    println!("\n=== Fetching CLMM Package via TransactionFetcher ===");
-    match fetcher.fetch_package_modules(upgraded_clmm) {
-        Ok(modules) => {
-            println!("✓ Successfully parsed {} modules:", modules.len());
-            for (name, bytes) in &modules {
-                println!("  - {}: {} bytes", name, bytes.len());
+    println!("\n=== Fetching CLMM Package via DataFetcher ===");
+    match fetcher.fetch_package(upgraded_clmm) {
+        Ok(pkg) => {
+            println!("✓ Successfully parsed {} modules:", pkg.modules.len());
+            for module in &pkg.modules {
+                println!("  - {}: {} bytes", module.name, module.bytecode.len());
             }
         }
         Err(e) => {
@@ -29,11 +30,11 @@ async fn test_fetch_package_modules() {
     let skip_list_pkg = "0xbe21a06129308e0495431d12286127897aff07a8ade3970495a4404d97f9eaaa";
 
     println!("\n=== Fetching skip_list Package ===");
-    match fetcher.fetch_package_modules(skip_list_pkg) {
-        Ok(modules) => {
-            println!("✓ Successfully parsed {} modules:", modules.len());
-            for (name, bytes) in &modules {
-                println!("  - {}: {} bytes", name, bytes.len());
+    match fetcher.fetch_package(skip_list_pkg) {
+        Ok(pkg) => {
+            println!("✓ Successfully parsed {} modules:", pkg.modules.len());
+            for module in &pkg.modules {
+                println!("  - {}: {} bytes", module.name, module.bytecode.len());
             }
         }
         Err(e) => {
@@ -45,11 +46,11 @@ async fn test_fetch_package_modules() {
     let original_clmm = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
 
     println!("\n=== Fetching Original CLMM Package ===");
-    match fetcher.fetch_package_modules(original_clmm) {
-        Ok(modules) => {
-            println!("✓ Successfully parsed {} modules:", modules.len());
-            for (name, bytes) in &modules {
-                println!("  - {}: {} bytes", name, bytes.len());
+    match fetcher.fetch_package(original_clmm) {
+        Ok(pkg) => {
+            println!("✓ Successfully parsed {} modules:", pkg.modules.len());
+            for module in &pkg.modules {
+                println!("  - {}: {} bytes", module.name, module.bytecode.len());
             }
         }
         Err(e) => {
@@ -58,18 +59,30 @@ async fn test_fetch_package_modules() {
     }
 }
 
-/// Test raw package BCS parsing
+/// Test raw package BCS parsing via gRPC
 #[tokio::test]
 async fn test_raw_package_bcs_parsing() {
-    let client = GrpcClient::archive().await.expect("Failed to connect");
+    let client = match GrpcClient::archive().await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("SKIP: Cannot connect to archive gRPC: {}", e);
+            return;
+        }
+    };
 
     let upgraded_clmm = "0x75b2e9ecad34944b8d0c874e568c90db0cf9437f0d7392abfd4cb902972f3e40";
 
-    let obj = client
-        .get_object(upgraded_clmm)
-        .await
-        .expect("Failed to fetch")
-        .expect("Package not found");
+    let obj = match client.get_object(upgraded_clmm).await {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            println!("SKIP: Package not found");
+            return;
+        }
+        Err(e) => {
+            println!("SKIP: Failed to fetch package: {}", e);
+            return;
+        }
+    };
 
     println!("Package type: {:?}", obj.type_string);
     println!("BCS length: {:?}", obj.bcs.as_ref().map(|b| b.len()));

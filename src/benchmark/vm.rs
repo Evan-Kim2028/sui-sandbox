@@ -37,6 +37,8 @@ use std::sync::{Arc, Mutex};
 use crate::benchmark::natives::{build_native_function_table, EmittedEvent, MockNativeState};
 use crate::benchmark::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
 use crate::benchmark::resolver::LocalModuleResolver;
+use crate::benchmark::sui_object_runtime;
+use sui_protocol_config::ProtocolConfig;
 
 /// Configuration for the simulation sandbox.
 ///
@@ -85,6 +87,11 @@ pub struct SimulationConfig {
     /// Enforce immutable object constraints (default: false for backwards compat).
     /// When true, mutations to immutable objects will fail.
     pub enforce_immutability: bool,
+
+    /// Use Sui's actual native implementations (default: false).
+    /// When true, uses sui-move-natives for dynamic field operations which provides
+    /// 1:1 parity with on-chain behavior. When false, uses our custom mock natives.
+    pub use_sui_natives: bool,
 }
 
 impl Default for SimulationConfig {
@@ -101,6 +108,7 @@ impl Default for SimulationConfig {
             epoch: 100,                  // Default epoch
             gas_budget: None,            // Unlimited by default
             enforce_immutability: false, // Backwards compatible default
+            use_sui_natives: false,      // Use custom natives by default
         }
     }
 }
@@ -109,6 +117,15 @@ impl SimulationConfig {
     /// Create a new default configuration.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a config with Sui's actual natives enabled.
+    /// This provides 1:1 parity with on-chain behavior for dynamic field operations.
+    pub fn with_sui_natives() -> Self {
+        Self {
+            use_sui_natives: true,
+            ..Default::default()
+        }
     }
 
     /// Create a strict configuration (more realistic behavior).
@@ -125,6 +142,7 @@ impl SimulationConfig {
             epoch: 100,
             gas_budget: Some(50_000_000_000), // 50 SUI default budget
             enforce_immutability: true,       // Strict mode enforces immutability
+            use_sui_natives: false,           // Backwards compatible
         }
     }
 
@@ -994,6 +1012,12 @@ pub struct VMHarness<'a> {
     /// Address aliases for package upgrades (bytecode address -> runtime/storage address).
     /// These are passed to SharedObjectRuntime for type tag rewriting in dynamic field ops.
     address_aliases: std::collections::HashMap<AccountAddress, AccountAddress>,
+    /// Protocol config for Sui natives mode (cached to avoid recreating)
+    #[allow(dead_code)]
+    protocol_config: Option<ProtocolConfig>,
+    /// Sui native extensions (only used when use_sui_natives is true)
+    /// This is created lazily when a child fetcher is set.
+    sui_extensions: Option<sui_object_runtime::SuiNativeExtensions>,
 }
 
 impl<'a> VMHarness<'a> {
@@ -1012,11 +1036,29 @@ impl<'a> VMHarness<'a> {
         let mut native_state = MockNativeState::new();
         native_state.sender = AccountAddress::new(config.sender_address);
         native_state.epoch = config.epoch;
-        native_state.epoch_timestamp_ms = config.tx_timestamp_ms.unwrap_or(config.clock_base_ms);
+        let clock_base = config.tx_timestamp_ms.unwrap_or(config.clock_base_ms);
+        native_state.epoch_timestamp_ms = clock_base;
+        // Also set the MockClock's base to the configured timestamp
+        // This ensures clock::timestamp_ms() returns the correct time
+        native_state.clock = crate::benchmark::natives::MockClock::with_base(clock_base);
         let native_state = Arc::new(native_state);
 
-        // Build native function table with move-stdlib + mock Sui natives
-        let natives = build_native_function_table(native_state.clone());
+        // Build native function table based on configuration
+        let protocol_config = if config.use_sui_natives {
+            Some(ProtocolConfig::get_for_max_version_UNSAFE())
+        } else {
+            None
+        };
+
+        let natives = if let Some(ref pc) = protocol_config {
+            // Use Sui's actual native implementations for 1:1 parity
+            // Note: This provides correct dynamic field behavior but requires
+            // extensions to be set up per-session (ObjectRuntime, TransactionContext, etc.)
+            sui_object_runtime::build_sui_native_function_table(pc, false)
+        } else {
+            // Use our custom mock natives (default, backwards compatible)
+            build_native_function_table(native_state.clone())
+        };
 
         let vm = MoveVM::new(natives).map_err(|e| anyhow!("failed to create VM: {:?}", e))?;
         let trace = Arc::new(Mutex::new(ExecutionTrace::new()));
@@ -1030,6 +1072,8 @@ impl<'a> VMHarness<'a> {
             child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(std::collections::HashSet::new())),
             address_aliases: std::collections::HashMap::new(),
+            protocol_config,
+            sui_extensions: None,
         })
     }
 
@@ -1049,11 +1093,78 @@ impl<'a> VMHarness<'a> {
     /// the object's type and BCS bytes if available.
     pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
         self.child_fetcher = Some(Arc::new(fetcher));
+
+        // If using Sui natives mode, also set up Sui extensions
+        if self.config.use_sui_natives {
+            // Convert the ChildFetcherFn to a ChildFetchFn for Sui runtime
+            // The Sui version needs (type_tag, bytes, version, parent_id)
+            let fetcher_arc = self.child_fetcher.clone().unwrap();
+            let sui_fetcher: sui_object_runtime::ChildFetchFn =
+                std::sync::Arc::new(move |child_id: sui_types::base_types::ObjectID| {
+                    let addr = AccountAddress::new(child_id.into_bytes());
+                    fetcher_arc(addr).map(|(type_tag, bytes)| {
+                        // Use default version and parent
+                        (type_tag, bytes, 1u64, child_id)
+                    })
+                });
+
+            // Create Sui runtime config from simulation config
+            let sui_config = sui_object_runtime::SuiRuntimeConfig {
+                sender: AccountAddress::new(self.config.sender_address),
+                epoch: self.config.epoch,
+                epoch_timestamp_ms: self
+                    .config
+                    .tx_timestamp_ms
+                    .unwrap_or(self.config.clock_base_ms),
+                gas_price: 1000,
+                gas_budget: self.config.gas_budget.unwrap_or(50_000_000_000),
+                sponsor: None,
+            };
+
+            self.sui_extensions = Some(sui_object_runtime::SuiNativeExtensions::new(
+                sui_fetcher,
+                sui_config,
+            ));
+        }
     }
 
     /// Clear the child fetcher callback.
     pub fn clear_child_fetcher(&mut self) {
         self.child_fetcher = None;
+    }
+
+    /// Register an input object for Sui natives mode.
+    /// This is required for objects whose children will be accessed via dynamic fields.
+    /// The owner should match the object's actual owner (AddressOwner, ObjectOwner, or Shared).
+    pub fn add_sui_input_object(
+        &self,
+        object_id: AccountAddress,
+        version: u64,
+        owner: sui_types::object::Owner,
+    ) {
+        if let Some(ref sui_ext) = self.sui_extensions {
+            sui_ext.add_input_object(
+                sui_types::base_types::ObjectID::from(object_id),
+                version,
+                owner,
+            );
+        }
+    }
+
+    /// Register multiple input objects for Sui natives mode.
+    pub fn add_sui_input_objects(
+        &self,
+        objects: &[(AccountAddress, u64, sui_types::object::Owner)],
+    ) {
+        if let Some(ref sui_ext) = self.sui_extensions {
+            for (id, version, owner) in objects {
+                sui_ext.add_input_object(
+                    sui_types::base_types::ObjectID::from(*id),
+                    *version,
+                    owner.clone(),
+                );
+            }
+        }
     }
 
     /// Get all child object IDs that were accessed during execution.
@@ -1166,7 +1277,18 @@ impl<'a> VMHarness<'a> {
     /// This allows dynamic field operations to persist across multiple MoveCall executions.
     fn create_extensions(&self) -> NativeContextExtensions<'static> {
         let mut extensions = NativeContextExtensions::default();
-        // Use SharedObjectRuntime with shared access tracking
+
+        // If using Sui natives mode and we have Sui extensions, use those
+        if self.config.use_sui_natives {
+            if let Some(ref sui_ext) = self.sui_extensions {
+                sui_ext.add_to_extensions(&mut extensions);
+                return extensions;
+            }
+            // Fall through to custom runtime if no Sui extensions set up yet
+            eprintln!("[VMHarness] Warning: use_sui_natives=true but no Sui extensions configured");
+        }
+
+        // Use SharedObjectRuntime with shared access tracking (default path)
         let mut shared_runtime = SharedObjectRuntime::with_access_tracking(
             self.shared_df_state.clone(),
             self.accessed_children.clone(),

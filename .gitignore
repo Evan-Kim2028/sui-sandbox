@@ -4,51 +4,27 @@
 !/results/README.md
 !/results/*_submission_summary.json
 
-# Python benchmark harness (local artifacts only)
-/benchmark/.venv/
-/benchmark/.pytest_cache/
-/benchmark/__pycache__/
-/benchmark/**/__pycache__/
-/benchmark/data/
-/benchmark/results/*
-!/benchmark/results/README.md
-!/benchmark/results/*_example.json
-/benchmark/.tmp/
-/benchmark/.python-version
+# Environment files
 .env
 .env.*
+!.env.example
 .envrc
-/benchmark/.env
-/benchmark/.env.*
-!/benchmark/.env.example
+
+# Python
 .eggs/
 *.egg-info/
 .pytest_cache/
 __pycache__/
+*.pyc
+
+# macOS
 .DS_Store
 
 # Local logs and specs
 /logs/
 /specs/
 
-# Benchmark
-benchmark/.venv
-benchmark/.uv-cache
-benchmark/.docker_test_corpus
-benchmark/.docker_test_results
-benchmark/.docker_test_logs
-benchmark/.tmp*
-benchmark/logs/*
-benchmark/results/a2a/*
-benchmark/tmp_dbg*
-
-# Test artifacts
-benchmark/real_world_test_results_*.json
-benchmark/corpus/
-
 # Transaction cache and experiment data
 .tx-cache/
 deepbook_cache/
 *.jsonl
-benchmark/experiments/
-benchmark/llm_logs/

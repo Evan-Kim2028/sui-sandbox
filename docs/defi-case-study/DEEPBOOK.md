@@ -13,7 +13,7 @@ This case study demonstrates **PTB replay and what-if simulation** using DeepBoo
 | **What-If Simulation** | Modify inputs/objects to test alternative scenarios |
 | **PTB Command Modification** | Rewrite transaction commands arbitrarily |
 
-**Test File**: `tests/execute_deepbook_swap.rs`
+**Test File**: `tests/execute_deepbook.rs`
 
 ---
 
@@ -455,45 +455,32 @@ When modifying state, ensure consistency:
 
 ## Running the Tests
 
-### Basic Replay
+### Quick Start (All Tests)
 
 ```bash
-export SURFLUX_API_KEY=your_key_here
+# Run all 8 DeepBook tests from scratch (no cache needed, no API keys required)
+cargo test --test execute_deepbook -- --nocapture
 
-# Sandbox validation (success vs failure contrast)
-cargo test --test execute_deepbook_swap test_sandbox_success_vs_failure_contrast -- --ignored --nocapture
+# Clear cache first if you want a completely fresh run
+rm -rf .tx-cache && cargo test --test execute_deepbook -- --nocapture
+```
 
-# DeepBook replay tests
-cargo test --test execute_deepbook_swap test_deepbook_two_phase_replay -- --ignored --nocapture
+**Expected Output**: All 8 tests pass
 
-# Test individual transactions by index:
-#   0 = cancel_order
-#   1 = flashloan_arb_failed (for what-if simulation)
-#   2 = flashloan_swap_success (for success/failure contrast)
-DEEPBOOK_TX_INDEX=0 cargo test --test execute_deepbook_swap test_deepbook_two_phase_replay -- --ignored --nocapture
-```text
-
-### What-If Simulation
+### Individual Tests
 
 ```bash
-# Level 1: Input value modification - analyze pure inputs
-cargo test --test execute_deepbook_swap test_what_if_simulation_modified_loan -- --ignored --nocapture
+# Order operations
+cargo test --test execute_deepbook test_replay_deepbook_place_limit_order -- --nocapture
+cargo test --test execute_deepbook test_replay_deepbook_cancel_order -- --nocapture
 
-# Level 1: Execute with modified loan amounts
-cargo test --test execute_deepbook_swap test_what_if_execute_modified_loan -- --ignored --nocapture
+# Flash loan operations
+cargo test --test execute_deepbook test_replay_flashloan_swap_success -- --nocapture
+cargo test --test execute_deepbook test_replay_flashloan_arb_failed -- --nocapture
 
-# Level 2: Object state modification - shows BCS bytes and layout
-cargo test --test execute_deepbook_swap test_what_if_object_state_modification -- --ignored --nocapture
-
-# Level 3: PTB command modification (make failed TX succeed)
-cargo test --test execute_deepbook_swap test_ptb_command_modification -- --ignored --nocapture
-```text
-
-### Package Loading (No API Key)
-
-```bash
-cargo test --test execute_deepbook_swap test_deepbook_package_loading -- --nocapture
-```text
+# Success vs Failure contrast (validates sandbox accuracy)
+cargo test --test execute_deepbook test_sandbox_success_vs_failure_contrast -- --nocapture
+```
 
 ---
 

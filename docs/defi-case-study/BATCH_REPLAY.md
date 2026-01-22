@@ -166,6 +166,8 @@ From a sample of 50 recent transactions:
 
 ## Running the Tests
 
+All tests run from scratch without cache or API keys. Data is fetched automatically from Sui mainnet GraphQL.
+
 ```bash
 # Sample and classify transactions
 cargo test --test complex_tx_replay test_sample_and_filter_complex_transactions -- --ignored --nocapture

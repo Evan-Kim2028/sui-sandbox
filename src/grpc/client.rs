@@ -448,6 +448,8 @@ pub struct GrpcTransaction {
     pub inputs: Vec<GrpcInput>,
     pub commands: Vec<GrpcCommand>,
     pub status: Option<String>,
+    /// Detailed execution error information if the transaction failed.
+    pub execution_error: Option<GrpcExecutionError>,
     /// Dynamic field children loaded but not modified during execution.
     /// Format: (object_id, version)
     pub unchanged_loaded_runtime_objects: Vec<(String, u64)>,
@@ -457,6 +459,41 @@ pub struct GrpcTransaction {
     /// Objects created during execution.
     /// Format: (object_id, output_version)
     pub created_objects: Vec<(String, u64)>,
+    /// Consensus objects (shared objects) that were read but not modified.
+    /// Format: (object_id, version) - this is the ACTUAL version used during execution,
+    /// not the initial_shared_version from the transaction input.
+    pub unchanged_consensus_objects: Vec<(String, u64)>,
+}
+
+/// Detailed execution error from a failed transaction.
+#[derive(Debug, Clone)]
+pub struct GrpcExecutionError {
+    /// Human-readable error description.
+    pub description: Option<String>,
+    /// Command index where the error occurred.
+    pub command: Option<u64>,
+    /// Error kind (e.g., "MOVE_ABORT", "INSUFFICIENT_GAS").
+    pub kind: Option<String>,
+    /// Move abort details if this was a Move abort.
+    pub move_abort: Option<GrpcMoveAbort>,
+}
+
+/// Move abort information from a failed transaction.
+#[derive(Debug, Clone)]
+pub struct GrpcMoveAbort {
+    /// The abort code.
+    pub abort_code: u64,
+    /// Package where the abort occurred.
+    pub package: Option<String>,
+    /// Module where the abort occurred.
+    pub module: Option<String>,
+    /// Function name where the abort occurred.
+    pub function_name: Option<String>,
+    /// If this is a "clever error", the constant name used for the abort code.
+    /// e.g., "E_INSUFFICIENT_BALANCE"
+    pub constant_name: Option<String>,
+    /// The rendered error message from the clever error.
+    pub rendered_message: Option<String>,
 }
 
 impl GrpcTransaction {
@@ -493,6 +530,54 @@ impl GrpcTransaction {
                 "failure".to_string()
             }
         });
+
+        // Parse execution error details including CleverError
+        let execution_error = effects
+            .and_then(|e| e.status.as_ref())
+            .and_then(|s| s.error.as_ref())
+            .map(|err| {
+                use proto::execution_error::{ErrorDetails, ExecutionErrorKind};
+
+                let kind = err.kind.and_then(|k| {
+                    ExecutionErrorKind::try_from(k)
+                        .ok()
+                        .map(|k| format!("{:?}", k))
+                });
+
+                // Parse MoveAbort details including CleverError
+                let move_abort = err.error_details.as_ref().and_then(|details| {
+                    if let ErrorDetails::Abort(abort) = details {
+                        let location = abort.location.as_ref();
+                        let clever = abort.clever_error.as_ref();
+
+                        Some(GrpcMoveAbort {
+                            abort_code: abort.abort_code.unwrap_or(0),
+                            package: location.and_then(|l| l.package.clone()),
+                            module: location.and_then(|l| l.module.clone()),
+                            function_name: location.and_then(|l| l.function_name.clone()),
+                            constant_name: clever.and_then(|c| c.constant_name.clone()),
+                            rendered_message: clever.and_then(|c| {
+                                c.value.as_ref().and_then(|v| {
+                                    if let proto::clever_error::Value::Rendered(s) = v {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }),
+                        })
+                    } else {
+                        None
+                    }
+                });
+
+                GrpcExecutionError {
+                    description: err.description.clone(),
+                    command: err.command,
+                    kind,
+                    move_abort,
+                }
+            });
 
         // Extract unchanged_loaded_runtime_objects from effects
         let unchanged_loaded_runtime_objects = effects
@@ -551,6 +636,22 @@ impl GrpcTransaction {
             })
             .unwrap_or_default();
 
+        // Extract unchanged_consensus_objects (shared objects read but not modified)
+        // This is CRITICAL for replay - the version here is the ACTUAL version used during
+        // execution, not the initial_shared_version from the transaction input!
+        let unchanged_consensus_objects = effects
+            .map(|e| {
+                e.unchanged_consensus_objects
+                    .iter()
+                    .filter_map(|obj| {
+                        let object_id = obj.object_id.clone()?;
+                        let version = obj.version?;
+                        Some((object_id, version))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             digest: proto.digest.unwrap_or_default(),
             sender: tx.and_then(|t| t.sender.clone()).unwrap_or_default(),
@@ -561,9 +662,11 @@ impl GrpcTransaction {
             inputs,
             commands,
             status,
+            execution_error,
             unchanged_loaded_runtime_objects,
             changed_objects,
             created_objects,
+            unchanged_consensus_objects,
         }
     }
 
@@ -757,6 +860,14 @@ impl GrpcArgument {
     }
 }
 
+/// Package linkage entry mapping original_id -> upgraded_id
+#[derive(Debug, Clone)]
+pub struct GrpcLinkage {
+    pub original_id: String,
+    pub upgraded_id: String,
+    pub upgraded_version: u64,
+}
+
 /// A Sui object from gRPC.
 #[derive(Debug, Clone)]
 pub struct GrpcObject {
@@ -772,6 +883,9 @@ pub struct GrpcObject {
     /// Package modules (if this object is a package)
     /// Each tuple is (module_name, module_bytecode)
     pub package_modules: Option<Vec<(String, Vec<u8>)>>,
+    /// Package linkage table (if this object is a package)
+    /// Maps original package IDs to their upgraded storage IDs
+    pub package_linkage: Option<Vec<GrpcLinkage>>,
 }
 
 impl GrpcObject {
@@ -812,6 +926,23 @@ impl GrpcObject {
                 .collect()
         });
 
+        // Extract package linkage table if this is a package
+        let package_linkage = proto.package.as_ref().map(|pkg| {
+            pkg.linkage
+                .iter()
+                .filter_map(|l| {
+                    let original_id = l.original_id.clone()?;
+                    let upgraded_id = l.upgraded_id.clone()?;
+                    let upgraded_version = l.upgraded_version.unwrap_or(0);
+                    Some(GrpcLinkage {
+                        original_id,
+                        upgraded_id,
+                        upgraded_version,
+                    })
+                })
+                .collect()
+        });
+
         Self {
             object_id,
             version: proto.version.unwrap_or(0),
@@ -821,6 +952,7 @@ impl GrpcObject {
             bcs,
             bcs_full,
             package_modules,
+            package_linkage,
         }
     }
 }
@@ -921,6 +1053,456 @@ impl GrpcOwner {
             },
             Ok(OwnerKind::Immutable) => GrpcOwner::Immutable,
             _ => GrpcOwner::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // GrpcOwner parsing tests
+    // =========================================================================
+
+    #[test]
+    fn test_grpc_owner_from_proto_address() {
+        use proto::owner::OwnerKind;
+        let proto = proto::Owner {
+            kind: Some(OwnerKind::Address as i32),
+            address: Some("0x1234".to_string()),
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        match owner {
+            GrpcOwner::Address(addr) => assert_eq!(addr, "0x1234"),
+            _ => panic!("Expected Address owner"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_owner_from_proto_object() {
+        use proto::owner::OwnerKind;
+        let proto = proto::Owner {
+            kind: Some(OwnerKind::Object as i32),
+            address: Some("0xparent".to_string()),
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        match owner {
+            GrpcOwner::Object(parent) => assert_eq!(parent, "0xparent"),
+            _ => panic!("Expected Object owner"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_owner_from_proto_shared() {
+        use proto::owner::OwnerKind;
+        let proto = proto::Owner {
+            kind: Some(OwnerKind::Shared as i32),
+            address: None,
+            version: Some(42),
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        match owner {
+            GrpcOwner::Shared { initial_version } => assert_eq!(initial_version, 42),
+            _ => panic!("Expected Shared owner"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_owner_from_proto_immutable() {
+        use proto::owner::OwnerKind;
+        let proto = proto::Owner {
+            kind: Some(OwnerKind::Immutable as i32),
+            address: None,
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        assert!(matches!(owner, GrpcOwner::Immutable));
+    }
+
+    #[test]
+    fn test_grpc_owner_from_proto_unknown_kind() {
+        let proto = proto::Owner {
+            kind: Some(999), // Invalid kind
+            address: None,
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        assert!(matches!(owner, GrpcOwner::Unknown));
+    }
+
+    #[test]
+    fn test_grpc_owner_from_proto_none_kind() {
+        let proto = proto::Owner {
+            kind: None,
+            address: None,
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        // None defaults to 0 which is not a valid OwnerKind
+        assert!(matches!(owner, GrpcOwner::Unknown));
+    }
+
+    #[test]
+    fn test_grpc_owner_address_missing_defaults_empty() {
+        use proto::owner::OwnerKind;
+        let proto = proto::Owner {
+            kind: Some(OwnerKind::Address as i32),
+            address: None, // Missing address
+            version: None,
+        };
+        let owner = GrpcOwner::from_proto(&proto);
+        match owner {
+            GrpcOwner::Address(addr) => assert!(addr.is_empty()),
+            _ => panic!("Expected Address owner"),
+        }
+    }
+
+    // =========================================================================
+    // GrpcTransaction is_ptb tests
+    // =========================================================================
+
+    #[test]
+    fn test_grpc_transaction_is_ptb_with_commands() {
+        // Transaction with commands and sender - is a PTB
+        let tx = GrpcTransaction {
+            digest: "test".to_string(),
+            sender: "0x1".to_string(),
+            gas_budget: Some(1000),
+            gas_price: Some(1),
+            checkpoint: None,
+            timestamp_ms: None,
+            inputs: vec![],
+            commands: vec![GrpcCommand::MoveCall {
+                package: "0x2".to_string(),
+                module: "coin".to_string(),
+                function: "value".to_string(),
+                type_arguments: vec![],
+                arguments: vec![],
+            }],
+            status: None,
+            execution_error: None,
+            unchanged_loaded_runtime_objects: vec![],
+            changed_objects: vec![],
+            created_objects: vec![],
+            unchanged_consensus_objects: vec![],
+        };
+        assert!(tx.is_ptb(), "Transaction with MoveCall command is a PTB");
+    }
+
+    #[test]
+    fn test_grpc_transaction_is_ptb_with_gas_budget_only() {
+        // Transaction with gas budget but no commands - still a PTB
+        let tx = GrpcTransaction {
+            digest: "test".to_string(),
+            sender: "0x1".to_string(),
+            gas_budget: Some(1000),
+            gas_price: Some(1),
+            checkpoint: None,
+            timestamp_ms: None,
+            inputs: vec![],
+            execution_error: None,
+            commands: vec![],
+            status: None,
+            unchanged_loaded_runtime_objects: vec![],
+            changed_objects: vec![],
+            created_objects: vec![],
+            unchanged_consensus_objects: vec![],
+        };
+        assert!(tx.is_ptb(), "Transaction with gas budget is a PTB");
+    }
+
+    #[test]
+    fn test_grpc_transaction_is_not_ptb_empty_sender() {
+        // Empty sender - not a PTB (system transaction)
+        let tx = GrpcTransaction {
+            digest: "test".to_string(),
+            sender: "".to_string(), // Empty sender
+            gas_budget: Some(1000),
+            gas_price: Some(1),
+            checkpoint: None,
+            timestamp_ms: None,
+            inputs: vec![],
+            commands: vec![],
+            status: None,
+            execution_error: None,
+            unchanged_loaded_runtime_objects: vec![],
+            changed_objects: vec![],
+            created_objects: vec![],
+            unchanged_consensus_objects: vec![],
+        };
+        assert!(!tx.is_ptb(), "Transaction without sender is not a PTB");
+    }
+
+    #[test]
+    fn test_grpc_transaction_is_not_ptb_no_commands_no_gas() {
+        // No commands and no gas budget - not a PTB
+        let tx = GrpcTransaction {
+            digest: "test".to_string(),
+            sender: "0x1".to_string(),
+            gas_budget: None,
+            gas_price: None,
+            checkpoint: None,
+            timestamp_ms: None,
+            inputs: vec![],
+            commands: vec![],
+            status: None,
+            execution_error: None,
+            unchanged_loaded_runtime_objects: vec![],
+            changed_objects: vec![],
+            created_objects: vec![],
+            unchanged_consensus_objects: vec![],
+        };
+        assert!(
+            !tx.is_ptb(),
+            "Transaction without commands and gas budget is not a PTB"
+        );
+    }
+
+    // =========================================================================
+    // GrpcArgument parsing tests
+    // =========================================================================
+
+    #[test]
+    fn test_grpc_argument_from_proto_gas() {
+        use proto::argument::ArgumentKind;
+        let proto = proto::Argument {
+            kind: Some(ArgumentKind::Gas as i32),
+            input: None,
+            result: None,
+            subresult: None,
+        };
+        let arg = GrpcArgument::from_proto(&proto);
+        assert!(matches!(arg, GrpcArgument::GasCoin));
+    }
+
+    #[test]
+    fn test_grpc_argument_from_proto_input() {
+        use proto::argument::ArgumentKind;
+        let proto = proto::Argument {
+            kind: Some(ArgumentKind::Input as i32),
+            input: Some(5),
+            result: None,
+            subresult: None,
+        };
+        let arg = GrpcArgument::from_proto(&proto);
+        match arg {
+            GrpcArgument::Input(idx) => assert_eq!(idx, 5),
+            _ => panic!("Expected Input argument"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_argument_from_proto_result() {
+        use proto::argument::ArgumentKind;
+        let proto = proto::Argument {
+            kind: Some(ArgumentKind::Result as i32),
+            input: None,
+            result: Some(3),
+            subresult: None,
+        };
+        let arg = GrpcArgument::from_proto(&proto);
+        match arg {
+            GrpcArgument::Result(cmd) => assert_eq!(cmd, 3),
+            _ => panic!("Expected Result argument"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_argument_from_proto_nested_result() {
+        use proto::argument::ArgumentKind;
+        let proto = proto::Argument {
+            kind: Some(ArgumentKind::Result as i32),
+            input: None,
+            result: Some(2),
+            subresult: Some(1), // Having subresult makes it a NestedResult
+        };
+        let arg = GrpcArgument::from_proto(&proto);
+        match arg {
+            GrpcArgument::NestedResult(cmd, sub) => {
+                assert_eq!(cmd, 2);
+                assert_eq!(sub, 1);
+            }
+            _ => panic!("Expected NestedResult argument"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_argument_from_proto_none_kind_defaults_to_gas() {
+        let proto = proto::Argument {
+            kind: None,
+            input: None,
+            result: None,
+            subresult: None,
+        };
+        let arg = GrpcArgument::from_proto(&proto);
+        assert!(matches!(arg, GrpcArgument::GasCoin));
+    }
+
+    // =========================================================================
+    // GrpcInput parsing tests
+    // =========================================================================
+
+    #[test]
+    fn test_grpc_input_from_proto_pure() {
+        use proto::input::InputKind;
+        let proto = proto::Input {
+            kind: Some(InputKind::Pure as i32),
+            pure: Some(vec![1, 2, 3]),
+            ..Default::default()
+        };
+        let input = GrpcInput::from_proto(&proto);
+        match input {
+            GrpcInput::Pure { bytes } => assert_eq!(bytes, vec![1, 2, 3]),
+            _ => panic!("Expected Pure input"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_input_from_proto_immutable_or_owned() {
+        use proto::input::InputKind;
+        let proto = proto::Input {
+            kind: Some(InputKind::ImmutableOrOwned as i32),
+            object_id: Some("0xobj".to_string()),
+            version: Some(10),
+            digest: Some("abc".to_string()),
+            ..Default::default()
+        };
+        let input = GrpcInput::from_proto(&proto);
+        match input {
+            GrpcInput::Object {
+                object_id,
+                version,
+                digest,
+            } => {
+                assert_eq!(object_id, "0xobj");
+                assert_eq!(version, 10);
+                assert_eq!(digest, "abc");
+            }
+            _ => panic!("Expected Object input"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_input_from_proto_shared() {
+        use proto::input::InputKind;
+        let proto = proto::Input {
+            kind: Some(InputKind::Shared as i32),
+            object_id: Some("0xshared".to_string()),
+            version: Some(5),
+            mutable: Some(true),
+            ..Default::default()
+        };
+        let input = GrpcInput::from_proto(&proto);
+        match input {
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                mutable,
+            } => {
+                assert_eq!(object_id, "0xshared");
+                assert_eq!(initial_version, 5);
+                assert!(mutable);
+            }
+            _ => panic!("Expected SharedObject input"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_input_from_proto_receiving() {
+        use proto::input::InputKind;
+        let proto = proto::Input {
+            kind: Some(InputKind::Receiving as i32),
+            object_id: Some("0xrecv".to_string()),
+            version: Some(7),
+            digest: Some("def".to_string()),
+            ..Default::default()
+        };
+        let input = GrpcInput::from_proto(&proto);
+        match input {
+            GrpcInput::Receiving {
+                object_id,
+                version,
+                digest,
+            } => {
+                assert_eq!(object_id, "0xrecv");
+                assert_eq!(version, 7);
+                assert_eq!(digest, "def");
+            }
+            _ => panic!("Expected Receiving input"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_input_from_proto_none_kind_defaults_to_pure() {
+        let proto = proto::Input::default();
+        let input = GrpcInput::from_proto(&proto);
+        match input {
+            GrpcInput::Pure { bytes } => assert!(bytes.is_empty()),
+            _ => panic!("Expected Pure input for None kind"),
+        }
+    }
+
+    // =========================================================================
+    // GrpcCommand variant tests
+    // =========================================================================
+
+    #[test]
+    fn test_grpc_command_move_call_creation() {
+        let cmd = GrpcCommand::MoveCall {
+            package: "0x2".to_string(),
+            module: "coin".to_string(),
+            function: "value".to_string(),
+            type_arguments: vec!["0x2::sui::SUI".to_string()],
+            arguments: vec![GrpcArgument::Input(0)],
+        };
+        match cmd {
+            GrpcCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
+                assert_eq!(package, "0x2");
+                assert_eq!(module, "coin");
+                assert_eq!(function, "value");
+                assert_eq!(type_arguments.len(), 1);
+                assert_eq!(arguments.len(), 1);
+            }
+            _ => panic!("Expected MoveCall command"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_command_split_coins_creation() {
+        let cmd = GrpcCommand::SplitCoins {
+            coin: GrpcArgument::Input(0),
+            amounts: vec![GrpcArgument::Input(1), GrpcArgument::Input(2)],
+        };
+        match cmd {
+            GrpcCommand::SplitCoins { coin, amounts } => {
+                assert!(matches!(coin, GrpcArgument::Input(0)));
+                assert_eq!(amounts.len(), 2);
+            }
+            _ => panic!("Expected SplitCoins command"),
+        }
+    }
+
+    #[test]
+    fn test_grpc_command_transfer_objects_creation() {
+        let cmd = GrpcCommand::TransferObjects {
+            objects: vec![GrpcArgument::Result(0)],
+            address: GrpcArgument::Input(1),
+        };
+        match cmd {
+            GrpcCommand::TransferObjects { objects, address } => {
+                assert_eq!(objects.len(), 1);
+                assert!(matches!(address, GrpcArgument::Input(1)));
+            }
+            _ => panic!("Expected TransferObjects command"),
         }
     }
 }

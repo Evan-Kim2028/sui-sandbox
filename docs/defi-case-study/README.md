@@ -67,26 +67,64 @@ See [GitHub Issue #10](https://github.com/Evan-Kim2028/sui-move-interface-extrac
 | Test | Case Study |
 |------|------------|
 | `tests/execute_cetus_swap.rs` | Cetus AMM swaps |
-| `tests/execute_deepbook_swap.rs` | DeepBook CLOB + Bluefin flash loans |
+| `tests/execute_deepbook.rs` | DeepBook CLOB + Bluefin flash loans |
 | `tests/execute_bluefin_perpetuals.rs` | Bluefin perpetual futures |
 | `tests/execute_lending_protocols.rs` | NAVI + Suilend lending |
 | `tests/complex_tx_replay.rs` | Batch replay infrastructure |
 
 ## Running Tests
 
+All case study tests can be run from scratch without any cache or API keys. Data is fetched automatically from Sui mainnet GraphQL.
+
+### Quick Start (All Case Studies)
+
 ```bash
-# Cetus (requires SURFLUX_API_KEY)
-SURFLUX_API_KEY=key cargo test --test execute_cetus_swap -- --nocapture
+# Run all three main case studies from scratch
+cargo test --test execute_lending_protocols test_replay_scallop_deposit -- --nocapture
+cargo test --test execute_cetus_swap test_replay_cetus_with_historical_state -- --nocapture
+cargo test --test execute_deepbook -- --nocapture
+```
 
-# DeepBook package loading (no key needed)
-cargo test --test execute_deepbook_swap test_deepbook_package_loading -- --nocapture
+### Individual Test Commands
 
-# DeepBook flash loan with Bluefin (requires SURFLUX_API_KEY)
-SURFLUX_API_KEY=key DEEPBOOK_TX_INDEX=5 cargo test --test execute_deepbook_swap test_deepbook_two_phase_replay -- --ignored --nocapture
+```bash
+# Scallop Lending (deposit transaction replay)
+cargo test --test execute_lending_protocols test_replay_scallop_deposit -- --nocapture
 
-# Bluefin package loading (validates version solution)
-cargo test --test execute_bluefin_perpetuals test_bluefin_package_loading -- --nocapture
+# Cetus AMM (swap with historical state)
+cargo test --test execute_cetus_swap test_replay_cetus_with_historical_state -- --nocapture
 
-# Lending protocol tests
-SURFLUX_API_KEY=key cargo test --test execute_lending_protocols -- --nocapture
+# DeepBook CLOB (8 tests: orders, flash loans, what-if simulation)
+cargo test --test execute_deepbook -- --nocapture
+```
+
+### What Happens Automatically
+
+When you run a test from scratch:
+
+1. **Framework Loading**: Fetches latest Sui framework (95 modules) from mainnet GraphQL
+2. **Transaction Fetching**: Retrieves transaction data, input objects, and packages
+3. **Dependency Resolution**: Recursively fetches all package dependencies via bytecode analysis
+4. **Dynamic Field Fetching**: Loads child objects (skip_list nodes, etc.) at historical versions
+5. **Object Patching**: Automatically fixes version checks and time validation issues
+6. **PTB Execution**: Replays the transaction locally with Move VM
+
+### Expected Results
+
+| Test | Protocol | Expected Outcome |
+|------|----------|------------------|
+| `test_replay_scallop_deposit` | Scallop | `Success: true` |
+| `test_replay_cetus_with_historical_state` | Cetus | `Local success: true`, `Status match: true` |
+| `execute_deepbook` (8 tests) | DeepBook | All 8 tests pass |
+
+### Clearing Cache (Optional)
+
+Tests cache fetched data in `.tx-cache/` for faster subsequent runs:
+
+```bash
+# Clear cache to force fresh fetch
+rm -rf .tx-cache
+
+# Run test (will fetch everything fresh)
+cargo test --test execute_lending_protocols test_replay_scallop_deposit -- --nocapture
 ```

@@ -2,15 +2,27 @@
 //!
 //! These tests validate the gRPC client against a Sui gRPC endpoint.
 //!
+//! ## Requirements
+//!
 //! IMPORTANT: Sui's public fullnodes don't expose gRPC. To run these tests,
 //! you need a gRPC endpoint from a provider (QuickNode, Dwellir, etc.) or
 //! a self-hosted fullnode with gRPC enabled.
 //!
-//! Set the environment variable before running:
-//!   export SUI_GRPC_ENDPOINT="https://your-endpoint.sui-mainnet.quiknode.pro:9000"
+//! ## Running Tests
 //!
-//! Run tests:
-//!   cargo test --test grpc_tests -- --ignored --nocapture
+//! Set the environment variable before running:
+//! ```sh
+//! export SUI_GRPC_ENDPOINT="https://your-endpoint.sui-mainnet.quiknode.pro:9000"
+//! cargo test --test grpc_tests -- --ignored --nocapture
+//! ```
+//!
+//! ## Test Organization
+//!
+//! - Unit tests (no network): Run without `--ignored`
+//! - Integration tests (network required): Run with `--ignored` and SUI_GRPC_ENDPOINT set
+//!
+//! Note: These tests use `panic!()` for failures because they're explicitly
+//! testing network connectivity when the environment is properly configured.
 
 use std::time::Duration;
 use sui_move_interface_extractor::data_fetcher::DataFetcher;

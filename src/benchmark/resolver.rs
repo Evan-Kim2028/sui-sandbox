@@ -166,13 +166,24 @@ impl LocalModuleResolver {
         let mut count = 0;
 
         // Load each package's modules
-        for package_bytes in [MOVE_STDLIB, SUI_FRAMEWORK, SUI_SYSTEM] {
-            let module_bytes_list: Vec<Vec<u8>> = bcs::from_bytes(package_bytes)
-                .map_err(|e| anyhow!("failed to deserialize framework package: {}", e))?;
+        for (pkg_addr, package_bytes) in [
+            ("0x1 (Move stdlib)", MOVE_STDLIB),
+            ("0x2 (Sui framework)", SUI_FRAMEWORK),
+            ("0x3 (Sui system)", SUI_SYSTEM),
+        ] {
+            let module_bytes_list: Vec<Vec<u8>> = bcs::from_bytes(package_bytes).map_err(|e| {
+                anyhow!("Failed to deserialize embedded package {}: {}", pkg_addr, e)
+            })?;
 
-            for bytes in module_bytes_list {
-                let module = CompiledModule::deserialize_with_defaults(&bytes)
-                    .map_err(|e| anyhow!("failed to deserialize framework module: {:?}", e))?;
+            for (idx, bytes) in module_bytes_list.into_iter().enumerate() {
+                let module = CompiledModule::deserialize_with_defaults(&bytes).map_err(|e| {
+                    anyhow!(
+                        "Failed to deserialize module {} in package {}: {:?}",
+                        idx,
+                        pkg_addr,
+                        e
+                    )
+                })?;
                 let id = module.self_id();
                 self.modules.insert(id.clone(), module);
                 self.modules_bytes.insert(id, bytes);
@@ -181,6 +192,96 @@ impl LocalModuleResolver {
         }
 
         Ok(count)
+    }
+
+    /// Load framework modules from GraphQL (fetches latest mainnet version).
+    ///
+    /// This fetches the framework packages (0x1, 0x2, 0x3) directly from mainnet,
+    /// ensuring we have the exact modules that on-chain code expects.
+    ///
+    /// This is preferred over the bundled framework for historical transaction replay,
+    /// as the on-chain framework may have modules not present in the bundled version.
+    pub fn load_sui_framework_from_graphql(
+        &mut self,
+        graphql: &crate::graphql::GraphQLClient,
+    ) -> Result<usize> {
+        let framework_packages = [
+            "0x0000000000000000000000000000000000000000000000000000000000000001", // move-stdlib
+            "0x0000000000000000000000000000000000000000000000000000000000000002", // sui-framework
+            "0x0000000000000000000000000000000000000000000000000000000000000003", // sui-system
+        ];
+
+        let mut count = 0;
+
+        for pkg_addr in framework_packages {
+            match graphql.fetch_package(pkg_addr) {
+                Ok(pkg) => {
+                    for module in &pkg.modules {
+                        if let Some(ref bytecode_b64) = module.bytecode_base64 {
+                            use base64::Engine;
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(bytecode_b64)
+                            {
+                                match CompiledModule::deserialize_with_defaults(&bytes) {
+                                    Ok(compiled) => {
+                                        let id = compiled.self_id();
+                                        self.modules.insert(id.clone(), compiled);
+                                        self.modules_bytes.insert(id, bytes);
+                                        count += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Warning: Failed to deserialize framework module {}: {:?}",
+                                            module.name, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to fetch framework package {}: {}",
+                        pkg_addr, e
+                    );
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Load framework from GraphQL, falling back to bundled if fetch fails.
+    pub fn load_sui_framework_auto(&mut self) -> Result<usize> {
+        // Try to fetch from GraphQL first for latest version
+        let client = crate::graphql::GraphQLClient::mainnet();
+        match self.load_sui_framework_from_graphql(&client) {
+            Ok(count) if count > 0 => {
+                eprintln!("[framework] Loaded {} modules from mainnet GraphQL", count);
+                return Ok(count);
+            }
+            Ok(0) => {
+                eprintln!("[framework] GraphQL returned no modules, falling back to bundled");
+            }
+            Err(e) => {
+                eprintln!(
+                    "[framework] GraphQL fetch failed: {}, falling back to bundled",
+                    e
+                );
+            }
+            _ => {}
+        }
+
+        // Fall back to bundled framework
+        self.load_sui_framework()
+    }
+
+    /// Create a new resolver with framework loaded from GraphQL (or bundled fallback).
+    pub fn with_sui_framework_auto() -> Result<Self> {
+        let mut resolver = Self::new();
+        resolver.load_sui_framework_auto()?;
+        Ok(resolver)
     }
 
     pub fn load_from_dir(&mut self, package_dir: &Path) -> Result<usize> {

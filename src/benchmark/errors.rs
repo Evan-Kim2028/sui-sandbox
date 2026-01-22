@@ -1505,6 +1505,69 @@ pub use crate::phase_ensure;
 pub use crate::phase_err;
 
 // =============================================================================
+// Error Context Integration
+// =============================================================================
+
+/// Create an error with phase and execution context.
+///
+/// Use this for errors that occur during PTB execution where you want
+/// to include contextual information about the command, objects, etc.
+///
+/// # Example
+/// ```ignore
+/// use crate::benchmark::errors::{phase_error_with_context, Phase};
+/// use crate::benchmark::error_context::{ExecutionContext, ObjectContext};
+///
+/// let ctx = ExecutionContext::new()
+///     .at_command(3, "MoveCall 0x2::coin::split")
+///     .with_object(ObjectContext::new("0x123").with_type("Coin<SUI>"));
+///
+/// let err = phase_error_with_context(
+///     Phase::Execution,
+///     "insufficient balance",
+///     ctx
+/// );
+/// ```
+pub fn phase_error_with_context(
+    phase: Phase,
+    message: impl std::fmt::Display,
+    context: super::error_context::ExecutionContext,
+) -> anyhow::Error {
+    if context.is_empty() {
+        anyhow::anyhow!("[{}] {}", phase.short_name(), message)
+    } else {
+        anyhow::anyhow!("[{}] {}\n{}", phase.short_name(), message, context)
+    }
+}
+
+/// Create a phase error with abort code context.
+///
+/// Automatically looks up what the abort code typically means.
+pub fn abort_error_with_context(
+    module: &str,
+    function: &str,
+    abort_code: u64,
+    command_index: Option<usize>,
+) -> anyhow::Error {
+    use super::error_context::get_abort_code_context;
+
+    let mut msg = format!(
+        "MoveAbort in {}::{} with code {}",
+        module, function, abort_code
+    );
+
+    if let Some(idx) = command_index {
+        msg.push_str(&format!(" at command #{}", idx));
+    }
+
+    if let Some(context) = get_abort_code_context(abort_code, module) {
+        msg.push_str(&format!(" ({})", context));
+    }
+
+    anyhow::anyhow!("[execution] {}", msg)
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

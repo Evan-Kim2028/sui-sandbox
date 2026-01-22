@@ -1,6 +1,6 @@
 [package]
 name = "sui_move_interface_extractor"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 
 [workspace]
@@ -18,46 +18,50 @@ rayon = "1.10"
 bcs = "0.1"
 smallvec = "1.11"
 
-# Move bytecode parsing - PINNED to mainnet-v1.62.1 to match Docker's sui binary.
+# Move bytecode parsing - PINNED to mainnet-v1.63.4 to match Docker's sui binary.
 # This ensures framework modules loaded at runtime match what `sui move build` produces.
 # To update: change the tag below AND update Dockerfile's SUI_VERSION ARG.
-# Current: mainnet-v1.62.1 (must match Dockerfile's SUI_VERSION)
-move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-binary-format" }
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-core-types" }
-move-compiler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-compiler" }
-move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-runtime", features = ["tracing"] }
-move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-vm-types" }
-move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-trace-format" }
-move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-symbol-pool" }
+# Current: mainnet-v1.63.4 (must match Dockerfile's SUI_VERSION)
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-binary-format" }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }
+move-compiler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-compiler" }
+move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-runtime", features = ["tracing"] }
+move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-types" }
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-trace-format" }
+move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-symbol-pool" }
 
 # Bytecode disassembly for LLM debugging
-move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-disassembler" }
-move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-bytecode-source-map" }
-move-ir-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-ir-types" }
-move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-command-line-common" }
+move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-disassembler" }
+move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-bytecode-source-map" }
+move-ir-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-ir-types" }
+move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-command-line-common" }
 
 # MM2 (Move Model 2) for static type validation - builds semantic model from bytecode
 # Used for Phase 2 (TypeCheck) to validate types without VM execution
-move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-model-2" }
+move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-model-2" }
 
 # Package building and scaffolding
-move-package = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-package" }
-sui-move-build = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-move-build" }
+move-package = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-package" }
+sui-move-build = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-build" }
 
 # PTB construction helpers
-sui-transaction-builder = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-transaction-builder" }
+sui-transaction-builder = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-transaction-builder" }
 
 # Align with MystenLabs Sui crate requirements.
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
 
 # Sui SDK crates - PINNED to same version as above for consistency.
-sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-sdk" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-types" }
-sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "sui-json-rpc-types" }
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-sdk" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-types" }
+sui-json-rpc-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-json-rpc-types" }
 
 # Native function support for Tier B execution
 # move-stdlib-natives provides vector, bcs, hash, string, type_name natives
-move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.62.1", package = "move-stdlib-natives" }
+move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-stdlib-natives" }
+
+# Sui Move natives - includes ObjectRuntime for dynamic field support
+sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-natives-latest" }
+sui-protocol-config = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-protocol-config" }
 
 # Cryptographic primitives for real native function implementations
 # fastcrypto is Mysten Labs' crypto library used by Sui - provides 1:1 compatibility
@@ -70,6 +74,7 @@ fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0
 # IMPORTANT: Must match the version used by move-vm-runtime (0.1)
 better_any = "0.1"
 hex = "0.4.3"
+prometheus = "0.13"
 dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -93,3 +98,16 @@ assert_cmd = "2.0"
 predicates = "3.0"
 tempfile = "3"
 dotenv = "0.15"
+
+# Examples
+[[example]]
+name = "cetus_swap"
+path = "examples/cetus_swap.rs"
+
+[[example]]
+name = "scallop_deposit"
+path = "examples/scallop_deposit.rs"
+
+[[example]]
+name = "deepbook_replay"
+path = "examples/deepbook_replay.rs"

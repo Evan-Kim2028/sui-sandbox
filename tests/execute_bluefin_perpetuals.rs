@@ -1,6 +1,3 @@
-// This test file is temporarily disabled due to API changes.
-// TODO: Migrate tests to use the new GraphQL-based API.
-#![cfg(feature = "legacy_tests")]
 //! Bluefin Perpetual Futures PTB Replay Tests
 //!
 //! Integration tests for replaying Bluefin perpetual futures transactions in the local Move VM sandbox.
@@ -34,9 +31,12 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
 use sui_move_interface_extractor::benchmark::tx_replay::{
-    build_address_aliases_for_test, CachedTransaction, TransactionFetcher,
+    build_address_aliases_for_test, graphql_to_fetched_transaction, load_or_fetch_transaction,
+    CachedTransaction,
 };
 use sui_move_interface_extractor::benchmark::vm::{SimulationConfig, VMHarness};
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
+use sui_move_interface_extractor::graphql::{GraphQLCommand, GraphQLTransaction};
 
 // =============================================================================
 // Bluefin Protocol Constants
@@ -133,14 +133,10 @@ fn parse_type_tag_flexible(type_str: &str) -> TypeTag {
 }
 
 /// Helper to detect if a transaction uses Bluefin perpetuals
-fn is_bluefin_perp_transaction(
-    tx: &sui_move_interface_extractor::benchmark::tx_replay::FetchedTransaction,
-) -> bool {
+fn is_bluefin_perp_transaction(tx: &GraphQLTransaction) -> bool {
     tx.commands.iter().any(|cmd| {
-        if let sui_move_interface_extractor::benchmark::tx_replay::PtbCommand::MoveCall {
-            package,
-            function,
-            ..
+        if let GraphQLCommand::MoveCall {
+            package, function, ..
         } = cmd
         {
             // Check if it's Bluefin and a perpetual operation (not just swap)
@@ -157,15 +153,9 @@ fn is_bluefin_perp_transaction(
 }
 
 /// Extract perpetual operation type from transaction
-fn get_perp_operation(
-    tx: &sui_move_interface_extractor::benchmark::tx_replay::FetchedTransaction,
-) -> String {
+fn get_perp_operation(tx: &GraphQLTransaction) -> String {
     for cmd in &tx.commands {
-        if let sui_move_interface_extractor::benchmark::tx_replay::PtbCommand::MoveCall {
-            function,
-            ..
-        } = cmd
-        {
+        if let GraphQLCommand::MoveCall { function, .. } = cmd {
             let func = function.to_lowercase();
             if func.contains("open_position") || func.contains("create_position") {
                 return "open_position".to_string();
@@ -198,11 +188,11 @@ fn get_perp_operation(
 fn test_discover_bluefin_perps() {
     println!("=== Discovering Bluefin Perpetual Transactions ===\n");
 
-    let fetcher = TransactionFetcher::mainnet_with_archive();
+    let fetcher = DataFetcher::mainnet();
 
     // Fetch recent transactions
     println!("Fetching recent transactions...");
-    let recent = match fetcher.fetch_recent_transactions(1000) {
+    let recent = match fetcher.fetch_recent_transactions_full(50) {
         Ok(txs) => txs,
         Err(e) => {
             println!("Failed to fetch recent transactions: {}", e);
@@ -217,27 +207,34 @@ fn test_discover_bluefin_perps() {
 
     let mut perp_txs = Vec::new();
 
-    for tx_digest in recent.iter().take(500) {
-        let digest = &tx_digest.0;
-        if let Ok(tx) = fetcher.fetch_transaction_sync(digest) {
-            if is_bluefin_perp_transaction(&tx) {
-                let op = get_perp_operation(&tx);
-                println!("Bluefin {} - {}", op, digest);
+    for tx in &recent {
+        if is_bluefin_perp_transaction(tx) {
+            let op = get_perp_operation(tx);
+            println!("Bluefin {} - {}", op, tx.digest);
 
-                // Print command details
-                for (i, cmd) in tx.commands.iter().enumerate() {
-                    if let sui_move_interface_extractor::benchmark::tx_replay::PtbCommand::MoveCall {
-                        package, module, function, ..
-                    } = cmd {
-                        println!("  [{}] {}::{}::{}", i, &package[..20.min(package.len())], module, function);
-                    }
+            // Print command details
+            for (i, cmd) in tx.commands.iter().enumerate() {
+                if let GraphQLCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    ..
+                } = cmd
+                {
+                    println!(
+                        "  [{}] {}::{}::{}",
+                        i,
+                        &package[..20.min(package.len())],
+                        module,
+                        function
+                    );
                 }
+            }
 
-                perp_txs.push((digest.clone(), op));
+            perp_txs.push((tx.digest.clone(), op));
 
-                if perp_txs.len() >= 10 {
-                    break;
-                }
+            if perp_txs.len() >= 10 {
+                break;
             }
         }
     }
@@ -276,32 +273,42 @@ const SAMPLE_PERP_TRANSACTIONS: &[(&str, &str)] = &[
 fn test_bluefin_package_loading() {
     println!("=== Testing Bluefin Package Loading ===\n");
 
-    let fetcher = TransactionFetcher::mainnet_with_archive();
+    let fetcher = DataFetcher::mainnet();
 
     // Step 1: Fetch jk aggregator to get linkage table
     println!("Step 1: Fetching jk aggregator package for linkage table...");
-    match fetcher.fetch_package_modules(bluefin::JK_AGGREGATOR) {
-        Ok(modules) => {
-            println!("   ✓ jk aggregator: {} modules", modules.len());
+    match fetcher.fetch_package(bluefin::JK_AGGREGATOR) {
+        Ok(pkg) => {
+            let modules: Vec<(String, Vec<u8>)> = pkg
+                .modules
+                .into_iter()
+                .map(|m| (m.name, m.bytecode))
+                .collect();
+            println!("   [OK] jk aggregator: {} modules", modules.len());
         }
         Err(e) => {
-            println!("   ✗ Failed to fetch jk: {}", e);
+            println!("   [FAILED] Failed to fetch jk: {}", e);
             return;
         }
     }
 
     // Step 2: Fetch Bluefin from upgraded storage address
     println!("\nStep 2: Fetching Bluefin from upgraded storage address...");
-    let bluefin_modules = match fetcher.fetch_package_modules(bluefin::UPGRADED_STORAGE) {
-        Ok(modules) => {
-            println!("   ✓ Bluefin (upgraded): {} modules", modules.len());
+    let bluefin_modules = match fetcher.fetch_package(bluefin::UPGRADED_STORAGE) {
+        Ok(pkg) => {
+            let modules: Vec<(String, Vec<u8>)> = pkg
+                .modules
+                .into_iter()
+                .map(|m| (m.name, m.bytecode))
+                .collect();
+            println!("   [OK] Bluefin (upgraded): {} modules", modules.len());
             for (name, bytes) in &modules {
                 println!("      - {}: {} bytes", name, bytes.len());
             }
             modules
         }
         Err(e) => {
-            println!("   ✗ Failed to fetch Bluefin: {}", e);
+            println!("   [FAILED] Failed to fetch Bluefin: {}", e);
             return;
         }
     };
@@ -311,7 +318,7 @@ fn test_bluefin_package_loading() {
     let mut resolver = match LocalModuleResolver::with_sui_framework() {
         Ok(r) => r,
         Err(e) => {
-            println!("   ✗ Failed to create resolver: {}", e);
+            println!("   [FAILED] Failed to create resolver: {}", e);
             return;
         }
     };
@@ -319,17 +326,20 @@ fn test_bluefin_package_loading() {
     let original_addr = parse_address(bluefin::ORIGINAL);
     match resolver.add_package_modules_at(bluefin_modules, Some(original_addr)) {
         Ok((count, _)) => {
-            println!("   ✓ Loaded {} Bluefin modules at original address", count);
+            println!(
+                "   [OK] Loaded {} Bluefin modules at original address",
+                count
+            );
             println!("     Original: {}", bluefin::ORIGINAL);
             println!("     Storage:  {}", bluefin::UPGRADED_STORAGE);
         }
         Err(e) => {
-            println!("   ✗ Failed to load: {}", e);
+            println!("   [FAILED] Failed to load: {}", e);
             return;
         }
     }
 
-    println!("\n✓ Bluefin package loading successful!");
+    println!("\n[OK] Bluefin package loading successful!");
     println!("  Version check will pass because we loaded upgraded bytecode (v17)");
     println!("  at the original address that PTBs reference.");
 }
@@ -338,25 +348,39 @@ fn test_bluefin_package_loading() {
 ///
 /// Run with: cargo test --test execute_bluefin_perpetuals test_replay_bluefin_open_position -- --nocapture --ignored
 #[test]
-#[ignore] // Requires discovered transaction digest
+#[ignore = "requires valid Bluefin open_position transaction digest - set TX_DIGEST env var"]
 fn test_replay_bluefin_open_position() {
     println!("=== Replay Bluefin Open Position ===\n");
 
-    // TODO: Replace with discovered transaction digest
-    const TX_DIGEST: &str = "REPLACE_WITH_DISCOVERED_OPEN_POSITION_TX";
+    // Get transaction digest from environment or skip
+    let tx_digest = match std::env::var("BLUEFIN_OPEN_POSITION_TX") {
+        Ok(digest) if !digest.is_empty() => digest,
+        _ => {
+            println!("SKIPPED: Set BLUEFIN_OPEN_POSITION_TX environment variable to a valid transaction digest");
+            println!("Example: BLUEFIN_OPEN_POSITION_TX=<digest> cargo test --test execute_bluefin_perpetuals test_replay_bluefin_open_position -- --nocapture --ignored");
+            return;
+        }
+    };
 
-    replay_bluefin_perp_transaction(TX_DIGEST, "open_position");
+    replay_bluefin_perp_transaction(&tx_digest, "open_position");
 }
 
 /// Replay a Bluefin close position transaction
 #[test]
-#[ignore]
+#[ignore = "requires valid Bluefin close_position transaction digest - set TX_DIGEST env var"]
 fn test_replay_bluefin_close_position() {
     println!("=== Replay Bluefin Close Position ===\n");
 
-    const TX_DIGEST: &str = "REPLACE_WITH_DISCOVERED_CLOSE_POSITION_TX";
+    // Get transaction digest from environment or skip
+    let tx_digest = match std::env::var("BLUEFIN_CLOSE_POSITION_TX") {
+        Ok(digest) if !digest.is_empty() => digest,
+        _ => {
+            println!("SKIPPED: Set BLUEFIN_CLOSE_POSITION_TX environment variable to a valid transaction digest");
+            return;
+        }
+    };
 
-    replay_bluefin_perp_transaction(TX_DIGEST, "close_position");
+    replay_bluefin_perp_transaction(&tx_digest, "close_position");
 }
 
 // =============================================================================
@@ -365,19 +389,19 @@ fn test_replay_bluefin_close_position() {
 
 /// Generic Bluefin perpetual transaction replay function
 fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
-    let fetcher = TransactionFetcher::mainnet_with_archive();
+    let fetcher = DataFetcher::mainnet();
 
     // Step 1: Fetch transaction
     println!(
         "Step 1: Fetching Bluefin {} transaction {}...",
         operation, tx_digest
     );
-    let tx = match fetcher.fetch_transaction_sync(tx_digest) {
+    let tx = match fetcher.fetch_transaction(tx_digest) {
         Ok(t) => {
-            println!("   ✓ Transaction fetched");
+            println!("   [OK] Transaction fetched");
             println!("   Commands: {}", t.commands.len());
             for (i, cmd) in t.commands.iter().enumerate() {
-                if let sui_move_interface_extractor::benchmark::tx_replay::PtbCommand::MoveCall {
+                if let GraphQLCommand::MoveCall {
                     package,
                     module,
                     function,
@@ -396,18 +420,26 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
             t
         }
         Err(e) => {
-            println!("   ✗ Failed to fetch: {}", e);
+            println!("   [FAILED] Failed to fetch: {}", e);
             return;
         }
     };
 
-    let mut cached = CachedTransaction::new(tx.clone());
+    // Convert GraphQL transaction to FetchedTransaction for replay
+    let fetched_tx = match graphql_to_fetched_transaction(&tx) {
+        Ok(ft) => ft,
+        Err(e) => {
+            println!("   [FAILED] Failed to convert transaction: {}", e);
+            return;
+        }
+    };
+    let mut cached = CachedTransaction::new(fetched_tx.clone());
 
     // Step 2: Fetch input objects
     println!("\nStep 2: Fetching input objects...");
     match fetcher.fetch_transaction_inputs(&tx) {
         Ok(objects) => {
-            println!("   ✓ Fetched {} input objects", objects.len());
+            println!("   [OK] Fetched {} input objects", objects.len());
             use base64::Engine;
             for (obj_id, bcs_bytes) in objects {
                 let bcs_base64 = base64::engine::general_purpose::STANDARD.encode(&bcs_bytes);
@@ -422,11 +454,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
 
     let mut packages_to_fetch = Vec::new();
     for cmd in &tx.commands {
-        if let sui_move_interface_extractor::benchmark::tx_replay::PtbCommand::MoveCall {
-            package,
-            ..
-        } = cmd
-        {
+        if let GraphQLCommand::MoveCall { package, .. } = cmd {
             if !packages_to_fetch.contains(package) {
                 packages_to_fetch.push(package.clone());
             }
@@ -450,17 +478,22 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
             pkg.as_str()
         };
 
-        match fetcher.fetch_package_modules(fetch_pkg) {
-            Ok(modules) => {
+        match fetcher.fetch_package(fetch_pkg) {
+            Ok(pkg_data) => {
+                let modules: Vec<(String, Vec<u8>)> = pkg_data
+                    .modules
+                    .into_iter()
+                    .map(|m| (m.name, m.bytecode))
+                    .collect();
                 println!(
-                    "   ✓ {}: {} modules",
+                    "   [OK] {}: {} modules",
                     &pkg[..20.min(pkg.len())],
                     modules.len()
                 );
                 package_modules_raw.insert(pkg.to_string(), modules.clone());
                 cached.add_package(pkg.to_string(), modules);
             }
-            Err(e) => println!("   ✗ {}: {}", &pkg[..20.min(pkg.len())], e),
+            Err(e) => println!("   [FAILED] {}: {}", &pkg[..20.min(pkg.len())], e),
         }
     }
 
@@ -469,7 +502,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
     let mut resolver = match LocalModuleResolver::with_sui_framework() {
         Ok(r) => r,
         Err(e) => {
-            println!("   ✗ Failed: {}", e);
+            println!("   [FAILED] Failed: {}", e);
             return;
         }
     };
@@ -478,7 +511,10 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
     if let Some(modules) = package_modules_raw.get(bluefin::ORIGINAL) {
         let original_addr = parse_address(bluefin::ORIGINAL);
         match resolver.add_package_modules_at(modules.clone(), Some(original_addr)) {
-            Ok((count, _)) => println!("   ✓ Loaded {} Bluefin modules at original address", count),
+            Ok((count, _)) => println!(
+                "   [OK] Loaded {} Bluefin modules at original address",
+                count
+            ),
             Err(e) => println!("   Warning loading Bluefin: {}", e),
         }
     }
@@ -512,7 +548,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
     let mut harness = match VMHarness::with_config(&resolver, false, config) {
         Ok(h) => h,
         Err(e) => {
-            println!("   ✗ Failed: {}", e);
+            println!("   [FAILED] Failed: {}", e);
             return;
         }
     };
@@ -520,10 +556,10 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
     // Step 6: Fetch shared objects at historical versions
     println!("\nStep 6: Fetching shared objects at historical versions...");
 
-    let shared_versions = if let Some(effects) = &tx.effects {
+    let shared_versions = if let Some(effects) = &fetched_tx.effects {
         effects.shared_object_versions.clone()
     } else {
-        println!("   ✗ No effects in transaction");
+        println!("   [FAILED] No effects in transaction");
         std::collections::HashMap::new()
     };
 
@@ -539,7 +575,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
         clock_bytes.extend_from_slice(&tx_timestamp_ms.to_le_bytes());
         let clock_base64 = base64::engine::general_purpose::STANDARD.encode(&clock_bytes);
         historical_objects.insert(clock_id_str.to_string(), clock_base64);
-        println!("   ✓ Clock @ timestamp {} ms", tx_timestamp_ms);
+        println!("   [OK] Clock @ timestamp {} ms", tx_timestamp_ms);
     }
 
     // Fetch shared objects
@@ -547,21 +583,29 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
         if object_id == clock_id_str {
             continue;
         }
-        match fetcher.fetch_object_at_version_full(object_id, *version) {
+        match fetcher.fetch_object_at_version(object_id, *version) {
             Ok(obj) => {
                 use base64::Engine;
-                let bcs_base64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes);
-                historical_objects.insert(object_id.clone(), bcs_base64);
-                println!(
-                    "   ✓ {} @ v{}: {} bytes",
-                    &object_id[..20.min(object_id.len())],
-                    version,
-                    obj.bcs_bytes.len()
-                );
+                if let Some(bcs_bytes) = obj.bcs_bytes {
+                    let bcs_base64 = base64::engine::general_purpose::STANDARD.encode(&bcs_bytes);
+                    historical_objects.insert(object_id.to_string(), bcs_base64);
+                    println!(
+                        "   [OK] {} @ v{}: {} bytes",
+                        &object_id[..20.min(object_id.len())],
+                        version,
+                        bcs_bytes.len()
+                    );
+                } else {
+                    println!(
+                        "   [WARN] {} @ v{}: no BCS bytes",
+                        &object_id[..20.min(object_id.len())],
+                        version
+                    );
+                }
             }
             Err(e) => {
                 println!(
-                    "   ✗ {} @ v{}: {}",
+                    "   [FAILED] {} @ v{}: {}",
                     &object_id[..20.min(object_id.len())],
                     version,
                     e
@@ -573,7 +617,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
     // Step 7: Set up on-demand child fetcher
     println!("\nStep 7: Setting up on-demand child fetcher...");
 
-    let archive_fetcher = std::sync::Arc::new(TransactionFetcher::mainnet_with_archive());
+    let archive_fetcher = std::sync::Arc::new(DataFetcher::mainnet());
     let fetcher_for_closure = archive_fetcher.clone();
 
     let child_fetcher: sui_move_interface_extractor::benchmark::object_runtime::ChildFetcherFn =
@@ -581,15 +625,20 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
             let child_id_str = format!("0x{}", hex::encode(child_id.as_ref()));
             eprintln!("[On-demand fetcher] Requesting: {}", child_id_str);
 
-            match fetcher_for_closure.fetch_object_full(&child_id_str) {
+            match fetcher_for_closure.fetch_object(&child_id_str) {
                 Ok(obj) => {
-                    eprintln!("[On-demand fetcher] Found: {} bytes", obj.bcs_bytes.len());
-                    let type_tag = obj
-                        .type_string
-                        .as_ref()
-                        .map(|t| parse_type_tag_flexible(t))
-                        .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
-                    Some((type_tag, obj.bcs_bytes))
+                    if let Some(bcs_bytes) = obj.bcs_bytes {
+                        eprintln!("[On-demand fetcher] Found: {} bytes", bcs_bytes.len());
+                        let type_tag = obj
+                            .type_string
+                            .as_ref()
+                            .map(|t| parse_type_tag_flexible(t))
+                            .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
+                        Some((type_tag, bcs_bytes))
+                    } else {
+                        eprintln!("[On-demand fetcher] No BCS bytes");
+                        None
+                    }
                 }
                 Err(e) => {
                     eprintln!("[On-demand fetcher] Failed: {}", e);
@@ -599,7 +648,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
         });
 
     harness.set_child_fetcher(child_fetcher);
-    println!("   ✓ Child fetcher configured");
+    println!("   [OK] Child fetcher configured");
 
     // Step 8: Replay
     println!("\nStep 8: Replaying transaction...");
@@ -617,7 +666,7 @@ fn replay_bluefin_perp_transaction(tx_digest: &str, operation: &str) {
 
             if result.local_success {
                 println!(
-                    "\n✓ BLUEFIN {} REPLAYED SUCCESSFULLY!",
+                    "\n[OK] BLUEFIN {} REPLAYED SUCCESSFULLY!",
                     operation.to_uppercase()
                 );
             } else if let Some(err) = &result.local_error {

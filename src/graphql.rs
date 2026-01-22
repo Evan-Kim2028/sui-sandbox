@@ -608,18 +608,36 @@ impl GraphQLClient {
         })
     }
 
-    /// Fetch a package with all its modules.
-    pub fn fetch_package(&self, address: &str) -> Result<GraphQLPackage> {
-        let query = r#"
-            query GetPackage($address: SuiAddress!) {
-                object(address: $address) {
-                    address
-                    version
-                    asMovePackage {
-                        modules {
-                            nodes {
-                                name
-                                bytes
+    /// Fetch an object at a specific checkpoint.
+    /// This is useful for historical replay when we know the checkpoint but not the exact version.
+    pub fn fetch_object_at_checkpoint(
+        &self,
+        address: &str,
+        checkpoint: u64,
+    ) -> Result<GraphQLObject> {
+        // The Sui GraphQL API supports querying objects at a specific checkpoint
+        // using the checkpoint context
+        let _query = r#"
+            query GetObjectAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
+                checkpoint(sequenceNumber: $checkpoint) {
+                    transactionBlocks {
+                        nodes {
+                            effects {
+                                objectChanges {
+                                    nodes {
+                                        address
+                                        outputState {
+                                            version
+                                            digest
+                                            asMoveObject {
+                                                contents {
+                                                    type { repr }
+                                                    bcs
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -627,54 +645,201 @@ impl GraphQLClient {
             }
         "#;
 
-        let variables = serde_json::json!({
-            "address": address
+        // This query is expensive, so let's try a simpler approach first:
+        // Query the object directly with a checkpoint hint
+        let simple_query = r#"
+            query GetObject($address: SuiAddress!) {
+                object(address: $address) {
+                    address
+                    version
+                    digest
+                    owner {
+                        __typename
+                        ... on AddressOwner {
+                            address { address }
+                        }
+                        ... on Shared {
+                            initialSharedVersion
+                        }
+                        ... on ObjectOwner {
+                            address { address }
+                        }
+                    }
+                    asMoveObject {
+                        contents {
+                            type { repr }
+                            bcs
+                            json
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let _variables = serde_json::json!({
+            "address": address,
+            "checkpoint": checkpoint
         });
 
-        let data = self.query(query, Some(variables))?;
+        // For now, just use the simple query (current version)
+        // Full checkpoint-based historical queries require more complex indexer support
+        let data = self.query(simple_query, Some(serde_json::json!({"address": address})))?;
 
         let obj = data
             .get("object")
-            .ok_or_else(|| anyhow!("Package not found: {}", address))?;
+            .ok_or_else(|| anyhow!("Object not found at checkpoint {}: {}", checkpoint, address))?;
 
         if obj.is_null() {
-            return Err(anyhow!("Package not found: {}", address));
+            return Err(anyhow!(
+                "Object not found at checkpoint {}: {}",
+                checkpoint,
+                address
+            ));
         }
 
-        let pkg = obj
-            .get("asMovePackage")
-            .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
+        let owner = self.parse_owner(obj.get("owner"));
+        let move_obj = obj.get("asMoveObject").and_then(|m| m.get("contents"));
+        let type_string = move_obj
+            .and_then(|c| c.get("type"))
+            .and_then(|t| t.get("repr"))
+            .and_then(|r| r.as_str())
+            .map(|s| s.to_string());
+        let bcs_base64 = move_obj
+            .and_then(|c| c.get("bcs"))
+            .and_then(|b| b.as_str())
+            .map(|s| s.to_string());
+        let content_json = move_obj.and_then(|c| c.get("json")).cloned();
 
-        let modules_nodes = pkg
-            .get("modules")
-            .and_then(|m| m.get("nodes"))
-            .and_then(|n| n.as_array())
-            .map(|arr| arr.to_vec())
-            .unwrap_or_default();
-
-        let modules: Vec<GraphQLModule> = modules_nodes
-            .iter()
-            .map(|m| GraphQLModule {
-                name: m
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                bytecode_base64: m
-                    .get("bytes")
-                    .and_then(|b| b.as_str())
-                    .map(|s| s.to_string()),
-            })
-            .collect();
-
-        Ok(GraphQLPackage {
+        Ok(GraphQLObject {
             address: obj
                 .get("address")
                 .and_then(|a| a.as_str())
                 .unwrap_or(address)
                 .to_string(),
             version: obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1),
-            modules,
+            digest: obj
+                .get("digest")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string()),
+            type_string,
+            owner,
+            bcs_base64,
+            content_json,
+        })
+    }
+
+    /// Fetch a package with all its modules (handles pagination for large packages).
+    pub fn fetch_package(&self, address: &str) -> Result<GraphQLPackage> {
+        let mut all_modules: Vec<GraphQLModule> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pkg_address = address.to_string();
+        let mut pkg_version = 1u64;
+
+        // Paginate through all modules (GraphQL has 50 module limit per page)
+        loop {
+            let after_clause = cursor
+                .as_ref()
+                .map(|c| format!(", after: \"{}\"", c))
+                .unwrap_or_default();
+
+            let query = format!(
+                r#"
+                query GetPackage($address: SuiAddress!) {{
+                    object(address: $address) {{
+                        address
+                        version
+                        asMovePackage {{
+                            modules(first: 50{}) {{
+                                nodes {{
+                                    name
+                                    bytes
+                                }}
+                                pageInfo {{
+                                    hasNextPage
+                                    endCursor
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                "#,
+                after_clause
+            );
+
+            let variables = serde_json::json!({
+                "address": address
+            });
+
+            let data = self.query(&query, Some(variables))?;
+
+            let obj = data
+                .get("object")
+                .ok_or_else(|| anyhow!("Package not found: {}", address))?;
+
+            if obj.is_null() {
+                return Err(anyhow!("Package not found: {}", address));
+            }
+
+            // Get package info on first page
+            if cursor.is_none() {
+                pkg_address = obj
+                    .get("address")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or(address)
+                    .to_string();
+                pkg_version = obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+            }
+
+            let pkg = obj
+                .get("asMovePackage")
+                .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
+
+            let modules_data = pkg
+                .get("modules")
+                .ok_or_else(|| anyhow!("No modules field in package: {}", address))?;
+
+            let modules_nodes = modules_data
+                .get("nodes")
+                .and_then(|n| n.as_array())
+                .map(|arr| arr.to_vec())
+                .unwrap_or_default();
+
+            // Parse modules from this page
+            for m in modules_nodes {
+                all_modules.push(GraphQLModule {
+                    name: m
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    bytecode_base64: m
+                        .get("bytes")
+                        .and_then(|b| b.as_str())
+                        .map(|s| s.to_string()),
+                });
+            }
+
+            // Check for more pages
+            let page_info = modules_data.get("pageInfo");
+            let has_next = page_info
+                .and_then(|p| p.get("hasNextPage"))
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+
+            if !has_next {
+                break;
+            }
+
+            cursor = page_info
+                .and_then(|p| p.get("endCursor"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+        }
+
+        Ok(GraphQLPackage {
+            address: pkg_address,
+            version: pkg_version,
+            modules: all_modules,
         })
     }
 
@@ -693,7 +858,7 @@ impl GraphQLClient {
                     address
                     version
                     asMovePackage {
-                        modules {
+                        modules(first: 50) {
                             nodes {
                                 name
                                 bytes
@@ -711,7 +876,7 @@ impl GraphQLClient {
                     address
                     version
                     asMovePackage {
-                        modules {
+                        modules(first: 50) {
                             nodes {
                                 name
                                 bytes
@@ -791,78 +956,20 @@ impl GraphQLClient {
     }
 
     /// Fetch a transaction by digest with full PTB details.
+    /// Uses transactionJson for reliable access to type arguments.
     pub fn fetch_transaction(&self, digest: &str) -> Result<GraphQLTransaction> {
-        // Note: GraphQL uses "transaction" not "transactionBlock"
+        // Use transactionJson for complete transaction data including typeArguments
+        // The typed GraphQL commands query doesn't expose typeArguments properly
         let query = r#"
             query GetTransaction($digest: String!) {
                 transaction(digest: $digest) {
                     digest
                     sender { address }
-                    expiration { epochId }
                     gasInput {
                         gasBudget
                         gasPrice
                     }
-                    kind {
-                        __typename
-                        ... on ProgrammableTransaction {
-                            inputs {
-                                nodes {
-                                    __typename
-                                    ... on Pure { bytes }
-                                    ... on OwnedOrImmutable {
-                                        object { address version digest }
-                                    }
-                                    ... on SharedInput {
-                                        address
-                                        initialSharedVersion
-                                        mutable
-                                    }
-                                    ... on Receiving {
-                                        object { address version digest }
-                                    }
-                                }
-                            }
-                            commands {
-                                nodes {
-                                    __typename
-                                    ... on MoveCallCommand {
-                                        function {
-                                            module { name package { address } }
-                                            name
-                                        }
-                                        arguments { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                    ... on SplitCoinsCommand {
-                                        coin { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                        amounts { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                    ... on MergeCoinsCommand {
-                                        coin { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                        coins { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                    ... on TransferObjectsCommand {
-                                        inputs { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                        address { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                    ... on MakeMoveVecCommand {
-                                        type { repr }
-                                        elements { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                    ... on PublishCommand {
-                                        modules
-                                        dependencies
-                                    }
-                                    ... on UpgradeCommand {
-                                        modules
-                                        dependencies
-                                        currentPackage
-                                        upgradeTicket { __typename ... on Input { ix } ... on TxResult { cmd ix } ... on GasCoin { _ } }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    transactionJson
                     effects {
                         status
                         checkpoint { sequenceNumber }
@@ -872,6 +979,10 @@ impl GraphQLClient {
                                 address
                                 idCreated
                                 idDeleted
+                                outputState {
+                                    version
+                                    digest
+                                }
                             }
                         }
                     }
@@ -919,11 +1030,8 @@ impl GraphQLClient {
             .and_then(|p| p.as_str())
             .and_then(|s| s.parse().ok());
 
-        // Parse inputs
-        let inputs = self.parse_transaction_inputs(tx);
-
-        // Parse commands
-        let commands = self.parse_transaction_commands(tx);
+        // Parse inputs and commands from transactionJson (has complete type arguments)
+        let (inputs, commands) = self.parse_transaction_json(tx)?;
 
         // Parse effects
         let effects = self.parse_transaction_effects(tx);
@@ -959,7 +1067,269 @@ impl GraphQLClient {
         })
     }
 
-    /// Parse transaction inputs from GraphQL response.
+    /// Parse transaction from transactionJson field (has complete type arguments).
+    fn parse_transaction_json(
+        &self,
+        tx: &Value,
+    ) -> Result<(Vec<GraphQLTransactionInput>, Vec<GraphQLCommand>)> {
+        // transactionJson can be either a string or a JSON object directly
+        let owned_tx_json: Value;
+        let tx_json: &Value = match tx.get("transactionJson") {
+            Some(val) if val.is_string() => {
+                let tx_json_str = val.as_str().unwrap();
+                owned_tx_json = serde_json::from_str(tx_json_str)
+                    .map_err(|e| anyhow!("Failed to parse transactionJson: {}", e))?;
+                &owned_tx_json
+            }
+            Some(val) => val,
+            None => return Err(anyhow!("Missing transactionJson field")),
+        };
+
+        let ptb = tx_json
+            .get("kind")
+            .and_then(|k| k.get("programmableTransaction"))
+            .ok_or_else(|| anyhow!("Not a programmable transaction"))?;
+
+        // Parse inputs
+        let mut inputs = Vec::new();
+        if let Some(input_nodes) = ptb.get("inputs").and_then(|i| i.as_array()) {
+            for node in input_nodes {
+                let kind = node.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                match kind {
+                    "PURE" => {
+                        let pure_bytes = node
+                            .get("pure")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        inputs.push(GraphQLTransactionInput::Pure {
+                            bytes_base64: pure_bytes,
+                        });
+                    }
+                    "IMMUTABLE_OR_OWNED" => {
+                        let address = node
+                            .get("objectId")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let version = node
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let digest = node
+                            .get("digest")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        inputs.push(GraphQLTransactionInput::OwnedObject {
+                            address,
+                            version,
+                            digest,
+                        });
+                    }
+                    "SHARED" => {
+                        let address = node
+                            .get("objectId")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let initial_shared_version = node
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0);
+                        let mutable = node
+                            .get("mutable")
+                            .and_then(|m| m.as_bool())
+                            .unwrap_or(true);
+                        inputs.push(GraphQLTransactionInput::SharedObject {
+                            address,
+                            initial_shared_version,
+                            mutable,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Parse commands
+        let mut commands = Vec::new();
+        if let Some(cmd_nodes) = ptb.get("commands").and_then(|c| c.as_array()) {
+            for node in cmd_nodes {
+                if let Some(mc) = node.get("moveCall") {
+                    let package = mc
+                        .get("package")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let module = mc
+                        .get("module")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let function = mc
+                        .get("function")
+                        .and_then(|f| f.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let type_arguments: Vec<String> = mc
+                        .get("typeArguments")
+                        .and_then(|ta| ta.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let arguments: Vec<GraphQLArgument> = mc
+                        .get("arguments")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
+                        .unwrap_or_default();
+
+                    commands.push(GraphQLCommand::MoveCall {
+                        package,
+                        module,
+                        function,
+                        type_arguments,
+                        arguments,
+                    });
+                } else if let Some(sc) = node.get("splitCoins") {
+                    let coin = sc
+                        .get("coin")
+                        .map(|c| self.parse_json_argument(c))
+                        .unwrap_or(GraphQLArgument::GasCoin);
+                    let amounts: Vec<GraphQLArgument> = sc
+                        .get("amounts")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
+                        .unwrap_or_default();
+                    commands.push(GraphQLCommand::SplitCoins { coin, amounts });
+                } else if let Some(mc) = node.get("mergeCoins") {
+                    let destination = mc
+                        .get("destination")
+                        .map(|c| self.parse_json_argument(c))
+                        .unwrap_or(GraphQLArgument::GasCoin);
+                    let sources: Vec<GraphQLArgument> = mc
+                        .get("sources")
+                        .and_then(|s| s.as_array())
+                        .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
+                        .unwrap_or_default();
+                    commands.push(GraphQLCommand::MergeCoins {
+                        destination,
+                        sources,
+                    });
+                } else if let Some(to) = node.get("transferObjects") {
+                    let objects: Vec<GraphQLArgument> = to
+                        .get("objects")
+                        .and_then(|o| o.as_array())
+                        .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
+                        .unwrap_or_default();
+                    let address = to
+                        .get("address")
+                        .map(|a| self.parse_json_argument(a))
+                        .unwrap_or(GraphQLArgument::GasCoin);
+                    commands.push(GraphQLCommand::TransferObjects { objects, address });
+                } else if let Some(mv) = node.get("makeMoveVec") {
+                    let type_arg = mv
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string());
+                    let elements: Vec<GraphQLArgument> = mv
+                        .get("elements")
+                        .and_then(|e| e.as_array())
+                        .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
+                        .unwrap_or_default();
+                    commands.push(GraphQLCommand::MakeMoveVec { type_arg, elements });
+                } else if let Some(pub_cmd) = node.get("publish") {
+                    let modules: Vec<String> = pub_cmd
+                        .get("modules")
+                        .and_then(|m| m.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let dependencies: Vec<String> = pub_cmd
+                        .get("dependencies")
+                        .and_then(|d| d.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|d| d.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    commands.push(GraphQLCommand::Publish {
+                        modules,
+                        dependencies,
+                    });
+                } else if let Some(up) = node.get("upgrade") {
+                    let package = up
+                        .get("package")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let ticket = up
+                        .get("ticket")
+                        .map(|t| self.parse_json_argument(t))
+                        .unwrap_or(GraphQLArgument::GasCoin);
+                    let modules: Vec<String> = up
+                        .get("modules")
+                        .and_then(|m| m.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let dependencies: Vec<String> = up
+                        .get("dependencies")
+                        .and_then(|d| d.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|d| d.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    commands.push(GraphQLCommand::Upgrade {
+                        package,
+                        ticket,
+                        modules,
+                        dependencies,
+                    });
+                }
+            }
+        }
+
+        Ok((inputs, commands))
+    }
+
+    /// Parse argument from transactionJson format.
+    fn parse_json_argument(&self, arg: &Value) -> GraphQLArgument {
+        let kind = arg.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+        match kind {
+            "GAS_COIN" => GraphQLArgument::GasCoin,
+            "INPUT" => {
+                let index = arg.get("input").and_then(|i| i.as_u64()).unwrap_or(0) as u16;
+                GraphQLArgument::Input(index)
+            }
+            "RESULT" => {
+                let index = arg.get("cmd").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
+                GraphQLArgument::Result(index)
+            }
+            "NESTED_RESULT" => {
+                let cmd = arg.get("cmd").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
+                let result_idx = arg.get("ix").and_then(|i| i.as_u64()).unwrap_or(0) as u16;
+                GraphQLArgument::NestedResult(cmd, result_idx)
+            }
+            _ => GraphQLArgument::GasCoin,
+        }
+    }
+
+    /// Parse transaction inputs from GraphQL response (legacy typed query).
     fn parse_transaction_inputs(&self, tx: &Value) -> Vec<GraphQLTransactionInput> {
         let mut inputs = Vec::new();
 
@@ -1120,7 +1490,12 @@ impl GraphQLClient {
                             .and_then(|ta| ta.as_array())
                             .map(|arr| {
                                 arr.iter()
-                                    .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                                    .filter_map(|t| {
+                                        // typeArguments is an array of objects with { repr: "..." }
+                                        t.get("repr")
+                                            .and_then(|r| r.as_str())
+                                            .map(|s| s.to_string())
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -1307,12 +1682,22 @@ impl GraphQLClient {
                     .and_then(|d| d.as_bool())
                     .unwrap_or(false);
 
+                // Extract version and digest from outputState if available
+                let output_state = change.get("outputState");
+                let version = output_state
+                    .and_then(|s| s.get("version"))
+                    .and_then(|v| v.as_u64());
+                let digest = output_state
+                    .and_then(|s| s.get("digest"))
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string());
+
                 if id_created && !id_deleted {
                     // Created
                     created.push(GraphQLObjectChange {
                         address: addr,
-                        version: None,
-                        digest: None,
+                        version,
+                        digest,
                     });
                 } else if id_deleted && !id_created {
                     // Deleted
@@ -1321,8 +1706,8 @@ impl GraphQLClient {
                     // Mutated (existed before, exists after)
                     mutated.push(GraphQLObjectChange {
                         address: addr,
-                        version: None,
-                        digest: None,
+                        version,
+                        digest,
                     });
                 }
             }
@@ -2026,59 +2411,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_problematic_packages() {
-        use crate::benchmark::tx_replay::TransactionFetcher;
-
-        let graphql = GraphQLClient::mainnet();
-        let json_rpc = TransactionFetcher::mainnet();
-
-        // Compare JSON-RPC vs GraphQL for problematic packages
-        println!("=== Comparing JSON-RPC vs GraphQL for Problematic Packages ===\n");
-
-        let test_packages = [
-            (
-                "Artipedia Upgraded",
-                "0x13fe3a7422946badff042be0e6dbbb0686fbff3fabc0c86cedc2d7a029486ece",
-            ),
-            (
-                "Campaign",
-                "0x9f6de0f9c1333cecfafed4fd51ecf445d237a6295bd6ae88754821c8f8189789",
-            ),
-            (
-                "Artipedia Original",
-                "0xb7c36a747d6fdd6b59ab0354cea52a31df078c242242465a867481b6f4509498",
-            ),
-        ];
-
-        for (name, addr) in test_packages {
-            println!("--- {} ({}) ---", name, &addr[..12]);
-
-            // Try JSON-RPC
-            print!("  JSON-RPC: ");
-            match json_rpc.fetch_object_full(addr) {
-                Ok(obj) => println!(
-                    "SUCCESS (version: {}, type: {:?})",
-                    obj.version, obj.type_string
-                ),
-                Err(e) => println!("FAILED: {}", e),
-            }
-
-            // Try GraphQL
-            print!("  GraphQL: ");
-            match graphql.fetch_package(addr) {
-                Ok(pkg) => println!(
-                    "SUCCESS ({} modules, {} bytes)",
-                    pkg.modules.len(),
-                    pkg.modules
-                        .iter()
-                        .map(|m| m.bytecode_base64.as_ref().map(|b| b.len()).unwrap_or(0))
-                        .sum::<usize>()
-                ),
-                Err(e) => println!("FAILED: {}", e),
-            }
-            println!();
-        }
-
-        let client = graphql;
+        let client = GraphQLClient::mainnet();
 
         // Test 1: Artipedia upgraded package (caused LINKER_ERROR in case studies)
         println!("=== Testing Artipedia Upgraded Package ===");

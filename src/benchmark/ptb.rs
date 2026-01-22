@@ -42,11 +42,12 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
+use move_core_types::language_storage::{ModuleId, TypeTag};
 use std::collections::{HashMap, HashSet};
 
 use crate::benchmark::natives::EmittedEvent;
 use crate::benchmark::vm::{gas_costs, VMHarness};
+use crate::benchmark::well_known;
 
 // Re-export format_type_tag from types module for backward compatibility
 pub use crate::benchmark::types::format_type_tag;
@@ -1167,28 +1168,42 @@ impl CommandResult {
     /// Get the primary (first) return value.
     pub fn primary_value(&self) -> Result<Vec<u8>> {
         match self {
-            CommandResult::Empty => Err(anyhow!("command returned no values")),
-            CommandResult::Values(vs) if vs.is_empty() => {
-                Err(anyhow!("command returned no values"))
-            }
+            CommandResult::Empty => Err(anyhow!(
+                "Command returned Empty result (no values). \
+                 The function may return unit type or may not have been executed."
+            )),
+            CommandResult::Values(vs) if vs.is_empty() => Err(anyhow!(
+                "Command returned an empty Values list. \
+                 The function may return unit type or all values were filtered out."
+            )),
             CommandResult::Values(vs) => Ok(vs[0].clone()),
-            CommandResult::Created(_) => {
-                Err(anyhow!("command returned created objects, not values"))
-            }
+            CommandResult::Created(ids) => Err(anyhow!(
+                "Command returned {} created object IDs, not BCS values. \
+                 Use CommandResult::created_ids() to access created objects.",
+                ids.len()
+            )),
         }
     }
 
     /// Get a specific return value by index.
     pub fn get(&self, index: usize) -> Result<Vec<u8>> {
         match self {
-            CommandResult::Empty => Err(anyhow!("command returned no values")),
-            CommandResult::Values(vs) => vs
-                .get(index)
-                .cloned()
-                .ok_or_else(|| anyhow!("result index {} out of bounds (len={})", index, vs.len())),
-            CommandResult::Created(_) => {
-                Err(anyhow!("command returned created objects, not values"))
-            }
+            CommandResult::Empty => Err(anyhow!(
+                "Command returned Empty result; cannot get value at index {}",
+                index
+            )),
+            CommandResult::Values(vs) => vs.get(index).cloned().ok_or_else(|| {
+                anyhow!(
+                    "Result index {} out of bounds: command returned {} value(s)",
+                    index,
+                    vs.len()
+                )
+            }),
+            CommandResult::Created(ids) => Err(anyhow!(
+                "Command returned {} created object IDs, not indexable values. \
+                 Use CommandResult::created_ids() to access them.",
+                ids.len()
+            )),
         }
     }
 
@@ -1355,6 +1370,14 @@ pub struct TransactionEffects {
     /// Dynamic field entries: (parent_id, child_id) -> (type_tag, bytes).
     /// Used to sync Table/Bag state back to SimulationEnvironment.
     pub dynamic_field_entries: HashMap<(ObjectID, ObjectID), (TypeTag, Vec<u8>)>,
+
+    /// Detailed error context for debugging failures.
+    /// Populated when a command fails with information about the failure.
+    pub error_context: Option<crate::benchmark::error_context::CommandErrorContext>,
+
+    /// Snapshot of execution state at the time of failure.
+    /// Includes all objects loaded, commands that succeeded, etc.
+    pub state_at_failure: Option<crate::benchmark::error_context::ExecutionSnapshot>,
 }
 
 impl TransactionEffects {
@@ -1386,6 +1409,27 @@ impl TransactionEffects {
             failed_command_index: Some(command_index),
             failed_command_description: Some(command_description),
             commands_succeeded,
+            ..Default::default()
+        }
+    }
+
+    /// Create a failure at a specific command index with full error context.
+    pub fn failure_at_with_context(
+        error: String,
+        command_index: usize,
+        command_description: String,
+        commands_succeeded: usize,
+        error_context: crate::benchmark::error_context::CommandErrorContext,
+        state_at_failure: crate::benchmark::error_context::ExecutionSnapshot,
+    ) -> Self {
+        Self {
+            success: false,
+            error: Some(error),
+            failed_command_index: Some(command_index),
+            failed_command_description: Some(command_description),
+            commands_succeeded,
+            error_context: Some(error_context),
+            state_at_failure: Some(state_at_failure),
             ..Default::default()
         }
     }
@@ -2043,7 +2087,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 if bytes.len() != 8 {
                     return Err(anyhow!("amount must be u64 (8 bytes), got {}", bytes.len()));
                 }
-                Ok(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+                // Safe: we just verified length is exactly 8
+                let arr: [u8; 8] = bytes[..8].try_into().expect("length checked above");
+                Ok(u64::from_le_bytes(arr))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -2056,7 +2102,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             ));
         }
 
-        let original_value = u64::from_le_bytes(coin_bytes[32..40].try_into().unwrap());
+        // Safe: we just verified length >= 40
+        let original_value = u64::from_le_bytes(
+            coin_bytes[32..40]
+                .try_into()
+                .expect("slice is exactly 8 bytes"),
+        );
 
         // Check we have enough balance
         let total_split: u64 = amounts.iter().sum();
@@ -2074,17 +2125,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             .and_then(|(_, t)| t)
             .or_else(|| {
                 // Default to Coin<SUI> if type not known
-                Some(TypeTag::Struct(Box::new(StructTag {
-                    address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                    module: Identifier::new("coin").unwrap(),
-                    name: Identifier::new("Coin").unwrap(),
-                    type_params: vec![TypeTag::Struct(Box::new(StructTag {
-                        address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                        module: Identifier::new("sui").unwrap(),
-                        name: Identifier::new("SUI").unwrap(),
-                        type_params: vec![],
-                    }))],
-                })))
+                Some(well_known::types::sui_coin())
             });
 
         // Create new coins for each amount
@@ -2140,18 +2181,35 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let source_bytes_list = self.resolve_args(&sources)?;
 
         if dest_bytes.len() < 40 {
-            return Err(anyhow!("destination coin bytes too short"));
+            return Err(anyhow!(
+                "destination coin bytes too short: expected at least 40, got {}",
+                dest_bytes.len()
+            ));
         }
 
-        let dest_value = u64::from_le_bytes(dest_bytes[32..40].try_into().unwrap());
+        // Safe: we just verified length >= 40
+        let dest_value = u64::from_le_bytes(
+            dest_bytes[32..40]
+                .try_into()
+                .expect("slice is exactly 8 bytes"),
+        );
 
         // Sum up all source values
         let mut total_merge: u64 = 0;
-        for source_bytes in &source_bytes_list {
+        for (i, source_bytes) in source_bytes_list.iter().enumerate() {
             if source_bytes.len() < 40 {
-                return Err(anyhow!("source coin bytes too short"));
+                return Err(anyhow!(
+                    "source coin {} bytes too short: expected at least 40, got {}",
+                    i,
+                    source_bytes.len()
+                ));
             }
-            let source_value = u64::from_le_bytes(source_bytes[32..40].try_into().unwrap());
+            // Safe: we just verified length >= 40
+            let source_value = u64::from_le_bytes(
+                source_bytes[32..40]
+                    .try_into()
+                    .expect("slice is exactly 8 bytes"),
+            );
             total_merge = total_merge
                 .checked_add(source_value)
                 .ok_or_else(|| anyhow!("merge would overflow"))?;
@@ -2524,12 +2582,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             self.publish_index += 1;
 
             // UpgradeCap type: 0x2::package::UpgradeCap
-            let upgrade_cap_type = TypeTag::Struct(Box::new(StructTag {
-                address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                module: Identifier::new("package").unwrap(),
-                name: Identifier::new("UpgradeCap").unwrap(),
-                type_params: vec![],
-            }));
+            let upgrade_cap_type = well_known::types::UPGRADE_CAP_TYPE.clone();
 
             // Mark the UpgradeCap as created with its type
             self.created_objects
@@ -2576,12 +2629,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             self.upgrade_index += 1;
 
             // UpgradeReceipt type: 0x2::package::UpgradeReceipt
-            let upgrade_receipt_type = TypeTag::Struct(Box::new(StructTag {
-                address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                module: Identifier::new("package").unwrap(),
-                name: Identifier::new("UpgradeReceipt").unwrap(),
-                type_params: vec![],
-            }));
+            let upgrade_receipt_type = well_known::types::UPGRADE_RECEIPT_TYPE.clone();
 
             // Mark the UpgradeReceipt as created with its type
             self.created_objects
@@ -2685,6 +2733,347 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             .insert(object_id, (object_bytes, Some(type_tag)));
     }
 
+    /// Build a CommandErrorContext for a failed command.
+    fn build_error_context(
+        &self,
+        cmd: &Command,
+        cmd_index: usize,
+        error_msg: &str,
+    ) -> crate::benchmark::error_context::CommandErrorContext {
+        use crate::benchmark::error_context::{CoinOperationContext, CommandErrorContext};
+
+        let cmd_type = Self::command_type_name(cmd);
+        let mut ctx = CommandErrorContext::new(cmd_index, &cmd_type);
+
+        // Set prior successful commands
+        ctx.prior_successful_commands = (0..cmd_index).collect();
+        ctx.gas_consumed_before_failure = self.gas_used;
+
+        // Build command-specific context
+        match cmd {
+            Command::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } => {
+                ctx.function_signature = Some(format!(
+                    "{}::{}::{}",
+                    package.to_hex_literal(),
+                    module,
+                    function
+                ));
+                ctx.type_arguments = type_args.iter().map(|t| format!("{}", t)).collect();
+
+                // Add input object snapshots
+                for arg in args {
+                    if let Some(snapshot) = self.build_object_snapshot_from_arg(arg) {
+                        ctx.input_objects.push(snapshot);
+                    }
+                }
+
+                // Parse abort info from error message if it's an abort
+                if let Some(abort_info) =
+                    Self::parse_abort_info(error_msg, module.as_str(), function.as_str())
+                {
+                    ctx.abort_info = Some(abort_info);
+                }
+            }
+            Command::SplitCoins { coin, amounts } => {
+                // Add the source coin snapshot
+                if let Some(snapshot) = self.build_object_snapshot_from_arg(coin) {
+                    ctx.input_objects.push(snapshot);
+                }
+
+                // Build coin operation context
+                let source_balance = self.get_coin_balance_from_arg(coin);
+                let requested_splits: Option<Vec<u64>> = amounts
+                    .iter()
+                    .map(|a| {
+                        self.resolve_arg(a).ok().and_then(|b| {
+                            if b.len() == 8 {
+                                Some(u64::from_le_bytes(b[..8].try_into().ok()?))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                ctx.coin_balances = Some(CoinOperationContext {
+                    coin_type: self.get_coin_type_from_arg(coin).unwrap_or_default(),
+                    source_balance,
+                    requested_splits,
+                    destination_balance: None,
+                    source_balances: None,
+                });
+            }
+            Command::MergeCoins {
+                destination,
+                sources,
+            } => {
+                // Add destination coin snapshot
+                if let Some(snapshot) = self.build_object_snapshot_from_arg(destination) {
+                    ctx.input_objects.push(snapshot);
+                }
+
+                // Add source coin snapshots
+                for src in sources {
+                    if let Some(snapshot) = self.build_object_snapshot_from_arg(src) {
+                        ctx.input_objects.push(snapshot);
+                    }
+                }
+
+                // Build coin operation context
+                let dest_balance = self.get_coin_balance_from_arg(destination);
+                let src_balances: Option<Vec<u64>> = Some(
+                    sources
+                        .iter()
+                        .filter_map(|s| self.get_coin_balance_from_arg(s))
+                        .collect(),
+                );
+
+                ctx.coin_balances = Some(CoinOperationContext {
+                    coin_type: self.get_coin_type_from_arg(destination).unwrap_or_default(),
+                    source_balance: None,
+                    requested_splits: None,
+                    destination_balance: dest_balance,
+                    source_balances: src_balances,
+                });
+            }
+            Command::TransferObjects { objects, address } => {
+                for obj_arg in objects {
+                    if let Some(snapshot) = self.build_object_snapshot_from_arg(obj_arg) {
+                        ctx.input_objects.push(snapshot);
+                    }
+                }
+                // Add address argument snapshot if it references an object
+                if let Some(snapshot) = self.build_object_snapshot_from_arg(address) {
+                    ctx.input_objects.push(snapshot);
+                }
+            }
+            _ => {}
+        }
+
+        ctx
+    }
+
+    /// Build an ObjectSnapshot from an Argument if it references an object.
+    fn build_object_snapshot_from_arg(
+        &self,
+        arg: &Argument,
+    ) -> Option<crate::benchmark::error_context::ObjectSnapshot> {
+        use crate::benchmark::error_context::ObjectSnapshot;
+
+        let (id, type_tag) = self.get_object_id_and_type_from_arg(arg)?;
+        let bytes = self.resolve_arg(arg).ok()?;
+
+        // Check if this object was modified in the PTB
+        let modified = self.mutated_objects.contains_key(&id);
+
+        // Get owner info
+        let owner = self
+            .object_owners
+            .get(&id)
+            .map(|o| match o {
+                Owner::Address(addr) => format!("address:{}", addr.to_hex_literal()),
+                Owner::Shared => "shared".to_string(),
+                Owner::Immutable => "immutable".to_string(),
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Some(
+            ObjectSnapshot::new(
+                id.to_hex_literal(),
+                type_tag
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "unknown".to_string()),
+                0, // version not tracked at PTB level
+                bytes.len(),
+                owner,
+            )
+            .as_modified_if(modified),
+        )
+    }
+
+    /// Get the coin balance from an argument if it's a Coin.
+    fn get_coin_balance_from_arg(&self, arg: &Argument) -> Option<u64> {
+        let bytes = self.resolve_arg(arg).ok()?;
+        // Coin structure: { id: UID (32 bytes), balance: Balance<T> { value: u64 } }
+        if bytes.len() >= 40 {
+            let balance_bytes: [u8; 8] = bytes[32..40].try_into().ok()?;
+            Some(u64::from_le_bytes(balance_bytes))
+        } else {
+            None
+        }
+    }
+
+    /// Get the coin type from an argument if it's a Coin.
+    fn get_coin_type_from_arg(&self, arg: &Argument) -> Option<String> {
+        let (_, type_tag) = self.get_object_id_and_type_from_arg(arg)?;
+        let type_tag = type_tag?;
+        // Extract T from Coin<T>
+        if let TypeTag::Struct(s) = &type_tag {
+            if s.name.as_str() == "Coin" && !s.type_params.is_empty() {
+                return Some(format!("{}", s.type_params[0]));
+            }
+        }
+        Some(format!("{}", type_tag))
+    }
+
+    /// Parse abort information from an error message.
+    fn parse_abort_info(
+        error_msg: &str,
+        module: &str,
+        function: &str,
+    ) -> Option<crate::benchmark::error_context::AbortInfo> {
+        use crate::benchmark::error_context::AbortInfo;
+
+        // Parse abort code from various VM error formats:
+        // - VMError { major_status: ABORTED, sub_status: Some(202), ... }
+        // - "abort code: 1"
+        // - "ABORTED with code 1"
+        // - "Move abort: 1"
+        // - "MoveAbort(..., 42)"
+        let abort_code = if let Some(idx) = error_msg.find("sub_status: Some(") {
+            // VMError format: sub_status: Some(202)
+            let start = idx + 17;
+            error_msg[start..]
+                .split(')')
+                .next()
+                .and_then(|s| s.parse().ok())
+        } else if let Some(idx) = error_msg.find("MoveAbort") {
+            // MoveAbort(location, code) format - extract the last number
+            error_msg[idx..]
+                .split(|c: char| !c.is_ascii_digit())
+                .rfind(|s: &&str| !s.is_empty())
+                .and_then(|s| s.parse().ok())
+        } else if let Some(idx) = error_msg.find("abort code:") {
+            error_msg[idx + 11..]
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.trim_matches(|c: char| !c.is_numeric()).parse().ok())
+        } else if let Some(idx) = error_msg.find("ABORTED with code") {
+            error_msg[idx + 17..]
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.trim_matches(|c: char| !c.is_numeric()).parse().ok())
+        } else if let Some(idx) = error_msg.find("Move abort:") {
+            error_msg[idx + 11..]
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.trim_matches(|c: char| !c.is_numeric()).parse().ok())
+        } else if error_msg.contains("abort") || error_msg.contains("ABORT") {
+            // Generic fallback: try to find any number after "abort"
+            error_msg
+                .split_whitespace()
+                .filter_map(|s| {
+                    s.trim_matches(|c: char| !c.is_numeric())
+                        .parse::<u64>()
+                        .ok()
+                })
+                .next()
+        } else {
+            None
+        };
+
+        abort_code.map(|code| {
+            let abort_meaning =
+                crate::benchmark::error_context::get_abort_code_context(code, module);
+            AbortInfo {
+                module: module.to_string(),
+                function: function.to_string(),
+                abort_code: code,
+                constant_name: None, // Not available from local execution - only from gRPC CleverError
+                abort_meaning,
+                involved_objects: Vec::new(),
+            }
+        })
+    }
+
+    /// Build an ExecutionSnapshot capturing the state at failure time.
+    fn build_execution_snapshot(
+        &self,
+        successful_cmd_count: usize,
+    ) -> crate::benchmark::error_context::ExecutionSnapshot {
+        use crate::benchmark::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
+
+        let mut snapshot = ExecutionSnapshot {
+            total_gas_consumed: self.gas_used,
+            ..Default::default()
+        };
+
+        // Add all loaded input objects
+        for (idx, input) in self.inputs.iter().enumerate() {
+            if let InputValue::Object(obj_input) = input {
+                let bytes = obj_input.bytes();
+                let id = obj_input.id();
+                let modified = self.mutated_objects.contains_key(id);
+                let owner = self
+                    .object_owners
+                    .get(id)
+                    .map(|o| match o {
+                        Owner::Address(addr) => format!("address:{}", addr.to_hex_literal()),
+                        Owner::Shared => "shared".to_string(),
+                        Owner::Immutable => "immutable".to_string(),
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                snapshot.objects.push(
+                    ObjectSnapshot::new(
+                        id.to_hex_literal(),
+                        format!("input_{}", idx), // Type not always available
+                        0,
+                        bytes.len(),
+                        owner,
+                    )
+                    .as_modified_if(modified),
+                );
+            }
+        }
+
+        // Add created objects
+        for (id, (bytes, type_tag)) in &self.created_objects {
+            let owner = self
+                .object_owners
+                .get(id)
+                .map(|o| match o {
+                    Owner::Address(addr) => format!("address:{}", addr.to_hex_literal()),
+                    Owner::Shared => "shared".to_string(),
+                    Owner::Immutable => "immutable".to_string(),
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+
+            snapshot.objects.push(ObjectSnapshot::new(
+                id.to_hex_literal(),
+                type_tag
+                    .as_ref()
+                    .map(|t| format!("{}", t))
+                    .unwrap_or_else(|| "created".to_string()),
+                0,
+                bytes.len(),
+                owner,
+            ));
+        }
+
+        // Add successful command summaries from execution trace
+        for entry in &self.execution_trace.commands {
+            if entry.success && entry.index < successful_cmd_count {
+                snapshot.successful_commands.push(CommandSummary {
+                    index: entry.index,
+                    command_type: entry.command_type.clone(),
+                    description: entry.description.clone(),
+                    gas_consumed: entry.gas_used,
+                    objects_created: entry.objects_created.clone(),
+                    objects_mutated: Vec::new(),
+                });
+            }
+        }
+
+        snapshot
+    }
+
     /// Execute all commands in the PTB.
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<TransactionEffects> {
         let start_time = std::time::Instant::now();
@@ -2725,9 +3114,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.vm.clear_trace();
         self.vm.clear_events();
 
-        for (index, cmd) in commands.into_iter().enumerate() {
-            let cmd_description = Self::describe_command(&cmd);
-            let cmd_type = Self::command_type_name(&cmd);
+        for (index, cmd) in commands.iter().enumerate() {
+            let cmd_description = Self::describe_command(cmd);
+            let cmd_type = Self::command_type_name(cmd);
 
             // Extract function call info for MoveCall commands
             let func_info = if let Command::MoveCall {
@@ -2736,7 +3125,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 function,
                 type_args,
                 args,
-            } = &cmd
+            } = cmd
             {
                 Some(FunctionCallInfo {
                     module: format!("{}::{}", package.to_hex_literal(), module),
@@ -2748,7 +3137,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 None
             };
 
-            match self.execute_command(cmd) {
+            match self.execute_command(cmd.clone()) {
                 Ok(result) => {
                     let return_count = result.len();
                     self.results.push(result);
@@ -2767,6 +3156,11 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                     // Check gas budget after each successful command
                     if let Err(gas_err) = self.check_gas_budget() {
+                        // Build error context for out-of-gas failure
+                        let error_context =
+                            self.build_error_context(cmd, index, &gas_err.to_string());
+                        let state_at_failure = self.build_execution_snapshot(self.results.len());
+
                         self.execution_trace.add_failure(
                             index,
                             &cmd_type,
@@ -2775,15 +3169,21 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         );
                         self.execution_trace
                             .complete(false, Some(start_time.elapsed().as_millis() as u64));
-                        return Ok(TransactionEffects::failure_at(
+                        return Ok(TransactionEffects::failure_at_with_context(
                             gas_err.to_string(),
                             index,
                             format!("{} (out of gas)", cmd_description),
                             self.results.len(),
+                            error_context,
+                            state_at_failure,
                         ));
                     }
                 }
                 Err(e) => {
+                    // Build error context for command failure
+                    let error_context = self.build_error_context(cmd, index, &e.to_string());
+                    let state_at_failure = self.build_execution_snapshot(self.results.len());
+
                     self.execution_trace.add_failure(
                         index,
                         &cmd_type,
@@ -2792,11 +3192,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     );
                     self.execution_trace
                         .complete(false, Some(start_time.elapsed().as_millis() as u64));
-                    return Ok(TransactionEffects::failure_at(
+                    return Ok(TransactionEffects::failure_at_with_context(
                         e.to_string(),
                         index,
                         cmd_description,
                         self.results.len(),
+                        error_context,
+                        state_at_failure,
                     ));
                 }
             }
@@ -3746,5 +4148,177 @@ mod tests {
         assert_eq!(func.module, "0x2::coin");
         assert_eq!(func.function, "mint");
         assert_eq!(func.type_args.len(), 1);
+    }
+
+    // =========================================================================
+    // Error Context Population Tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_abort_info_with_abort_code() {
+        // Test parsing abort info from various error message formats
+        use crate::benchmark::ptb::PTBExecutor;
+
+        // Format: "abort code: X"
+        let info = PTBExecutor::parse_abort_info(
+            "execution failed with abort code: 1 in module",
+            "coin",
+            "split",
+        );
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.abort_code, 1);
+        assert_eq!(info.module, "coin");
+        assert_eq!(info.function, "split");
+        assert!(info.abort_meaning.is_some()); // Should match coin module code 1
+
+        // Format: "ABORTED with code X"
+        let info = PTBExecutor::parse_abort_info(
+            "Move function ABORTED with code 257",
+            "vector",
+            "borrow",
+        );
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().abort_code, 257);
+
+        // Format: VMError with sub_status (actual VM output format)
+        let info = PTBExecutor::parse_abort_info(
+            "VMError { major_status: ABORTED, sub_status: Some(202), message: Some(\"0xf825::sq::csst at offset 13\") }",
+            "sq",
+            "csst",
+        );
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().abort_code, 202);
+
+        // Format: MoveAbort with location and code
+        let info = PTBExecutor::parse_abort_info(
+            "MoveAbort(MoveLocation { module: 0x2::coin, function: 0, instruction: 5 }, 1)",
+            "coin",
+            "split",
+        );
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.abort_code, 1);
+        assert!(info.abort_meaning.is_some()); // coin module code 1 = insufficient balance
+
+        // No abort code present
+        let info = PTBExecutor::parse_abort_info("type mismatch error", "test", "func");
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_transaction_effects_failure_with_context() {
+        use crate::benchmark::error_context::{CommandErrorContext, ExecutionSnapshot};
+
+        // Test that failure_at_with_context properly stores the context
+        let ctx = CommandErrorContext::new(2, "SplitCoins")
+            .with_gas_consumed(1500)
+            .with_prior_commands(vec![0, 1]);
+
+        let mut snapshot = ExecutionSnapshot::default();
+        snapshot.total_gas_consumed = 1500;
+
+        let effects = TransactionEffects::failure_at_with_context(
+            "insufficient balance".to_string(),
+            2,
+            "SplitCoins (coin: Input(0), 1 amounts)".to_string(),
+            2,
+            ctx,
+            snapshot,
+        );
+
+        assert!(!effects.success);
+        assert_eq!(effects.failed_command_index, Some(2));
+        assert_eq!(effects.commands_succeeded, 2);
+
+        // Verify error_context is populated
+        assert!(effects.error_context.is_some());
+        let ctx = effects.error_context.unwrap();
+        assert_eq!(ctx.command_index, 2);
+        assert_eq!(ctx.command_type, "SplitCoins");
+        assert_eq!(ctx.gas_consumed_before_failure, 1500);
+        assert_eq!(ctx.prior_successful_commands, vec![0, 1]);
+
+        // Verify state_at_failure is populated
+        assert!(effects.state_at_failure.is_some());
+        let snapshot = effects.state_at_failure.unwrap();
+        assert_eq!(snapshot.total_gas_consumed, 1500);
+    }
+
+    #[test]
+    fn test_transaction_effects_success_no_context() {
+        // Verify that success() doesn't have error context
+        let effects = TransactionEffects::success();
+
+        assert!(effects.success);
+        assert!(effects.error_context.is_none());
+        assert!(effects.state_at_failure.is_none());
+    }
+
+    #[test]
+    fn test_transaction_effects_failure_at_no_context() {
+        // Verify that failure_at() (without context) doesn't have error context
+        let effects =
+            TransactionEffects::failure_at("some error".to_string(), 1, "MoveCall".to_string(), 1);
+
+        assert!(!effects.success);
+        assert_eq!(effects.failed_command_index, Some(1));
+        assert!(effects.error_context.is_none()); // Old method doesn't populate context
+        assert!(effects.state_at_failure.is_none());
+    }
+
+    #[test]
+    fn test_command_error_context_coin_operation() {
+        use crate::benchmark::error_context::{CoinOperationContext, CommandErrorContext};
+
+        // Test that coin operation context is properly constructed
+        let coin_ctx = CoinOperationContext {
+            coin_type: "0x2::sui::SUI".to_string(),
+            source_balance: Some(100),
+            requested_splits: Some(vec![300, 400]),
+            destination_balance: None,
+            source_balances: None,
+        };
+
+        let ctx = CommandErrorContext::new(0, "SplitCoins").with_coin_context(coin_ctx);
+
+        assert!(ctx.coin_balances.is_some());
+        let coin = ctx.coin_balances.unwrap();
+        assert_eq!(coin.coin_type, "0x2::sui::SUI");
+        assert_eq!(coin.source_balance, Some(100));
+        assert_eq!(coin.requested_splits, Some(vec![300, 400]));
+    }
+
+    #[test]
+    fn test_execution_snapshot_structure() {
+        use crate::benchmark::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
+
+        let mut snapshot = ExecutionSnapshot::default();
+
+        // Add an object
+        snapshot.objects.push(ObjectSnapshot::new(
+            "0x123",
+            "0x2::coin::Coin<0x2::sui::SUI>",
+            42,
+            40,
+            "address:0xabc",
+        ));
+
+        // Add a successful command
+        snapshot.successful_commands.push(CommandSummary {
+            index: 0,
+            command_type: "SplitCoins".to_string(),
+            description: "SplitCoins (coin: Input(0), 1 amounts)".to_string(),
+            gas_consumed: 500,
+            objects_created: vec!["0x456".to_string()],
+            objects_mutated: vec!["0x123".to_string()],
+        });
+
+        snapshot.total_gas_consumed = 500;
+
+        assert_eq!(snapshot.objects.len(), 1);
+        assert_eq!(snapshot.successful_commands.len(), 1);
+        assert_eq!(snapshot.successful_commands[0].index, 0);
+        assert_eq!(snapshot.total_gas_consumed, 500);
     }
 }

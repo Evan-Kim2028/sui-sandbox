@@ -52,14 +52,15 @@ fn test_simulation_environment_create_coin() {
     let mut env = SimulationEnvironment::new().expect("create env");
 
     // Create a SUI coin
-    let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000);
-
-    assert!(coin_id.is_ok(), "Should create SUI coin");
-    let id = coin_id.unwrap();
+    let id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("should create SUI coin");
 
     // Verify the object exists
-    let obj = env.get_object(&id);
-    assert!(obj.is_some(), "Created coin should exist");
+    assert!(
+        env.get_object(&id).is_some(),
+        "Created coin should exist in environment"
+    );
 
     println!("Created coin: {}", id.to_hex_literal());
 }
@@ -114,15 +115,13 @@ fn test_ptb_split_coins() {
 
     let result = env.execute_ptb(inputs, commands);
 
-    if result.success {
-        println!("SplitCoins succeeded");
-        if let Some(effects) = &result.effects {
-            println!("  Created: {}", effects.created.len());
-            println!("  Mutated: {}", effects.mutated.len());
-            assert!(effects.created.len() >= 1, "Should create new coin");
-        }
-    } else {
-        panic!("SplitCoins failed: {:?}", result.error);
+    assert!(
+        result.success,
+        "SplitCoins should succeed, but got error: {:?}",
+        result.error
+    );
+    if let Some(effects) = &result.effects {
+        assert!(effects.created.len() >= 1, "Should create new coin");
     }
 }
 
@@ -162,15 +161,11 @@ fn test_ptb_merge_coins() {
 
     let result = env.execute_ptb(inputs, commands);
 
-    if result.success {
-        println!("MergeCoins succeeded");
-        if let Some(effects) = &result.effects {
-            println!("  Deleted: {}", effects.deleted.len());
-            println!("  Mutated: {}", effects.mutated.len());
-        }
-    } else {
-        panic!("MergeCoins failed: {:?}", result.error);
-    }
+    assert!(
+        result.success,
+        "MergeCoins should succeed, but got error: {:?}",
+        result.error
+    );
 }
 
 #[test]
@@ -204,14 +199,11 @@ fn test_ptb_transfer_objects() {
 
     let result = env.execute_ptb(inputs, commands);
 
-    if result.success {
-        println!("TransferObjects succeeded");
-        if let Some(effects) = &result.effects {
-            println!("  Mutated: {}", effects.mutated.len());
-        }
-    } else {
-        panic!("TransferObjects failed: {:?}", result.error);
-    }
+    assert!(
+        result.success,
+        "TransferObjects should succeed, but got error: {:?}",
+        result.error
+    );
 }
 
 #[test]
@@ -255,15 +247,11 @@ fn test_ptb_multi_command_sequence() {
 
     let result = env.execute_ptb(inputs, commands);
 
-    if result.success {
-        println!("Multi-command PTB succeeded");
-        if let Some(effects) = &result.effects {
-            println!("  Created: {}", effects.created.len());
-            println!("  Mutated: {}", effects.mutated.len());
-        }
-    } else {
-        panic!("Multi-command PTB failed: {:?}", result.error);
-    }
+    assert!(
+        result.success,
+        "Multi-command PTB should succeed, but got error: {:?}",
+        result.error
+    );
 }
 
 // =============================================================================
@@ -443,10 +431,9 @@ fn test_list_functions() {
     let env = SimulationEnvironment::new().expect("create env");
 
     // List functions in sui::coin
-    let functions = env.list_functions("0x2::coin");
-
-    assert!(functions.is_some(), "Should find sui::coin");
-    let funcs = functions.unwrap();
+    let funcs = env
+        .list_functions("0x2::coin")
+        .expect("should find sui::coin");
 
     assert!(!funcs.is_empty(), "Should have functions");
 
@@ -464,10 +451,9 @@ fn test_list_functions() {
 fn test_get_function_info() {
     let env = SimulationEnvironment::new().expect("create env");
 
-    let info = env.get_function_info("0x2::coin", "value");
-
-    assert!(info.is_some(), "Should find coin::value");
-    let info = info.unwrap();
+    let info = env
+        .get_function_info("0x2::coin", "value")
+        .expect("should find coin::value");
 
     // Info is a serde_json::Value, check for expected keys
     assert!(info.get("visibility").is_some(), "Should have visibility");
@@ -480,11 +466,10 @@ fn test_get_function_info() {
 fn test_module_summary() {
     let env = SimulationEnvironment::new().expect("create env");
 
-    let sui_addr = AccountAddress::from_hex_literal("0x2").unwrap();
-    let summary = env.get_module_summary(&sui_addr, "coin");
-
-    assert!(summary.is_ok(), "Should get coin summary");
-    let summary = summary.unwrap();
+    let sui_addr = AccountAddress::from_hex_literal("0x2").expect("0x2 should be a valid address");
+    let summary = env
+        .get_module_summary(&sui_addr, "coin")
+        .expect("should get coin summary");
 
     // Summary is a string, just verify it's non-empty
     assert!(!summary.is_empty(), "Summary should not be empty");
@@ -521,11 +506,10 @@ fn test_gas_usage_tracking() {
 
     let result = env.execute_ptb(inputs, commands);
 
-    assert!(result.success);
-    assert!(result.effects.is_some(), "Should have effects");
+    assert!(result.success, "PTB execution should succeed");
 
     // Gas tracking is available in effects (may be 0 in unmetered execution)
-    let effects = result.effects.unwrap();
+    let effects = result.effects.expect("should have effects on success");
     println!("Gas used: {}", effects.gas_used);
 }
 
@@ -569,4 +553,128 @@ fn test_events_are_captured() {
     // Events are available (may or may not have any depending on operation)
     let events = env.get_all_events();
     println!("Events captured: {}", events.len());
+}
+
+// =============================================================================
+// Error Path Tests
+// =============================================================================
+
+#[test]
+fn test_invalid_coin_type_creation() {
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Empty type string should fail
+    let result = env.create_coin("", 1_000_000);
+    assert!(result.is_err(), "Empty coin type should fail");
+
+    // Malformed type string (no module separator)
+    let result = env.create_coin("invalid", 1_000_000);
+    assert!(result.is_err(), "Malformed coin type should fail");
+
+    // Missing struct name
+    let result = env.create_coin("0x2::coin::", 1_000_000);
+    assert!(result.is_err(), "Missing struct name should fail");
+}
+
+#[test]
+fn test_execute_ptb_with_missing_object() {
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Reference a non-existent object
+    let fake_object_id = AccountAddress::from_hex_literal(
+        "0x0000000000000000000000000000000000000000000000000000000000001234",
+    )
+    .unwrap();
+
+    let inputs = vec![InputValue::Object(ObjectInput::Owned {
+        id: fake_object_id,
+        bytes: vec![], // Empty bytes for non-existent object
+        type_tag: None,
+    })];
+
+    let commands = vec![Command::TransferObjects {
+        objects: vec![Argument::Input(0)],
+        address: Argument::Input(0), // Invalid - same input as recipient
+    }];
+
+    let result = env.execute_ptb(inputs, commands);
+
+    // Should fail - object doesn't exist or has invalid setup
+    assert!(
+        !result.success,
+        "PTB with non-existent object should fail execution"
+    );
+}
+
+#[test]
+fn test_list_functions_nonexistent_module() {
+    let env = SimulationEnvironment::new().expect("create env");
+
+    // Non-existent module should return None
+    let result = env.list_functions("0x999::nonexistent::Module");
+    assert!(
+        result.is_none(),
+        "Non-existent module should return None for list_functions"
+    );
+}
+
+#[test]
+fn test_get_function_info_nonexistent() {
+    let env = SimulationEnvironment::new().expect("create env");
+
+    // Non-existent function should return None
+    let result = env.get_function_info("0x2::coin", "nonexistent_function");
+    assert!(result.is_none(), "Non-existent function should return None");
+
+    // Non-existent module should also return None
+    let result = env.get_function_info("0x999::fake_module", "fake_function");
+    assert!(result.is_none(), "Non-existent module should return None");
+}
+
+#[test]
+fn test_deploy_empty_package() {
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Deploy empty package should fail or return an error
+    let result = env.deploy_package(vec![]);
+
+    // Deploying an empty package should fail
+    assert!(result.is_err(), "Deploying empty package should fail");
+}
+
+#[test]
+fn test_execute_ptb_with_invalid_arguments() {
+    let mut env = SimulationEnvironment::new().expect("create env");
+
+    // Create a coin
+    let coin_id = env
+        .create_coin("0x2::sui::SUI", 1_000_000_000)
+        .expect("create coin");
+    let coin_obj = env.get_object(&coin_id).expect("coin exists");
+
+    let inputs = vec![
+        InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin_obj.bcs_bytes.clone(),
+            type_tag: None,
+        }),
+        InputValue::Pure(vec![1, 2, 3]), // Invalid - should be u64 for amount
+    ];
+
+    // Try to split coins with malformed amount
+    let commands = vec![Command::SplitCoins {
+        coin: Argument::Input(0),
+        amounts: vec![Argument::Input(1)], // Pure input is not a valid u64
+    }];
+
+    let result = env.execute_ptb(inputs, commands);
+
+    // This may fail at execution time due to deserialization error
+    // The important thing is it doesn't panic
+    if !result.success {
+        assert!(
+            result.error.is_some(),
+            "Failed execution should have error message"
+        );
+    }
 }

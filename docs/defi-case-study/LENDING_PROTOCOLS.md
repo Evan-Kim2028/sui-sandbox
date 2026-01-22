@@ -37,9 +37,14 @@ This case study demonstrates **historical transaction replay** for lending proto
 ### Running the Test
 
 ```bash
-# Run the replay test
-cargo test test_replay_scallop_deposit --test execute_lending_protocols -- --nocapture
-```text
+# Run from scratch (no cache needed, no API keys required)
+cargo test --test execute_lending_protocols test_replay_scallop_deposit -- --nocapture
+
+# Clear cache first if you want a completely fresh run
+rm -rf .tx-cache && cargo test --test execute_lending_protocols test_replay_scallop_deposit -- --nocapture
+```
+
+**Expected Output**: `Success: true` with `SCALLOP DEPOSIT REPLAYED SUCCESSFULLY!`
 
 ### Key Technical Challenges Solved
 

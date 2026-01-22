@@ -463,8 +463,13 @@ impl ObjectRuntime {
             return Err(E_FIELD_ALREADY_EXISTS);
         }
 
-        // Wrap in GlobalValue for reference semantics
-        let global_value = GlobalValue::cached(value).map_err(|_| E_FIELD_TYPE_MISMATCH)?;
+        // Use GlobalValue::none() + move_to() instead of GlobalValue::cached()
+        // This creates a "Fresh" GlobalValue which returns ContainerRef::Local on borrow,
+        // avoiding a field indexing bug in ContainerRef::Global's borrow_elem.
+        let mut global_value = GlobalValue::none();
+        global_value
+            .move_to(value)
+            .map_err(|_| E_FIELD_TYPE_MISMATCH)?;
 
         self.children.insert(
             key,

@@ -2,7 +2,20 @@
 //! GraphQL Integration Tests
 //!
 //! These tests validate the GraphQL client and DataFetcher against mainnet.
-//! Note: These tests require network access.
+//!
+//! ## Network Tests
+//!
+//! Most tests in this file require network access to Sui mainnet/testnet.
+//! They are marked with `#[ignore]` to avoid CI failures when network is unavailable.
+//!
+//! To run all network tests:
+//! ```sh
+//! cargo test --test graphql_tests -- --ignored
+//! ```
+//!
+//! Note: Tests that silently pass when network is unavailable provide false confidence.
+//! We explicitly mark network-dependent tests as ignored rather than having them
+//! silently succeed with eprintln warnings.
 
 use sui_move_interface_extractor::data_fetcher::{
     DataFetcher, DataSource, GraphQLArgument, GraphQLCommand,
@@ -12,7 +25,7 @@ use sui_move_interface_extractor::graphql::{
 };
 
 // =============================================================================
-// GraphQL Client Tests
+// Unit Tests (No Network Required)
 // =============================================================================
 
 #[test]
@@ -27,57 +40,46 @@ fn test_graphql_client_creation() {
     drop(custom);
 }
 
+// =============================================================================
+// Network Integration Tests (require --ignored flag)
+// =============================================================================
+
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_object() {
     let client = GraphQLClient::mainnet();
 
     // Fetch the Sui framework package (0x2)
-    let result = client.fetch_object("0x2");
+    let obj = client
+        .fetch_object("0x2")
+        .expect("fetch_object should succeed when network is available");
 
-    match result {
-        Ok(obj) => {
-            assert_eq!(
-                obj.address,
-                "0x0000000000000000000000000000000000000000000000000000000000000002"
-            );
-            assert!(obj.version > 0, "Should have version");
-            println!("Fetched object 0x2, version: {}", obj.version);
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch object (network issue?): {}", e);
-        }
-    }
+    assert_eq!(
+        obj.address,
+        "0x0000000000000000000000000000000000000000000000000000000000000002"
+    );
+    assert!(obj.version > 0, "Should have version");
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_package() {
     let client = GraphQLClient::mainnet();
 
     // Fetch the Sui framework package
-    let result = client.fetch_package("0x2");
+    let pkg = client
+        .fetch_package("0x2")
+        .expect("fetch_package should succeed when network is available");
 
-    match result {
-        Ok(pkg) => {
-            assert!(!pkg.modules.is_empty(), "Sui framework should have modules");
+    assert!(!pkg.modules.is_empty(), "Sui framework should have modules");
 
-            // Check for some known modules
-            let module_names: Vec<_> = pkg.modules.iter().map(|m| m.name.as_str()).collect();
-            assert!(module_names.contains(&"coin"), "Should have coin module");
-            // Note: 'transfer' is actually at 0x2::transfer_policy or similar
-
-            println!(
-                "Fetched package 0x2 with {} modules: {:?}",
-                pkg.modules.len(),
-                module_names.iter().take(5).collect::<Vec<_>>()
-            );
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch package (network issue?): {}", e);
-        }
-    }
+    // Check for some known modules
+    let module_names: Vec<_> = pkg.modules.iter().map(|m| m.name.as_str()).collect();
+    assert!(module_names.contains(&"coin"), "Should have coin module");
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_transaction() {
     let client = GraphQLClient::mainnet();
 
@@ -103,6 +105,7 @@ fn test_graphql_fetch_transaction() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_recent_transactions() {
     let client = GraphQLClient::mainnet();
 
@@ -128,6 +131,7 @@ fn test_graphql_fetch_recent_transactions() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_pagination_over_50() {
     let client = GraphQLClient::mainnet();
 
@@ -155,6 +159,7 @@ fn test_graphql_pagination_over_50() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_recent_transactions_full() {
     let client = GraphQLClient::mainnet();
 
@@ -183,6 +188,7 @@ fn test_graphql_fetch_recent_transactions_full() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_fetch_ptb_transactions() {
     let client = GraphQLClient::mainnet();
 
@@ -219,6 +225,7 @@ fn test_data_fetcher_creation() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_data_fetcher_object() {
     let fetcher = DataFetcher::mainnet();
 
@@ -245,6 +252,7 @@ fn test_data_fetcher_object() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_data_fetcher_package() {
     let fetcher = DataFetcher::mainnet();
 
@@ -267,6 +275,7 @@ fn test_data_fetcher_package() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_data_fetcher_recent_ptb_transactions() {
     let fetcher = DataFetcher::mainnet();
 
@@ -291,6 +300,7 @@ fn test_data_fetcher_recent_ptb_transactions() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_data_fetcher_graphql_only() {
     let fetcher = DataFetcher::mainnet();
 
@@ -430,6 +440,7 @@ fn test_paginator_exhaustion() {
 // =============================================================================
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_command_variants() {
     let client = GraphQLClient::mainnet();
 
@@ -514,6 +525,7 @@ fn test_graphql_command_variants() {
 // =============================================================================
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_invalid_object() {
     let client = GraphQLClient::mainnet();
 
@@ -529,6 +541,7 @@ fn test_graphql_invalid_object() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_graphql_invalid_transaction() {
     let client = GraphQLClient::mainnet();
 
@@ -540,6 +553,7 @@ fn test_graphql_invalid_transaction() {
 }
 
 #[test]
+#[ignore = "requires network access to Sui mainnet"]
 fn test_data_fetcher_graceful_degradation() {
     let fetcher = DataFetcher::mainnet();
 

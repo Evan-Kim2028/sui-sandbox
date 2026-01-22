@@ -1,5 +1,3 @@
-// This test file is temporarily disabled due to API changes.
-#![cfg(feature = "legacy_tests")]
 //! # Quickstart Validation Test
 //!
 //! This test validates that a new user can successfully run the Cetus DEX swap replay
@@ -8,14 +6,14 @@
 //!
 //! ## What this test validates:
 //! 1. The cached transaction data exists and loads correctly
-//! 2. Historical object state (from cache or gRPC archive)
+//! 2. Historical object state (from cache or GraphQL)
 //! 3. Package loading and address aliasing for upgraded packages
 //! 4. Dynamic field resolution (skip_list nodes for tick management)
 //! 5. Full PTB execution with the real Move VM
 //!
 //! ## Data Sources (in priority order):
 //! 1. **Cache**: Pre-fetched data in `.tx-cache/` (historical_objects, dynamic_field_children)
-//! 2. **Network**: gRPC archive at `archive.mainnet.sui.io:443` (fallback)
+//! 2. **Network**: GraphQL endpoint (fallback)
 //!
 //! ## Usage:
 //! ```bash
@@ -26,8 +24,11 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::tx_replay::CachedTransaction;
+use sui_move_interface_extractor::benchmark::tx_replay::{
+    load_or_fetch_transaction, CachedTransaction,
+};
 use sui_move_interface_extractor::benchmark::vm::VMHarness;
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
 
 /// The Cetus LEIA/SUI swap transaction used in the quickstart guide
 const CETUS_TX_DIGEST: &str = "7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp";
@@ -61,7 +62,7 @@ fn parse_address(s: &str) -> AccountAddress {
     AccountAddress::new(bytes)
 }
 
-/// Flexible type tag parser for gRPC responses
+/// Flexible type tag parser for responses
 fn parse_type_tag_flexible(type_str: &str) -> TypeTag {
     // Handle primitive types
     match type_str {
@@ -135,27 +136,19 @@ fn test_quickstart_cetus_swap_replay() {
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 1: Verify cached transaction data exists
+    // STEP 1: Load transaction data (auto-fetch if not cached)
     // ═══════════════════════════════════════════════════════════════════════════
-    println!("Step 1/5: Loading cached transaction data...");
+    println!("Step 1/5: Loading transaction data...");
 
-    let cache_file = format!(".tx-cache/{}.json", CETUS_TX_DIGEST);
-    let cache_data = match std::fs::read_to_string(&cache_file) {
-        Ok(data) => {
-            println!("   ✓ Found cached transaction: {}", CETUS_TX_DIGEST);
-            data
-        }
-        Err(e) => {
-            println!("   ✗ FAILED: Cannot read cache file");
-            println!("     Error: {}", e);
-            println!("\n   The .tx-cache/ directory should be included in the repository.");
-            println!("   Please ensure you have the complete repository clone.");
-            panic!("Quickstart validation failed: missing cache file");
-        }
-    };
-
-    let cached: CachedTransaction = match serde_json::from_str::<CachedTransaction>(&cache_data) {
+    let cached = match load_or_fetch_transaction(
+        ".tx-cache",
+        CETUS_TX_DIGEST,
+        None,  // Create DataFetcher automatically
+        false, // Don't fetch historical versions
+        true,  // Fetch dynamic field children
+    ) {
         Ok(c) => {
+            println!("   ✓ Transaction loaded (from cache or network)");
             println!(
                 "   ✓ Parsed transaction with {} packages, {} objects",
                 c.packages.len(),
@@ -177,9 +170,9 @@ fn test_quickstart_cetus_swap_replay() {
             c
         }
         Err(e) => {
-            println!("   ✗ FAILED: Cannot parse cached transaction");
+            println!("   ✗ FAILED: Cannot load/fetch transaction");
             println!("     Error: {}", e);
-            panic!("Quickstart validation failed: invalid cache format");
+            panic!("Quickstart validation failed: transaction loading");
         }
     };
 
@@ -207,7 +200,6 @@ fn test_quickstart_cetus_swap_replay() {
         }
     };
 
-    use sui_move_interface_extractor::data_fetcher::DataFetcher;
     let fetcher = DataFetcher::mainnet();
 
     // Check if upgraded CLMM is in cache via package_upgrades mapping
@@ -303,26 +295,30 @@ fn test_quickstart_cetus_swap_replay() {
         );
     } else {
         // Fall back to network fetch
-        println!("   → Historical Pool not in cache, fetching from gRPC archive...");
-        match fetcher.fetch_object_at_version_full(POOL_ID, pool_version) {
+        println!("   → Historical Pool not in cache, fetching from GraphQL...");
+        match fetcher.fetch_object_at_version(POOL_ID, pool_version) {
             Ok(historical_pool) => {
-                use base64::Engine;
-                let bcs_base64 =
-                    base64::engine::general_purpose::STANDARD.encode(&historical_pool.bcs_bytes);
-                historical_objects.insert(POOL_ID.to_string(), bcs_base64);
-                println!(
-                    "   ✓ Fetched historical Pool at version {} ({} bytes)",
-                    pool_version,
-                    historical_pool.bcs_bytes.len()
-                );
-                used_network = true;
+                if let Some(bcs_bytes) = historical_pool.bcs_bytes {
+                    use base64::Engine;
+                    let bcs_base64 = base64::engine::general_purpose::STANDARD.encode(&bcs_bytes);
+                    historical_objects.insert(POOL_ID.to_string(), bcs_base64);
+                    println!(
+                        "   ✓ Fetched historical Pool at version {} ({} bytes)",
+                        pool_version,
+                        bcs_bytes.len()
+                    );
+                    used_network = true;
+                } else {
+                    println!("   ✗ FAILED: Historical Pool has no BCS data");
+                    panic!("Quickstart validation failed: missing BCS data");
+                }
             }
             Err(e) => {
                 println!("   ✗ FAILED: Cannot fetch historical Pool state");
                 println!("     Error: {}", e);
-                println!("\n   This requires network access to archive.mainnet.sui.io:443");
+                println!("\n   This requires network access to Sui GraphQL endpoint");
                 println!("   Please check your network connectivity.");
-                panic!("Quickstart validation failed: gRPC archive access");
+                panic!("Quickstart validation failed: GraphQL access");
             }
         }
     }
@@ -366,17 +362,22 @@ fn test_quickstart_cetus_swap_replay() {
 
                 // Fall back to network
                 let version = DEFAULT_SKIPLIST_VERSION;
-                match fetcher.fetch_object_at_version_full(&child_id_hex, version) {
+                match fetcher.fetch_object_at_version(&child_id_hex, version) {
                     Ok(obj) => {
-                        let type_tag = obj
-                            .type_string
-                            .as_ref()
-                            .map(|t| parse_type_tag_flexible(t))
-                            .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
+                        if let Some(bcs_bytes) = obj.bcs_bytes {
+                            let type_tag = obj
+                                .type_string
+                                .as_ref()
+                                .map(|t| parse_type_tag_flexible(t))
+                                .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
 
-                        preload_fields.push(((skip_list_uid, child_id), type_tag, obj.bcs_bytes));
-                        loaded_from_network += 1;
-                        used_network = true;
+                            preload_fields.push(((skip_list_uid, child_id), type_tag, bcs_bytes));
+                            loaded_from_network += 1;
+                            used_network = true;
+                        } else {
+                            println!("   ⚠ Key {} has no BCS data", key);
+                            failed_keys.push(*key);
+                        }
                     }
                     Err(e) => {
                         println!("   ⚠ Failed to load key {}: {}", key, e);
@@ -433,21 +434,25 @@ fn test_quickstart_cetus_swap_replay() {
         if let Ok(obj) =
             fetcher_clone.fetch_object_at_version(&child_id_str, DEFAULT_SKIPLIST_VERSION)
         {
-            let type_tag = obj
-                .type_string
-                .as_ref()
-                .map(|t| parse_type_tag_flexible(t))
-                .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
-            return obj.bcs_bytes.map(|bcs| (type_tag, bcs));
+            if let Some(bcs) = obj.bcs_bytes {
+                let type_tag = obj
+                    .type_string
+                    .as_ref()
+                    .map(|t| parse_type_tag_flexible(t))
+                    .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
+                return Some((type_tag, bcs));
+            }
         }
 
         if let Ok(obj) = fetcher_clone.fetch_object(&child_id_str) {
-            let type_tag = obj
-                .type_string
-                .as_ref()
-                .map(|t| parse_type_tag_flexible(t))
-                .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
-            return obj.bcs_bytes.map(|bcs| (type_tag, bcs));
+            if let Some(bcs) = obj.bcs_bytes {
+                let type_tag = obj
+                    .type_string
+                    .as_ref()
+                    .map(|t| parse_type_tag_flexible(t))
+                    .unwrap_or_else(|| TypeTag::Vector(Box::new(TypeTag::U8)));
+                return Some((type_tag, bcs));
+            }
         }
 
         None
@@ -475,7 +480,7 @@ fn test_quickstart_cetus_swap_replay() {
 
                 // Report data source summary
                 if used_network {
-                    println!("   Note: Some data was fetched from network (gRPC archive).");
+                    println!("   Note: Some data was fetched from network (GraphQL).");
                     println!("   For fully offline operation, pre-cache historical data.\n");
                 } else {
                     println!("   All data loaded from cache (fully offline).\n");
@@ -533,25 +538,20 @@ fn test_cache_parses_correctly() {
     assert!(!cached.objects.is_empty(), "Should have objects");
 }
 
-/// Test GraphQL archive connectivity (separate from main test for isolation)
+/// Test GraphQL connectivity (separate from main test for isolation)
 #[test]
 #[ignore] // Requires network access to GraphQL endpoint
-fn test_grpc_archive_connectivity() {
-    use sui_move_interface_extractor::data_fetcher::DataFetcher;
-
+fn test_graphql_connectivity() {
     let fetcher = DataFetcher::mainnet();
 
     match fetcher.fetch_object_at_version(POOL_ID, DEFAULT_POOL_VERSION) {
         Ok(obj) => {
             let bcs_bytes = obj.bcs_bytes.unwrap_or_default();
             assert!(!bcs_bytes.is_empty(), "Should fetch non-empty Pool object");
-            println!(
-                "GraphQL archive connectivity: OK ({} bytes)",
-                bcs_bytes.len()
-            );
+            println!("GraphQL connectivity: OK ({} bytes)", bcs_bytes.len());
         }
         Err(e) => {
-            println!("GraphQL archive connectivity: FAILED - {}", e);
+            println!("GraphQL connectivity: FAILED - {}", e);
             println!("This test requires network access to Sui GraphQL endpoint");
             // Don't panic here - the main test will handle this more gracefully
         }

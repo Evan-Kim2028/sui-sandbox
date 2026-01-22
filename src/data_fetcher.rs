@@ -615,11 +615,60 @@ impl DataFetcher {
         use std::collections::BTreeSet;
         let mut packages = BTreeSet::new();
         for cmd in &tx.commands {
-            if let GraphQLCommand::MoveCall { package, .. } = cmd {
+            if let GraphQLCommand::MoveCall {
+                package,
+                type_arguments,
+                ..
+            } = cmd
+            {
+                // Add the called package
                 packages.insert(package.clone());
+
+                // Also extract packages from type arguments (e.g., "0xabc::module::Type<0xdef::mod::T>")
+                for type_arg in type_arguments {
+                    Self::extract_packages_from_type_string(type_arg, &mut packages);
+                }
             }
         }
         packages.into_iter().collect()
+    }
+
+    /// Extract package addresses from a type string like "0xabc::module::Type<0xdef::mod::T>".
+    fn extract_packages_from_type_string(
+        type_str: &str,
+        packages: &mut std::collections::BTreeSet<String>,
+    ) {
+        // Find all 0x... patterns that look like package addresses
+        // A package address is followed by ::module_name
+        let mut chars = type_str.chars().peekable();
+        let mut current_addr = String::new();
+        let mut in_addr = false;
+
+        while let Some(ch) = chars.next() {
+            if ch == '0' && chars.peek() == Some(&'x') {
+                // Start of a potential address
+                in_addr = true;
+                current_addr.clear();
+                current_addr.push(ch);
+            } else if in_addr {
+                if ch.is_ascii_hexdigit() || ch == 'x' {
+                    current_addr.push(ch);
+                } else if ch == ':' && chars.peek() == Some(&':') {
+                    // This looks like a package address (0x...::)
+                    if current_addr.len() > 2 {
+                        // Normalize to full 64-char hex address
+                        let addr = current_addr.strip_prefix("0x").unwrap_or(&current_addr);
+                        let normalized = format!("0x{:0>64}", addr);
+                        packages.insert(normalized);
+                    }
+                    in_addr = false;
+                    current_addr.clear();
+                } else {
+                    in_addr = false;
+                    current_addr.clear();
+                }
+            }
+        }
     }
 
     /// Fetch all input objects for a transaction.
@@ -798,53 +847,6 @@ pub struct FetchedDynamicChild {
     pub version: Option<u64>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_fetcher_creation() {
-        // Just test that we can create fetchers without panicking
-        let _mainnet = DataFetcher::mainnet();
-        let _testnet = DataFetcher::testnet();
-        let _custom = DataFetcher::new("https://graphql.mainnet.sui.io/graphql");
-    }
-
-    /// Test unified package fetching
-    /// Run with: cargo test test_unified_package_fetch -- --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn test_unified_package_fetch() {
-        let fetcher = DataFetcher::mainnet();
-
-        println!("=== Testing Unified Package Fetching ===\n");
-
-        let test_packages = [
-            (
-                "Artipedia",
-                "0x13fe3a7422946badff042be0e6dbbb0686fbff3fabc0c86cedc2d7a029486ece",
-            ),
-            (
-                "Campaign",
-                "0x9f6de0f9c1333cecfafed4fd51ecf445d237a6295bd6ae88754821c8f8189789",
-            ),
-            ("Sui Framework", "0x2"),
-        ];
-
-        for (name, addr) in test_packages {
-            print!("{}: ", name);
-            match fetcher.fetch_package(addr) {
-                Ok(pkg) => {
-                    let total_bytes: usize = pkg.modules.iter().map(|m| m.bytecode.len()).sum();
-                    println!(
-                        "SUCCESS via {:?} ({} modules, {} bytes total)",
-                        pkg.source,
-                        pkg.modules.len(),
-                        total_bytes
-                    );
-                }
-                Err(e) => println!("FAILED: {}", e),
-            }
-        }
-    }
-}
+// Tests removed:
+// - test_fetcher_creation: Had zero assertions, only verified no panic on construction
+// - test_unified_package_fetch: Was #[ignore], required network, used println instead of assertions

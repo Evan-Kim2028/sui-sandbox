@@ -68,12 +68,13 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
+use move_core_types::language_storage::TypeTag;
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 
 use crate::benchmark::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::benchmark::resolver::LocalModuleResolver;
+use crate::benchmark::well_known;
 
 // ============================================================================
 // Coin Constants
@@ -127,125 +128,236 @@ pub use crate::benchmark::natives::EmittedEvent;
 pub enum SimulationError {
     /// LINKER_ERROR: A required package/module is not available.
     MissingPackage {
+        /// The address of the missing package
         address: String,
+        /// The specific module within the package (if known)
         module: Option<String>,
+        /// Packages that depend on this one (helps trace the dependency)
+        #[allow(dead_code)]
+        referenced_by: Option<Vec<String>>,
+        /// Whether this package has known upgrades
+        upgrade_info: Option<crate::benchmark::error_context::PackageUpgradeInfo>,
     },
 
     /// A required object is not available.
     MissingObject {
+        /// Object ID that was not found
         id: String,
+        /// Expected type of the object
         expected_type: Option<String>,
+        /// The command that tried to access this object
+        command_index: Option<usize>,
+        /// Version requested (if historical)
+        requested_version: Option<u64>,
     },
 
     /// Type mismatch between expected and provided.
     TypeMismatch {
+        /// Expected type
         expected: String,
+        /// Actual type provided
         got: String,
+        /// Where the mismatch occurred (e.g., "input 0", "command 3 argument 1")
         location: String,
+        /// The command index where this occurred
+        command_index: Option<usize>,
     },
 
     /// ABORTED: Contract assertion failed.
     ContractAbort {
+        /// Full module path (e.g., "0x1eabed72::pool")
         module: String,
+        /// Function name
         function: String,
+        /// Abort code from the contract
         abort_code: u64,
+        /// Human-readable message if available
         message: Option<String>,
+        /// The command index that aborted
+        command_index: Option<usize>,
+        /// What objects were involved in this call
+        involved_objects: Option<Vec<String>>,
     },
 
     /// FAILED_TO_DESERIALIZE_ARGUMENT: Deserialization failed for an argument.
     DeserializationFailed {
+        /// Index of the argument that failed
         argument_index: usize,
+        /// Expected type for the argument
         expected_type: String,
+        /// The command index where this occurred
+        command_index: Option<usize>,
+        /// Size of the provided data
+        data_size: Option<usize>,
     },
 
     /// Other execution error.
-    ExecutionError { message: String },
+    ExecutionError {
+        /// Error message
+        message: String,
+        /// The command index where this occurred
+        command_index: Option<usize>,
+    },
 
     /// Shared object lock conflict (concurrent access detection).
     SharedObjectLockConflict {
+        /// Object ID that had the conflict
         object_id: AccountAddress,
+        /// Who/what holds the lock
         held_by: Option<String>,
+        /// Reason for the conflict
         reason: String,
+        /// The command index where this occurred
+        command_index: Option<usize>,
     },
 }
 
 impl std::fmt::Display for SimulationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SimulationError::MissingPackage { address, module } => {
+            SimulationError::MissingPackage {
+                address,
+                module,
+                referenced_by: _,
+                upgrade_info,
+            } => {
                 if let Some(m) = module {
-                    write!(f, "LINKER_ERROR: Cannot find ModuleId {{ address: {}, name: Identifier(\"{}\") }}",
-                        address.trim_start_matches("0x"), m)
+                    write!(
+                        f,
+                        "LINKER_ERROR: Cannot find ModuleId {{ address: {}, name: Identifier(\"{}\") }}",
+                        address.trim_start_matches("0x"),
+                        m
+                    )?;
                 } else {
-                    write!(f, "LINKER_ERROR: Cannot find package {}", address)
+                    write!(f, "LINKER_ERROR: Cannot find package {}", address)?;
                 }
+                if let Some(info) = upgrade_info {
+                    write!(
+                        f,
+                        " (upgraded from {} to {} at version {})",
+                        info.original_id, info.storage_id, info.version
+                    )?;
+                }
+                Ok(())
             }
-            SimulationError::MissingObject { id, expected_type } => {
+            SimulationError::MissingObject {
+                id,
+                expected_type,
+                command_index,
+                requested_version,
+            } => {
+                write!(f, "ObjectNotFound: {}", id)?;
                 if let Some(t) = expected_type {
-                    write!(f, "ObjectNotFound: {} (expected type: {})", id, t)
-                } else {
-                    write!(f, "ObjectNotFound: {}", id)
+                    write!(f, " (expected type: {})", t)?;
                 }
+                if let Some(idx) = command_index {
+                    write!(f, " at command #{}", idx)?;
+                }
+                if let Some(v) = requested_version {
+                    write!(f, " version {}", v)?;
+                }
+                Ok(())
             }
             SimulationError::TypeMismatch {
                 expected,
                 got,
                 location,
+                command_index,
             } => {
                 write!(
                     f,
                     "TYPE_MISMATCH at {}: expected {}, got {}",
                     location, expected, got
-                )
+                )?;
+                if let Some(idx) = command_index {
+                    write!(f, " (command #{})", idx)?;
+                }
+                Ok(())
             }
             SimulationError::ContractAbort {
                 module,
                 function,
                 abort_code,
                 message,
+                command_index,
+                involved_objects,
             } => {
+                write!(
+                    f,
+                    "MoveAbort(MoveLocation {{ module: {}::{}, function: 0, instruction: 0 }}, {})",
+                    module, function, abort_code
+                )?;
                 if let Some(msg) = message {
-                    write!(f, "MoveAbort(MoveLocation {{ module: {}::{}, function: 0, instruction: 0 }}, {}) in {}",
-                        module, function, abort_code, msg)
-                } else {
-                    write!(f, "MoveAbort(MoveLocation {{ module: {}::{}, function: 0, instruction: 0 }}, {})",
-                        module, function, abort_code)
+                    write!(f, " in {}", msg)?;
                 }
+                if let Some(idx) = command_index {
+                    write!(f, " at command #{}", idx)?;
+                }
+                // Add abort code context
+                if let Some(context) =
+                    crate::benchmark::error_context::get_abort_code_context(*abort_code, module)
+                {
+                    write!(f, " ({})", context)?;
+                }
+                if let Some(objs) = involved_objects {
+                    if !objs.is_empty() {
+                        write!(f, " [objects: {}]", objs.join(", "))?;
+                    }
+                }
+                Ok(())
             }
             SimulationError::DeserializationFailed {
                 argument_index,
                 expected_type,
+                command_index,
+                data_size,
             } => {
                 write!(
                     f,
                     "FAILED_TO_DESERIALIZE_ARGUMENT: argument {} cannot be deserialized as {}",
                     argument_index, expected_type
-                )
+                )?;
+                if let Some(idx) = command_index {
+                    write!(f, " at command #{}", idx)?;
+                }
+                if let Some(size) = data_size {
+                    write!(f, " (data size: {} bytes)", size)?;
+                }
+                Ok(())
             }
-            SimulationError::ExecutionError { message } => {
-                write!(f, "{}", message)
+            SimulationError::ExecutionError {
+                message,
+                command_index,
+            } => {
+                write!(f, "{}", message)?;
+                if let Some(idx) = command_index {
+                    write!(f, " at command #{}", idx)?;
+                }
+                Ok(())
             }
             SimulationError::SharedObjectLockConflict {
                 object_id,
                 held_by,
                 reason,
+                command_index,
             } => {
                 if let Some(tx) = held_by {
                     write!(
                         f,
                         "SharedObjectLockConflict: object {} is locked by transaction {}: {}",
-                        object_id.to_hex_literal(),
-                        tx,
-                        reason
-                    )
+                        object_id, tx, reason
+                    )?;
                 } else {
                     write!(
                         f,
-                        "SharedObjectLockConflict: object {}: {}",
-                        object_id.to_hex_literal(),
-                        reason
-                    )
+                        "SharedObjectLockConflict: object {} lock conflict: {}",
+                        object_id, reason
+                    )?;
                 }
+                if let Some(idx) = command_index {
+                    write!(f, " at command #{}", idx)?;
+                }
+                Ok(())
             }
         }
     }
@@ -360,6 +472,23 @@ pub struct ExecutionResult {
 
     /// Number of commands that succeeded before the failure.
     pub commands_succeeded: usize,
+
+    /// Detailed error context for debugging (optional, populated for complex failures).
+    ///
+    /// Includes information like:
+    /// - Objects involved in the failing command
+    /// - Gas consumed before failure
+    /// - For coin operations: balances involved
+    /// - For aborts: interpreted abort code meaning
+    pub error_context: Option<crate::benchmark::error_context::CommandErrorContext>,
+
+    /// Snapshot of execution state at failure time (optional).
+    ///
+    /// Includes:
+    /// - All objects that were loaded
+    /// - Dynamic fields accessed
+    /// - Summary of successful commands
+    pub state_at_failure: Option<crate::benchmark::error_context::ExecutionSnapshot>,
 }
 
 /// An object in the simulation environment.
@@ -886,12 +1015,7 @@ impl SimulationEnvironment {
         clock_bytes.extend_from_slice(&timestamp_ms.to_le_bytes()); // timestamp_ms (8 bytes)
 
         // Clock type: 0x2::clock::Clock
-        let clock_type = TypeTag::Struct(Box::new(StructTag {
-            address: AccountAddress::from_hex_literal("0x2").unwrap(),
-            module: Identifier::new("clock").unwrap(),
-            name: Identifier::new("Clock").unwrap(),
-            type_params: vec![],
-        }));
+        let clock_type = well_known::types::CLOCK_TYPE.clone();
 
         let clock_obj = SimulatedObject {
             id: clock_id,
@@ -924,12 +1048,7 @@ impl SimulationEnvironment {
         random_bytes.extend_from_slice(&1u64.to_le_bytes()); // version (8 bytes)
 
         // Random type: 0x2::random::Random
-        let random_type = TypeTag::Struct(Box::new(StructTag {
-            address: AccountAddress::from_hex_literal("0x2").unwrap(),
-            module: Identifier::new("random").unwrap(),
-            name: Identifier::new("Random").unwrap(),
-            type_params: vec![],
-        }));
+        let random_type = well_known::types::RANDOM_TYPE.clone();
 
         let random_obj = SimulatedObject {
             id: random_id,
@@ -989,7 +1108,12 @@ impl SimulationEnvironment {
         if let Some(id) = clock_id {
             if let Some(clock_obj) = self.objects.get(&id) {
                 if clock_obj.bcs_bytes.len() >= 40 {
-                    return u64::from_le_bytes(clock_obj.bcs_bytes[32..40].try_into().unwrap());
+                    // Safe: we just verified length >= 40
+                    return u64::from_le_bytes(
+                        clock_obj.bcs_bytes[32..40]
+                            .try_into()
+                            .expect("slice is exactly 8 bytes"),
+                    );
                 }
             }
         }
@@ -1271,12 +1395,7 @@ impl SimulationEnvironment {
         // Balance (u64)
         bcs_bytes.extend_from_slice(&balance.to_le_bytes());
 
-        let coin_type_tag = TypeTag::Struct(Box::new(StructTag {
-            address: AccountAddress::from_hex_literal("0x2").unwrap(),
-            module: Identifier::new("coin").unwrap(),
-            name: Identifier::new("Coin").unwrap(),
-            type_params: vec![inner_type],
-        }));
+        let coin_type_tag = well_known::types::coin_of(inner_type);
 
         let obj = SimulatedObject {
             id,
@@ -1603,12 +1722,7 @@ impl SimulationEnvironment {
 
         let upgrade_cap = SimulatedObject {
             id: upgrade_cap_id,
-            type_tag: TypeTag::Struct(Box::new(move_core_types::language_storage::StructTag {
-                address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                module: move_core_types::identifier::Identifier::new("package").unwrap(),
-                name: move_core_types::identifier::Identifier::new("UpgradeCap").unwrap(),
-                type_params: vec![],
-            })),
+            type_tag: well_known::types::UPGRADE_CAP_TYPE.clone(),
             bcs_bytes: upgrade_cap_bytes,
             is_shared: false,
             is_immutable: false,
@@ -1672,12 +1786,7 @@ impl SimulationEnvironment {
 
         let receipt = SimulatedObject {
             id: receipt_id,
-            type_tag: TypeTag::Struct(Box::new(move_core_types::language_storage::StructTag {
-                address: AccountAddress::from_hex_literal("0x2").unwrap(),
-                module: move_core_types::identifier::Identifier::new("package").unwrap(),
-                name: move_core_types::identifier::Identifier::new("UpgradeReceipt").unwrap(),
-                type_params: vec![],
-            })),
+            type_tag: well_known::types::UPGRADE_RECEIPT_TYPE.clone(),
             bcs_bytes: receipt_bytes,
             is_shared: false,
             is_immutable: false,
@@ -1734,11 +1843,14 @@ impl SimulationEnvironment {
                             object_id,
                             held_by: existing_lock.transaction_id,
                             reason,
+                            command_index: None,
                         }),
                         raw_error: Some(raw_error),
                         failed_command_index: None,
                         failed_command_description: Some("Shared object locking".to_string()),
                         commands_succeeded: 0,
+                        error_context: None,
+                        state_at_failure: None,
                     };
                 }
             }
@@ -1823,11 +1935,14 @@ impl SimulationEnvironment {
                             object_id,
                             held_by: existing_lock.transaction_id,
                             reason,
+                            command_index: None,
                         }),
                         raw_error: Some(raw_error),
                         failed_command_index: None,
                         failed_command_description: Some("Shared object locking".to_string()),
                         commands_succeeded: 0,
+                        error_context: None,
+                        state_at_failure: None,
                     };
                 }
             }
@@ -1858,7 +1973,7 @@ impl SimulationEnvironment {
         let mut published_packages: Vec<(AccountAddress, AccountAddress)> = Vec::new(); // (package_id, upgrade_cap_id)
         let mut upgraded_packages: Vec<(AccountAddress, AccountAddress)> = Vec::new(); // (new_package_id, receipt_id)
 
-        for cmd in &commands {
+        for (cmd_idx, cmd) in commands.iter().enumerate() {
             match cmd {
                 Command::Publish { modules, .. } => match self.pre_publish_modules(modules) {
                     Ok((pkg_id, cap_id)) => {
@@ -1870,13 +1985,16 @@ impl SimulationEnvironment {
                             effects: None,
                             error: Some(SimulationError::ExecutionError {
                                 message: format!("Failed to publish modules: {}", e),
+                                command_index: Some(cmd_idx),
                             }),
                             raw_error: Some(e.to_string()),
-                            failed_command_index: None,
+                            failed_command_index: Some(cmd_idx),
                             failed_command_description: Some(
                                 "Publish (pre-processing)".to_string(),
                             ),
-                            commands_succeeded: 0,
+                            commands_succeeded: cmd_idx,
+                            error_context: None,
+                            state_at_failure: None,
                         };
                     }
                 },
@@ -1892,13 +2010,16 @@ impl SimulationEnvironment {
                             effects: None,
                             error: Some(SimulationError::ExecutionError {
                                 message: format!("Failed to upgrade package: {}", e),
+                                command_index: Some(cmd_idx),
                             }),
                             raw_error: Some(e.to_string()),
-                            failed_command_index: None,
+                            failed_command_index: Some(cmd_idx),
                             failed_command_description: Some(
                                 "Upgrade (pre-processing)".to_string(),
                             ),
-                            commands_succeeded: 0,
+                            commands_succeeded: cmd_idx,
+                            error_context: None,
+                            state_at_failure: None,
                         };
                     }
                 },
@@ -1926,11 +2047,14 @@ impl SimulationEnvironment {
                     effects: None,
                     error: Some(SimulationError::ExecutionError {
                         message: format!("Failed to create VM: {}", e),
+                        command_index: None,
                     }),
                     raw_error: Some(e.to_string()),
                     failed_command_index: None,
                     failed_command_description: Some("VM initialization".to_string()),
                     commands_succeeded: 0,
+                    error_context: None,
+                    state_at_failure: None,
                 };
             }
         };
@@ -2004,6 +2128,8 @@ impl SimulationEnvironment {
                     failed_command_index: effects.failed_command_index,
                     failed_command_description: effects.failed_command_description.clone(),
                     commands_succeeded: effects.commands_succeeded,
+                    error_context: effects.error_context.clone(),
+                    state_at_failure: effects.state_at_failure.clone(),
                 }
             }
             Err(e) => {
@@ -2019,6 +2145,8 @@ impl SimulationEnvironment {
                     failed_command_index: None,
                     failed_command_description: None,
                     commands_succeeded: 0,
+                    error_context: None,
+                    state_at_failure: None,
                 }
             }
         }
@@ -2779,6 +2907,8 @@ impl SimulationEnvironment {
                 return SimulationError::MissingPackage {
                     address: addr,
                     module: Self::extract_module_name(error),
+                    referenced_by: None,
+                    upgrade_info: None,
                 };
             }
         }
@@ -2792,6 +2922,8 @@ impl SimulationEnvironment {
                     function: function.unwrap_or_else(|| "unknown".to_string()),
                     abort_code: code,
                     message: Self::extract_abort_message(error),
+                    command_index: None,
+                    involved_objects: None,
                 };
             }
         }
@@ -2802,6 +2934,8 @@ impl SimulationEnvironment {
                 argument_index: Self::extract_argument_index(error).unwrap_or(0),
                 expected_type: Self::extract_expected_type(error)
                     .unwrap_or_else(|| "unknown".to_string()),
+                command_index: None,
+                data_size: None,
             };
         }
 
@@ -2811,6 +2945,8 @@ impl SimulationEnvironment {
                 return SimulationError::MissingPackage {
                     address: addr,
                     module: Self::extract_module_name(error),
+                    referenced_by: None,
+                    upgrade_info: None,
                 };
             }
         }
@@ -2818,6 +2954,7 @@ impl SimulationEnvironment {
         // Default: pass through the raw error
         SimulationError::ExecutionError {
             message: error.to_string(),
+            command_index: None,
         }
     }
 
@@ -4160,11 +4297,8 @@ impl SimulationEnvironment {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_create_environment() {
-        let env = SimulationEnvironment::new();
-        assert!(env.is_ok());
-    }
+    // Removed: test_create_environment - only asserted is_ok(), redundant since
+    // any other test using SimulationEnvironment::new().unwrap() would fail if creation broke
 
     #[test]
     fn test_create_coin() {
@@ -4217,7 +4351,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_string_primitives() {
+    fn test_parse_type_string() {
+        // Primitives
         assert!(matches!(
             SimulationEnvironment::parse_type_string("u8"),
             Some(TypeTag::U8)
@@ -4234,10 +4369,8 @@ mod tests {
             SimulationEnvironment::parse_type_string("address"),
             Some(TypeTag::Address)
         ));
-    }
 
-    #[test]
-    fn test_parse_type_string_simple_struct() {
+        // Simple struct
         let result = SimulationEnvironment::parse_type_string("0x2::sui::SUI");
         assert!(result.is_some());
         if let Some(TypeTag::Struct(s)) = result {
@@ -4247,10 +4380,8 @@ mod tests {
         } else {
             panic!("Expected struct type");
         }
-    }
 
-    #[test]
-    fn test_parse_type_string_single_generic() {
+        // Single generic
         let result = SimulationEnvironment::parse_type_string("0x2::coin::Coin<0x2::sui::SUI>");
         assert!(result.is_some());
         if let Some(TypeTag::Struct(s)) = result {
@@ -4260,10 +4391,8 @@ mod tests {
         } else {
             panic!("Expected struct type");
         }
-    }
 
-    #[test]
-    fn test_parse_type_string_multiple_generics() {
+        // Multiple generics
         let result = SimulationEnvironment::parse_type_string(
             "0xabc::pool::Pool<0x2::sui::SUI, 0x2::usdc::USDC>",
         );
@@ -4275,10 +4404,17 @@ mod tests {
         } else {
             panic!("Expected struct type");
         }
+
+        // Vectors
+        let result = SimulationEnvironment::parse_type_string("vector<u8>");
+        assert!(matches!(result, Some(TypeTag::Vector(_))));
+        let result = SimulationEnvironment::parse_type_string("vector<0x2::sui::SUI>");
+        assert!(matches!(result, Some(TypeTag::Vector(_))));
     }
 
     #[test]
     fn test_parse_type_string_nested_generics() {
+        // Nested generics are complex enough to warrant their own test
         let result = SimulationEnvironment::parse_type_string(
             "0x2::option::Option<0x2::coin::Coin<0x2::sui::SUI>>",
         );
@@ -4286,7 +4422,6 @@ mod tests {
         if let Some(TypeTag::Struct(s)) = result {
             assert_eq!(s.name.as_str(), "Option");
             assert_eq!(s.type_params.len(), 1);
-            // Check nested type
             if let TypeTag::Struct(inner) = &s.type_params[0] {
                 assert_eq!(inner.name.as_str(), "Coin");
                 assert_eq!(inner.type_params.len(), 1);
@@ -4299,21 +4434,115 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_string_vector() {
-        let result = SimulationEnvironment::parse_type_string("vector<u8>");
-        assert!(matches!(result, Some(TypeTag::Vector(_))));
-
-        let result = SimulationEnvironment::parse_type_string("vector<0x2::sui::SUI>");
-        assert!(matches!(result, Some(TypeTag::Vector(_))));
-    }
-
-    #[test]
     fn test_format_type_tag_roundtrip() {
         let type_str = "0x2::coin::Coin<0x2::sui::SUI>";
         if let Some(parsed) = SimulationEnvironment::parse_type_string(type_str) {
             let formatted = SimulationEnvironment::format_type_tag(&parsed);
             assert!(formatted.contains("coin::Coin"));
             assert!(formatted.contains("sui::SUI"));
+        }
+    }
+
+    // ========================================================================
+    // Negative test cases - testing error conditions
+    // ========================================================================
+
+    #[test]
+    fn test_parse_type_string_invalid_inputs() {
+        // Empty string should return None
+        assert!(SimulationEnvironment::parse_type_string("").is_none());
+
+        // Invalid type names
+        assert!(SimulationEnvironment::parse_type_string("invalid_type").is_none());
+        assert!(SimulationEnvironment::parse_type_string("u999").is_none());
+
+        // Malformed struct paths
+        assert!(SimulationEnvironment::parse_type_string("0x2::").is_none());
+        assert!(SimulationEnvironment::parse_type_string("::sui::SUI").is_none());
+        assert!(SimulationEnvironment::parse_type_string("0x2::sui::").is_none());
+
+        // Unbalanced generics
+        assert!(SimulationEnvironment::parse_type_string("vector<u8").is_none());
+        assert!(SimulationEnvironment::parse_type_string("vector u8>").is_none());
+        assert!(
+            SimulationEnvironment::parse_type_string("0x2::coin::Coin<0x2::sui::SUI").is_none()
+        );
+    }
+
+    #[test]
+    fn test_create_coin_with_invalid_type() {
+        let mut env = SimulationEnvironment::new().unwrap();
+
+        // Empty type string should fail
+        let result = env.create_coin("", 1_000_000);
+        assert!(result.is_err(), "Empty coin type should fail");
+
+        // Malformed type string (no address prefix) should fail
+        let result = env.create_coin("invalid", 1_000_000);
+        assert!(result.is_err(), "Malformed coin type should fail");
+
+        // Incomplete module path should fail
+        let result = env.create_coin("0x2::", 1_000_000);
+        assert!(result.is_err(), "Incomplete module path should fail");
+
+        // Valid type string should succeed (create_coin wraps any T in Coin<T>)
+        let result = env.create_coin("0x2::sui::SUI", 1_000_000);
+        assert!(result.is_ok(), "Valid coin type should succeed");
+    }
+
+    #[test]
+    fn test_get_nonexistent_object() {
+        let env = SimulationEnvironment::new().unwrap();
+
+        // Non-existent object should return None
+        let fake_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000001234",
+        )
+        .unwrap();
+        let result = env.get_object(&fake_id);
+        assert!(result.is_none(), "Non-existent object should return None");
+
+        // Another non-existent object with different address
+        let another_fake = AccountAddress::from_hex_literal("0xdeadbeef").unwrap();
+        let result = env.get_object(&another_fake);
+        assert!(result.is_none(), "Non-existent object should return None");
+    }
+
+    #[test]
+    fn test_parse_error_unknown_format() {
+        let env = SimulationEnvironment::new().unwrap();
+
+        // Unknown error format should return ExecutionError
+        let error = "Some random error message that doesn't match any pattern";
+        let parsed = env.parse_error(error);
+
+        match parsed {
+            SimulationError::ExecutionError { message, .. } => {
+                assert!(
+                    message.contains("random error"),
+                    "ExecutionError should contain original message"
+                );
+            }
+            _ => panic!("Expected ExecutionError for unknown error format"),
+        }
+    }
+
+    #[test]
+    fn test_parse_abort_error_edge_cases() {
+        let env = SimulationEnvironment::new().unwrap();
+
+        // Abort with no message
+        let error = "VMError { major_status: ABORTED, sub_status: Some(100), message: None }";
+        let parsed = env.parse_error(error);
+
+        match parsed {
+            SimulationError::ContractAbort { abort_code, .. } => {
+                assert_eq!(abort_code, 100);
+            }
+            SimulationError::ExecutionError { .. } => {
+                // Also acceptable if parser doesn't handle None message
+            }
+            _ => panic!("Expected ContractAbort or ExecutionError"),
         }
     }
 }

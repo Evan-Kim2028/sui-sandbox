@@ -19,7 +19,8 @@ use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sui_move_build::BuildConfig;
+// NOTE: sui_move_build API changed significantly in v1.63.4
+// use sui_move_build::BuildConfig;
 
 /// Sui framework version we're targeting
 pub const FRAMEWORK_VERSION: &str = "mainnet-v1.62.1";
@@ -357,53 +358,12 @@ impl PackageBuilder {
     }
 
     /// Compile a Move package to bytecode
-    pub fn compile(&self, package_dir: &Path) -> Result<CompilationResult> {
-        // Register Sui package hooks
-        move_package::package_hooks::register_package_hooks(Box::new(
-            sui_move_build::SuiPackageHooks,
-        ));
-
-        // Create build config
-        let build_config = BuildConfig::new_for_testing();
-
-        // Attempt to build
-        match build_config.build(package_dir) {
-            Ok(compiled) => {
-                // Extract compiled modules
-                let modules: Result<Vec<(String, Vec<u8>)>> = compiled
-                    .package
-                    .root_compiled_units
-                    .iter()
-                    .map(|unit| {
-                        let name = unit.unit.name().to_string();
-                        let mut bytes = Vec::new();
-                        let module = &unit.unit.module;
-                        module
-                            .serialize_with_version(module.version, &mut bytes)
-                            .map_err(|e| anyhow!("Failed to serialize module {}: {}", name, e))?;
-                        Ok((name, bytes))
-                    })
-                    .collect();
-
-                Ok(CompilationResult {
-                    success: true,
-                    modules: modules?,
-                    diagnostics: String::new(),
-                    digest: compiled.published_at.ok().map(|id| id.to_string()),
-                })
-            }
-            Err(e) => {
-                // Extract diagnostics from error
-                let diagnostics = format!("{:#}", e);
-
-                Ok(CompilationResult {
-                    success: false,
-                    modules: vec![],
-                    diagnostics,
-                    digest: None,
-                })
-            }
-        }
+    ///
+    /// NOTE: This function is temporarily disabled due to API changes in sui-move-build v1.63.4.
+    /// The sui_move_build::SuiPackageHooks was removed and the build API changed significantly.
+    /// TODO: Update to use the new move_package_alt API when needed.
+    pub fn compile(&self, _package_dir: &Path) -> Result<CompilationResult> {
+        Err(anyhow!("Package compilation is temporarily disabled due to sui-move-build API changes in v1.63.4. Use pre-compiled bytecode instead."))
     }
 
     /// Scaffold, write source, and compile in one step

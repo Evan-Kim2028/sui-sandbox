@@ -44,10 +44,12 @@
 
 pub mod bytecode_analyzer;
 pub mod constructor_map;
+pub mod error_context;
 pub mod errors;
 pub mod fetcher;
 pub mod mm2;
 pub mod natives;
+pub mod object_patcher;
 pub mod object_runtime;
 pub mod output;
 pub mod package_builder;
@@ -63,7 +65,9 @@ pub mod simulation;
 pub mod state_layer;
 pub mod state_source;
 pub mod storage_log;
+pub mod sui_object_runtime;
 pub mod tx_replay;
 pub mod types;
 pub mod validator;
 pub mod vm;
+pub mod well_known;

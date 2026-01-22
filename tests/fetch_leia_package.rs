@@ -1,10 +1,9 @@
-// This test file is temporarily disabled due to API changes.
-#![cfg(feature = "legacy_tests")]
 //! Fetch the LEIA token package and add it to the transaction cache.
 //!
 //! This is a one-time script to complete the Cetus swap case study.
 
-use sui_move_interface_extractor::benchmark::tx_replay::{CachedTransaction, TransactionFetcher};
+use sui_move_interface_extractor::benchmark::tx_replay::CachedTransaction;
+use sui_move_interface_extractor::data_fetcher::DataFetcher;
 
 const LEIA_PACKAGE_ID: &str = "0xb55d9fa9168c5f5f642f90b0330a47ccba9ef8e20a3207c1163d3d15c5c8663e";
 const TX_DIGEST: &str = "7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp";
@@ -18,7 +17,7 @@ fn fetch_and_cache_leia_package() {
     let cache_file = cache_dir.join(format!("{}.json", TX_DIGEST));
 
     if !cache_file.exists() {
-        println!("ERROR: Transaction cache file not found: {:?}", cache_file);
+        println!("SKIP: Transaction cache file not found: {:?}", cache_file);
         println!("Run the transaction cache first.");
         return;
     }
@@ -37,18 +36,24 @@ fn fetch_and_cache_leia_package() {
         return;
     }
 
-    // Create client to fetch the package
-    let endpoint = "https://fullnode.mainnet.sui.io:443";
-    let client = TransactionFetcher::new(endpoint);
+    // Create DataFetcher to fetch the package
+    let fetcher = DataFetcher::mainnet();
 
     println!("Fetching LEIA package from mainnet...");
 
-    match client.fetch_package_modules(LEIA_PACKAGE_ID) {
-        Ok(modules) => {
-            println!("  Fetched {} modules:", modules.len());
-            for (name, bytes) in &modules {
-                println!("    - {} ({} bytes)", name, bytes.len());
+    match fetcher.fetch_package(LEIA_PACKAGE_ID) {
+        Ok(pkg) => {
+            println!("  Fetched {} modules:", pkg.modules.len());
+            for module in &pkg.modules {
+                println!("    - {} ({} bytes)", module.name, module.bytecode.len());
             }
+
+            // Convert to the format expected by CachedTransaction
+            let modules: Vec<(String, Vec<u8>)> = pkg
+                .modules
+                .into_iter()
+                .map(|m| (m.name, m.bytecode))
+                .collect();
 
             // Add to cache
             cache.add_package(LEIA_PACKAGE_ID.to_string(), modules);

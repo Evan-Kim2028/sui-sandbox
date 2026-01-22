@@ -1,8 +1,7 @@
 //! Transaction Replay Module
 //!
-//! This module provides functionality to fetch and replay mainnet Sui transactions
+//! This module provides types and utilities for replaying Sui transactions
 //! in the local Move VM sandbox. This enables:
-#![allow(deprecated)] // TransactionFetcher is deprecated but still used internally
 //!
 //! 1. **Validation**: Compare local execution with on-chain effects
 //! 2. **Training Data**: Generate input/output pairs for LLM training
@@ -10,28 +9,51 @@
 //!
 //! ## Architecture
 //!
+//! Transactions are fetched via GraphQL (see `DataFetcher`) and cached locally.
+//! The cached transactions can then be replayed using the `FetchedTransaction::replay()` method.
+//!
 //! ```text
-//! Mainnet RPC → FetchedTransaction → PTBCommands → LocalExecution → CompareEffects
+//! GraphQL → CachedTransaction → PTBCommands → LocalExecution → CompareEffects
 //! ```
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! let fetcher = TransactionFetcher::new("https://fullnode.mainnet.sui.io:443")?;
-//! let tx = fetcher.fetch_transaction("digest_here").await?;
-//! let replay_result = tx.replay(&mut harness)?;
+//! // Load a cached transaction
+//! let cache = TransactionCache::new(".tx-cache")?;
+//! let cached = cache.load("digest_here")?;
+//!
+//! // Replay it locally
+//! let result = cached.transaction.replay(&mut harness)?;
 //! ```
+//!
+//! ## Known Limitations: Dynamic Field Traversal
+//!
+//! Some DeFi protocols (Cetus, Turbos) use `skip_list` data structures that store
+//! tick data as dynamic fields. These present a replay challenge:
+//!
+//! 1. The skip_list computes tick indices at runtime during traversal
+//! 2. Each computed index becomes a dynamic field lookup via `derive_dynamic_field_id()`
+//! 3. We can pre-fetch known dynamic fields, but not indices computed during execution
+//!
+//! **Example**: A Cetus swap traverses: `head(0) → 481316 → 512756 → tail(887272)`.
+//! If the swap needs tick `500000`, this is computed at runtime and we can't know
+//! to pre-fetch it without simulating the entire traversal.
+//!
+//! **Workarounds**:
+//! - Cache all dynamic field children at transaction time
+//! - Use synthetic/mocked transactions for testing (see `synthetic_ptb_case_study.rs`)
+//! - Pre-fetch all known tick indices for a pool
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use crate::benchmark::ptb::{Argument, Command, InputValue, ObjectInput};
 use crate::benchmark::vm::VMHarness;
-use crate::grpc::{GrpcClient, GrpcOwner};
 
 // Re-export type parsing functions from the canonical location (types module)
 // This maintains backwards compatibility while centralizing the implementation.
@@ -39,58 +61,6 @@ pub use crate::benchmark::types::{
     clear_type_cache as clear_type_tag_cache, parse_type_tag,
     type_cache_size as type_tag_cache_size,
 };
-
-// =============================================================================
-// RPC Helper Functions
-// =============================================================================
-
-/// Execute a JSON-RPC request to a Sui endpoint.
-///
-/// This is the canonical way to make RPC calls throughout the codebase.
-/// Handles request formatting, error checking, and result extraction.
-///
-/// # Arguments
-/// * `endpoint` - The RPC endpoint URL
-/// * `method` - The JSON-RPC method name (e.g., "sui_getObject")
-/// * `params` - The method parameters as a JSON value
-///
-/// # Returns
-/// The "result" field from the RPC response, or an error if the request failed.
-fn rpc_request(
-    endpoint: &str,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value> {
-    let request_body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params
-    });
-
-    let response: serde_json::Value = ureq::post(endpoint)
-        .set("Content-Type", "application/json")
-        .send_json(&request_body)
-        .map_err(|e| anyhow!("RPC request failed: {}", e))?
-        .into_json()
-        .map_err(|e| anyhow!("Failed to parse RPC response: {}", e))?;
-
-    // Check for RPC error
-    if let Some(error) = response.get("error") {
-        return Err(anyhow!(
-            "RPC error: {}",
-            error
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown")
-        ));
-    }
-
-    response
-        .get("result")
-        .cloned()
-        .ok_or_else(|| anyhow!("No result in RPC response"))
-}
 
 /// Object ID type (32-byte address)
 pub type ObjectID = AccountAddress;
@@ -437,885 +407,6 @@ pub struct FetchedObject {
     pub is_immutable: bool,
     /// Object version.
     pub version: u64,
-}
-
-/// Fetches transactions from a Sui RPC endpoint.
-#[deprecated(
-    since = "0.5.0",
-    note = "JSON-RPC is deprecated by Sui (April 2026). Use DataFetcher with GraphQL instead."
-)]
-pub struct TransactionFetcher {
-    /// RPC endpoint URL
-    endpoint: String,
-    /// Archive endpoint for historical object lookups via JSON-RPC (optional, legacy)
-    archive_endpoint: Option<String>,
-    /// gRPC archive endpoint URL for historical lookups (preferred)
-    grpc_archive_endpoint: Option<String>,
-    /// Lazily initialized gRPC client for archive lookups
-    grpc_client: OnceLock<GrpcClient>,
-    /// Tokio runtime for executing async gRPC calls in sync context
-    runtime: OnceLock<tokio::runtime::Runtime>,
-}
-
-impl TransactionFetcher {
-    /// Create a new fetcher with the given RPC endpoint.
-    pub fn new(endpoint: impl Into<String>) -> Self {
-        Self {
-            endpoint: endpoint.into(),
-            archive_endpoint: None,
-            grpc_archive_endpoint: None,
-            grpc_client: OnceLock::new(),
-            runtime: OnceLock::new(),
-        }
-    }
-
-    /// Create a fetcher for Sui mainnet.
-    pub fn mainnet() -> Self {
-        Self::new("https://fullnode.mainnet.sui.io:443")
-    }
-
-    /// Create a fetcher for Sui mainnet with gRPC archive support.
-    ///
-    /// Uses `archive.mainnet.sui.io:443` for historical object lookups via gRPC.
-    /// This is the recommended way to fetch historical objects as the JSON-RPC
-    /// archive endpoints are unreliable.
-    pub fn mainnet_with_archive() -> Self {
-        Self {
-            endpoint: "https://fullnode.mainnet.sui.io:443".to_string(),
-            archive_endpoint: None,
-            grpc_archive_endpoint: Some("https://archive.mainnet.sui.io:443".to_string()),
-            grpc_client: OnceLock::new(),
-            runtime: OnceLock::new(),
-        }
-    }
-
-    /// Create a fetcher for Sui testnet.
-    pub fn testnet() -> Self {
-        Self::new("https://fullnode.testnet.sui.io:443")
-    }
-
-    /// Set the JSON-RPC archive endpoint for historical lookups (legacy).
-    /// Prefer `with_grpc_archive_endpoint` for more reliable historical lookups.
-    pub fn with_archive_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.archive_endpoint = Some(endpoint.into());
-        self
-    }
-
-    /// Set the gRPC archive endpoint for historical lookups (recommended).
-    ///
-    /// The gRPC archive at `archive.mainnet.sui.io:443` provides reliable
-    /// historical object lookups via the LedgerService.
-    pub fn with_grpc_archive_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.grpc_archive_endpoint = Some(endpoint.into());
-        self
-    }
-
-    /// Get or initialize the tokio runtime for async operations.
-    fn get_runtime(&self) -> Result<&tokio::runtime::Runtime> {
-        self.runtime.get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create tokio runtime")
-        });
-        self.runtime
-            .get()
-            .ok_or_else(|| anyhow!("Runtime not initialized"))
-    }
-
-    /// Get or initialize the gRPC client for archive lookups.
-    fn get_grpc_client(&self) -> Result<&GrpcClient> {
-        let endpoint = self
-            .grpc_archive_endpoint
-            .as_ref()
-            .ok_or_else(|| anyhow!("No gRPC archive endpoint configured"))?;
-
-        // Ensure runtime is initialized first
-        let runtime = self.get_runtime()?;
-
-        // Initialize client if needed
-        if self.grpc_client.get().is_none() {
-            let client = runtime.block_on(async { GrpcClient::new(endpoint).await })?;
-            // Ignore if another thread beat us to it
-            let _ = self.grpc_client.set(client);
-        }
-
-        self.grpc_client
-            .get()
-            .ok_or_else(|| anyhow!("gRPC client not initialized"))
-    }
-
-    /// Get the endpoint URL.
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
-    /// Fetch a transaction by digest.
-    ///
-    /// This is an async operation that makes an HTTP request to the RPC endpoint.
-    /// For now, returns a placeholder; actual implementation requires async runtime.
-    pub fn fetch_transaction_sync(&self, digest: &str) -> Result<FetchedTransaction> {
-        let result = rpc_request(
-            &self.endpoint,
-            "sui_getTransactionBlock",
-            serde_json::json!([
-                digest,
-                {
-                    "showInput": true,
-                    "showEffects": true,
-                    "showEvents": false,
-                    "showObjectChanges": true,
-                    "showBalanceChanges": false
-                }
-            ]),
-        )?;
-
-        parse_transaction_response(digest, &result)
-    }
-
-    /// Fetch recent transactions from a checkpoint.
-    pub fn fetch_recent_transactions(&self, limit: usize) -> Result<Vec<TransactionDigest>> {
-        // Get the latest checkpoint
-        let checkpoint_result = rpc_request(
-            &self.endpoint,
-            "sui_getLatestCheckpointSequenceNumber",
-            serde_json::json!([]),
-        )?;
-
-        let checkpoint = checkpoint_result
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or_else(|| anyhow!("Failed to get latest checkpoint"))?;
-
-        // Get transactions from recent checkpoints
-        let mut digests = Vec::new();
-        let mut current_checkpoint = checkpoint;
-
-        while digests.len() < limit && current_checkpoint > 0 {
-            let result = rpc_request(
-                &self.endpoint,
-                "sui_getCheckpoint",
-                serde_json::json!([current_checkpoint.to_string()]),
-            )?;
-
-            if let Some(txs) = result.get("transactions").and_then(|t| t.as_array()) {
-                for tx in txs {
-                    if let Some(digest) = tx.as_str() {
-                        digests.push(TransactionDigest::new(digest));
-                        if digests.len() >= limit {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            current_checkpoint = current_checkpoint.saturating_sub(1);
-        }
-
-        Ok(digests)
-    }
-
-    /// Fetch an object's BCS data by ID.
-    /// Returns the raw BCS bytes of the object content.
-    pub fn fetch_object_bcs(&self, object_id: &str) -> Result<Vec<u8>> {
-        let fetched = self.fetch_object_full(object_id)?;
-        Ok(fetched.bcs_bytes)
-    }
-
-    /// Fetch full object data including type, ownership, and BCS bytes.
-    pub fn fetch_object_full(&self, object_id: &str) -> Result<FetchedObject> {
-        let result = rpc_request(
-            &self.endpoint,
-            "sui_getObject",
-            serde_json::json!([
-                object_id,
-                {
-                    "showType": true,
-                    "showOwner": true,
-                    "showContent": true,
-                    "showBcs": true
-                }
-            ]),
-        )?;
-
-        // Check if object exists
-        if result.get("error").is_some() {
-            return Err(anyhow!("ObjectNotFound: {}", object_id));
-        }
-
-        let data = result
-            .get("data")
-            .ok_or_else(|| anyhow!("No data in object response"))?;
-
-        // Get BCS bytes (base64 encoded)
-        let bcs_base64 = data
-            .get("bcs")
-            .and_then(|b| b.get("bcsBytes"))
-            .and_then(|b| b.as_str())
-            .ok_or_else(|| anyhow!("No BCS data in object"))?;
-
-        use base64::Engine;
-        let bcs_bytes = base64::engine::general_purpose::STANDARD
-            .decode(bcs_base64)
-            .map_err(|e| anyhow!("Failed to decode BCS: {}", e))?;
-
-        // Get type string
-        let type_string = data
-            .get("type")
-            .and_then(|t| t.as_str())
-            .map(|s| s.to_string());
-
-        // Get ownership info
-        let owner = data.get("owner");
-        let is_shared = owner.and_then(|o| o.get("Shared")).is_some();
-        let is_immutable = owner
-            .and_then(|o| o.as_str())
-            .map(|s| s == "Immutable")
-            .unwrap_or(false);
-
-        // Get version
-        let version = data
-            .get("version")
-            .and_then(|v| v.as_str())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(1);
-
-        Ok(FetchedObject {
-            bcs_bytes,
-            type_string,
-            is_shared,
-            is_immutable,
-            version,
-        })
-    }
-
-    /// Fetch object data at a specific version (for historical replay).
-    /// Uses the archive endpoint if available, otherwise falls back to regular endpoint.
-    pub fn fetch_object_at_version(&self, object_id: &str, version: u64) -> Result<Vec<u8>> {
-        let fetched = self.fetch_object_at_version_full(object_id, version)?;
-        Ok(fetched.bcs_bytes)
-    }
-
-    /// Fetch full object data at a specific version (for historical replay).
-    ///
-    /// Tries methods in order of reliability:
-    /// 1. gRPC archive (most reliable for historical data)
-    /// 2. JSON-RPC archive endpoint (legacy)
-    /// 3. Regular JSON-RPC endpoint (fallback)
-    pub fn fetch_object_at_version_full(
-        &self,
-        object_id: &str,
-        version: u64,
-    ) -> Result<FetchedObject> {
-        // Try gRPC archive first (most reliable)
-        if self.grpc_archive_endpoint.is_some() {
-            match self.fetch_object_at_version_grpc(object_id, Some(version)) {
-                Ok(obj) => return Ok(obj),
-                Err(e) => {
-                    // Log but continue to fallbacks
-                    eprintln!(
-                        "gRPC archive lookup failed for {}@{}: {}",
-                        object_id, version, e
-                    );
-                }
-            }
-        }
-
-        // Try JSON-RPC archive endpoint if available
-        let endpoint = self.archive_endpoint.as_ref().unwrap_or(&self.endpoint);
-
-        let result = rpc_request(
-            endpoint,
-            "sui_tryGetPastObject",
-            serde_json::json!([
-                object_id,
-                version,
-                {
-                    "showType": true,
-                    "showOwner": true,
-                    "showContent": true,
-                    "showBcs": true
-                }
-            ]),
-        );
-
-        // If archive failed and we have a fallback, try regular endpoint
-        let result = match result {
-            Ok(r) => r,
-            Err(e) if self.archive_endpoint.is_some() => {
-                // Try regular endpoint as fallback
-                rpc_request(
-                    &self.endpoint,
-                    "sui_tryGetPastObject",
-                    serde_json::json!([
-                        object_id,
-                        version,
-                        {
-                            "showType": true,
-                            "showOwner": true,
-                            "showContent": true,
-                            "showBcs": true
-                        }
-                    ]),
-                )
-                .map_err(|_| e)?
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Check status
-        let status = result
-            .get("status")
-            .and_then(|s| s.as_str())
-            .unwrap_or("unknown");
-
-        if status != "VersionFound" {
-            return Err(anyhow!("Object version not found: status={}", status));
-        }
-
-        let details = result
-            .get("details")
-            .ok_or_else(|| anyhow!("No details in past object response"))?;
-
-        // Get BCS bytes
-        let bcs_base64 = details
-            .get("bcs")
-            .and_then(|b| b.get("bcsBytes"))
-            .and_then(|b| b.as_str())
-            .ok_or_else(|| anyhow!("No BCS data in past object"))?;
-
-        use base64::Engine;
-        let bcs_bytes = base64::engine::general_purpose::STANDARD
-            .decode(bcs_base64)
-            .map_err(|e| anyhow!("Failed to decode BCS: {}", e))?;
-
-        // Get type string
-        let type_string = details
-            .get("type")
-            .or_else(|| details.get("bcs").and_then(|b| b.get("type")))
-            .and_then(|t| t.as_str())
-            .map(|s| s.to_string());
-
-        // Get ownership info
-        let owner = details.get("owner");
-        let is_shared = owner.and_then(|o| o.get("Shared")).is_some();
-        let is_immutable = owner
-            .and_then(|o| o.as_str())
-            .map(|s| s == "Immutable")
-            .unwrap_or(false);
-
-        Ok(FetchedObject {
-            bcs_bytes,
-            type_string,
-            is_shared,
-            is_immutable,
-            version,
-        })
-    }
-
-    /// Fetch object at version using gRPC archive.
-    ///
-    /// This is the most reliable method for historical object lookups as
-    /// the archive at `archive.mainnet.sui.io:443` has full history.
-    fn fetch_object_at_version_grpc(
-        &self,
-        object_id: &str,
-        version: Option<u64>,
-    ) -> Result<FetchedObject> {
-        let client = self.get_grpc_client()?;
-        let runtime = self.get_runtime()?;
-
-        let grpc_obj: Option<crate::grpc::GrpcObject> =
-            runtime.block_on(async { client.get_object_at_version(object_id, version).await })?;
-
-        let obj = grpc_obj.ok_or_else(|| anyhow!("Object not found via gRPC: {}", object_id))?;
-
-        // Extract BCS bytes
-        let bcs_bytes = obj
-            .bcs
-            .ok_or_else(|| anyhow!("No BCS data in gRPC response for {}", object_id))?;
-
-        // Determine ownership
-        let (is_shared, is_immutable) = match &obj.owner {
-            GrpcOwner::Shared { .. } => (true, false),
-            GrpcOwner::Immutable => (false, true),
-            _ => (false, false),
-        };
-
-        Ok(FetchedObject {
-            bcs_bytes,
-            type_string: obj.type_string,
-            is_shared,
-            is_immutable,
-            version: obj.version,
-        })
-    }
-
-    /// Fetch all input objects for a transaction.
-    /// Returns a map from object ID to BCS bytes.
-    pub fn fetch_transaction_inputs(
-        &self,
-        tx: &FetchedTransaction,
-    ) -> Result<std::collections::HashMap<String, Vec<u8>>> {
-        let mut objects = std::collections::HashMap::new();
-
-        for input in &tx.inputs {
-            match input {
-                TransactionInput::Object {
-                    object_id, version, ..
-                } => {
-                    // Try to fetch at specific version first, fall back to current
-                    let bytes = if *version > 0 {
-                        self.fetch_object_at_version(object_id, *version)
-                            .or_else(|_| self.fetch_object_bcs(object_id))
-                    } else {
-                        self.fetch_object_bcs(object_id)
-                    };
-
-                    match bytes {
-                        Ok(b) => {
-                            objects.insert(object_id.clone(), b);
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to fetch object {}: {}", object_id, e);
-                        }
-                    }
-                }
-                TransactionInput::SharedObject {
-                    object_id,
-                    initial_shared_version,
-                    ..
-                } => {
-                    // For shared objects, try to get at initial version or current
-                    let bytes = self
-                        .fetch_object_at_version(object_id, *initial_shared_version)
-                        .or_else(|_| self.fetch_object_bcs(object_id));
-
-                    match bytes {
-                        Ok(b) => {
-                            objects.insert(object_id.clone(), b);
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to fetch shared object {}: {}",
-                                object_id, e
-                            );
-                        }
-                    }
-                }
-                TransactionInput::ImmutableObject {
-                    object_id, version, ..
-                } => {
-                    let bytes = if *version > 0 {
-                        self.fetch_object_at_version(object_id, *version)
-                            .or_else(|_| self.fetch_object_bcs(object_id))
-                    } else {
-                        self.fetch_object_bcs(object_id)
-                    };
-
-                    match bytes {
-                        Ok(b) => {
-                            objects.insert(object_id.clone(), b);
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to fetch immutable object {}: {}",
-                                object_id, e
-                            );
-                        }
-                    }
-                }
-                TransactionInput::Receiving {
-                    object_id, version, ..
-                } => {
-                    let bytes = if *version > 0 {
-                        self.fetch_object_at_version(object_id, *version)
-                            .or_else(|_| self.fetch_object_bcs(object_id))
-                    } else {
-                        self.fetch_object_bcs(object_id)
-                    };
-
-                    match bytes {
-                        Ok(b) => {
-                            objects.insert(object_id.clone(), b);
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to fetch receiving object {}: {}",
-                                object_id, e
-                            );
-                        }
-                    }
-                }
-                TransactionInput::Pure { .. } => {
-                    // Pure values don't need fetching
-                }
-            }
-        }
-
-        Ok(objects)
-    }
-
-    /// Fetch all input objects for a transaction with type information.
-    /// Returns a map from object ID to (bytes, type_string).
-    pub fn fetch_transaction_inputs_with_types(
-        &self,
-        tx: &FetchedTransaction,
-    ) -> Result<std::collections::HashMap<String, (Vec<u8>, Option<String>)>> {
-        let mut objects = std::collections::HashMap::new();
-
-        for input in &tx.inputs {
-            match input {
-                TransactionInput::Object { object_id, .. }
-                | TransactionInput::SharedObject { object_id, .. }
-                | TransactionInput::ImmutableObject { object_id, .. }
-                | TransactionInput::Receiving { object_id, .. } => {
-                    // Use full fetch to get both bytes and type
-                    match self.fetch_object_full(object_id) {
-                        Ok(fetched) => {
-                            objects.insert(
-                                object_id.clone(),
-                                (fetched.bcs_bytes, fetched.type_string),
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: Failed to fetch object {}: {}", object_id, e);
-                        }
-                    }
-                }
-                TransactionInput::Pure { .. } => {
-                    // Pure values don't need fetching
-                }
-            }
-        }
-
-        Ok(objects)
-    }
-
-    /// Fetch package bytecode modules from the RPC.
-    /// Returns a vector of (module_name, module_bytes) pairs.
-    pub fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-        let result = rpc_request(
-            &self.endpoint,
-            "sui_getObject",
-            serde_json::json!([
-                package_id,
-                {
-                    "showBcs": true,
-                    "showContent": true
-                }
-            ]),
-        )?;
-
-        let data = result
-            .get("data")
-            .ok_or_else(|| anyhow!("No data in object response"))?;
-
-        // Verify this is a package - check both "type" and "content.dataType"
-        let obj_type = data
-            .get("type")
-            .and_then(|t| t.as_str())
-            .or_else(|| {
-                data.get("content")
-                    .and_then(|c| c.get("dataType"))
-                    .and_then(|t| t.as_str())
-            })
-            .unwrap_or("");
-
-        if obj_type != "package" {
-            return Err(anyhow!(
-                "Object {} is not a package (type: {})",
-                package_id,
-                obj_type
-            ));
-        }
-
-        // Get BCS module map - this is the primary source for bytecode
-        let bcs_data = data.get("bcs");
-
-        let mut modules = Vec::new();
-
-        // Method 1: Try to get from BCS moduleMap (top-level)
-        if let Some(bcs) = bcs_data {
-            if let Some(module_map) = bcs.get("moduleMap").and_then(|m| m.as_object()) {
-                use base64::Engine;
-                for (name, bytes_b64) in module_map {
-                    if let Some(b64_str) = bytes_b64.as_str() {
-                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str)
-                        {
-                            modules.push((name.clone(), bytes));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Method 2: If no BCS modules found, try content.disassembled for module names
-        // (informational only - we won't have executable bytecode)
-        if modules.is_empty() {
-            if let Some(content) = data.get("content") {
-                if let Some(disasm) = content.get("disassembled").and_then(|d| d.as_object()) {
-                    for name in disasm.keys() {
-                        // Return empty bytes to indicate we know the module exists but don't have bytecode
-                        modules.push((name.clone(), vec![]));
-                    }
-                }
-            }
-        }
-
-        if modules.is_empty() {
-            return Err(anyhow!("No modules found in package {}", package_id));
-        }
-
-        Ok(modules)
-    }
-
-    /// Extract all unique package IDs from a transaction's commands.
-    pub fn extract_package_ids(tx: &FetchedTransaction) -> Vec<String> {
-        let mut packages = std::collections::BTreeSet::new();
-
-        for cmd in &tx.commands {
-            if let PtbCommand::MoveCall { package, .. } = cmd {
-                packages.insert(package.clone());
-            }
-        }
-
-        packages.into_iter().collect()
-    }
-
-    /// Fetch all packages used by a transaction.
-    /// Returns a map from package ID to list of (module_name, module_bytes).
-    pub fn fetch_transaction_packages(
-        &self,
-        tx: &FetchedTransaction,
-    ) -> Result<std::collections::HashMap<String, Vec<(String, Vec<u8>)>>> {
-        let package_ids = Self::extract_package_ids(tx);
-        let mut packages = std::collections::HashMap::new();
-
-        // Skip framework packages (0x1, 0x2, 0x3) - we have those bundled
-        let framework_prefixes = [
-            "0x0000000000000000000000000000000000000000000000000000000000000001",
-            "0x0000000000000000000000000000000000000000000000000000000000000002",
-            "0x0000000000000000000000000000000000000000000000000000000000000003",
-            "0x1",
-            "0x2",
-            "0x3",
-        ];
-
-        for pkg_id in package_ids {
-            // Check if it's a framework package
-            let is_framework = framework_prefixes
-                .iter()
-                .any(|prefix| pkg_id == *prefix || pkg_id.to_lowercase() == prefix.to_lowercase());
-
-            if is_framework {
-                continue;
-            }
-
-            match self.fetch_package_modules(&pkg_id) {
-                Ok(modules) => {
-                    packages.insert(pkg_id, modules);
-                }
-                Err(e) => {
-                    eprintln!("Warning: Failed to fetch package {}: {}", pkg_id, e);
-                }
-            }
-        }
-
-        Ok(packages)
-    }
-
-    /// Fetch dynamic field children of an object (or wrapped UID) via JSON-RPC.
-    ///
-    /// This uses the `suix_getDynamicFields` RPC method which works for both:
-    /// - Top-level objects (like Tables)
-    /// - Wrapped UIDs (like skip_list nodes inside a Pool)
-    ///
-    /// Returns a list of dynamic field info including object IDs and types.
-    pub fn fetch_dynamic_fields(&self, parent_id: &str) -> Result<Vec<DynamicFieldEntry>> {
-        let mut all_fields = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let params = match &cursor {
-                Some(c) => serde_json::json!([parent_id, c, 50]),
-                None => serde_json::json!([parent_id, null, 50]),
-            };
-
-            let result = rpc_request(&self.endpoint, "suix_getDynamicFields", params)?;
-
-            let data = result
-                .get("data")
-                .and_then(|d| d.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            for entry in data {
-                // Parse the dynamic field entry
-                let name_value = entry.get("name");
-                let name_type = name_value
-                    .and_then(|n| n.get("type"))
-                    .and_then(|t| t.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                let name_json = name_value.and_then(|n| n.get("value")).cloned();
-
-                // BCS-encoded name
-                let name_bcs = entry.get("bcsName").and_then(|b| b.as_str()).and_then(|s| {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD.decode(s).ok()
-                });
-
-                let object_id = entry
-                    .get("objectId")
-                    .and_then(|o| o.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                let object_type = entry
-                    .get("objectType")
-                    .and_then(|t| t.as_str())
-                    .map(|s| s.to_string());
-
-                let version = entry.get("version").and_then(|v| v.as_u64());
-
-                let digest = entry
-                    .get("digest")
-                    .and_then(|d| d.as_str())
-                    .map(|s| s.to_string());
-
-                all_fields.push(DynamicFieldEntry {
-                    name_type,
-                    name_json,
-                    name_bcs,
-                    object_id,
-                    object_type,
-                    version,
-                    digest,
-                });
-            }
-
-            // Check for more pages
-            let has_next = result
-                .get("hasNextPage")
-                .and_then(|h| h.as_bool())
-                .unwrap_or(false);
-
-            if has_next {
-                cursor = result
-                    .get("nextCursor")
-                    .and_then(|c| c.as_str())
-                    .map(|s| s.to_string());
-            } else {
-                break;
-            }
-        }
-
-        Ok(all_fields)
-    }
-
-    /// Recursively fetch dynamic fields and all their nested children.
-    /// This is useful for structures like skip_lists that have nested UIDs.
-    ///
-    /// # Arguments
-    /// * `parent_id` - The parent object/UID to start from
-    /// * `max_depth` - Maximum recursion depth (0 = just direct children)
-    /// * `max_total` - Maximum total entries to fetch
-    pub fn fetch_dynamic_fields_recursive(
-        &self,
-        parent_id: &str,
-        max_depth: usize,
-        max_total: usize,
-    ) -> Result<Vec<DynamicFieldEntry>> {
-        let mut all_fields = Vec::new();
-        let mut queue = vec![(parent_id.to_string(), 0usize)];
-        let mut visited = std::collections::HashSet::new();
-        visited.insert(parent_id.to_string());
-
-        while let Some((current_id, depth)) = queue.pop() {
-            if all_fields.len() >= max_total {
-                break;
-            }
-
-            // Fetch children of this ID
-            match self.fetch_dynamic_fields(&current_id) {
-                Ok(fields) => {
-                    for field in fields {
-                        if all_fields.len() >= max_total {
-                            break;
-                        }
-
-                        all_fields.push(field.clone());
-
-                        // If we haven't reached max depth, queue child objects for scanning
-                        if depth < max_depth && !visited.contains(&field.object_id) {
-                            visited.insert(field.object_id.clone());
-                            queue.push((field.object_id.clone(), depth + 1));
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Log but continue - some UIDs may not have children
-                    eprintln!(
-                        "Warning: Failed to fetch dynamic fields for {}: {}",
-                        current_id, e
-                    );
-                }
-            }
-        }
-
-        Ok(all_fields)
-    }
-
-    /// Fetch a dynamic field object at a specific version.
-    /// This is useful for historical replay where we need the dynamic field
-    /// state at a specific transaction version.
-    ///
-    /// # Arguments
-    /// * `object_id` - The dynamic field object ID
-    /// * `version` - The version to fetch (usually from DynamicFieldEntry.version)
-    ///
-    /// # Returns
-    /// The BCS bytes of the dynamic field wrapper object
-    pub fn fetch_dynamic_field_at_version(
-        &self,
-        object_id: &str,
-        version: u64,
-    ) -> Result<FetchedObject> {
-        self.fetch_object_at_version_full(object_id, version)
-    }
-
-    /// Fetch multiple dynamic field objects at their historical versions.
-    /// Uses the archive endpoint for historical lookups.
-    ///
-    /// # Arguments
-    /// * `entries` - List of (object_id, version) pairs to fetch
-    ///
-    /// # Returns
-    /// Map from object_id to FetchedObject
-    pub fn fetch_dynamic_fields_at_versions(
-        &self,
-        entries: &[(String, u64)],
-    ) -> Result<std::collections::HashMap<String, FetchedObject>> {
-        let mut result = std::collections::HashMap::new();
-
-        for (object_id, version) in entries {
-            match self.fetch_dynamic_field_at_version(object_id, *version) {
-                Ok(fetched) => {
-                    result.insert(object_id.clone(), fetched);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to fetch dynamic field {} at version {}: {}",
-                        object_id, version, e
-                    );
-                }
-            }
-        }
-
-        Ok(result)
-    }
 }
 
 /// Entry for a dynamic field child (from JSON-RPC `suix_getDynamicFields`).
@@ -1907,937 +998,6 @@ pub fn replay_parallel(
         elapsed_ms,
         tps,
     })
-}
-
-/// Download and cache a single transaction by digest.
-///
-/// Returns Ok(true) if the transaction was fetched and cached, Ok(false) if already cached.
-pub fn download_single_transaction(
-    fetcher: &TransactionFetcher,
-    cache: &TransactionCache,
-    digest: &str,
-    fetch_packages: bool,
-    fetch_objects: bool,
-    verbose: bool,
-) -> Result<bool> {
-    use std::io::Write;
-
-    // Skip if already cached
-    if cache.has(digest) {
-        if verbose {
-            eprintln!("Transaction {} already cached", digest);
-        }
-        return Ok(false);
-    }
-
-    if verbose {
-        eprint!("Fetching transaction {}...", digest);
-        std::io::stderr().flush().ok();
-    }
-
-    // Fetch the transaction
-    let tx = fetcher.fetch_transaction_sync(digest)?;
-    let mut cached = CachedTransaction::new(tx);
-
-    // Fetch packages if requested
-    if fetch_packages {
-        if let Ok(packages) = fetcher.fetch_transaction_packages(&cached.transaction) {
-            for (pkg_id, modules) in packages {
-                cached.add_package(pkg_id, modules);
-            }
-        }
-
-        // Fetch transitive dependencies (up to 3 levels deep)
-        for _depth in 0..3 {
-            let missing = find_missing_dependencies(&cached);
-            if missing.is_empty() {
-                break;
-            }
-
-            if verbose {
-                eprint!(" (+{} deps)", missing.len());
-                std::io::stderr().flush().ok();
-            }
-
-            for pkg_addr in missing {
-                let pkg_hex = format!("0x{}", pkg_addr.to_hex());
-                match fetcher.fetch_package_modules(&pkg_hex) {
-                    Ok(modules) => {
-                        cached.add_package(pkg_hex, modules);
-                    }
-                    Err(_e) => {
-                        // Dependency not found - might be a deleted/old package
-                    }
-                }
-            }
-        }
-    }
-
-    // Fetch objects if requested (with type info)
-    if fetch_objects {
-        if let Ok(objects) = fetcher.fetch_transaction_inputs_with_types(&cached.transaction) {
-            for (obj_id, (bytes, type_str)) in objects {
-                cached.add_object_with_type(obj_id, bytes, type_str);
-            }
-        }
-    }
-
-    // Fetch packages referenced in type arguments (coin types, etc.)
-    // This runs after objects are fetched so we can also check object_types
-    if fetch_packages {
-        let type_arg_packages = extract_type_argument_packages(&cached);
-        if !type_arg_packages.is_empty() {
-            if verbose {
-                eprint!(" (+{} type pkgs)", type_arg_packages.len());
-                std::io::stderr().flush().ok();
-            }
-
-            for pkg_addr in type_arg_packages {
-                let pkg_hex = format!("0x{}", pkg_addr.to_hex());
-                match fetcher.fetch_package_modules(&pkg_hex) {
-                    Ok(modules) => {
-                        cached.add_package(pkg_hex, modules);
-                    }
-                    Err(_e) => {
-                        // Type package not found - might be a deleted/old package
-                    }
-                }
-            }
-        }
-    }
-
-    // Save to cache
-    cache.save(&cached)?;
-
-    if verbose {
-        eprintln!(
-            " ok ({} cmds, {} pkgs, {} objs)",
-            cached.transaction.commands.len(),
-            cached.packages.len(),
-            cached.objects.len()
-        );
-    }
-
-    Ok(true)
-}
-
-/// Download and cache transactions from mainnet.
-///
-/// Returns the number of new transactions cached.
-pub fn download_transactions(
-    fetcher: &TransactionFetcher,
-    cache: &TransactionCache,
-    count: usize,
-    fetch_packages: bool,
-    fetch_objects: bool,
-    verbose: bool,
-) -> Result<usize> {
-    use std::io::Write;
-
-    if verbose {
-        eprintln!("Fetching {} recent transaction digests...", count);
-    }
-
-    let digests = fetcher.fetch_recent_transactions(count)?;
-    let mut new_count = 0;
-
-    for (i, digest) in digests.iter().enumerate() {
-        // Skip if already cached
-        if cache.has(&digest.0) {
-            if verbose {
-                eprintln!(
-                    "  [{}/{}] {} - cached",
-                    i + 1,
-                    digests.len(),
-                    &digest.0[..12]
-                );
-            }
-            continue;
-        }
-
-        if verbose {
-            eprint!(
-                "  [{}/{}] {} - fetching...",
-                i + 1,
-                digests.len(),
-                &digest.0[..12]
-            );
-            std::io::stderr().flush().ok();
-        }
-
-        // Fetch the transaction
-        match fetcher.fetch_transaction_sync(&digest.0) {
-            Ok(tx) => {
-                let mut cached = CachedTransaction::new(tx);
-
-                // Fetch packages if requested
-                if fetch_packages {
-                    if let Ok(packages) = fetcher.fetch_transaction_packages(&cached.transaction) {
-                        for (pkg_id, modules) in packages {
-                            cached.add_package(pkg_id, modules);
-                        }
-                    }
-
-                    // Fetch transitive dependencies (up to 3 levels deep)
-                    for _depth in 0..3 {
-                        let missing = find_missing_dependencies(&cached);
-                        if missing.is_empty() {
-                            break;
-                        }
-
-                        if verbose {
-                            eprint!(" (+{} deps)", missing.len());
-                            std::io::stderr().flush().ok();
-                        }
-
-                        for pkg_addr in missing {
-                            let pkg_hex = format!("0x{}", pkg_addr.to_hex());
-                            match fetcher.fetch_package_modules(&pkg_hex) {
-                                Ok(modules) => {
-                                    cached.add_package(pkg_hex, modules);
-                                }
-                                Err(_e) => {
-                                    // Dependency not found - might be a deleted/old package
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Fetch objects if requested (with type info)
-                if fetch_objects {
-                    if let Ok(objects) =
-                        fetcher.fetch_transaction_inputs_with_types(&cached.transaction)
-                    {
-                        for (obj_id, (bytes, type_str)) in objects {
-                            cached.add_object_with_type(obj_id, bytes, type_str);
-                        }
-                    }
-                }
-
-                // Fetch packages referenced in type arguments (coin types, etc.)
-                // This runs after objects are fetched so we can also check object_types
-                if fetch_packages {
-                    let type_arg_packages = extract_type_argument_packages(&cached);
-                    if !type_arg_packages.is_empty() {
-                        if verbose {
-                            eprint!(" (+{} type pkgs)", type_arg_packages.len());
-                            std::io::stderr().flush().ok();
-                        }
-
-                        for pkg_addr in type_arg_packages {
-                            let pkg_hex = format!("0x{}", pkg_addr.to_hex());
-                            match fetcher.fetch_package_modules(&pkg_hex) {
-                                Ok(modules) => {
-                                    cached.add_package(pkg_hex, modules);
-                                }
-                                Err(_e) => {
-                                    // Type package not found - might be a deleted/old package
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Save to cache
-                if let Err(e) = cache.save(&cached) {
-                    if verbose {
-                        eprintln!(" error saving: {}", e);
-                    }
-                } else {
-                    new_count += 1;
-                    if verbose {
-                        eprintln!(
-                            " ok ({} cmds, {} pkgs)",
-                            cached.transaction.commands.len(),
-                            cached.packages.len()
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                if verbose {
-                    eprintln!(" error: {}", e);
-                }
-            }
-        }
-    }
-
-    Ok(new_count)
-}
-
-/// Find missing package dependencies from the cached transaction's packages.
-/// Returns a list of package addresses that are referenced but not present.
-fn find_missing_dependencies(cached: &CachedTransaction) -> Vec<AccountAddress> {
-    use move_binary_format::file_format::CompiledModule;
-    use std::collections::BTreeSet;
-
-    // Framework addresses we always have bundled
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    // Build set of loaded package addresses
-    let mut loaded_addrs: BTreeSet<AccountAddress> = BTreeSet::new();
-    for pkg_id in cached.packages.keys() {
-        if let Ok(addr) = AccountAddress::from_hex_literal(pkg_id) {
-            loaded_addrs.insert(addr);
-        }
-    }
-
-    // Find all dependencies by parsing modules
-    let mut missing = BTreeSet::new();
-
-    for _pkg_id in cached.packages.keys() {
-        if let Some(module_bytes_list) = cached.get_package_modules(_pkg_id) {
-            for (_name, bytes) in module_bytes_list {
-                if bytes.is_empty() {
-                    continue;
-                }
-                if let Ok(module) = CompiledModule::deserialize_with_defaults(&bytes) {
-                    // Check all module handles for dependencies
-                    for handle in &module.module_handles {
-                        let addr = *module.address_identifier_at(handle.address);
-
-                        // Skip framework and already loaded
-                        if framework_addrs.contains(&addr) {
-                            continue;
-                        }
-                        if loaded_addrs.contains(&addr) {
-                            continue;
-                        }
-
-                        missing.insert(addr);
-                    }
-                }
-            }
-        }
-    }
-
-    missing.into_iter().collect()
-}
-
-/// Extract package addresses from type arguments in transaction commands.
-///
-/// Type arguments like `0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC`
-/// contain package addresses that need to be fetched for complete type resolution.
-fn extract_type_argument_packages(cached: &CachedTransaction) -> Vec<AccountAddress> {
-    use std::collections::BTreeSet;
-
-    // Framework addresses we always have bundled
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    // Build set of loaded package addresses
-    let mut loaded_addrs: BTreeSet<AccountAddress> = BTreeSet::new();
-    for pkg_id in cached.packages.keys() {
-        if let Ok(addr) = AccountAddress::from_hex_literal(pkg_id) {
-            loaded_addrs.insert(addr);
-        }
-    }
-
-    let mut missing = BTreeSet::new();
-
-    // Helper to extract hex addresses from a type string
-    let extract_addrs = |type_str: &str| -> Vec<AccountAddress> {
-        let mut addrs = Vec::new();
-        let mut i = 0;
-        let chars: Vec<char> = type_str.chars().collect();
-
-        while i < chars.len() {
-            // Look for "0x" prefix
-            if i + 1 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
-                // Found potential hex address, collect hex chars
-                let start = i;
-                i += 2; // Skip "0x"
-                while i < chars.len() && chars[i].is_ascii_hexdigit() {
-                    i += 1;
-                }
-
-                // Extract the address string
-                let addr_str: String = chars[start..i].iter().collect();
-                if let Ok(addr) = AccountAddress::from_hex_literal(&addr_str) {
-                    addrs.push(addr);
-                }
-            } else {
-                i += 1;
-            }
-        }
-        addrs
-    };
-
-    // Extract from command type arguments
-    for cmd in &cached.transaction.commands {
-        if let PtbCommand::MoveCall { type_arguments, .. } = cmd {
-            for type_arg in type_arguments {
-                for addr in extract_addrs(type_arg) {
-                    if !framework_addrs.contains(&addr) && !loaded_addrs.contains(&addr) {
-                        missing.insert(addr);
-                    }
-                }
-            }
-        }
-    }
-
-    // Also extract from cached object types
-    for type_str in cached.object_types.values() {
-        for addr in extract_addrs(type_str) {
-            if !framework_addrs.contains(&addr) && !loaded_addrs.contains(&addr) {
-                missing.insert(addr);
-            }
-        }
-    }
-
-    missing.into_iter().collect()
-}
-
-/// Parse a transaction response from the RPC.
-fn parse_transaction_response(
-    digest: &str,
-    result: &serde_json::Value,
-) -> Result<FetchedTransaction> {
-    let transaction = result
-        .get("transaction")
-        .ok_or_else(|| anyhow!("No transaction in result"))?;
-
-    let data = transaction
-        .get("data")
-        .ok_or_else(|| anyhow!("No data in transaction"))?;
-
-    // Parse sender
-    let sender_str = data
-        .get("sender")
-        .and_then(|s| s.as_str())
-        .ok_or_else(|| anyhow!("No sender in transaction"))?;
-    let sender = AccountAddress::from_hex_literal(sender_str)
-        .map_err(|e| anyhow!("Invalid sender address: {}", e))?;
-
-    // Parse gas data
-    let gas_data = data.get("gasData").unwrap_or(&serde_json::Value::Null);
-    let gas_budget = gas_data
-        .get("budget")
-        .and_then(|b| b.as_str())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let gas_price = gas_data
-        .get("price")
-        .and_then(|p| p.as_str())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    // Parse PTB transaction - handle both old and new RPC formats
-    let tx_data = data.get("transaction");
-
-    let (commands, inputs) = if let Some(tx) = tx_data {
-        // Check if this is a ProgrammableTransaction
-        let kind = tx.get("kind").and_then(|k| k.as_str());
-
-        if kind == Some("ProgrammableTransaction") {
-            // New format: transaction.inputs and transaction.transactions
-            let commands = parse_ptb_commands(tx.get("transactions"))?;
-            let inputs = parse_ptb_inputs(tx.get("inputs"))?;
-            (commands, inputs)
-        } else if let Some(ptb) = tx.get("ProgrammableTransaction") {
-            // Old format: transaction.ProgrammableTransaction.commands/inputs
-            let commands = parse_ptb_commands(ptb.get("commands"))?;
-            let inputs = parse_ptb_inputs(ptb.get("inputs"))?;
-            (commands, inputs)
-        } else {
-            (vec![], vec![])
-        }
-    } else {
-        (vec![], vec![])
-    };
-
-    // Parse effects
-    let effects = result.get("effects").and_then(|e| parse_effects(e).ok());
-
-    // Parse timestamp and checkpoint
-    let timestamp_ms = result
-        .get("timestampMs")
-        .and_then(|t| t.as_str())
-        .and_then(|s| s.parse().ok());
-    let checkpoint = result
-        .get("checkpoint")
-        .and_then(|c| c.as_str())
-        .and_then(|s| s.parse().ok());
-
-    Ok(FetchedTransaction {
-        digest: TransactionDigest::new(digest),
-        sender,
-        gas_budget,
-        gas_price,
-        commands,
-        inputs,
-        effects,
-        timestamp_ms,
-        checkpoint,
-    })
-}
-
-/// Parse PTB commands from JSON.
-fn parse_ptb_commands(commands: Option<&serde_json::Value>) -> Result<Vec<PtbCommand>> {
-    let commands = match commands {
-        Some(c) => c
-            .as_array()
-            .ok_or_else(|| anyhow!("Commands not an array"))?,
-        None => return Ok(vec![]),
-    };
-
-    let mut result = Vec::new();
-
-    for cmd in commands {
-        if let Some(move_call) = cmd.get("MoveCall") {
-            let package = move_call
-                .get("package")
-                .and_then(|p| p.as_str())
-                .unwrap_or("")
-                .to_string();
-            let module = move_call
-                .get("module")
-                .and_then(|m| m.as_str())
-                .unwrap_or("")
-                .to_string();
-            let function = move_call
-                .get("function")
-                .and_then(|f| f.as_str())
-                .unwrap_or("")
-                .to_string();
-            let type_arguments = move_call
-                .get("type_arguments")
-                .and_then(|ta| ta.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|t| t.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let arguments = parse_ptb_arguments(move_call.get("arguments"))?;
-
-            result.push(PtbCommand::MoveCall {
-                package,
-                module,
-                function,
-                type_arguments,
-                arguments,
-            });
-        } else if let Some(split_coins) = cmd.get("SplitCoins") {
-            let coin = parse_single_argument(split_coins.get(0))?;
-            let amounts = parse_ptb_arguments(split_coins.get(1))?;
-            result.push(PtbCommand::SplitCoins { coin, amounts });
-        } else if let Some(merge_coins) = cmd.get("MergeCoins") {
-            let destination = parse_single_argument(merge_coins.get(0))?;
-            let sources = parse_ptb_arguments(merge_coins.get(1))?;
-            result.push(PtbCommand::MergeCoins {
-                destination,
-                sources,
-            });
-        } else if let Some(transfer) = cmd.get("TransferObjects") {
-            let objects = parse_ptb_arguments(transfer.get(0))?;
-            let address = parse_single_argument(transfer.get(1))?;
-            result.push(PtbCommand::TransferObjects { objects, address });
-        } else if let Some(make_vec) = cmd.get("MakeMoveVec") {
-            let type_arg = make_vec.get(0).and_then(|t| t.as_str()).map(String::from);
-            let elements = parse_ptb_arguments(make_vec.get(1))?;
-            result.push(PtbCommand::MakeMoveVec { type_arg, elements });
-        }
-        // Publish and Upgrade are more complex and less common
-    }
-
-    Ok(result)
-}
-
-/// Parse a single PTB argument.
-fn parse_single_argument(arg: Option<&serde_json::Value>) -> Result<PtbArgument> {
-    let arg = arg.ok_or_else(|| anyhow!("Missing argument"))?;
-
-    if let Some(input) = arg.get("Input") {
-        let index = input.as_u64().unwrap_or(0) as u16;
-        return Ok(PtbArgument::Input { index });
-    }
-
-    if let Some(result) = arg.get("Result") {
-        let index = result.as_u64().unwrap_or(0) as u16;
-        return Ok(PtbArgument::Result { index });
-    }
-
-    if let Some(nested) = arg.get("NestedResult") {
-        if let Some(arr) = nested.as_array() {
-            let index = arr.first().and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            let result_index = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            return Ok(PtbArgument::NestedResult {
-                index,
-                result_index,
-            });
-        }
-    }
-
-    if arg.as_str() == Some("GasCoin") {
-        return Ok(PtbArgument::GasCoin);
-    }
-
-    Err(anyhow!("Unknown argument type: {:?}", arg))
-}
-
-/// Parse PTB arguments from JSON array.
-fn parse_ptb_arguments(args: Option<&serde_json::Value>) -> Result<Vec<PtbArgument>> {
-    let args = match args {
-        Some(a) => a
-            .as_array()
-            .ok_or_else(|| anyhow!("Arguments not an array"))?,
-        None => return Ok(vec![]),
-    };
-
-    args.iter()
-        .map(|a| parse_single_argument(Some(a)))
-        .collect()
-}
-
-/// Parse PTB inputs from JSON.
-fn parse_ptb_inputs(inputs: Option<&serde_json::Value>) -> Result<Vec<TransactionInput>> {
-    let inputs = match inputs {
-        Some(i) => i.as_array().ok_or_else(|| anyhow!("Inputs not an array"))?,
-        None => return Ok(vec![]),
-    };
-
-    let mut result = Vec::new();
-
-    for input in inputs {
-        // Handle the new RPC format with "type" field
-        let input_type = input.get("type").and_then(|t| t.as_str());
-
-        match input_type {
-            Some("pure") => {
-                // New format: {"type": "pure", "valueType": "...", "value": ...}
-                let value_type = input.get("valueType").and_then(|t| t.as_str());
-                let value = input.get("value");
-                let bytes = if let Some(v) = value {
-                    // Convert based on valueType
-                    match value_type {
-                        Some("u8") => {
-                            let n: u8 = if let Some(n) = v.as_u64() {
-                                n as u8
-                            } else if let Some(s) = v.as_str() {
-                                s.parse().unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            vec![n]
-                        }
-                        Some("u16") => {
-                            let n: u16 = if let Some(n) = v.as_u64() {
-                                n as u16
-                            } else if let Some(s) = v.as_str() {
-                                s.parse().unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            n.to_le_bytes().to_vec()
-                        }
-                        Some("u32") => {
-                            let n: u32 = if let Some(n) = v.as_u64() {
-                                n as u32
-                            } else if let Some(s) = v.as_str() {
-                                s.parse().unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            n.to_le_bytes().to_vec()
-                        }
-                        Some("u64") => {
-                            let n: u64 = if let Some(n) = v.as_u64() {
-                                n
-                            } else if let Some(s) = v.as_str() {
-                                s.parse().unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            n.to_le_bytes().to_vec()
-                        }
-                        Some("u128") => {
-                            let n: u128 = if let Some(s) = v.as_str() {
-                                s.parse().unwrap_or(0)
-                            } else if let Some(n) = v.as_u64() {
-                                n as u128
-                            } else {
-                                0
-                            };
-                            n.to_le_bytes().to_vec()
-                        }
-                        Some("u256") => {
-                            // u256 comes as a string, convert to 32 bytes LE
-                            if let Some(s) = v.as_str() {
-                                // Parse as hex or decimal
-                                let n = if s.starts_with("0x") || s.starts_with("0X") {
-                                    u128::from_str_radix(&s[2..], 16).unwrap_or(0)
-                                } else {
-                                    s.parse::<u128>().unwrap_or(0)
-                                };
-                                let mut bytes = n.to_le_bytes().to_vec();
-                                bytes.resize(32, 0); // Extend to 32 bytes
-                                bytes
-                            } else {
-                                vec![0u8; 32]
-                            }
-                        }
-                        Some("bool") => {
-                            let b = if let Some(b) = v.as_bool() {
-                                b
-                            } else if let Some(s) = v.as_str() {
-                                s == "true"
-                            } else {
-                                false
-                            };
-                            vec![if b { 1 } else { 0 }]
-                        }
-                        Some("address") => {
-                            // Address comes as "0x..." hex string
-                            if let Some(s) = v.as_str() {
-                                let hex_str = s.strip_prefix("0x").unwrap_or(s);
-                                hex::decode(hex_str).unwrap_or_else(|_| vec![0u8; 32])
-                            } else {
-                                vec![0u8; 32]
-                            }
-                        }
-                        Some(vt) if vt.starts_with("vector<u8>") => {
-                            // Vector of bytes - could be array or hex string
-                            if let Some(arr) = v.as_array() {
-                                // BCS vector: length prefix + elements
-                                let bytes: Vec<u8> = arr
-                                    .iter()
-                                    .filter_map(|x| x.as_u64().map(|n| n as u8))
-                                    .collect();
-                                let mut result = Vec::new();
-                                // ULEB128 length prefix
-                                let len = bytes.len();
-                                let mut len_val = len;
-                                loop {
-                                    let mut byte = (len_val & 0x7f) as u8;
-                                    len_val >>= 7;
-                                    if len_val != 0 {
-                                        byte |= 0x80;
-                                    }
-                                    result.push(byte);
-                                    if len_val == 0 {
-                                        break;
-                                    }
-                                }
-                                result.extend(bytes);
-                                result
-                            } else if let Some(s) = v.as_str() {
-                                // Hex string
-                                let hex_str = s.strip_prefix("0x").unwrap_or(s);
-                                let bytes = hex::decode(hex_str).unwrap_or_default();
-                                let mut result = Vec::new();
-                                // ULEB128 length prefix
-                                let len = bytes.len();
-                                let mut len_val = len;
-                                loop {
-                                    let mut byte = (len_val & 0x7f) as u8;
-                                    len_val >>= 7;
-                                    if len_val != 0 {
-                                        byte |= 0x80;
-                                    }
-                                    result.push(byte);
-                                    if len_val == 0 {
-                                        break;
-                                    }
-                                }
-                                result.extend(bytes);
-                                result
-                            } else {
-                                vec![0] // Empty vector
-                            }
-                        }
-                        _ => {
-                            // Fallback: try direct interpretation
-                            if let Some(n) = v.as_u64() {
-                                n.to_le_bytes().to_vec()
-                            } else if let Some(s) = v.as_str() {
-                                // Could be an address or other hex value
-                                if let Some(hex_str) = s.strip_prefix("0x") {
-                                    hex::decode(hex_str).unwrap_or_else(|_| s.as_bytes().to_vec())
-                                } else if let Ok(n) = s.parse::<u64>() {
-                                    n.to_le_bytes().to_vec()
-                                } else {
-                                    s.as_bytes().to_vec()
-                                }
-                            } else if let Some(b) = v.as_bool() {
-                                vec![if b { 1 } else { 0 }]
-                            } else if let Some(arr) = v.as_array() {
-                                arr.iter()
-                                    .filter_map(|x| x.as_u64().map(|n| n as u8))
-                                    .collect()
-                            } else {
-                                vec![]
-                            }
-                        }
-                    }
-                } else {
-                    vec![]
-                };
-                result.push(TransactionInput::Pure { bytes });
-            }
-            Some("object") => {
-                // New format: {"type": "object", "objectType": "sharedObject"|"immOrOwnedObject", ...}
-                let object_type = input.get("objectType").and_then(|t| t.as_str());
-                let object_id = input
-                    .get("objectId")
-                    .and_then(|o| o.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                match object_type {
-                    Some("sharedObject") => {
-                        let initial_version = input
-                            .get("initialSharedVersion")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                        let mutable = input
-                            .get("mutable")
-                            .and_then(|m| m.as_bool())
-                            .unwrap_or(true);
-                        result.push(TransactionInput::SharedObject {
-                            object_id,
-                            initial_shared_version: initial_version,
-                            mutable,
-                        });
-                    }
-                    _ => {
-                        let version = input
-                            .get("version")
-                            .and_then(|v| v.as_str().or_else(|| v.as_u64().map(|_| "")))
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0);
-                        let digest = input
-                            .get("digest")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        result.push(TransactionInput::Object {
-                            object_id,
-                            version,
-                            digest,
-                        });
-                    }
-                }
-            }
-            // Unknown type - skip
-            _ => {}
-        }
-    }
-
-    Ok(result)
-}
-
-/// Parse transaction effects.
-fn parse_effects(effects: &serde_json::Value) -> Result<TransactionEffectsSummary> {
-    let status = if effects
-        .get("status")
-        .and_then(|s| s.get("status"))
-        .and_then(|s| s.as_str())
-        == Some("success")
-    {
-        TransactionStatus::Success
-    } else {
-        let error = effects
-            .get("status")
-            .and_then(|s| s.get("error"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        TransactionStatus::Failure { error }
-    };
-
-    let created = parse_object_refs(effects.get("created"));
-    let mutated = parse_object_refs(effects.get("mutated"));
-    let deleted = parse_object_refs(effects.get("deleted"));
-    let wrapped = parse_object_refs(effects.get("wrapped"));
-    let unwrapped = parse_object_refs(effects.get("unwrapped"));
-
-    let gas_used = effects
-        .get("gasUsed")
-        .map(|g| GasSummary {
-            computation_cost: g
-                .get("computationCost")
-                .and_then(|c| c.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            storage_cost: g
-                .get("storageCost")
-                .and_then(|c| c.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            storage_rebate: g
-                .get("storageRebate")
-                .and_then(|c| c.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            non_refundable_storage_fee: g
-                .get("nonRefundableStorageFee")
-                .and_then(|c| c.as_str())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-        })
-        .unwrap_or_default();
-
-    // Parse shared object versions from effects.sharedObjects
-    // Format: [{ "objectId": "0x...", "version": 123, "digest": "..." }, ...]
-    let shared_object_versions = effects
-        .get("sharedObjects")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    let object_id = item.get("objectId")?.as_str()?.to_string();
-                    let version = item
-                        .get("version")
-                        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))?;
-                    Some((object_id, version))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Ok(TransactionEffectsSummary {
-        status,
-        created,
-        mutated,
-        deleted,
-        wrapped,
-        unwrapped,
-        gas_used,
-        events_count: 0, // Events not parsed for now
-        shared_object_versions,
-    })
-}
-
-/// Parse object references from effects.
-fn parse_object_refs(value: Option<&serde_json::Value>) -> Vec<String> {
-    value
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    item.get("reference")
-                        .or(item.get("objectId"))
-                        .and_then(|r| r.get("objectId").or(Some(r)))
-                        .and_then(|o| o.as_str())
-                        .map(String::from)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 impl FetchedTransaction {
@@ -3532,35 +1692,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fetcher_endpoints() {
-        let mainnet = TransactionFetcher::mainnet();
-        assert!(mainnet.endpoint().contains("mainnet"));
-
-        let testnet = TransactionFetcher::testnet();
-        assert!(testnet.endpoint().contains("testnet"));
-    }
-
-    #[test]
-    fn test_fetcher_with_grpc_archive() {
-        let fetcher = TransactionFetcher::mainnet_with_archive();
-        assert!(fetcher.endpoint().contains("mainnet"));
-        assert!(fetcher.grpc_archive_endpoint.is_some());
-        assert!(fetcher
-            .grpc_archive_endpoint
-            .as_ref()
-            .unwrap()
-            .contains("archive"));
-
-        // Test builder pattern
-        let fetcher2 = TransactionFetcher::mainnet()
-            .with_grpc_archive_endpoint("https://custom-archive.example.com");
-        assert_eq!(
-            fetcher2.grpc_archive_endpoint.as_ref().unwrap(),
-            "https://custom-archive.example.com"
-        );
-    }
-
-    #[test]
     fn test_derive_dynamic_field_id() {
         // Test case from Cetus Pool's skip_list:
         // Parent UID: 0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3
@@ -3605,4 +1736,756 @@ mod tests {
             key_0_expected.to_hex_literal()
         );
     }
+}
+
+// ============================================================================
+// GraphQL to FetchedTransaction Conversion
+// ============================================================================
+
+/// Convert a GraphQL transaction to the internal FetchedTransaction format.
+///
+/// This enables using transactions fetched via DataFetcher with the CachedTransaction
+/// and replay infrastructure.
+pub fn graphql_to_fetched_transaction(
+    tx: &crate::graphql::GraphQLTransaction,
+) -> Result<FetchedTransaction> {
+    use crate::graphql::GraphQLTransactionInput;
+    use base64::Engine;
+    use move_core_types::account_address::AccountAddress;
+
+    // Parse sender address
+    let sender_hex = tx.sender.strip_prefix("0x").unwrap_or(&tx.sender);
+    let sender = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))
+        .map_err(|e| anyhow::anyhow!("Invalid sender address: {}", e))?;
+
+    // Convert inputs
+    let inputs: Vec<TransactionInput> = tx
+        .inputs
+        .iter()
+        .map(|input| match input {
+            GraphQLTransactionInput::Pure { bytes_base64 } => {
+                // Decode base64 to bytes for Pure input
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(bytes_base64)
+                    .unwrap_or_default();
+                TransactionInput::Pure { bytes }
+            }
+            GraphQLTransactionInput::OwnedObject {
+                address,
+                version,
+                digest,
+            } => TransactionInput::Object {
+                object_id: address.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+            GraphQLTransactionInput::SharedObject {
+                address,
+                initial_shared_version,
+                mutable,
+            } => TransactionInput::SharedObject {
+                object_id: address.clone(),
+                initial_shared_version: *initial_shared_version,
+                mutable: *mutable,
+            },
+            GraphQLTransactionInput::Receiving {
+                address,
+                version,
+                digest,
+            } => TransactionInput::Receiving {
+                object_id: address.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+        })
+        .collect();
+
+    // Convert commands
+    let commands: Vec<PtbCommand> = tx
+        .commands
+        .iter()
+        .filter_map(convert_graphql_command)
+        .collect();
+
+    // Convert effects
+    let effects = tx.effects.as_ref().map(convert_graphql_effects);
+
+    Ok(FetchedTransaction {
+        digest: TransactionDigest(tx.digest.clone()),
+        sender,
+        gas_budget: tx.gas_budget.unwrap_or(0),
+        gas_price: tx.gas_price.unwrap_or(0),
+        commands,
+        inputs,
+        effects,
+        timestamp_ms: tx.timestamp_ms,
+        checkpoint: tx.checkpoint,
+    })
+}
+
+/// Convert a GraphQL command to PtbCommand
+fn convert_graphql_command(cmd: &crate::graphql::GraphQLCommand) -> Option<PtbCommand> {
+    use crate::graphql::GraphQLCommand;
+
+    match cmd {
+        GraphQLCommand::MoveCall {
+            package,
+            module,
+            function,
+            type_arguments,
+            arguments,
+        } => Some(PtbCommand::MoveCall {
+            package: package.clone(),
+            module: module.clone(),
+            function: function.clone(),
+            type_arguments: type_arguments.clone(),
+            arguments: arguments.iter().map(convert_graphql_argument).collect(),
+        }),
+        GraphQLCommand::TransferObjects { objects, address } => Some(PtbCommand::TransferObjects {
+            objects: objects.iter().map(convert_graphql_argument).collect(),
+            address: convert_graphql_argument(address),
+        }),
+        GraphQLCommand::SplitCoins { coin, amounts } => Some(PtbCommand::SplitCoins {
+            coin: convert_graphql_argument(coin),
+            amounts: amounts.iter().map(convert_graphql_argument).collect(),
+        }),
+        GraphQLCommand::MergeCoins {
+            destination,
+            sources,
+        } => Some(PtbCommand::MergeCoins {
+            destination: convert_graphql_argument(destination),
+            sources: sources.iter().map(convert_graphql_argument).collect(),
+        }),
+        GraphQLCommand::MakeMoveVec { type_arg, elements } => Some(PtbCommand::MakeMoveVec {
+            type_arg: type_arg.clone(),
+            elements: elements.iter().map(convert_graphql_argument).collect(),
+        }),
+        GraphQLCommand::Publish {
+            modules,
+            dependencies,
+        } => Some(PtbCommand::Publish {
+            modules: modules.clone(),
+            dependencies: dependencies.clone(),
+        }),
+        GraphQLCommand::Upgrade {
+            package, ticket, ..
+        } => Some(PtbCommand::Upgrade {
+            modules: Vec::new(), // Upgrade modules not available in GraphQL response
+            package: package.clone(),
+            ticket: convert_graphql_argument(ticket),
+        }),
+        GraphQLCommand::Other { .. } => None, // Skip unknown command types
+    }
+}
+
+/// Convert a GraphQL argument to PtbArgument
+fn convert_graphql_argument(arg: &crate::graphql::GraphQLArgument) -> PtbArgument {
+    use crate::graphql::GraphQLArgument;
+
+    match arg {
+        GraphQLArgument::GasCoin => PtbArgument::GasCoin,
+        GraphQLArgument::Input(index) => PtbArgument::Input { index: *index },
+        GraphQLArgument::Result(index) => PtbArgument::Result { index: *index },
+        GraphQLArgument::NestedResult(index, result_idx) => PtbArgument::NestedResult {
+            index: *index,
+            result_index: *result_idx,
+        },
+    }
+}
+
+/// Convert GraphQL effects to TransactionEffectsSummary
+fn convert_graphql_effects(effects: &crate::graphql::GraphQLEffects) -> TransactionEffectsSummary {
+    let status = if effects.status == "SUCCESS" {
+        TransactionStatus::Success
+    } else {
+        TransactionStatus::Failure {
+            error: effects.status.clone(),
+        }
+    };
+
+    TransactionEffectsSummary {
+        status,
+        created: effects.created.iter().map(|o| o.address.clone()).collect(),
+        mutated: effects.mutated.iter().map(|o| o.address.clone()).collect(),
+        deleted: effects.deleted.clone(),
+        wrapped: Vec::new(),
+        unwrapped: Vec::new(),
+        gas_used: GasSummary::default(),
+        events_count: 0,
+        shared_object_versions: std::collections::HashMap::new(),
+    }
+}
+
+// ============================================================================
+// gRPC to FetchedTransaction Conversion
+// ============================================================================
+
+/// Convert a gRPC transaction to the internal FetchedTransaction format.
+///
+/// This enables using transactions fetched directly via gRPC (e.g., from Surflux)
+/// with the CachedTransaction and replay infrastructure.
+///
+/// gRPC transactions provide additional historical data that GraphQL doesn't:
+/// - `unchanged_loaded_runtime_objects`: Objects read but not modified (with exact versions)
+/// - `unchanged_consensus_objects`: Actual consensus versions for shared objects
+/// - `changed_objects`: Objects modified with their INPUT versions
+pub fn grpc_to_fetched_transaction(
+    tx: &crate::grpc::GrpcTransaction,
+) -> Result<FetchedTransaction> {
+    use crate::grpc::GrpcInput;
+    use move_core_types::account_address::AccountAddress;
+
+    // Parse sender address
+    let sender_hex = tx.sender.strip_prefix("0x").unwrap_or(&tx.sender);
+    let sender = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))
+        .map_err(|e| anyhow::anyhow!("Invalid sender address: {}", e))?;
+
+    // Convert inputs
+    let inputs: Vec<TransactionInput> = tx
+        .inputs
+        .iter()
+        .map(|input| match input {
+            GrpcInput::Pure { bytes } => TransactionInput::Pure {
+                bytes: bytes.clone(),
+            },
+            GrpcInput::Object {
+                object_id,
+                version,
+                digest,
+            } => TransactionInput::Object {
+                object_id: object_id.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                mutable,
+            } => TransactionInput::SharedObject {
+                object_id: object_id.clone(),
+                initial_shared_version: *initial_version,
+                mutable: *mutable,
+            },
+            GrpcInput::Receiving {
+                object_id,
+                version,
+                digest,
+            } => TransactionInput::Receiving {
+                object_id: object_id.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+        })
+        .collect();
+
+    // Convert commands
+    let commands: Vec<PtbCommand> = tx
+        .commands
+        .iter()
+        .filter_map(convert_grpc_command)
+        .collect();
+
+    // Convert effects status
+    let effects = tx.status.as_ref().map(|status| {
+        let tx_status = if status == "success" {
+            TransactionStatus::Success
+        } else {
+            TransactionStatus::Failure {
+                error: tx
+                    .execution_error
+                    .as_ref()
+                    .and_then(|e| e.description.clone())
+                    .unwrap_or_else(|| status.clone()),
+            }
+        };
+
+        TransactionEffectsSummary {
+            status: tx_status,
+            created: tx
+                .created_objects
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+            mutated: tx
+                .changed_objects
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+            deleted: Vec::new(),
+            wrapped: Vec::new(),
+            unwrapped: Vec::new(),
+            gas_used: GasSummary::default(),
+            events_count: 0,
+            shared_object_versions: std::collections::HashMap::new(),
+        }
+    });
+
+    Ok(FetchedTransaction {
+        digest: TransactionDigest(tx.digest.clone()),
+        sender,
+        gas_budget: tx.gas_budget.unwrap_or(0),
+        gas_price: tx.gas_price.unwrap_or(0),
+        commands,
+        inputs,
+        effects,
+        timestamp_ms: tx.timestamp_ms,
+        checkpoint: tx.checkpoint,
+    })
+}
+
+/// Convert a gRPC command to PtbCommand
+fn convert_grpc_command(cmd: &crate::grpc::GrpcCommand) -> Option<PtbCommand> {
+    use crate::grpc::GrpcCommand;
+
+    match cmd {
+        GrpcCommand::MoveCall {
+            package,
+            module,
+            function,
+            type_arguments,
+            arguments,
+        } => Some(PtbCommand::MoveCall {
+            package: package.clone(),
+            module: module.clone(),
+            function: function.clone(),
+            type_arguments: type_arguments.clone(),
+            arguments: arguments.iter().map(convert_grpc_argument).collect(),
+        }),
+        GrpcCommand::TransferObjects { objects, address } => Some(PtbCommand::TransferObjects {
+            objects: objects.iter().map(convert_grpc_argument).collect(),
+            address: convert_grpc_argument(address),
+        }),
+        GrpcCommand::SplitCoins { coin, amounts } => Some(PtbCommand::SplitCoins {
+            coin: convert_grpc_argument(coin),
+            amounts: amounts.iter().map(convert_grpc_argument).collect(),
+        }),
+        GrpcCommand::MergeCoins { coin, sources } => Some(PtbCommand::MergeCoins {
+            destination: convert_grpc_argument(coin),
+            sources: sources.iter().map(convert_grpc_argument).collect(),
+        }),
+        GrpcCommand::MakeMoveVec {
+            element_type,
+            elements,
+        } => Some(PtbCommand::MakeMoveVec {
+            type_arg: element_type.clone(),
+            elements: elements.iter().map(convert_grpc_argument).collect(),
+        }),
+        GrpcCommand::Publish {
+            modules,
+            dependencies,
+        } => Some(PtbCommand::Publish {
+            modules: modules
+                .iter()
+                .map(|m| base64::engine::general_purpose::STANDARD.encode(m))
+                .collect(),
+            dependencies: dependencies.clone(),
+        }),
+        GrpcCommand::Upgrade {
+            modules,
+            package,
+            ticket,
+            ..
+        } => Some(PtbCommand::Upgrade {
+            modules: modules
+                .iter()
+                .map(|m| base64::engine::general_purpose::STANDARD.encode(m))
+                .collect(),
+            package: package.clone(),
+            ticket: convert_grpc_argument(ticket),
+        }),
+    }
+}
+
+/// Convert a gRPC argument to PtbArgument
+fn convert_grpc_argument(arg: &crate::grpc::GrpcArgument) -> PtbArgument {
+    use crate::grpc::GrpcArgument;
+
+    match arg {
+        GrpcArgument::GasCoin => PtbArgument::GasCoin,
+        GrpcArgument::Input(index) => PtbArgument::Input {
+            index: *index as u16,
+        },
+        GrpcArgument::Result(index) => PtbArgument::Result {
+            index: *index as u16,
+        },
+        GrpcArgument::NestedResult(index, result_idx) => PtbArgument::NestedResult {
+            index: *index as u16,
+            result_index: *result_idx as u16,
+        },
+    }
+}
+
+// ============================================================================
+// Auto-Fetch and Cache Functionality
+// ============================================================================
+
+/// Extract package addresses that a module depends on from its bytecode.
+///
+/// This parses the CompiledModule to find all module_handles, which reference
+/// other modules that this module depends on.
+fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<AccountAddress> {
+    use move_binary_format::CompiledModule;
+    use std::collections::BTreeSet;
+
+    // Framework addresses to skip
+    let framework_addrs: BTreeSet<AccountAddress> = [
+        AccountAddress::from_hex_literal("0x1").unwrap(),
+        AccountAddress::from_hex_literal("0x2").unwrap(),
+        AccountAddress::from_hex_literal("0x3").unwrap(),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut deps = Vec::new();
+
+    if let Ok(module) = CompiledModule::deserialize_with_defaults(bytecode) {
+        for handle in &module.module_handles {
+            let addr = *module.address_identifier_at(handle.address);
+            // Skip framework modules
+            if !framework_addrs.contains(&addr) {
+                deps.push(addr);
+            }
+        }
+    }
+
+    deps
+}
+
+/// Extract all unique dependency addresses from a set of packages.
+/// packages is HashMap<String, Vec<(module_name, bytecode_base64)>>
+fn extract_all_dependencies(
+    packages: &std::collections::HashMap<String, Vec<(String, String)>>,
+) -> std::collections::BTreeSet<String> {
+    use base64::Engine;
+    use std::collections::BTreeSet;
+
+    let mut all_deps: BTreeSet<String> = BTreeSet::new();
+
+    for modules in packages.values() {
+        for (_name, bytecode_base64) in modules {
+            if let Ok(bytecode) = base64::engine::general_purpose::STANDARD.decode(bytecode_base64)
+            {
+                for dep_addr in extract_dependencies_from_bytecode(&bytecode) {
+                    let addr_str = format!("0x{}", hex::encode(dep_addr.as_ref()));
+                    all_deps.insert(addr_str);
+                }
+            }
+        }
+    }
+
+    all_deps
+}
+
+/// Fetch a transaction and all its dependencies, returning a fully populated CachedTransaction.
+///
+/// This function automatically:
+/// 1. Fetches the transaction from GraphQL
+/// 2. Fetches all referenced packages
+/// 3. **Recursively fetches transitive package dependencies** (up to max_depth)
+/// 4. Fetches all input objects
+/// 5. Optionally fetches historical object versions via gRPC
+/// 6. Optionally fetches dynamic field children
+///
+/// # Arguments
+/// * `fetcher` - DataFetcher configured for mainnet
+/// * `digest` - Transaction digest to fetch
+/// * `fetch_historical` - Whether to fetch historical object versions (requires gRPC)
+/// * `fetch_dynamic_fields` - Whether to fetch dynamic field children
+pub fn fetch_and_cache_transaction(
+    fetcher: &crate::data_fetcher::DataFetcher,
+    digest: &str,
+    _fetch_historical: bool,
+    fetch_dynamic_fields: bool,
+) -> Result<CachedTransaction> {
+    use crate::graphql::GraphQLTransactionInput;
+    use base64::Engine;
+    use std::collections::BTreeSet;
+
+    // Maximum depth for transitive dependency resolution
+    const MAX_DEPENDENCY_DEPTH: usize = 10;
+
+    // Step 1: Fetch transaction
+    eprintln!("[fetch_and_cache] Fetching transaction {}...", digest);
+    let graphql_tx = fetcher.fetch_transaction(digest)?;
+    let fetched_tx = graphql_to_fetched_transaction(&graphql_tx)?;
+    let mut cached = CachedTransaction::new(fetched_tx);
+
+    // Step 2: Extract and fetch all directly referenced packages
+    let package_ids = crate::data_fetcher::DataFetcher::extract_package_ids(&graphql_tx);
+    eprintln!(
+        "[fetch_and_cache] Found {} directly referenced packages",
+        package_ids.len()
+    );
+
+    let mut fetched_packages: BTreeSet<String> = BTreeSet::new();
+    let mut packages_to_fetch: BTreeSet<String> = package_ids.into_iter().collect();
+
+    // Step 3: Recursively fetch transitive dependencies
+    for depth in 0..MAX_DEPENDENCY_DEPTH {
+        if packages_to_fetch.is_empty() {
+            eprintln!(
+                "[fetch_and_cache] All dependencies resolved at depth {}",
+                depth
+            );
+            break;
+        }
+
+        eprintln!(
+            "[fetch_and_cache] Depth {}: fetching {} packages...",
+            depth,
+            packages_to_fetch.len()
+        );
+
+        let mut newly_fetched: Vec<String> = Vec::new();
+
+        for pkg_id in &packages_to_fetch {
+            if fetched_packages.contains(pkg_id) {
+                continue;
+            }
+
+            match fetcher.fetch_package(pkg_id) {
+                Ok(pkg) => {
+                    let modules: Vec<(String, Vec<u8>)> = pkg
+                        .modules
+                        .into_iter()
+                        .map(|m| (m.name, m.bytecode))
+                        .collect();
+
+                    eprintln!(
+                        "[fetch_and_cache]   Fetched {}: {} modules",
+                        &pkg_id[..20.min(pkg_id.len())],
+                        modules.len()
+                    );
+
+                    cached.add_package(pkg_id.clone(), modules);
+                    newly_fetched.push(pkg_id.clone());
+                    fetched_packages.insert(pkg_id.clone());
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[fetch_and_cache]   Warning: Failed to fetch {}: {}",
+                        &pkg_id[..20.min(pkg_id.len())],
+                        e
+                    );
+                    // Mark as "fetched" to avoid infinite retry
+                    fetched_packages.insert(pkg_id.clone());
+                }
+            }
+        }
+
+        // Extract dependencies from newly fetched packages
+        let all_deps = extract_all_dependencies(&cached.packages);
+
+        // Find packages we haven't fetched yet
+        packages_to_fetch = all_deps
+            .into_iter()
+            .filter(|p| !fetched_packages.contains(p))
+            .collect();
+
+        if packages_to_fetch.is_empty() {
+            eprintln!("[fetch_and_cache] No more transitive dependencies to fetch");
+            break;
+        }
+
+        eprintln!(
+            "[fetch_and_cache] Found {} new transitive dependencies",
+            packages_to_fetch.len()
+        );
+    }
+
+    eprintln!(
+        "[fetch_and_cache] Total packages fetched: {}",
+        cached.packages.len()
+    );
+
+    // Build a map of object address -> input version from effects
+    // For mutated objects: input_version = output_version - 1
+    let mut input_versions: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+    if let Some(effects) = &graphql_tx.effects {
+        for change in &effects.mutated {
+            if let Some(output_version) = change.version {
+                // Input version is output version minus 1
+                let input_version = output_version.saturating_sub(1);
+                input_versions.insert(change.address.clone(), input_version);
+                eprintln!(
+                    "[fetch_and_cache] Object {} mutated: output_version={}, input_version={}",
+                    &change.address[..20.min(change.address.len())],
+                    output_version,
+                    input_version
+                );
+            }
+        }
+    }
+
+    // Step 4: Fetch input objects
+    for input in &graphql_tx.inputs {
+        match input {
+            GraphQLTransactionInput::OwnedObject {
+                address, version, ..
+            } => match fetcher.fetch_object_at_version(address, *version) {
+                Ok(obj) => {
+                    if let Some(bcs) = obj.bcs_bytes {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&bcs);
+                        cached.objects.insert(address.clone(), encoded);
+                        cached.object_versions.insert(address.clone(), *version);
+                        if let Some(type_str) = obj.type_string {
+                            cached.object_types.insert(address.clone(), type_str);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to fetch object {}: {}", address, e);
+                }
+            },
+            GraphQLTransactionInput::SharedObject {
+                address,
+                initial_shared_version,
+                ..
+            } => {
+                // For shared objects, try to use the computed input version from effects
+                // This is more accurate than initial_shared_version which is when the object was first shared
+                let version_to_fetch = input_versions.get(address).copied();
+
+                let fetch_result = if let Some(version) = version_to_fetch {
+                    eprintln!("[fetch_and_cache] Fetching shared object {} at input version {} (initial_shared_version={})",
+                        &address[..20.min(address.len())], version, initial_shared_version);
+                    fetcher.fetch_object_at_version(address, version)
+                } else {
+                    // No version info from effects (read-only object not in mutations)
+                    eprintln!("[fetch_and_cache] Fetching shared object {} at initial_shared_version={} (no mutation)",
+                        &address[..20.min(address.len())], initial_shared_version);
+                    fetcher.fetch_object_at_version(address, *initial_shared_version)
+                };
+
+                match fetch_result {
+                    Ok(obj) => {
+                        if let Some(bcs) = obj.bcs_bytes {
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(&bcs);
+                            cached.objects.insert(address.clone(), encoded);
+                            cached.object_versions.insert(address.clone(), obj.version);
+                            if let Some(type_str) = obj.type_string {
+                                cached.object_types.insert(address.clone(), type_str);
+                            }
+                            eprintln!("[fetch_and_cache]   SUCCESS: got version {}", obj.version);
+                        }
+                    }
+                    Err(e) => {
+                        // Historical version not available - fall back to current version
+                        // Note: This may cause replay differences for objects that changed since the tx
+                        eprintln!(
+                            "[fetch_and_cache] WARNING: Historical version unavailable for {}: {}",
+                            &address[..20.min(address.len())],
+                            e
+                        );
+                        eprintln!("[fetch_and_cache]   Falling back to CURRENT version (may cause replay differences)");
+
+                        if let Ok(obj) = fetcher.fetch_object(address) {
+                            if let Some(bcs) = obj.bcs_bytes {
+                                let encoded =
+                                    base64::engine::general_purpose::STANDARD.encode(&bcs);
+                                cached.objects.insert(address.clone(), encoded);
+                                cached.object_versions.insert(address.clone(), obj.version);
+                                if let Some(type_str) = obj.type_string {
+                                    cached.object_types.insert(address.clone(), type_str);
+                                }
+                                eprintln!("[fetch_and_cache]   Fallback SUCCESS: got version {} (wanted {})",
+                                    obj.version, version_to_fetch.unwrap_or(*initial_shared_version));
+                            }
+                        } else {
+                            eprintln!("[fetch_and_cache]   ERROR: Could not fetch object at all");
+                        }
+                    }
+                }
+            }
+            // Receiving and Pure inputs don't need special fetching
+            _ => {}
+        }
+    }
+
+    // Step 5: Fetch dynamic field children if requested
+    if fetch_dynamic_fields {
+        // Fetch dynamic fields for all shared objects (they often contain important state)
+        for input in &graphql_tx.inputs {
+            if let GraphQLTransactionInput::SharedObject { address, .. } = input {
+                match fetcher.fetch_dynamic_fields_recursive(address, 2, 100) {
+                    Ok(children) => {
+                        for child in children {
+                            if let (Some(_name_bcs), Some(value_bcs)) =
+                                (child.name_bcs, child.value_bcs)
+                            {
+                                let child_field = CachedDynamicField {
+                                    parent_id: child.parent_address.clone(),
+                                    type_string: child.value_type.unwrap_or_default(),
+                                    bcs_base64: base64::engine::general_purpose::STANDARD
+                                        .encode(&value_bcs),
+                                    version: child.version.unwrap_or(0),
+                                };
+                                cached
+                                    .dynamic_field_children
+                                    .insert(child.child_address, child_field);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Failed to fetch dynamic fields for {}: {}",
+                            address, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(cached)
+}
+
+/// Load a cached transaction from disk, or fetch and cache it if not present.
+///
+/// This is the main entry point for auto-caching behavior.
+///
+/// # Arguments
+/// * `cache_dir` - Directory to store/load cached transactions
+/// * `digest` - Transaction digest
+/// * `fetcher` - Optional DataFetcher (created if None and fetch needed)
+/// * `fetch_historical` - Whether to fetch historical versions
+/// * `fetch_dynamic_fields` - Whether to fetch dynamic fields
+pub fn load_or_fetch_transaction(
+    cache_dir: &str,
+    digest: &str,
+    fetcher: Option<&crate::data_fetcher::DataFetcher>,
+    fetch_historical: bool,
+    fetch_dynamic_fields: bool,
+) -> Result<CachedTransaction> {
+    let cache_path = std::path::Path::new(cache_dir).join(format!("{}.json", digest));
+
+    // Try to load from cache first
+    if cache_path.exists() {
+        let data = std::fs::read_to_string(&cache_path)?;
+        let cached: CachedTransaction = serde_json::from_str(&data)?;
+        return Ok(cached);
+    }
+
+    // Create cache directory if needed
+    std::fs::create_dir_all(cache_dir)?;
+
+    // Fetch the transaction - create a new fetcher if none provided
+    let owned_fetcher;
+    let fetcher_ref = match fetcher {
+        Some(f) => f,
+        None => {
+            owned_fetcher = crate::data_fetcher::DataFetcher::mainnet();
+            &owned_fetcher
+        }
+    };
+
+    let cached =
+        fetch_and_cache_transaction(fetcher_ref, digest, fetch_historical, fetch_dynamic_fields)?;
+
+    // Save to cache
+    let json = serde_json::to_string_pretty(&cached)?;
+    std::fs::write(&cache_path, json)?;
+
+    Ok(cached)
 }

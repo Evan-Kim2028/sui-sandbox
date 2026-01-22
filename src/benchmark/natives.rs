@@ -1140,6 +1140,19 @@ fn build_sui_natives(
         }),
     ));
 
+    // protocol_config::is_feature_enabled - returns true for all features in simulation
+    natives.push((
+        "protocol_config",
+        "is_feature_enabled",
+        make_native(|_ctx, _ty_args, _args| {
+            // Return true for any feature check in simulation mode
+            Ok(NativeResult::ok(
+                InternalGas::new(0),
+                smallvec![Value::bool(true)],
+            ))
+        }),
+    ));
+
     // accumulator natives - no-op
     natives.push((
         "accumulator",
@@ -1515,13 +1528,28 @@ fn add_dynamic_field_natives(
             let hash = hasher.finalize();
             let child_id = AccountAddress::new(hash.digest);
 
-            eprintln!(
-                "[hash_type_and_key] parent={}, key_type={:?}, key_len={}, result={}",
-                parent.to_hex_literal(),
-                key_tag,
-                key_bytes.len(),
-                child_id.to_hex_literal()
-            );
+            // Check for suspicious parent addresses that look like corrupted data
+            // Sui addresses are usually SHA-256 based, so having most bytes zero is suspicious
+            let parent_bytes = parent.as_ref();
+            let zero_count = parent_bytes.iter().filter(|&&b| b == 0).count();
+            let is_suspicious = zero_count > 24; // More than 24 zero bytes out of 32 is suspicious
+
+            if is_suspicious {
+                eprintln!(
+                    "[hash_type_and_key] SUSPICIOUS parent={} ({} zero bytes), raw bytes: {:02x?}",
+                    parent.to_hex_literal(),
+                    zero_count,
+                    parent_bytes
+                );
+            } else {
+                eprintln!(
+                    "[hash_type_and_key] parent={}, key_type={:?}, key_len={}, result={}",
+                    parent.to_hex_literal(),
+                    key_tag,
+                    key_bytes.len(),
+                    child_id.to_hex_literal()
+                );
+            }
 
             Ok(NativeResult::ok(
                 InternalGas::new(0),
@@ -1590,7 +1618,10 @@ fn add_dynamic_field_natives(
             use crate::benchmark::object_runtime::SharedObjectRuntime;
             use move_vm_types::values::StructRef;
 
+            eprintln!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
+
             let child_ty = ty_args.pop().ok_or_else(|| {
+                eprintln!("[borrow_child_object] ERROR: no type arg");
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
@@ -1600,7 +1631,7 @@ fn add_dynamic_field_natives(
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
 
-            eprintln!("[borrow_child_object] NATIVE CALLED");
+            eprintln!("[borrow_child_object] NATIVE CALLED, child_tag={:?}", child_tag);
 
             // Extract parent address from UID { id: ID { bytes: address } }
             // Navigate: UID.id (field 0) -> ID.bytes (field 0) -> address
@@ -1698,8 +1729,48 @@ fn add_dynamic_field_natives(
                 };
 
                 if let Some(child_bytes) = child_bytes_opt {
+                    // Get detailed layout info for debugging
+                    let layout_field_count = match &type_layout {
+                        MoveTypeLayout::Struct(s) => s.0.len(),
+                        _ => 0,
+                    };
+
+                    // Log detailed info for all Field types
+                    let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
+                    if is_field_type {
+                        eprintln!(
+                            "[borrow_child_object] Field type detected: child_tag={:?}",
+                            child_tag
+                        );
+                        eprintln!(
+                            "[borrow_child_object] layout has {} fields, bytes len={}",
+                            layout_field_count, child_bytes.len()
+                        );
+
+                        // Validate Field struct layout - should have exactly 3 fields: id, name, value
+                        if layout_field_count != 3 {
+                            eprintln!(
+                                "[borrow_child_object] WARNING: Field layout has {} fields, expected 3!",
+                                layout_field_count
+                            );
+                            eprintln!("[borrow_child_object] Full layout: {:?}", type_layout);
+                        }
+
+                        // Log raw bytes structure
+                        if child_bytes.len() >= 40 {
+                            eprintln!("[borrow_child_object] bytes 0-32 (id/UID): {:02x?}", &child_bytes[0..32]);
+                            eprintln!("[borrow_child_object] bytes 32-40 (name): {:02x?}", &child_bytes[32..40]);
+                            if child_bytes.len() >= 72 {
+                                eprintln!("[borrow_child_object] bytes 40-72 (value start): {:02x?}", &child_bytes[40..72]);
+                            }
+                        }
+                    }
+
                     // Deserialize the bytes into a Move Value
                     if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
+                        if is_field_type {
+                            eprintln!("[borrow_child_object] Deserialization SUCCESS");
+                        }
                         // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
                         match runtime.add_child_object(parent, child_id, value, child_tag.clone()) {
@@ -1720,7 +1791,11 @@ fn add_dynamic_field_natives(
                             Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
                         }
                     } else {
-                        // Deserialization failed
+                        eprintln!(
+                            "[borrow_child_object] Deserialization FAILED for type {:?}",
+                            child_tag
+                        );
+                        eprintln!("[borrow_child_object] Layout: {:?}", type_layout);
                         return Ok(NativeResult::err(
                             InternalGas::new(0),
                             E_FIELD_TYPE_MISMATCH,
@@ -1772,10 +1847,18 @@ fn add_dynamic_field_natives(
             {
                 let runtime = get_object_runtime_ref(ctx)?;
                 if runtime.child_object_exists(parent, child_id) {
-                    eprintln!("[borrow_child_object_mut] found in local runtime");
+                    let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
+                    eprintln!("[borrow_child_object_mut] found in local runtime, parent={}, child={}, type={:?}",
+                        parent.to_hex_literal(), child_id.to_hex_literal(), child_tag);
                     let runtime = get_object_runtime_mut(ctx)?;
                     match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
-                        Ok(value) => return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value])),
+                        Ok(value) => {
+                            if is_field_type {
+                                eprintln!("[borrow_child_object_mut] LOCAL returning value for parent={}: {:?}",
+                                    parent.to_hex_literal(), value);
+                            }
+                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                        }
                         Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
                     }
                 }
@@ -1817,18 +1900,80 @@ fn add_dynamic_field_natives(
                 };
 
                 if let Some(child_bytes) = child_bytes_opt {
+                    // Get detailed layout info for debugging
+                    let layout_field_count = match &type_layout {
+                        MoveTypeLayout::Struct(s) => s.0.len(),
+                        _ => 0,
+                    };
+
+                    // Log detailed info for all Field types (not just PoolInner)
+                    let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
+                    if is_field_type {
+                        eprintln!(
+                            "[borrow_child_object_mut] Field type detected: child_tag={:?}",
+                            child_tag
+                        );
+                        eprintln!(
+                            "[borrow_child_object_mut] child_ty (Move Type): {:?}",
+                            child_ty
+                        );
+                        eprintln!(
+                            "[borrow_child_object_mut] layout has {} fields, bytes len={}",
+                            layout_field_count, child_bytes.len()
+                        );
+                        // Print the actual layout structure
+                        eprintln!("[borrow_child_object_mut] Full layout structure: {:?}", type_layout);
+
+                        // Validate Field struct layout - should have exactly 3 fields: id, name, value
+                        if layout_field_count != 3 {
+                            eprintln!(
+                                "[borrow_child_object_mut] WARNING: Field layout has {} fields, expected 3!",
+                                layout_field_count
+                            );
+                            eprintln!("[borrow_child_object_mut] Full layout: {:?}", type_layout);
+                        }
+
+                        // Log raw bytes structure
+                        if child_bytes.len() >= 40 {
+                            eprintln!("[borrow_child_object_mut] bytes 0-32 (id/UID): {:02x?}", &child_bytes[0..32]);
+                            eprintln!("[borrow_child_object_mut] bytes 32-40 (name): {:02x?}", &child_bytes[32..40]);
+                            if child_bytes.len() >= 72 {
+                                eprintln!("[borrow_child_object_mut] bytes 40-72 (value start): {:02x?}", &child_bytes[40..72]);
+                            }
+                        }
+                    }
+
+                    // Deserialize the bytes into a Move Value
                     if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
+                        if is_field_type {
+                            eprintln!("[borrow_child_object_mut] Deserialization SUCCESS");
+                        }
+                        // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
                         match runtime.add_child_object(parent, child_id, value, child_tag.clone()) {
                             Ok(()) => {
+                                // Now we can borrow mutably from the local runtime
                                 match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
-                                    Ok(ref_value) => return Ok(NativeResult::ok(InternalGas::new(0), smallvec![ref_value])),
-                                    Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                                    Ok(ref_value) => {
+                                        if is_field_type {
+                                            eprintln!("[borrow_child_object_mut] Returning ref_value: {:?}", ref_value);
+                                        }
+                                        return Ok(NativeResult::ok(InternalGas::new(0), smallvec![ref_value]));
+                                    }
+                                    Err(code) => {
+                                        eprintln!("[borrow_child_object_mut] borrow failed with code {}", code);
+                                        return Ok(NativeResult::err(InternalGas::new(0), code));
+                                    }
                                 }
                             }
                             Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
                         }
                     } else {
+                        eprintln!(
+                            "[borrow_child_object_mut] Deserialization FAILED for type {:?}",
+                            child_tag
+                        );
+                        eprintln!("[borrow_child_object_mut] Layout: {:?}", type_layout);
                         return Ok(NativeResult::err(InternalGas::new(0), E_FIELD_TYPE_MISMATCH));
                     }
                 }
@@ -1876,8 +2021,17 @@ fn add_dynamic_field_natives(
 
             let runtime = get_object_runtime_ref(ctx)?;
             // Check local runtime first, then shared state
-            let exists = runtime.child_object_exists(parent, child_id)
-                || check_shared_state_for_child(ctx, parent, child_id);
+            let in_local = runtime.child_object_exists(parent, child_id);
+            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+            let exists = in_local || in_shared;
+            eprintln!(
+                "[has_child_object] parent={}, child={}, in_local={}, in_shared={}, exists={}",
+                parent.to_hex_literal(),
+                child_id.to_hex_literal(),
+                in_local,
+                in_shared,
+                exists
+            );
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::bool(exists)],
@@ -1901,8 +2055,18 @@ fn add_dynamic_field_natives(
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
             let runtime = get_object_runtime_ref(ctx)?;
             // Check local runtime first, then shared state (type checking happens only in local)
-            let exists = runtime.child_object_exists_with_type(parent, child_id, &child_tag)
-                || check_shared_state_for_child(ctx, parent, child_id);
+            let in_local = runtime.child_object_exists_with_type(parent, child_id, &child_tag);
+            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+            let exists = in_local || in_shared;
+            eprintln!(
+                "[has_child_object_with_ty] parent={}, child={}, type={:?}, in_local={}, in_shared={}, exists={}",
+                parent.to_hex_literal(),
+                child_id.to_hex_literal(),
+                child_tag,
+                in_local,
+                in_shared,
+                exists
+            );
 
             Ok(NativeResult::ok(
                 InternalGas::new(0),

@@ -189,15 +189,14 @@ The PTBExecutor handles the command sequence (SplitCoins → MoveCall → Transf
 ## Running the Tests
 
 ```bash
-# Run both Cetus swap replays (requires SURFLUX_API_KEY)
-SURFLUX_API_KEY=your_key cargo test --test execute_cetus_swap -- --nocapture
+# Run from scratch (no cache needed, no API keys required)
+cargo test --test execute_cetus_swap test_replay_cetus_with_historical_state -- --nocapture
 
-# LEIA → SUI swap
-cargo test test_replay_cetus_with_grpc_archive_data -- --nocapture
+# Clear cache first if you want a completely fresh run
+rm -rf .tx-cache && cargo test --test execute_cetus_swap test_replay_cetus_with_historical_state -- --nocapture
+```
 
-# JACKSON → SUI swap
-cargo test test_replay_second_cetus_swap -- --nocapture
-```text
+**Expected Output**: `Local success: true` with `HISTORICAL TRANSACTION REPLAYED SUCCESSFULLY!`
 
 ---
 
