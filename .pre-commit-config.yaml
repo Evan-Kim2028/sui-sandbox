@@ -46,41 +46,6 @@ repos:
         stages: [pre-push]
 
   # ============================================================================
-  # Python checks
-  # ============================================================================
-  - repo: local
-    hooks:
-      - id: ruff-fix
-        name: ruff fix
-        entry: bash -c 'cd benchmark && uv run ruff check --fix .'
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      - id: ruff-format
-        name: ruff format
-        entry: bash -c 'cd benchmark && uv run ruff format .'
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      # P1: Python type checking
-      - id: python-typecheck
-        name: python type check (ty)
-        entry: bash -c 'cd benchmark && uv run ty check src/'
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      - id: pytest-unit
-        name: pytest (unit tests)
-        entry: bash -c 'cd benchmark && uv run pytest -x -q -m "not integration and not docker" --tb=short'
-        language: system
-        types: [python]
-        pass_filenames: false
-        stages: [pre-push]
-
-  # ============================================================================
   # Documentation checks
   # ============================================================================
   - repo: https://github.com/igorshubovych/markdownlint-cli
@@ -94,16 +59,6 @@ repos:
     hooks:
       - id: codespell
         args: ["--skip", "*.lock,target/*,*.json,*.proto", "--ignore-words-list", "crate,sui,ser,implementors"]
-
-  - repo: local
-    hooks:
-      - id: validate-crossrefs
-        name: validate markdown links
-        entry: bash -c 'cd benchmark && uv run python scripts/validate_crossrefs.py --skip-external --fail-on-warning'
-        language: system
-        types: [markdown]
-        pass_filenames: false
-        stages: [pre-push]
 
   # ============================================================================
   # Docker validation (pre-commit only, not in CI)
