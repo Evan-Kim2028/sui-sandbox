@@ -41,6 +41,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
+// Core simulation modules
 pub mod constructor_map;
 pub mod error_context;
 pub mod errors;
@@ -61,6 +62,13 @@ pub mod types;
 pub mod validator;
 pub mod vm;
 pub mod well_known;
+
+// Package building and analysis (for creating mock contracts)
+pub mod bytecode_analyzer;
+pub mod output;
+pub mod package_builder;
+pub mod state_layer;
+pub mod storage_log;
 
 // Re-export main types at crate root for convenience
 pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};
