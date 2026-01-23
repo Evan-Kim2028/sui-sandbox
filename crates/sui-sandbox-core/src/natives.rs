@@ -106,18 +106,38 @@ fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
     )
 }
 
-/// Mock clock that advances on each access.
+/// Mock clock for Move VM execution.
 ///
-/// This provides sensible time values for time-dependent Move code.
-/// The clock starts at a realistic timestamp and advances by a configurable
-/// increment on each access, simulating the passage of time.
+/// Provides configurable time values for time-dependent Move code.
+/// Supports two modes:
+/// - **Frozen mode** (default for replay): Returns the same timestamp on every access.
+///   This is essential for transaction replay where the clock should be fixed.
+/// - **Advancing mode**: Advances by a configurable increment on each access.
+///   Useful for testing time-dependent logic.
+///
+/// ## Usage for Transaction Replay
+///
+/// When replaying transactions, use frozen mode to match on-chain behavior:
+/// ```rust
+/// let clock = MockClock::frozen(tx_timestamp_ms);
+/// ```
+///
+/// ## Usage for Testing
+///
+/// For testing time-dependent logic with advancing time:
+/// ```rust
+/// let clock = MockClock::advancing(base_ms, tick_ms);
+/// ```
 pub struct MockClock {
     /// Base timestamp in milliseconds (default: 2024-01-01 00:00:00 UTC = 1704067200000)
     pub base_ms: u64,
     /// Increment per access in milliseconds (default: 1000 = 1 second)
+    /// Set to 0 for frozen mode.
     pub tick_ms: u64,
     /// Number of times the clock has been accessed
     accesses: AtomicU64,
+    /// Whether the clock is in frozen mode (returns same timestamp always)
+    frozen: bool,
 }
 
 impl Default for MockClock {
@@ -129,40 +149,108 @@ impl Default for MockClock {
 impl MockClock {
     /// Default base timestamp: 2024-01-01 00:00:00 UTC
     pub const DEFAULT_BASE_MS: u64 = 1704067200000;
-    /// Default tick: 1 second per access
+    /// Default tick: 1 second per access (used in advancing mode)
     pub const DEFAULT_TICK_MS: u64 = 1000;
 
+    /// Create a new clock in advancing mode with default settings.
+    /// For transaction replay, use `frozen()` instead.
     pub fn new() -> Self {
         Self {
             base_ms: Self::DEFAULT_BASE_MS,
             tick_ms: Self::DEFAULT_TICK_MS,
             accesses: AtomicU64::new(0),
+            frozen: false,
         }
     }
 
+    /// Create a clock with a specific base timestamp in advancing mode.
+    /// For transaction replay, use `frozen()` instead.
     pub fn with_base(base_ms: u64) -> Self {
         Self {
             base_ms,
             tick_ms: Self::DEFAULT_TICK_MS,
             accesses: AtomicU64::new(0),
+            frozen: false,
         }
     }
 
-    /// Get the current timestamp, advancing the clock.
+    /// Create a frozen clock that always returns the same timestamp.
+    ///
+    /// This is the correct mode for transaction replay - on-chain, the Clock
+    /// object has a fixed timestamp throughout the entire transaction.
+    /// Using advancing mode would cause deadline checks to fail incorrectly.
+    pub fn frozen(timestamp_ms: u64) -> Self {
+        Self {
+            base_ms: timestamp_ms,
+            tick_ms: 0,
+            accesses: AtomicU64::new(0),
+            frozen: true,
+        }
+    }
+
+    /// Create a clock in advancing mode with custom tick interval.
+    ///
+    /// Each call to `timestamp_ms()` will advance by `tick_ms` milliseconds.
+    /// Useful for testing time-dependent logic.
+    pub fn advancing(base_ms: u64, tick_ms: u64) -> Self {
+        Self {
+            base_ms,
+            tick_ms,
+            accesses: AtomicU64::new(0),
+            frozen: false,
+        }
+    }
+
+    /// Check if the clock is in frozen mode.
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Freeze the clock at its current timestamp.
+    ///
+    /// After calling this, `timestamp_ms()` will always return the same value.
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+        self.tick_ms = 0;
+    }
+
+    /// Unfreeze the clock and resume advancing mode.
+    pub fn unfreeze(&mut self, tick_ms: u64) {
+        self.frozen = false;
+        self.tick_ms = tick_ms;
+    }
+
+    /// Get the current timestamp.
+    ///
+    /// In frozen mode, always returns `base_ms`.
+    /// In advancing mode, returns `base_ms + (accesses * tick_ms)` and increments.
     pub fn timestamp_ms(&self) -> u64 {
-        let n = self.accesses.fetch_add(1, Ordering::SeqCst);
-        self.base_ms + (n * self.tick_ms)
+        if self.frozen {
+            self.base_ms
+        } else {
+            let n = self.accesses.fetch_add(1, Ordering::SeqCst);
+            self.base_ms + (n * self.tick_ms)
+        }
     }
 
     /// Get the current timestamp without advancing (for inspection).
     pub fn peek_timestamp_ms(&self) -> u64 {
-        let n = self.accesses.load(Ordering::SeqCst);
-        self.base_ms + (n * self.tick_ms)
+        if self.frozen {
+            self.base_ms
+        } else {
+            let n = self.accesses.load(Ordering::SeqCst);
+            self.base_ms + (n * self.tick_ms)
+        }
     }
 
-    /// Reset the clock to its initial state.
+    /// Reset the clock to its initial state (accesses = 0).
     pub fn reset(&self) {
         self.accesses.store(0, Ordering::SeqCst);
+    }
+
+    /// Get the number of times the clock has been accessed.
+    pub fn access_count(&self) -> u64 {
+        self.accesses.load(Ordering::SeqCst)
     }
 }
 
@@ -347,6 +435,46 @@ impl MockNativeState {
             ids_created: AtomicU64::new(0),
             clock: MockClock::new(),
             random: MockRandom::with_seed(seed),
+            events: EventStore::new(),
+        }
+    }
+
+    /// Create state configured for transaction replay.
+    ///
+    /// This sets up:
+    /// - Frozen clock at the exact transaction timestamp (won't advance during execution)
+    /// - Correct epoch from the transaction
+    /// - Sender address from the transaction
+    ///
+    /// Use this for accurate replay of on-chain transactions.
+    pub fn for_replay(sender: AccountAddress, epoch: u64, timestamp_ms: u64) -> Self {
+        Self {
+            sender,
+            epoch,
+            epoch_timestamp_ms: timestamp_ms,
+            ids_created: AtomicU64::new(0),
+            clock: MockClock::frozen(timestamp_ms),
+            random: MockRandom::new(),
+            events: EventStore::new(),
+        }
+    }
+
+    /// Create state for replay with a specific random seed.
+    ///
+    /// Same as `for_replay` but with deterministic randomness.
+    pub fn for_replay_with_seed(
+        sender: AccountAddress,
+        epoch: u64,
+        timestamp_ms: u64,
+        random_seed: [u8; 32],
+    ) -> Self {
+        Self {
+            sender,
+            epoch,
+            epoch_timestamp_ms: timestamp_ms,
+            ids_created: AtomicU64::new(0),
+            clock: MockClock::frozen(timestamp_ms),
+            random: MockRandom::with_seed(random_seed),
             events: EventStore::new(),
         }
     }
@@ -1428,113 +1556,6 @@ fn check_shared_state_for_child(
     false
 }
 
-/// Check if a child exists in shared state, triggering on-demand fetch if needed.
-/// This is the unified resolution path that ensures all child object checks
-/// (existence, type, borrow) go through the same fetching logic.
-fn check_shared_state_for_child_with_fetch(
-    ctx: &mut NativeContext,
-    parent: AccountAddress,
-    child_id: AccountAddress,
-) -> bool {
-    use crate::object_runtime::SharedObjectRuntime;
-
-    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-        // First check if already cached in shared state
-        let already_cached = shared.shared_state().lock().has_child(parent, child_id);
-
-        if already_cached {
-            return true;
-        }
-
-        // Not in cache - try on-demand fetching
-        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
-            eprintln!(
-                "[check_shared_state_for_child_with_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
-                child_id.to_hex_literal(),
-                fetched_bytes.len(),
-                fetched_tag
-            );
-            // Add to shared state for future lookups
-            shared
-                .shared_state()
-                .lock()
-                .add_child(parent, child_id, fetched_tag, fetched_bytes);
-            return true;
-        } else {
-            eprintln!(
-                "[check_shared_state_for_child_with_fetch] child={} not found (no fetcher or fetch failed)",
-                child_id.to_hex_literal()
-            );
-        }
-    }
-    false
-}
-
-/// Check if a child exists with a specific type in shared state, triggering on-demand fetch if needed.
-/// Returns true only if the child exists AND has the expected type.
-fn check_shared_state_for_child_with_type_and_fetch(
-    ctx: &mut NativeContext,
-    parent: AccountAddress,
-    child_id: AccountAddress,
-    expected_type: &TypeTag,
-) -> bool {
-    use crate::object_runtime::SharedObjectRuntime;
-
-    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-        // First check if already cached in shared state
-        let cached_type = shared
-            .shared_state()
-            .lock()
-            .get_child(parent, child_id)
-            .map(|(tag, _)| tag.clone());
-
-        if let Some(actual_type) = cached_type {
-            // Already cached - check if type matches
-            let type_matches = &actual_type == expected_type;
-            eprintln!(
-                "[check_shared_state_for_child_with_type_and_fetch] cached child={}, expected={:?}, actual={:?}, matches={}",
-                child_id.to_hex_literal(),
-                expected_type,
-                actual_type,
-                type_matches
-            );
-            return type_matches;
-        }
-
-        // Not in cache - try on-demand fetching
-        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
-            eprintln!(
-                "[check_shared_state_for_child_with_type_and_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
-                child_id.to_hex_literal(),
-                fetched_bytes.len(),
-                fetched_tag
-            );
-            // Add to shared state for future lookups
-            shared.shared_state().lock().add_child(
-                parent,
-                child_id,
-                fetched_tag.clone(),
-                fetched_bytes,
-            );
-            // Check if fetched type matches expected
-            let type_matches = &fetched_tag == expected_type;
-            eprintln!(
-                "[check_shared_state_for_child_with_type_and_fetch] expected={:?}, fetched={:?}, matches={}",
-                expected_type,
-                fetched_tag,
-                type_matches
-            );
-            return type_matches;
-        } else {
-            eprintln!(
-                "[check_shared_state_for_child_with_type_and_fetch] child={} not found (no fetcher or fetch failed)",
-                child_id.to_hex_literal()
-            );
-        }
-    }
-    false
-}
-
 /// Count children for a parent in shared state (if using SharedObjectRuntime).
 fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u64 {
     use crate::object_runtime::SharedObjectRuntime;
@@ -2084,22 +2105,16 @@ fn add_dynamic_field_natives(
                 runtime.child_object_exists(parent, child_id)
             };
 
-            // If not in local, check shared state with on-demand fetch
+            // If not in local, check shared state WITHOUT fetching
+            // (fetching happens only on borrow, not on existence check)
+            // This matches v0.7.0 behavior and prevents spurious fetch failures
             let in_shared = if !in_local {
-                check_shared_state_for_child_with_fetch(ctx, parent, child_id)
+                check_shared_state_for_child(ctx, parent, child_id)
             } else {
                 false
             };
 
             let exists = in_local || in_shared;
-            eprintln!(
-                "[has_child_object] parent={}, child={}, in_local={}, in_shared={}, exists={}",
-                parent.to_hex_literal(),
-                child_id.to_hex_literal(),
-                in_local,
-                in_shared,
-                exists
-            );
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::bool(exists)],
@@ -2128,23 +2143,16 @@ fn add_dynamic_field_natives(
                 runtime.child_object_exists_with_type(parent, child_id, &child_tag)
             };
 
-            // If not in local, check shared state with on-demand fetch AND type verification
+            // If not in local, check shared state WITHOUT fetching
+            // (fetching happens only on borrow, not on existence check)
+            // This matches v0.7.0 behavior and prevents spurious fetch failures
             let in_shared = if !in_local {
-                check_shared_state_for_child_with_type_and_fetch(ctx, parent, child_id, &child_tag)
+                check_shared_state_for_child(ctx, parent, child_id)
             } else {
                 false
             };
 
             let exists = in_local || in_shared;
-            eprintln!(
-                "[has_child_object_with_ty] parent={}, child={}, type={:?}, in_local={}, in_shared={}, exists={}",
-                parent.to_hex_literal(),
-                child_id.to_hex_literal(),
-                child_tag,
-                in_local,
-                in_shared,
-                exists
-            );
 
             Ok(NativeResult::ok(
                 InternalGas::new(0),

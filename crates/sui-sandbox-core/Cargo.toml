@@ -5,63 +5,48 @@ edition = "2021"
 description = "Move VM simulation engine for Sui transactions"
 
 [dependencies]
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.22"
-sha2 = "0.10"
-bcs = "0.1"
-smallvec = "1.11"
-hex = "0.4.3"
-prometheus = "0.13"
+# Core utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+sha2.workspace = true
+bcs.workspace = true
+smallvec.workspace = true
+hex.workspace = true
+prometheus.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+dirs.workspace = true
+rayon.workspace = true
+better_any.workspace = true
+parking_lot.workspace = true
 
-# Move VM dependencies - PINNED to mainnet-v1.63.4
-move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-binary-format" }
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }
-move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-runtime", features = ["tracing"] }
-move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-types" }
-move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-trace-format" }
-move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-symbol-pool" }
-
-# Move Model 2 for type analysis
-move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-model-2" }
-
-# Bytecode disassembly for debugging
-move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-disassembler" }
-move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-bytecode-source-map" }
-move-ir-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-ir-types" }
-move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-command-line-common" }
-
-# Utilities
-chrono = { version = "0.4", features = ["serde"] }
+# Move VM dependencies
+move-binary-format.workspace = true
+move-core-types.workspace = true
+move-vm-runtime.workspace = true
+move-vm-types.workspace = true
+move-trace-format.workspace = true
+move-symbol-pool.workspace = true
+move-model-2.workspace = true
+move-disassembler.workspace = true
+move-bytecode-source-map.workspace = true
+move-ir-types.workspace = true
+move-command-line-common.workspace = true
 
 # Native function support
-move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-stdlib-natives" }
-sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-natives-latest" }
+move-stdlib-natives.workspace = true
+sui-move-natives.workspace = true
 
 # Sui types and protocol config
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-types" }
-sui-protocol-config = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-protocol-config" }
+sui-types.workspace = true
+sui-protocol-config.workspace = true
 
-# Cryptographic primitives for native implementations
-fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
-fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
-
-# VM extension support
-better_any = "0.1"
-
-# Faster, non-poisoning mutex
-parking_lot = "0.12"
-
-# Parallel processing
-rayon = "1.10"
-
-# Unique IDs for logging
-uuid = { version = "1", features = ["v4"] }
-
-# Home directory detection
-dirs = "5"
+# Cryptographic primitives
+fastcrypto.workspace = true
+fastcrypto-zkp.workspace = true
 
 # Workspace crates
-sui-sandbox-types = { path = "../sui-types" }
-sui-data-fetcher = { path = "../sui-data-fetcher" }
+sui-sandbox-types.workspace = true
+sui-data-fetcher.workspace = true
