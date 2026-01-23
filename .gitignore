@@ -24,6 +24,10 @@ __pycache__/
 /logs/
 /specs/
 /plans/
+/docs/plans/
+
+# Framework bytecode (regenerated from sui-framework source)
+/framework_bytecode/
 
 # Transaction cache and experiment data
 .tx-cache/
