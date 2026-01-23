@@ -59,9 +59,9 @@ use anyhow::Result;
 use base64::Engine;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcTransaction};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
-use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
+use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// Build a GenericObjectPatcher with modules from the resolver.
@@ -89,13 +89,20 @@ pub fn build_generic_patcher(
     patcher.add_default_rules();
 
     if verbose {
-        println!("   ✓ Generic patcher configured with {} modules", resolver.module_count());
+        println!(
+            "   ✓ Generic patcher configured with {} modules",
+            resolver.module_count()
+        );
 
         // Report detected versions from bytecode constant pools
         if patcher.has_detected_versions() {
             println!("   Version constants detected from bytecode:");
             for (pkg_addr, version) in patcher.detected_versions() {
-                println!("      {} -> v{}", &pkg_addr[..20.min(pkg_addr.len())], version);
+                println!(
+                    "      {} -> v{}",
+                    &pkg_addr[..20.min(pkg_addr.len())],
+                    version
+                );
             }
         }
     }
@@ -208,11 +215,8 @@ pub fn create_child_fetcher(
         let version = historical_arc.get(&child_id_str).copied();
 
         let rt = tokio::runtime::Runtime::new().ok()?;
-        let result = rt.block_on(async {
-            grpc_arc
-                .get_object_at_version(&child_id_str, version)
-                .await
-        });
+        let result =
+            rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, version).await });
 
         if let Ok(Some(obj)) = result {
             if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {

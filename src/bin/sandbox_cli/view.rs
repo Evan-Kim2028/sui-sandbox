@@ -106,28 +106,26 @@ fn view_object(state: &SandboxState, object_id: &str, json_output: bool) -> Resu
             println!("\x1b[1mType:\x1b[0m {}", type_tag);
             println!("\x1b[1mStatus:\x1b[0m Loaded in session");
         }
-    } else {
-        if json_output {
-            #[derive(Serialize)]
-            struct NotFound {
-                id: String,
-                in_session: bool,
-                hint: String,
-            }
-
-            let view = NotFound {
-                id: object_id.to_string(),
-                in_session: false,
-                hint: "Use 'sui-sandbox fetch object <ID>' to load from mainnet".to_string(),
-            };
-            println!("{}", serde_json::to_string_pretty(&view)?);
-        } else {
-            println!("\x1b[33mObject {} not found in session\x1b[0m", object_id);
-            println!(
-                "\nUse 'sui-sandbox fetch object {}' to load from mainnet",
-                object_id
-            );
+    } else if json_output {
+        #[derive(Serialize)]
+        struct NotFound {
+            id: String,
+            in_session: bool,
+            hint: String,
         }
+
+        let view = NotFound {
+            id: object_id.to_string(),
+            in_session: false,
+            hint: "Use 'sui-sandbox fetch object <ID>' to load from mainnet".to_string(),
+        };
+        println!("{}", serde_json::to_string_pretty(&view)?);
+    } else {
+        println!("\x1b[33mObject {} not found in session\x1b[0m", object_id);
+        println!(
+            "\nUse 'sui-sandbox fetch object {}' to load from mainnet",
+            object_id
+        );
     }
 
     Ok(())
@@ -162,22 +160,20 @@ fn view_packages(state: &SandboxState, json_output: bool) -> Result<()> {
             packages: entries,
         };
         println!("{}", serde_json::to_string_pretty(&view)?);
+    } else if packages.is_empty() {
+        println!("\x1b[33mNo user packages loaded\x1b[0m");
+        println!("\nFramework packages (0x1, 0x2, 0x3) are always available.");
+        println!("Use 'sui-sandbox publish' or 'sui-sandbox fetch package' to load packages.");
     } else {
-        if packages.is_empty() {
-            println!("\x1b[33mNo user packages loaded\x1b[0m");
-            println!("\nFramework packages (0x1, 0x2, 0x3) are always available.");
-            println!("Use 'sui-sandbox publish' or 'sui-sandbox fetch package' to load packages.");
-        } else {
-            println!("\x1b[1mLoaded Packages:\x1b[0m\n");
-            for addr in &packages {
-                let modules = state.get_package_modules(addr).unwrap_or_default();
-                println!("  \x1b[36m{}\x1b[0m ({} modules)", addr, modules.len());
-                for module in &modules {
-                    println!("    - {}", module);
-                }
+        println!("\x1b[1mLoaded Packages:\x1b[0m\n");
+        for addr in &packages {
+            let modules = state.get_package_modules(addr).unwrap_or_default();
+            println!("  \x1b[36m{}\x1b[0m ({} modules)", addr, modules.len());
+            for module in &modules {
+                println!("    - {}", module);
             }
-            println!("\n\x1b[90mNote: Framework packages (0x1, 0x2, 0x3) not listed but always available\x1b[0m");
         }
+        println!("\n\x1b[90mNote: Framework packages (0x1, 0x2, 0x3) not listed but always available\x1b[0m");
     }
 
     Ok(())

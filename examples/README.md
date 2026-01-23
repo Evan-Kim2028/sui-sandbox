@@ -83,6 +83,7 @@ cargo run --example fork_state
 ### cli_workflow.sh (Beginner)
 
 A shell script that walks through the `sui-sandbox` CLI:
+
 - Exploring framework modules (`view modules`, `view module`)
 - Checking session status
 - Publishing a test package
@@ -118,6 +119,7 @@ cargo build --release --bin sui-sandbox
 ### coin_transfer (Beginner)
 
 Demonstrates basic PTB (Programmable Transaction Block) operations:
+
 - Creating a simulation environment
 - Creating test SUI coins
 - Splitting coins using `SplitCoins` command
@@ -128,6 +130,7 @@ No network access required - runs entirely locally.
 ### fork_state (Intermediate)
 
 Demonstrates "forking" real mainnet state:
+
 - Connect to Surflux gRPC to fetch mainnet data
 - Fetch packages (Move Stdlib, Sui Framework, DeepBook V3)
 - Fetch objects (DeepBook registry and pools)
@@ -136,6 +139,7 @@ Demonstrates "forking" real mainnet state:
 - Execute PTBs against the forked state
 
 This is useful for:
+
 - Testing transactions before submitting on-chain
 - Debugging failed transactions
 - Exploring "what-if" scenarios
@@ -144,6 +148,7 @@ This is useful for:
 ### Transaction Replay Examples (Advanced)
 
 These examples demonstrate replaying real historical transactions:
+
 - Fetch transaction data from mainnet
 - Reconstruct exact historical state
 - Execute locally and compare results
@@ -186,6 +191,7 @@ examples/
 ### PTB (Programmable Transaction Block)
 
 Sui transactions are expressed as PTBs containing:
+
 - **Inputs**: Objects and pure values
 - **Commands**: Operations like `MoveCall`, `SplitCoins`, `TransferObjects`
 - **Arguments**: References to inputs or previous command results
@@ -193,6 +199,7 @@ Sui transactions are expressed as PTBs containing:
 ### SimulationEnvironment
 
 The local Move VM that executes PTBs:
+
 - Pre-loaded with Sui Framework and Move Stdlib
 - Can load additional packages from mainnet
 - Tracks gas usage and object mutations

@@ -37,12 +37,12 @@ use base64::Engine;
 use common::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
 };
-use sui_sandbox_core::utilities::{is_framework_package, normalize_address, GenericObjectPatcher};
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
+use sui_sandbox_core::utilities::{is_framework_package, normalize_address, GenericObjectPatcher};
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// Scallop lending deposit transaction
@@ -479,7 +479,11 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     if generic_patcher.has_detected_versions() {
         println!("   Version constants detected from bytecode:");
         for (pkg_addr, version) in generic_patcher.detected_versions() {
-            println!("      {} -> v{}", &pkg_addr[..20.min(pkg_addr.len())], version);
+            println!(
+                "      {} -> v{}",
+                &pkg_addr[..20.min(pkg_addr.len())],
+                version
+            );
         }
     }
 

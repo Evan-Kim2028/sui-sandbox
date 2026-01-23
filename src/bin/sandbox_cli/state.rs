@@ -176,20 +176,24 @@ impl SandboxState {
     }
 
     /// Create a VM harness from current state with default config
-    pub fn create_harness(&self) -> Result<VMHarness> {
+    #[allow(dead_code)]
+    pub fn create_harness(&self) -> Result<VMHarness<'_>> {
         let config = SimulationConfig::default();
         VMHarness::with_config(&self.resolver, false, config)
     }
 
     /// Create a VM harness with a specific sender and gas budget
+    #[allow(dead_code)]
     pub fn create_harness_with_sender(
         &self,
         sender: AccountAddress,
         gas_budget: Option<u64>,
-    ) -> Result<VMHarness> {
-        let mut config = SimulationConfig::default();
-        config.sender_address = sender.into_bytes();
-        config.gas_budget = gas_budget;
+    ) -> Result<VMHarness<'_>> {
+        let config = SimulationConfig {
+            sender_address: sender.into_bytes(),
+            gas_budget,
+            ..Default::default()
+        };
         VMHarness::with_config(&self.resolver, false, config)
     }
 
@@ -221,6 +225,7 @@ impl SandboxState {
     }
 
     /// Get last sender or default
+    #[allow(dead_code)]
     pub fn last_sender(&self) -> AccountAddress {
         self.persisted
             .last_sender

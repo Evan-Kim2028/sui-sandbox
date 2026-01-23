@@ -79,6 +79,7 @@ pub struct ObjectInputSpec {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SharedObjectSpec {
     pub id: String,
     pub mutable: bool,

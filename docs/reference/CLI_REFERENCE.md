@@ -284,6 +284,7 @@ sui client publish ./my_package --gas-budget 100000000
 ```
 
 **Notes:**
+
 - The bridge detects sandbox addresses (like `0x100`, `0xdeadbeef`) and warns you to replace them
 - Generated commands include prerequisites (network switch, faucet)
 - Use `--json` for machine-readable output

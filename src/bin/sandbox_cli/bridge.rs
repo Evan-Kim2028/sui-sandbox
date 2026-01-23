@@ -383,6 +383,7 @@ impl PtbOutput {
 // =============================================================================
 
 #[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
 struct SandboxPtbSpec {
     calls: Vec<SandboxPtbCall>,
     #[serde(default)]

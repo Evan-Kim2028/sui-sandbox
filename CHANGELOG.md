@@ -2,6 +2,72 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.8.0] - 2026-01-23
+
+### Breaking Changes
+
+- **Removed `pyo3-bindings` crate**: Experimental Python bindings were never released publicly and have been removed to simplify the codebase
+- **Removed `object_patcher.rs`**: Functionality consolidated into `sui_sandbox_core::utilities::generic_patcher`
+- **Moved type utilities from examples to core**: `parse_type_tag_simple`, `extract_package_ids_from_type`, and `extract_dependencies_from_bytecode` moved from `examples/common` to `sui_sandbox_core::utilities`
+- **Removed deprecated tests**: Removed obsolete integration tests (execute_*, benchmark_*, debug_*, state_persistence_*)
+- **Removed deprecated examples**: `inspect_df.rs` (superseded by fork_state), `kriya_swap.rs` (outdated)
+
+### Added
+
+#### New Utilities Architecture
+
+**`sui_sandbox_core::utilities`** - Infrastructure workaround utilities:
+
+- `address.rs`: `normalize_address()`, `is_framework_package()` for address handling
+- `generic_patcher.rs`: `GenericObjectPatcher` for BCS object patching with version-lock workarounds
+- `type_utils.rs`: `parse_type_tag()`, `extract_package_ids_from_type()`, `extract_dependencies_from_bytecode()` for type/bytecode analysis
+- `version_utils.rs`: `detect_version_constants()` for bytecode version detection
+
+**`sui_data_fetcher::utilities`** - gRPC data helper utilities:
+
+- `create_grpc_client()`: Initialize Surflux gRPC client with API key
+- `collect_historical_versions()`: Aggregate object versions from gRPC transaction response
+
+#### CLI Tooling
+
+- **`sui-sandbox` CLI binary** with comprehensive subcommands:
+  - `fetch` - Fetch transaction data from gRPC endpoints
+  - `replay` - Replay historical transactions in local sandbox
+  - `run` - Execute Move functions against forked state
+  - `publish` - Deploy Move packages to sandbox environment
+  - `view` - Inspect sandbox state, objects, and dynamic fields
+  - `state` - Manage persistent sandbox state (save/load/clear)
+
+#### New Examples
+
+- `fork_state.rs` - Demonstrates forking on-chain state for local testing
+- `coin_transfer.rs` - Simple SUI coin transfer example
+- `multi_swap_flash_loan.rs` - Complex multi-hop DeFi flash loan example
+- `cli_workflow.sh` - Shell script demonstrating CLI usage patterns
+
+### Changed
+
+- **`examples/common/mod.rs`** now contains only application glue code between crates
+  - Re-exports utilities from `sui_sandbox_core::utilities` and `sui_data_fetcher::utilities`
+  - Provides bridge functions: `build_generic_patcher()`, `build_resolver_from_packages()`, `create_child_fetcher()`, `create_vm_harness()`, `register_input_objects()`
+- **Clear architectural separation**:
+  - `sui_sandbox_core::utilities` - Infrastructure workarounds (patching, normalization, bytecode analysis)
+  - `sui_data_fetcher::utilities` - Data helpers (gRPC client setup, version aggregation)
+
+### Migration Guide
+
+If you were importing utilities from `examples/common`, update your imports:
+
+```rust
+// Before
+use common::{parse_type_tag_simple, extract_package_ids_from_type, normalize_address};
+
+// After
+use sui_sandbox_core::utilities::{parse_type_tag, extract_package_ids_from_type, normalize_address};
+```
+
+For backwards compatibility, `examples/common` still re-exports these with `parse_type_tag_simple` as an alias for `parse_type_tag`.
+
 ## [0.7.1] - 2026-01-22
 
 ### Added

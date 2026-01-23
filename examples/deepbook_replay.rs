@@ -93,12 +93,12 @@ use base64::Engine;
 use common::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
 };
-use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
+use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// DeepBook flash loan swap - successful on-chain

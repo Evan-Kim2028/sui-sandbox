@@ -1499,7 +1499,9 @@ fn check_shared_state_for_child_with_type_and_fetch(
         // First check if already cached in shared state
         let cached_type = {
             if let Ok(state) = shared.shared_state().lock() {
-                state.get_child(parent, child_id).map(|(tag, _)| tag.clone())
+                state
+                    .get_child(parent, child_id)
+                    .map(|(tag, _)| tag.clone())
             } else {
                 None
             }
