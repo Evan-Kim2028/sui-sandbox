@@ -607,6 +607,21 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
     println!("   ✓ Resolver ready");
 
+    // Detect version constants from loaded bytecode
+    // This scans for U64 constants used in comparisons (version checks)
+    let detected_versions =
+        sui_sandbox_core::utilities::detect_version_constants(resolver.compiled_modules());
+    if !detected_versions.is_empty() {
+        println!("\n   Version constants detected from bytecode:");
+        for (pkg_addr, version) in &detected_versions {
+            println!(
+                "      {} -> v{}",
+                &pkg_addr[..20.min(pkg_addr.len())],
+                version
+            );
+        }
+    }
+
     // =========================================================================
     // Step 7b: Create GenericObjectPatcher and patch objects
     // =========================================================================
@@ -620,19 +635,35 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // Set timestamp for time-based patches
     generic_patcher.set_timestamp(tx_timestamp_ms);
 
-    // For historical transaction replay, we DON'T add version patching rules because:
-    // 1. Historical objects contain version values matching the bytecode they were used with
-    // 2. We can't fetch historical bytecode, only current bytecode
-    // 3. The version constants in current bytecode won't match historical objects
+    // Add default patching rules for version and timestamp fields.
+    // This handles protocols that use `package_version` or `value` fields for version checks.
+    generic_patcher.add_default_rules();
+
+    // Register detected versions for protocols
+    for (pkg_addr, version) in &detected_versions {
+        generic_patcher.register_version(pkg_addr, *version);
+    }
+
+    // For protocols with complex structs that can't be decoded (like Cetus GlobalConfig),
+    // we add raw byte patches as a fallback. The GlobalConfig struct has an ACL field that
+    // prevents full BCS decoding, so we patch the package_version field directly at its
+    // known byte offset.
     //
-    // Only add timestamp patching rules (for last_updated_time fields).
-    // Version fields are left unchanged to match the historical bytecode expectations.
-    generic_patcher.add_rule(sui_sandbox_core::utilities::FieldPatchRule {
-        field_name: "last_updated_time".to_string(),
-        type_pattern: None,
-        condition: sui_sandbox_core::utilities::PatchCondition::Always,
-        action: sui_sandbox_core::utilities::PatchAction::SetToTimestamp,
-    });
+    // GlobalConfig layout:
+    // - offset 0-31: UID (32 bytes)
+    // - offset 32-39: package_version (u64, 8 bytes)
+    //
+    // Use the detected version if available, otherwise use a high value.
+    let cetus_version = detected_versions
+        .iter()
+        .find(|(addr, _)| addr.contains("1eabed72"))
+        .map(|(_, v)| *v)
+        .unwrap_or(u64::MAX - 1);
+    println!(
+        "   Using Cetus version {} for GlobalConfig raw patch",
+        cetus_version
+    );
+    generic_patcher.add_raw_u64_patch("::config::GlobalConfig", 32, cetus_version);
 
     // Patch objects and convert to base64 for cached storage
     let mut objects: HashMap<String, String> = HashMap::new();

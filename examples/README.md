@@ -63,16 +63,25 @@ Just run the example:
 cargo run --example coin_transfer
 ```
 
-### For Advanced Examples (Requires API Key)
+### For Advanced Examples (Requires gRPC Endpoint)
 
-1. Get an API key from [Surflux](https://surflux.dev)
-2. Create a `.env` file in the project root:
+1. Configure your gRPC endpoint in a `.env` file in the project root:
 
 ```bash
+# Option 1: Generic configuration (recommended)
+SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
+SUI_GRPC_API_KEY=your_api_key_here
+
+# Option 2: Use Sui public endpoints (no API key needed, limited features)
+SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
+
+# Option 3: Legacy Surflux variables (still supported)
 SURFLUX_API_KEY=your_api_key_here
 ```
 
-3. Run the example:
+1. For Surflux, get an API key from [Surflux](https://surflux.dev)
+
+2. Run the example:
 
 ```bash
 cargo run --example fork_state
@@ -157,7 +166,7 @@ See each example's source code for detailed documentation.
 
 ## File Structure
 
-```
+```text
 examples/
 ├── README.md                   # This file
 ├── cli_workflow.sh            # CLI workflow demonstration (shell script)
@@ -210,9 +219,13 @@ The local Move VM that executes PTBs:
 
 ## Troubleshooting
 
-### "SURFLUX_API_KEY not set"
+### "API key / endpoint not configured"
 
-Create a `.env` file with your API key (see Setup section above).
+Create a `.env` file with your gRPC configuration (see Setup section above). The examples support multiple configuration options:
+
+- `SUI_GRPC_ENDPOINT` + `SUI_GRPC_API_KEY` (recommended)
+- `SURFLUX_API_KEY` (legacy, still supported)
+- No API key for public Sui endpoints (limited functionality)
 
 ### "sui CLI not found" (fork_state)
 

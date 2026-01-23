@@ -210,35 +210,37 @@ pub fn create_child_fetcher(
     let historical_arc = Arc::new(historical_versions);
     let patcher_arc = Arc::new(std::sync::Mutex::new(patcher));
 
-    Box::new(move |child_id: AccountAddress| {
-        let child_id_str = child_id.to_hex_literal();
-        let version = historical_arc.get(&child_id_str).copied();
+    Box::new(
+        move |_parent_id: AccountAddress, child_id: AccountAddress| {
+            let child_id_str = child_id.to_hex_literal();
+            let version = historical_arc.get(&child_id_str).copied();
 
-        let rt = tokio::runtime::Runtime::new().ok()?;
-        let result =
-            rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, version).await });
+            let rt = tokio::runtime::Runtime::new().ok()?;
+            let result =
+                rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, version).await });
 
-        if let Ok(Some(obj)) = result {
-            if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                // Apply patching if patcher is available
-                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
-                    if let Some(ref mut p) = *guard {
-                        p.patch_object(type_str, bcs)
+            if let Ok(Some(obj)) = result {
+                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+                    // Apply patching if patcher is available
+                    let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                        if let Some(ref mut p) = *guard {
+                            p.patch_object(type_str, bcs)
+                        } else {
+                            bcs.clone()
+                        }
                     } else {
                         bcs.clone()
-                    }
-                } else {
-                    bcs.clone()
-                };
+                    };
 
-                if let Some(type_tag) = parse_type_tag(type_str) {
-                    return Some((type_tag, final_bcs));
+                    if let Some(type_tag) = parse_type_tag(type_str) {
+                        return Some((type_tag, final_bcs));
+                    }
                 }
             }
-        }
 
-        None
-    })
+            None
+        },
+    )
 }
 
 /// Create a VM harness configured for transaction replay.

@@ -99,9 +99,8 @@ use common::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
 };
 use move_core_types::account_address::AccountAddress;
-use move_core_types::language_storage::TypeTag;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
-use sui_sandbox_core::object_runtime::{ChildFetcherFn, KeyBasedChildFetcherFn};
+use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
 use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
@@ -373,43 +372,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         historical_versions.len()
     );
 
-    // =========================================================================
-    // Step 3c: Prefetch dynamic fields recursively
-    // =========================================================================
-    // Recursively enumerate dynamic fields for all input objects to discover
-    // child objects that may be accessed during execution.
-    println!("\nStep 3c: Prefetching dynamic fields recursively...");
-
-    let graphql_for_prefetch = sui_data_fetcher::graphql::GraphQLClient::mainnet();
-    let prefetched = sui_data_fetcher::utilities::prefetch_dynamic_fields(
-        &graphql_for_prefetch,
-        &grpc,
-        &rt,
-        &historical_versions,
-        3,   // max_depth
-        200, // max_fields_per_object
-    );
-
-    println!(
-        "   ✓ Discovered {} dynamic fields, fetched {} child objects",
-        prefetched.total_discovered, prefetched.fetched_count
-    );
-
-    if !prefetched.failed.is_empty() {
-        println!("   ! {} objects failed to fetch", prefetched.failed.len());
-    }
-
-    // Add prefetched children to historical_versions for later use
-    for (child_id, (version, _, _)) in &prefetched.children {
-        historical_versions
-            .entry(child_id.clone())
-            .or_insert(*version);
-    }
-
-    println!(
-        "   Total unique objects (after prefetch): {}",
-        historical_versions.len()
-    );
+    println!("   Total unique objects: {}", historical_versions.len());
 
     // =========================================================================
     // Step 4: Fetch all objects at historical versions via gRPC
@@ -763,219 +726,36 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let grpc_for_closure = grpc_arc.clone();
     let historical_for_closure = historical_arc.clone();
 
-    // Create a GraphQL client for fallback fetching
-    let graphql = sui_data_fetcher::graphql::GraphQLClient::mainnet();
-    let graphql_arc = Arc::new(graphql);
-    let graphql_for_closure = graphql_arc.clone();
-
-    // Share the prefetched children cache with the child_fetcher
-    let prefetched_children_arc = Arc::new(prefetched.children.clone());
-    let prefetched_for_closure = prefetched_children_arc.clone();
-
+    // Simple child fetcher - just fetch via gRPC with historical version
+    // This matches the working v0.7.0 approach
     let child_fetcher: ChildFetcherFn = Box::new(
-        move |parent_id: AccountAddress, child_id: AccountAddress| {
+        move |_parent_id: AccountAddress, child_id: AccountAddress| {
             let child_id_str = child_id.to_hex_literal();
-            let parent_id_str = parent_id.to_hex_literal();
-
-            // Strategy 0: Check prefetched cache first
-            if let Some((version, type_str, bcs)) = prefetched_for_closure.get(&child_id_str) {
-                eprintln!(
-                    "[child_fetcher] HIT prefetched cache: {} v{} ({} bytes)",
-                    &child_id_str[..22.min(child_id_str.len())],
-                    version,
-                    bcs.len()
-                );
-                if let Some(type_tag) = parse_type_tag_simple(type_str) {
-                    return Some((type_tag, bcs.clone()));
-                }
-            }
 
             // Try to fetch at historical version if known
             let version = historical_for_closure.get(&child_id_str).copied();
 
-            eprintln!(
-                "[child_fetcher] Fetching {} (parent: {}) at version {:?}",
-                &child_id_str[..22.min(child_id_str.len())],
-                &parent_id_str[..22.min(parent_id_str.len())],
-                version
-            );
-
             let rt = tokio::runtime::Runtime::new().ok()?;
-
-            // Strategy 1: Try gRPC with historical version (if known) or current
             let result = rt.block_on(async {
                 grpc_for_closure
                     .get_object_at_version(&child_id_str, version)
                     .await
             });
 
-            match &result {
-                Ok(Some(obj)) => {
-                    if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                        if let Some(type_tag) = parse_type_tag_simple(type_str) {
-                            eprintln!("[child_fetcher] SUCCESS via gRPC: {} bytes", bcs.len());
-                            return Some((type_tag, bcs.clone()));
-                        }
+            if let Ok(Some(obj)) = result {
+                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+                    if let Some(type_tag) = parse_type_tag_simple(type_str) {
+                        return Some((type_tag, bcs.clone()));
                     }
                 }
-                Ok(None) => eprintln!("[child_fetcher] gRPC: NOT FOUND"),
-                Err(e) => eprintln!("[child_fetcher] gRPC error: {}", e),
             }
 
-            // Strategy 2: Try GraphQL direct object fetch
-            eprintln!("[child_fetcher] Trying GraphQL direct fetch...");
-            match graphql_for_closure.fetch_object(&child_id_str) {
-                Ok(obj) => {
-                    if let Some(bcs_b64) = &obj.bcs_base64 {
-                        if let Some(type_str) = &obj.type_string {
-                            if let Ok(bcs) = base64::Engine::decode(
-                                &base64::engine::general_purpose::STANDARD,
-                                bcs_b64,
-                            ) {
-                                if let Some(type_tag) = parse_type_tag_simple(type_str) {
-                                    eprintln!(
-                                    "[child_fetcher] SUCCESS via GraphQL direct: {} bytes (v{})",
-                                    bcs.len(),
-                                    obj.version
-                                );
-                                    return Some((type_tag, bcs));
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => {} // Continue to next strategy
-            }
-
-            // Strategy 3: Try enumerating parent's dynamic fields to find the child
-            // The child might be indexed under the parent rather than directly accessible
-            eprintln!(
-                "[child_fetcher] Trying dynamic field enumeration on parent {}...",
-                &parent_id_str[..22.min(parent_id_str.len())]
-            );
-            if let Ok(dfs) = graphql_for_closure.fetch_dynamic_fields(&parent_id_str, 100) {
-                let df_count = dfs.len();
-                for df in dfs {
-                    // Check if this dynamic field's object_id matches our target child
-                    if let Some(obj_id) = &df.object_id {
-                        if normalize_address(obj_id) == normalize_address(&child_id_str) {
-                            eprintln!("[child_fetcher] Found child in parent's dynamic fields!");
-                            if let (Some(value_type), Some(value_bcs_b64)) =
-                                (&df.value_type, &df.value_bcs)
-                            {
-                                if let Ok(bcs) = base64::Engine::decode(
-                                    &base64::engine::general_purpose::STANDARD,
-                                    value_bcs_b64,
-                                ) {
-                                    if let Some(type_tag) = parse_type_tag_simple(value_type) {
-                                        eprintln!(
-                                        "[child_fetcher] SUCCESS via dynamic field enumeration: {} bytes",
-                                        bcs.len()
-                                    );
-                                        return Some((type_tag, bcs));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                eprintln!(
-                    "[child_fetcher] Child not found in parent's {} dynamic fields",
-                    df_count
-                );
-            }
-
-            eprintln!("[child_fetcher] FAILED: could not fetch child object via any method");
             None
         },
     );
 
     harness.set_child_fetcher(child_fetcher);
     println!("   ✓ Child fetcher configured");
-
-    // Set up key-based child fetcher for package upgrade fallback
-    // This handles cases where the computed child ID differs from the stored ID
-    // due to type address changes in package upgrades
-    let prefetched_clone = Arc::new(prefetched.clone());
-    let key_fetcher: KeyBasedChildFetcherFn = Box::new(
-        move |parent_id: AccountAddress, key_type: &TypeTag, key_bytes: &[u8]| {
-            let parent_str = parent_id.to_hex_literal();
-            let key_type_str = format!("{}", key_type);
-
-            eprintln!(
-                "[key_fetcher] Looking up: parent={}, key_type={}, key_bytes={} bytes",
-                parent_str, // Full parent ID for debugging
-                &key_type_str[..80.min(key_type_str.len())],
-                key_bytes.len()
-            );
-
-            // Use fuzzy matching: try exact match first, then fallback to bytes-only match
-            // This handles package upgrades where type addresses differ
-            if let Some(child) =
-                prefetched_clone.get_by_key_fuzzy(&parent_str, &key_type_str, key_bytes)
-            {
-                eprintln!(
-                    "[key_fetcher] HIT: found child {} ({} bytes)",
-                    &child.object_id[..22.min(child.object_id.len())],
-                    child.bcs.len()
-                );
-
-                if let Some(type_tag) = parse_type_tag_simple(&child.type_string) {
-                    return Some((type_tag, child.bcs.clone()));
-                } else {
-                    eprintln!(
-                        "[key_fetcher] WARN: Failed to parse type: {}",
-                        child.type_string
-                    );
-                }
-            }
-
-            // Debug: show what keys we have for this parent
-            let normalized_parent = {
-                let hex = parent_str.strip_prefix("0x").unwrap_or(&parent_str);
-                format!("0x{}", hex.to_lowercase())
-            };
-            let matching_parents: Vec<_> = prefetched_clone
-                .children_by_key
-                .keys()
-                .filter(|k| k.parent_id == normalized_parent)
-                .collect();
-            if matching_parents.is_empty() {
-                eprintln!(
-                    "[key_fetcher] DEBUG: No keys found for parent {}",
-                    &normalized_parent[..22.min(normalized_parent.len())]
-                );
-            } else {
-                eprintln!(
-                    "[key_fetcher] DEBUG: Found {} keys for parent {}",
-                    matching_parents.len(),
-                    &normalized_parent[..22.min(normalized_parent.len())]
-                );
-                for key in matching_parents.iter().take(5) {
-                    eprintln!(
-                        "[key_fetcher] DEBUG:   type={}, bytes={} {:02x?}",
-                        &key.name_type,
-                        key.name_bcs.len(),
-                        &key.name_bcs[..20.min(key.name_bcs.len())]
-                    );
-                }
-                // Also show what bytes we're looking for
-                eprintln!(
-                    "[key_fetcher] DEBUG: Looking for bytes={} {:02x?}",
-                    key_bytes.len(),
-                    &key_bytes[..20.min(key_bytes.len())]
-                );
-            }
-
-            eprintln!("[key_fetcher] MISS: no match found");
-            None
-        },
-    );
-    harness.set_key_based_child_fetcher(key_fetcher);
-    println!(
-        "   ✓ Key-based child fetcher configured ({} entries)",
-        prefetched.children_by_key.len()
-    );
 
     // =========================================================================
     // Step 10: Register input objects

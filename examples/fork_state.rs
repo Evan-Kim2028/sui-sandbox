@@ -10,7 +10,11 @@
 //!
 //! ## Prerequisites
 //!
-//! 1. Add `SURFLUX_API_KEY` to your `.env` file (get one from surflux.dev)
+//! 1. Configure gRPC in your `.env` file:
+//!    ```
+//!    SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
+//!    SUI_GRPC_API_KEY=your-api-key-here
+//!    ```
 //! 2. Have `sui` CLI installed (for compiling custom Move modules)
 //!
 //! ## Run
@@ -21,7 +25,7 @@
 //!
 //! ## What This Example Does
 //!
-//! 1. Connects to Surflux gRPC to fetch mainnet data
+//! 1. Connects to gRPC endpoint to fetch mainnet data
 //! 2. Fetches DeepBook V3 packages and objects at a specific checkpoint
 //! 3. Loads everything into a local sandbox
 //! 4. Deploys a custom Move contract
@@ -66,13 +70,19 @@ fn main() -> Result<()> {
     // =========================================================================
     println!("Step 1: Fetching mainnet state...\n");
 
-    let api_key = std::env::var("SURFLUX_API_KEY")
-        .map_err(|_| anyhow!("SURFLUX_API_KEY not set. Add it to your .env file."))?;
+    // Read endpoint: SUI_GRPC_ENDPOINT > SURFLUX_GRPC_ENDPOINT > default
+    let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
+        .or_else(|_| std::env::var("SURFLUX_GRPC_ENDPOINT"))
+        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
+
+    // Read API key: SUI_GRPC_API_KEY > SURFLUX_API_KEY > None
+    let api_key = std::env::var("SUI_GRPC_API_KEY")
+        .or_else(|_| std::env::var("SURFLUX_API_KEY"))
+        .ok();
 
     let rt = tokio::runtime::Runtime::new()?;
-    let grpc = rt.block_on(async {
-        GrpcClient::with_api_key("https://grpc.surflux.dev:443", Some(api_key)).await
-    })?;
+    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+    println!("   Connected to: {}", endpoint);
 
     // Get checkpoint info
     let info = rt.block_on(async { grpc.get_service_info().await })?;
