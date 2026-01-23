@@ -25,8 +25,8 @@
 
 use move_binary_format::CompiledModule;
 use move_core_types::resolver::ModuleResolver;
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::graphql::GraphQLClient;
+use sui_data_fetcher::graphql::GraphQLClient;
+use sui_sandbox_core::resolver::LocalModuleResolver;
 
 fn main() -> anyhow::Result<()> {
     // First, let's load from GraphQL to check the on-chain version

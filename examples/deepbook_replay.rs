@@ -95,13 +95,11 @@ use common::{
     normalize_address, parse_type_tag_simple,
 };
 use move_core_types::account_address::AccountAddress;
-use sui_move_interface_extractor::benchmark::object_runtime::ChildFetcherFn;
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::tx_replay::{
-    grpc_to_fetched_transaction, CachedTransaction,
-};
-use sui_move_interface_extractor::benchmark::vm::{SimulationConfig, VMHarness};
-use sui_move_interface_extractor::grpc::{GrpcClient, GrpcInput};
+use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
+use sui_sandbox_core::object_runtime::ChildFetcherFn;
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
+use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// DeepBook flash loan swap - successful on-chain
 const FLASHLOAN_SUCCESS_TX: &str = "DwrqFzBSVHRAqeG4cp1Ri3Gw3m1cDUcBmfzRtWSTYFPs";
@@ -726,8 +724,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     println!("\nStep 11: Executing transaction replay...");
 
     // Build address aliases for upgraded packages (maps storage ID -> bytecode ID)
-    let address_aliases =
-        sui_move_interface_extractor::benchmark::tx_replay::build_address_aliases_for_test(&cached);
+    let address_aliases = sui_sandbox_core::tx_replay::build_address_aliases_for_test(&cached);
     if !address_aliases.is_empty() {
         println!("   Address aliases for replay: {}", address_aliases.len());
         for (runtime, bytecode) in &address_aliases {
@@ -742,13 +739,12 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // Also set aliases on the VM harness for module resolution during execution
     harness.set_address_aliases(address_aliases.clone());
 
-    let result =
-        sui_move_interface_extractor::benchmark::tx_replay::replay_with_objects_and_aliases(
-            &cached.transaction,
-            &mut harness,
-            &cached.objects,
-            &address_aliases,
-        )?;
+    let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(
+        &cached.transaction,
+        &mut harness,
+        &cached.objects,
+        &address_aliases,
+    )?;
 
     println!(
         "\n  Local execution: {}",
