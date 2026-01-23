@@ -15,17 +15,20 @@
 
 pub mod args;
 pub mod benchmark;
-pub mod bytecode;
 pub mod cache;
 pub mod comparator;
 pub mod corpus;
 pub mod data_fetcher;
-pub mod graphql;
-pub mod grpc;
 pub mod move_stubs;
-pub mod normalization;
 pub mod rpc;
 pub mod runner;
-pub mod tx_cache; // Legacy - use `cache` module instead
-pub mod types;
-pub mod utils;
+
+// Re-export modules from sui-package-extractor crate
+pub use sui_package_extractor::bytecode;
+pub use sui_package_extractor::normalization;
+pub use sui_package_extractor::types;
+pub use sui_package_extractor::utils;
+
+// Re-export modules from sui-data-fetcher crate
+pub use sui_data_fetcher::graphql;
+pub use sui_data_fetcher::grpc;
