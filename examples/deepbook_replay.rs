@@ -327,51 +327,6 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         }
     }
 
-    println!(
-        "   Total unique objects (from gRPC effects): {}",
-        historical_versions.len()
-    );
-
-    // =========================================================================
-    // Step 3b: Fetch loaded child objects via JSON-RPC
-    // =========================================================================
-    // The gRPC `unchanged_loaded_runtime_objects` may not include ALL dynamically
-    // accessed child objects. The JSON-RPC `sui_getLoadedChildObjects` method
-    // provides a more complete picture of which objects were accessed.
-    println!("\nStep 3b: Fetching loaded child objects via JSON-RPC...");
-
-    let json_rpc = sui_data_fetcher::graphql::JsonRpcClient::mainnet();
-    match json_rpc.get_loaded_child_objects(tx_digest) {
-        Ok(loaded_children) => {
-            let mut new_children = 0;
-            for child in &loaded_children {
-                if !historical_versions.contains_key(&child.object_id) {
-                    println!(
-                        "   + NEW child: {} v{}",
-                        &child.object_id[..22.min(child.object_id.len())],
-                        child.sequence_number
-                    );
-                    historical_versions.insert(child.object_id.clone(), child.sequence_number);
-                    new_children += 1;
-                }
-            }
-            println!(
-                "   ✓ Found {} loaded children ({} new)",
-                loaded_children.len(),
-                new_children
-            );
-        }
-        Err(e) => {
-            println!("   ! Failed to fetch loaded child objects: {}", e);
-            println!("   (Continuing with gRPC effects only)");
-        }
-    }
-
-    println!(
-        "   Total unique objects (after JSON-RPC): {}",
-        historical_versions.len()
-    );
-
     println!("   Total unique objects: {}", historical_versions.len());
 
     // =========================================================================
