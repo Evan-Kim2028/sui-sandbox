@@ -33,8 +33,13 @@
 //!
 //! ## Required Setup
 //!
-//! Set `SURFLUX_API_KEY` in your `.env` file:
+//! Configure gRPC endpoint and API key in your `.env` file:
 //! ```
+//! # Generic configuration (recommended)
+//! SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
+//! SUI_GRPC_API_KEY=your-api-key-here
+//!
+//! # Or use legacy Surflux-specific variables (still supported)
 //! SURFLUX_API_KEY=your-api-key-here
 //! ```
 //!
@@ -49,7 +54,7 @@
 //!
 //! ## Historical Data from gRPC
 //!
-//! Surflux gRPC provides three critical fields for historical replay:
+//! The gRPC endpoint provides three critical fields for historical replay:
 //! - `unchanged_loaded_runtime_objects`: Objects read but not modified (exact versions)
 //! - `unchanged_consensus_objects`: Actual consensus versions for shared objects
 //! - `changed_objects`: Objects modified with their INPUT versions (before tx)
@@ -77,7 +82,7 @@ use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 const KRIYA_SWAP_TX: &str = "63fPrufC6iYHdNzG7mXscaKkqTaYH8h4RQHuiUfUCXqz";
 
 fn main() -> anyhow::Result<()> {
-    // Load environment from .env file (SURFLUX_API_KEY required)
+    // Load environment from .env file
     // Searches for .env in current directory, then walks up parent directories
     dotenv::dotenv().ok();
 
@@ -86,7 +91,7 @@ fn main() -> anyhow::Result<()> {
     println!("║                                                                      ║");
     println!("║  Demonstrates replaying a complex swap routing through multiple      ║");
     println!("║  protocols (Kriya, Bluefin CLMM, etc.) with flash loan integration.  ║");
-    println!("║  Requires SURFLUX_API_KEY in .env file.                              ║");
+    println!("║  Configure SUI_GRPC_ENDPOINT and SUI_GRPC_API_KEY in .env file.      ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
 
     // Kriya swap transaction - succeeded on-chain
@@ -168,7 +173,7 @@ fn main() -> anyhow::Result<()> {
 /// Replay a transaction using ONLY gRPC for data fetching (no cache).
 ///
 /// This demonstrates the complete workflow for historical transaction replay:
-/// 1. Connect to Surflux gRPC with API key
+/// 1. Connect to gRPC endpoint
 /// 2. Fetch transaction to get PTB commands and historical object versions
 /// 3. Fetch all objects at their exact historical versions via gRPC
 /// 4. Fetch packages via gRPC
@@ -177,17 +182,22 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let rt = tokio::runtime::Runtime::new()?;
 
     // =========================================================================
-    // Step 1: Connect to Surflux gRPC
+    // Step 1: Connect to gRPC endpoint
     // =========================================================================
-    println!("Step 1: Connecting to Surflux gRPC...");
+    println!("Step 1: Connecting to gRPC...");
 
-    let api_key = std::env::var("SURFLUX_API_KEY")
-        .map_err(|_| anyhow!("SURFLUX_API_KEY not set in environment. Add it to .env file."))?;
+    // Read endpoint: SUI_GRPC_ENDPOINT > SURFLUX_GRPC_ENDPOINT > default
+    let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
+        .or_else(|_| std::env::var("SURFLUX_GRPC_ENDPOINT"))
+        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
 
-    let grpc = rt.block_on(async {
-        GrpcClient::with_api_key("https://grpc.surflux.dev:443", Some(api_key)).await
-    })?;
-    println!("   ✓ Connected to Surflux gRPC");
+    // Read API key: SUI_GRPC_API_KEY > SURFLUX_API_KEY > None
+    let api_key = std::env::var("SUI_GRPC_API_KEY")
+        .or_else(|_| std::env::var("SURFLUX_API_KEY"))
+        .ok();
+
+    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+    println!("   ✓ Connected to {}", endpoint);
 
     // =========================================================================
     // Step 2: Fetch transaction via gRPC
@@ -610,8 +620,19 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // Set timestamp for time-based patches
     generic_patcher.set_timestamp(tx_timestamp_ms);
 
-    // Add default patching rules (timestamp fields, version fields)
-    generic_patcher.add_default_rules();
+    // For historical transaction replay, we DON'T add version patching rules because:
+    // 1. Historical objects contain version values matching the bytecode they were used with
+    // 2. We can't fetch historical bytecode, only current bytecode
+    // 3. The version constants in current bytecode won't match historical objects
+    //
+    // Only add timestamp patching rules (for last_updated_time fields).
+    // Version fields are left unchanged to match the historical bytecode expectations.
+    generic_patcher.add_rule(sui_sandbox_core::utilities::FieldPatchRule {
+        field_name: "last_updated_time".to_string(),
+        type_pattern: None,
+        condition: sui_sandbox_core::utilities::PatchCondition::Always,
+        action: sui_sandbox_core::utilities::PatchAction::SetToTimestamp,
+    });
 
     // Patch objects and convert to base64 for cached storage
     let mut objects: HashMap<String, String> = HashMap::new();
@@ -673,29 +694,31 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let grpc_for_closure = grpc_arc.clone();
     let historical_for_closure = historical_arc.clone();
 
-    let child_fetcher: ChildFetcherFn = Box::new(move |child_id: AccountAddress| {
-        let child_id_str = child_id.to_hex_literal();
+    let child_fetcher: ChildFetcherFn = Box::new(
+        move |_parent_id: AccountAddress, child_id: AccountAddress| {
+            let child_id_str = child_id.to_hex_literal();
 
-        // Try to fetch at historical version if known
-        let version = historical_for_closure.get(&child_id_str).copied();
+            // Try to fetch at historical version if known
+            let version = historical_for_closure.get(&child_id_str).copied();
 
-        let rt = tokio::runtime::Runtime::new().ok()?;
-        let result = rt.block_on(async {
-            grpc_for_closure
-                .get_object_at_version(&child_id_str, version)
-                .await
-        });
+            let rt = tokio::runtime::Runtime::new().ok()?;
+            let result = rt.block_on(async {
+                grpc_for_closure
+                    .get_object_at_version(&child_id_str, version)
+                    .await
+            });
 
-        if let Ok(Some(obj)) = result {
-            if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                if let Some(type_tag) = parse_type_tag_simple(type_str) {
-                    return Some((type_tag, bcs.clone()));
+            if let Ok(Some(obj)) = result {
+                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+                    if let Some(type_tag) = parse_type_tag_simple(type_str) {
+                        return Some((type_tag, bcs.clone()));
+                    }
                 }
             }
-        }
 
-        None
-    });
+            None
+        },
+    );
 
     harness.set_child_fetcher(child_fetcher);
     println!("   ✓ Child fetcher configured");
