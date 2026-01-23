@@ -1,0 +1,43 @@
+[package]
+name = "sui-sandbox-core"
+version = "0.1.0"
+edition = "2021"
+description = "Move VM simulation engine for Sui transactions"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
+bcs = "0.1"
+smallvec = "1.11"
+hex = "0.4.3"
+prometheus = "0.13"
+
+# Move VM dependencies - PINNED to mainnet-v1.63.4
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-binary-format" }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }
+move-vm-runtime = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-runtime", features = ["tracing"] }
+move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-vm-types" }
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-trace-format" }
+move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-symbol-pool" }
+
+# Native function support
+move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-stdlib-natives" }
+sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-natives-latest" }
+
+# Sui types and protocol config
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-types" }
+sui-protocol-config = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-protocol-config" }
+
+# Cryptographic primitives for native implementations
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
+fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
+
+# VM extension support
+better_any = "0.1"
+
+# Workspace crates
+sui-sandbox-types = { path = "../sui-types" }
+sui-data-fetcher = { path = "../sui-data-fetcher" }

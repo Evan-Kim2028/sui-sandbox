@@ -6,17 +6,20 @@
 //! # Usage
 //!
 //! ```ignore
-//! use crate::benchmark::well_known::{addr, ident, types};
+//! use sui_sandbox_core::well_known::{addr, ident, types};
+//! use move_core_types::language_storage::TypeTag;
 //!
 //! // Use static addresses
 //! let sui_framework = *addr::SUI_FRAMEWORK;
+//! assert_eq!(sui_framework.to_hex_literal(), "0x2");
 //!
 //! // Use static identifiers
 //! let coin_module = ident::COIN.clone();
+//! assert_eq!(coin_module.as_str(), "coin");
 //!
 //! // Use type constructors
 //! let sui_coin_type = types::sui_coin();
-//! let my_coin = types::coin_of(my_inner_type);
+//! assert!(matches!(sui_coin_type, TypeTag::Struct(_)));
 //! ```
 
 use move_core_types::account_address::AccountAddress;

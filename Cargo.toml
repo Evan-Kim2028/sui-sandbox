@@ -83,6 +83,7 @@ chrono = { version = "0.4", features = ["serde"] }
 sui-sandbox-types = { path = "crates/sui-types" }
 sui-data-fetcher = { path = "crates/sui-data-fetcher" }
 sui-package-extractor = { path = "crates/sui-package-extractor" }
+sui-sandbox-core = { path = "crates/sui-sandbox-core" }
 
 # gRPC support for real-time transaction streaming
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }

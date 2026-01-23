@@ -34,10 +34,10 @@ use move_vm_types::views::{TypeView, ValueView};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use crate::benchmark::natives::{build_native_function_table, EmittedEvent, MockNativeState};
-use crate::benchmark::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
-use crate::benchmark::resolver::LocalModuleResolver;
-use crate::benchmark::sui_object_runtime;
+use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
+use crate::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
+use crate::resolver::LocalModuleResolver;
+use crate::sui_object_runtime;
 use sui_protocol_config::ProtocolConfig;
 
 /// Configuration for the simulation sandbox.
@@ -257,9 +257,35 @@ pub struct ExecutionOutput {
     pub gas_used: u64,
 }
 
-/// Gas cost constants for estimation.
-/// These are simplified approximations of Sui's actual gas costs.
+/// Gas cost constants and utilities for estimation.
+///
+/// This module provides both hardcoded defaults and integration with Sui's
+/// `ProtocolConfig` for accurate gas cost estimation.
+///
+/// ## Gas Model Overview
+///
+/// Sui's gas model (as of v2) charges for:
+/// - **Computation**: CPU cycles (function calls, bytecode execution, natives)
+/// - **Storage**: Object reads, writes, and deletions (per-byte costs)
+/// - **Transaction base cost**: Fixed overhead per transaction
+///
+/// ## Using ProtocolConfig
+///
+/// For mainnet-accurate gas estimation, use `GasCostTable::from_protocol_config()`:
+/// ```no_run
+/// use sui_protocol_config::ProtocolConfig;
+/// use sui_sandbox_core::vm::gas_costs::GasCostTable;
+///
+/// let config = ProtocolConfig::get_for_min_version();
+/// let costs = GasCostTable::from_protocol_config(&config);
+/// let object_size: u64 = 100;
+/// let read_cost = costs.obj_access_cost_read_per_byte * object_size;
+/// ```
 pub mod gas_costs {
+    use sui_protocol_config::ProtocolConfig;
+
+    // ========== Default Constants (fallback values) ==========
+
     /// Base cost per function call (covers stack frame, dispatch, etc.)
     pub const FUNCTION_CALL_BASE: u64 = 1000;
     /// Cost per byte of input arguments
@@ -278,6 +304,222 @@ pub mod gas_costs {
     pub const OBJECT_MUTATE: u64 = 1000;
     /// Cost for object deletion
     pub const OBJECT_DELETE: u64 = 500;
+
+    // ========== ProtocolConfig-based Gas Cost Table ==========
+
+    /// Gas cost table derived from Sui's ProtocolConfig.
+    ///
+    /// This provides mainnet-accurate gas costs when initialized from
+    /// the current protocol version's config.
+    #[derive(Debug, Clone)]
+    pub struct GasCostTable {
+        /// Base transaction cost (fixed overhead)
+        pub base_tx_cost_fixed: u64,
+        /// Additional fixed cost for package publish
+        pub package_publish_cost_fixed: u64,
+        /// Cost per byte of transaction data
+        pub base_tx_cost_per_byte: u64,
+        /// Cost per byte for package publish data
+        pub package_publish_cost_per_byte: u64,
+        /// Cost per byte for reading an object
+        pub obj_access_cost_read_per_byte: u64,
+        /// Cost per byte for mutating an object
+        pub obj_access_cost_mutate_per_byte: u64,
+        /// Cost per byte for deleting an object
+        pub obj_access_cost_delete_per_byte: u64,
+        /// Cost per byte for type verification
+        pub obj_access_cost_verify_per_byte: u64,
+        /// Refundable cost per byte of object data
+        pub obj_data_cost_refundable: u64,
+        /// Non-refundable cost per object (metadata)
+        pub obj_metadata_cost_non_refundable: u64,
+        /// Storage rebate rate (basis points, e.g., 9900 = 99%)
+        pub storage_rebate_rate: u64,
+        /// Maximum gas budget for a transaction
+        pub max_tx_gas: u64,
+        /// Maximum gas price
+        pub max_gas_price: u64,
+        /// Maximum computation gas bucket
+        pub max_gas_computation_bucket: u64,
+        /// Gas model version (affects charging behavior)
+        pub gas_model_version: u64,
+    }
+
+    impl Default for GasCostTable {
+        fn default() -> Self {
+            // These defaults match Sui's initial protocol config (v1)
+            Self {
+                base_tx_cost_fixed: 110_000,
+                package_publish_cost_fixed: 1_000,
+                base_tx_cost_per_byte: 0,
+                package_publish_cost_per_byte: 80,
+                obj_access_cost_read_per_byte: 15,
+                obj_access_cost_mutate_per_byte: 40,
+                obj_access_cost_delete_per_byte: 40,
+                obj_access_cost_verify_per_byte: 200,
+                obj_data_cost_refundable: 100,
+                obj_metadata_cost_non_refundable: 50,
+                storage_rebate_rate: 9900,  // 99%
+                max_tx_gas: 50_000_000_000, // 50 SUI
+                max_gas_price: 100_000,
+                max_gas_computation_bucket: 5_000_000,
+                gas_model_version: 1,
+            }
+        }
+    }
+
+    impl GasCostTable {
+        /// Create a gas cost table from Sui's ProtocolConfig.
+        ///
+        /// This ensures gas estimates match mainnet behavior for the
+        /// specified protocol version.
+        pub fn from_protocol_config(config: &ProtocolConfig) -> Self {
+            // Note: ProtocolConfig getters return u64 directly, not Option<u64>
+            Self {
+                base_tx_cost_fixed: config.base_tx_cost_fixed(),
+                package_publish_cost_fixed: config.package_publish_cost_fixed(),
+                base_tx_cost_per_byte: config.base_tx_cost_per_byte(),
+                package_publish_cost_per_byte: config.package_publish_cost_per_byte(),
+                obj_access_cost_read_per_byte: config.obj_access_cost_read_per_byte(),
+                obj_access_cost_mutate_per_byte: config.obj_access_cost_mutate_per_byte(),
+                obj_access_cost_delete_per_byte: config.obj_access_cost_delete_per_byte(),
+                obj_access_cost_verify_per_byte: config.obj_access_cost_verify_per_byte(),
+                obj_data_cost_refundable: config.obj_data_cost_refundable(),
+                obj_metadata_cost_non_refundable: config.obj_metadata_cost_non_refundable(),
+                storage_rebate_rate: config.storage_rebate_rate(),
+                max_tx_gas: config.max_tx_gas(),
+                max_gas_price: config.max_gas_price(),
+                max_gas_computation_bucket: config.max_gas_computation_bucket(),
+                gas_model_version: config.gas_model_version(),
+            }
+        }
+
+        /// Estimate gas cost for reading an object.
+        pub fn estimate_read_cost(&self, object_size_bytes: u64) -> u64 {
+            object_size_bytes * self.obj_access_cost_read_per_byte
+        }
+
+        /// Estimate gas cost for mutating an object.
+        pub fn estimate_mutate_cost(&self, object_size_bytes: u64) -> u64 {
+            object_size_bytes * self.obj_access_cost_mutate_per_byte
+        }
+
+        /// Estimate gas cost for deleting an object.
+        pub fn estimate_delete_cost(&self, object_size_bytes: u64) -> u64 {
+            object_size_bytes * self.obj_access_cost_delete_per_byte
+        }
+
+        /// Estimate storage cost for a new object (rebatable portion).
+        pub fn estimate_storage_cost(&self, object_size_bytes: u64) -> u64 {
+            object_size_bytes * self.obj_data_cost_refundable
+                + self.obj_metadata_cost_non_refundable
+        }
+
+        /// Calculate storage rebate for deleting an object.
+        ///
+        /// The rebate is a percentage of the original storage cost.
+        pub fn calculate_storage_rebate(&self, original_storage_cost: u64) -> u64 {
+            // storage_rebate_rate is in basis points (e.g., 9900 = 99%)
+            (original_storage_cost * self.storage_rebate_rate) / 10_000
+        }
+
+        /// Estimate total transaction cost.
+        ///
+        /// This combines the fixed base cost with per-byte costs and
+        /// object access costs.
+        pub fn estimate_transaction_cost(
+            &self,
+            tx_data_size: u64,
+            input_objects_read_bytes: u64,
+            output_objects_mutate_bytes: u64,
+            deleted_objects_bytes: u64,
+            computation_cost: u64,
+        ) -> u64 {
+            let base = self.base_tx_cost_fixed + tx_data_size * self.base_tx_cost_per_byte;
+            let read = self.estimate_read_cost(input_objects_read_bytes);
+            let mutate = self.estimate_mutate_cost(output_objects_mutate_bytes);
+            let delete = self.estimate_delete_cost(deleted_objects_bytes);
+
+            base + read + mutate + delete + computation_cost
+        }
+    }
+
+    /// Get the current mainnet gas cost table.
+    ///
+    /// This uses the maximum protocol version's config to get
+    /// the most current gas costs.
+    ///
+    /// # Safety
+    /// This uses `get_for_max_version_UNSAFE` which is intended for testing
+    /// and simulation, not for production validator use.
+    pub fn mainnet_gas_costs() -> GasCostTable {
+        let config = ProtocolConfig::get_for_max_version_UNSAFE();
+        GasCostTable::from_protocol_config(&config)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_gas_cost_table_default() {
+            let table = GasCostTable::default();
+            assert_eq!(table.base_tx_cost_fixed, 110_000);
+            assert_eq!(table.storage_rebate_rate, 9900);
+        }
+
+        #[test]
+        fn test_gas_cost_table_from_protocol_config() {
+            let table = mainnet_gas_costs();
+            // Verify it has reasonable values
+            assert!(table.base_tx_cost_fixed > 0);
+            assert!(table.max_tx_gas > 0);
+            assert!(table.storage_rebate_rate > 0);
+        }
+
+        #[test]
+        fn test_estimate_read_cost() {
+            let table = GasCostTable::default();
+            let cost = table.estimate_read_cost(1000); // 1KB object
+            assert_eq!(cost, 1000 * 15); // 15 gas per byte
+        }
+
+        #[test]
+        fn test_estimate_storage_cost() {
+            let table = GasCostTable::default();
+            let cost = table.estimate_storage_cost(1000); // 1KB object
+                                                          // 1000 * 100 (refundable) + 50 (metadata)
+            assert_eq!(cost, 100_050);
+        }
+
+        #[test]
+        fn test_calculate_storage_rebate() {
+            let table = GasCostTable::default();
+            let original_cost = 100_000;
+            let rebate = table.calculate_storage_rebate(original_cost);
+            // 99% rebate (9900 basis points)
+            assert_eq!(rebate, 99_000);
+        }
+
+        #[test]
+        fn test_estimate_transaction_cost() {
+            let table = GasCostTable::default();
+            let cost = table.estimate_transaction_cost(
+                100,    // tx data size
+                1000,   // input objects read bytes
+                500,    // output objects mutate bytes
+                200,    // deleted objects bytes
+                50_000, // computation cost
+            );
+            // base: 110_000 + 0*100 = 110_000
+            // read: 1000 * 15 = 15_000
+            // mutate: 500 * 40 = 20_000
+            // delete: 200 * 40 = 8_000
+            // computation: 50_000
+            // total: 203_000
+            assert_eq!(cost, 203_000);
+        }
+    }
 }
 
 /// Estimate gas for a function execution.
@@ -1040,7 +1282,7 @@ impl<'a> VMHarness<'a> {
         native_state.epoch_timestamp_ms = clock_base;
         // Also set the MockClock's base to the configured timestamp
         // This ensures clock::timestamp_ms() returns the correct time
-        native_state.clock = crate::benchmark::natives::MockClock::with_base(clock_base);
+        native_state.clock = crate::natives::MockClock::with_base(clock_base);
         let native_state = Arc::new(native_state);
 
         // Build native function table based on configuration
@@ -1522,18 +1764,7 @@ impl<'a> VMHarness<'a> {
 ///
 /// ## Usage
 ///
-/// ```ignore
-/// let mut session = PTBSession::new(&mut harness);
-///
-/// // First call creates a Table and adds an entry
-/// session.execute_function(&module_id, "create_table", vec![], vec![])?;
-///
-/// // Second call can access the Table entries created above
-/// session.execute_function(&module_id, "read_table", vec![], vec![])?;
-///
-/// // Extract dynamic field state for TransactionEffects
-/// let df_state = session.finish();
-/// ```
+/// See `examples/` for complete VM session usage patterns.
 pub struct PTBSession<'a, 'b> {
     harness: &'a mut VMHarness<'b>,
     /// Shared state that persists across VM sessions

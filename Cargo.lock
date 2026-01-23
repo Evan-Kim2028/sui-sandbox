@@ -7905,9 +7905,29 @@ name = "sui-sandbox-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "bcs",
+ "better_any",
+ "fastcrypto",
+ "fastcrypto-zkp",
+ "hex",
+ "move-binary-format",
+ "move-core-types",
+ "move-stdlib-natives",
+ "move-symbol-pool",
+ "move-trace-format",
+ "move-vm-runtime",
+ "move-vm-types",
+ "prometheus",
  "serde",
  "serde_json",
- "sui_move_interface_extractor",
+ "sha2 0.10.9",
+ "smallvec",
+ "sui-data-fetcher",
+ "sui-move-natives-latest",
+ "sui-protocol-config",
+ "sui-sandbox-types",
+ "sui-types",
 ]
 
 [[package]]
@@ -8131,6 +8151,7 @@ dependencies = [
  "sui-move-natives-latest",
  "sui-package-extractor",
  "sui-protocol-config",
+ "sui-sandbox-core",
  "sui-sandbox-types",
  "sui-sdk",
  "sui-transaction-builder",

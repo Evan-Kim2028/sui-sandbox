@@ -37,16 +37,21 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
-//! use sui_move_interface_extractor::benchmark::resolver::{ModuleProvider, LocalModuleResolver};
+//! ```no_run
+//! use sui_sandbox_core::resolver::{ModuleProvider, LocalModuleResolver};
+//! use move_core_types::language_storage::ModuleId;
+//! use move_core_types::account_address::AccountAddress;
+//! use move_core_types::identifier::Identifier;
 //!
 //! let mut resolver = LocalModuleResolver::new();
 //!
-//! // Load modules from bytecode
+//! // Load modules from bytecode (bytecode_bytes would be actual Move bytecode)
+//! let bytecode_bytes: Vec<u8> = vec![]; // Placeholder
 //! let modules = vec![("my_module".to_string(), bytecode_bytes)];
-//! let package_addr = resolver.load_package(modules)?;
+//! // let package_addr = resolver.load_package(modules)?;
 //!
 //! // Query modules
+//! let module_id = ModuleId::new(AccountAddress::ONE, Identifier::new("test").unwrap());
 //! if resolver.has_module(&module_id) {
 //!     let bytes = resolver.get_module_bytes(&module_id);
 //! }
@@ -73,10 +78,11 @@ use std::path::Path;
 /// - Future: RPC-backed providers, cached providers, etc.
 ///
 /// # Example
-/// ```ignore
-/// use sui_move_interface_extractor::benchmark::resolver::ModuleProvider;
+/// ```no_run
+/// use sui_sandbox_core::resolver::ModuleProvider;
+/// use anyhow::Result;
 ///
-/// fn load_modules(provider: &mut impl ModuleProvider) -> Result<()> {
+/// fn load_modules(provider: &mut impl ModuleProvider, bytecode_bytes: Vec<u8>) -> Result<()> {
 ///     let modules = vec![("my_module".to_string(), bytecode_bytes)];
 ///     provider.load_package(modules)?;
 ///     Ok(())
@@ -159,9 +165,10 @@ impl LocalModuleResolver {
     /// Version: mainnet-v1.62.1 (must match Dockerfile's SUI_VERSION)
     pub fn load_sui_framework(&mut self) -> Result<usize> {
         // Bundled framework bytecode - BCS-serialized Vec<Vec<u8>>
-        static MOVE_STDLIB: &[u8] = include_bytes!("../../framework_bytecode/move-stdlib");
-        static SUI_FRAMEWORK: &[u8] = include_bytes!("../../framework_bytecode/sui-framework");
-        static SUI_SYSTEM: &[u8] = include_bytes!("../../framework_bytecode/sui-system");
+        // Path from crates/sui-sandbox-core/src/ to project root's framework_bytecode/
+        static MOVE_STDLIB: &[u8] = include_bytes!("../../../framework_bytecode/move-stdlib");
+        static SUI_FRAMEWORK: &[u8] = include_bytes!("../../../framework_bytecode/sui-framework");
+        static SUI_SYSTEM: &[u8] = include_bytes!("../../../framework_bytecode/sui-system");
 
         let mut count = 0;
 
@@ -203,7 +210,7 @@ impl LocalModuleResolver {
     /// as the on-chain framework may have modules not present in the bundled version.
     pub fn load_sui_framework_from_graphql(
         &mut self,
-        graphql: &crate::graphql::GraphQLClient,
+        graphql: &sui_data_fetcher::GraphQLClient,
     ) -> Result<usize> {
         let framework_packages = [
             "0x0000000000000000000000000000000000000000000000000000000000000001", // move-stdlib
@@ -255,7 +262,7 @@ impl LocalModuleResolver {
     /// Load framework from GraphQL, falling back to bundled if fetch fails.
     pub fn load_sui_framework_auto(&mut self) -> Result<usize> {
         // Try to fetch from GraphQL first for latest version
-        let client = crate::graphql::GraphQLClient::mainnet();
+        let client = sui_data_fetcher::GraphQLClient::mainnet();
         match self.load_sui_framework_from_graphql(&client) {
             Ok(count) if count > 0 => {
                 eprintln!("[framework] Loaded {} modules from mainnet GraphQL", count);

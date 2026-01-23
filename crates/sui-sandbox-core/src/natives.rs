@@ -68,8 +68,11 @@ use fastcrypto::serde_helpers::ToFromByteArray;
 use fastcrypto::traits::{RecoverableSignature, ToFromBytes, VerifyingKey};
 use move_vm_types::values::Struct;
 
-use super::errors::E_NOT_SUPPORTED;
 use super::object_runtime::{E_FIELD_DOES_NOT_EXIST, E_FIELD_TYPE_MISMATCH};
+
+/// Abort code for unsupported native functions (category D).
+/// Used when a native cannot be simulated locally.
+pub const E_NOT_SUPPORTED: u64 = 1000;
 
 const MOVE_STDLIB_ADDRESS: AccountAddress = AccountAddress::ONE;
 const SUI_FRAMEWORK_ADDRESS: AccountAddress = AccountAddress::TWO;
@@ -610,7 +613,7 @@ fn build_sui_natives(
         "transfer",
         "transfer_impl",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::{ObjectRuntime, Owner};
+            use crate::object_runtime::{ObjectRuntime, Owner};
 
             // Pop arguments: recipient (address), obj (T)
             // Note: args are in reverse order on the stack
@@ -659,7 +662,7 @@ fn build_sui_natives(
         "transfer",
         "freeze_object_impl",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::ObjectRuntime;
+            use crate::object_runtime::ObjectRuntime;
 
             // Pop the object value
             let obj_value = args.pop_back().ok_or_else(|| {
@@ -699,7 +702,7 @@ fn build_sui_natives(
         "transfer",
         "share_object_impl",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::ObjectRuntime;
+            use crate::object_runtime::ObjectRuntime;
 
             // Pop the object value
             let obj_value = args.pop_back().ok_or_else(|| {
@@ -740,7 +743,7 @@ fn build_sui_natives(
         "transfer",
         "receive_impl",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+            use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
             // Get the type we're receiving (this is T, not Receiving<T>)
             let receive_ty = ty_args.pop().ok_or_else(|| {
@@ -1354,11 +1357,8 @@ fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Optio
 /// Tries SharedObjectRuntime first (for PTB sessions), falls back to ObjectRuntime.
 fn get_object_runtime_ref<'a>(
     ctx: &'a NativeContext,
-) -> Result<
-    &'a crate::benchmark::object_runtime::ObjectRuntime,
-    move_binary_format::errors::PartialVMError,
-> {
-    use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+) -> Result<&'a crate::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+    use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first (used in PTB sessions for persistent state)
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
@@ -1373,11 +1373,9 @@ fn get_object_runtime_ref<'a>(
 /// Helper to get mutable ObjectRuntime from extensions.
 fn get_object_runtime_mut<'a>(
     ctx: &'a mut NativeContext,
-) -> Result<
-    &'a mut crate::benchmark::object_runtime::ObjectRuntime,
-    move_binary_format::errors::PartialVMError,
-> {
-    use crate::benchmark::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+) -> Result<&'a mut crate::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError>
+{
+    use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first
     if ctx.extensions().get::<SharedObjectRuntime>().is_ok() {
@@ -1397,7 +1395,7 @@ fn sync_child_to_shared_state(
     child_tag: &TypeTag,
     child_bytes: &[u8],
 ) {
-    use crate::benchmark::object_runtime::SharedObjectRuntime;
+    use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         if let Ok(mut state) = shared.shared_state().lock() {
@@ -1412,7 +1410,7 @@ fn remove_child_from_shared_state(
     parent: AccountAddress,
     child_id: AccountAddress,
 ) {
-    use crate::benchmark::object_runtime::SharedObjectRuntime;
+    use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         if let Ok(mut state) = shared.shared_state().lock() {
@@ -1427,7 +1425,7 @@ fn check_shared_state_for_child(
     parent: AccountAddress,
     child_id: AccountAddress,
 ) -> bool {
-    use crate::benchmark::object_runtime::SharedObjectRuntime;
+    use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         if let Ok(state) = shared.shared_state().lock() {
@@ -1439,7 +1437,7 @@ fn check_shared_state_for_child(
 
 /// Count children for a parent in shared state (if using SharedObjectRuntime).
 fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u64 {
-    use crate::benchmark::object_runtime::SharedObjectRuntime;
+    use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         if let Ok(state) = shared.shared_state().lock() {
@@ -1474,7 +1472,7 @@ fn add_dynamic_field_natives(
         "dynamic_field",
         "hash_type_and_key",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::SharedObjectRuntime;
+            use crate::object_runtime::SharedObjectRuntime;
 
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
@@ -1615,7 +1613,7 @@ fn add_dynamic_field_natives(
         "dynamic_field",
         "borrow_child_object",
         make_native(|ctx, mut ty_args, mut args| {
-            use crate::benchmark::object_runtime::SharedObjectRuntime;
+            use crate::object_runtime::SharedObjectRuntime;
             use move_vm_types::values::StructRef;
 
             eprintln!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
@@ -1818,7 +1816,7 @@ fn add_dynamic_field_natives(
         "borrow_child_object_mut",
         make_native(|ctx, mut ty_args, mut args| {
             use move_vm_types::values::StructRef;
-            use crate::benchmark::object_runtime::SharedObjectRuntime;
+            use crate::object_runtime::SharedObjectRuntime;
 
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
