@@ -219,6 +219,51 @@ pub fn build_address_aliases_for_test(
     build_address_aliases(cached)
 }
 
+/// Build a comprehensive address alias map from multiple sources.
+///
+/// This combines:
+/// 1. Bytecode self-address mappings from loaded packages
+/// 2. Package linkage/upgrade mappings (original -> upgraded)
+///
+/// The resulting map allows the VM to resolve addresses correctly when:
+/// - A type refers to an original package ID that has been upgraded
+/// - The bytecode self-address differs from the on-chain package ID
+///
+/// # Arguments
+/// * `cached` - The cached transaction with loaded packages
+/// * `linkage_upgrades` - Map of original package IDs to their upgraded versions
+///
+/// # Returns
+/// A map: runtime/on-chain address -> bytecode/original address
+pub fn build_comprehensive_address_aliases(
+    cached: &CachedTransaction,
+    linkage_upgrades: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<AccountAddress, AccountAddress> {
+    // Start with bytecode-based aliases
+    let mut aliases = build_address_aliases(cached);
+
+    // Add linkage-based aliases (upgraded -> original)
+    // This maps the upgraded package ID back to the original package ID
+    for (original_id, upgraded_id) in linkage_upgrades {
+        // Normalize both addresses
+        let original_normalized = crate::utilities::normalize_address(original_id);
+        let upgraded_normalized = crate::utilities::normalize_address(upgraded_id);
+
+        if let (Ok(original_addr), Ok(upgraded_addr)) = (
+            AccountAddress::from_hex_literal(&format!("0x{}", original_normalized)),
+            AccountAddress::from_hex_literal(&format!("0x{}", upgraded_normalized)),
+        ) {
+            // Map upgraded -> original (so when we see a type with upgraded ID,
+            // we can resolve it to the original for module lookup)
+            if original_addr != upgraded_addr {
+                aliases.insert(upgraded_addr, original_addr);
+            }
+        }
+    }
+
+    aliases
+}
+
 /// Replay multiple transactions in parallel.
 ///
 /// This function uses rayon for parallel execution, creating a separate

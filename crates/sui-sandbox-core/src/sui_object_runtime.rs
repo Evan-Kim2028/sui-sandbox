@@ -250,6 +250,9 @@ pub fn make_input_object(
 ///
 /// The input function takes (child_id) and returns Option<(TypeTag, bytes)>.
 /// We wrap it to also return version=1 and parent=child (placeholder).
+///
+/// **Note**: For transaction replay, prefer `wrap_versioned_fetcher` which
+/// provides correct version information needed for accurate replay.
 pub fn wrap_simple_fetcher<F>(fetcher: F) -> ChildFetchFn
 where
     F: Fn(AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync + 'static,
@@ -261,6 +264,21 @@ where
             // when the actual parent/version info is available
             (type_tag, bytes, 1u64, child_id)
         })
+    })
+}
+
+/// Convert a versioned child fetcher function to ChildFetchFn type.
+///
+/// The input function takes (child_id) and returns Option<(TypeTag, bytes, version)>.
+/// This is the preferred wrapper for transaction replay as it provides correct
+/// version information.
+pub fn wrap_versioned_fetcher<F>(fetcher: F) -> ChildFetchFn
+where
+    F: Fn(AccountAddress) -> Option<(TypeTag, Vec<u8>, u64)> + Send + Sync + 'static,
+{
+    Arc::new(move |child_id: ObjectID| {
+        let addr = AccountAddress::new(child_id.into_bytes());
+        fetcher(addr).map(|(type_tag, bytes, version)| (type_tag, bytes, version, child_id))
     })
 }
 

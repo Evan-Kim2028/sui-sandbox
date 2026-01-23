@@ -5,24 +5,25 @@ edition = "2021"
 description = "Package interface extraction for Sui Move packages"
 
 [dependencies]
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
-base64 = "0.22"
-hex = "0.4.3"
-
-# Workspace dependencies
-sui-sandbox-types = { path = "../sui-types" }
-sui-data-fetcher = { path = "../sui-data-fetcher" }
-
-# Move bytecode parsing
-move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-binary-format" }
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }
-
-# Sui SDK for SuiClient (RPC calls)
-sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-sdk" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-types" }
+# Core utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+base64.workspace = true
+hex.workspace = true
 
 # Async runtime
-tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros"] }
+tokio.workspace = true
+
+# Move bytecode parsing
+move-binary-format.workspace = true
+move-core-types.workspace = true
+
+# Sui SDK
+sui-sdk.workspace = true
+sui-types.workspace = true
+
+# Workspace crates
+sui-sandbox-types.workspace = true
+sui-data-fetcher.workspace = true

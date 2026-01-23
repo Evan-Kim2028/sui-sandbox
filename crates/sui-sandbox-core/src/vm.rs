@@ -38,6 +38,7 @@ use std::sync::Arc;
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
 use crate::object_runtime::{
     ChildFetcherFn, KeyBasedChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime,
+    VersionedChildFetcherFn,
 };
 use crate::resolver::LocalModuleResolver;
 use crate::sui_object_runtime;
@@ -1402,6 +1403,49 @@ impl<'a> VMHarness<'a> {
         self.child_fetcher = None;
     }
 
+    /// Set a versioned child fetcher for transaction replay.
+    ///
+    /// This is preferred over `set_child_fetcher` for replay scenarios as it provides
+    /// correct version information for each child object. The fetcher should return
+    /// (type_tag, bcs_bytes, version) for each child.
+    pub fn set_versioned_child_fetcher(&mut self, fetcher: VersionedChildFetcherFn) {
+        // Create a non-versioned wrapper for the existing child_fetcher field
+        let fetcher_arc = Arc::new(fetcher);
+        let fetcher_for_legacy = fetcher_arc.clone();
+        let legacy_fetcher: ChildFetcherFn = Box::new(move |parent_id, child_id| {
+            fetcher_for_legacy(parent_id, child_id)
+                .map(|(type_tag, bytes, _version)| (type_tag, bytes))
+        });
+        self.child_fetcher = Some(Arc::new(legacy_fetcher));
+
+        // If using Sui natives mode, set up extensions with proper versioning
+        if self.config.use_sui_natives {
+            let sui_fetcher: sui_object_runtime::ChildFetchFn =
+                std::sync::Arc::new(move |child_id: sui_types::base_types::ObjectID| {
+                    let addr = AccountAddress::new(child_id.into_bytes());
+                    fetcher_arc(addr, addr)
+                        .map(|(type_tag, bytes, version)| (type_tag, bytes, version, child_id))
+                });
+
+            let sui_config = sui_object_runtime::SuiRuntimeConfig {
+                sender: AccountAddress::new(self.config.sender_address),
+                epoch: self.config.epoch,
+                epoch_timestamp_ms: self
+                    .config
+                    .tx_timestamp_ms
+                    .unwrap_or(self.config.clock_base_ms),
+                gas_price: 1000,
+                gas_budget: self.config.gas_budget.unwrap_or(DEFAULT_GAS_BUDGET),
+                sponsor: None,
+            };
+
+            self.sui_extensions = Some(sui_object_runtime::SuiNativeExtensions::new(
+                sui_fetcher,
+                sui_config,
+            ));
+        }
+    }
+
     /// Set a key-based child fetcher for handling package upgrade type mismatches.
     /// This callback is called when ID-based lookup fails, allowing lookup by
     /// dynamic field key content instead of computed hash.
@@ -1562,7 +1606,9 @@ impl<'a> VMHarness<'a> {
         if let Some(fetcher_arc) = &self.key_based_child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
             shared_runtime.set_key_based_child_fetcher(Box::new(
-                move |parent_id, key_type, key_bytes| fetcher_clone(parent_id, key_type, key_bytes),
+                move |parent_id, child_id, key_type, key_bytes| {
+                    fetcher_clone(parent_id, child_id, key_type, key_bytes)
+                },
             ));
         }
 

@@ -74,6 +74,9 @@ pub mod utilities;
 
 // Re-export main types at crate root for convenience
 pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};
-pub use object_runtime::{ObjectRuntime, SharedObjectRuntime};
+pub use object_runtime::{
+    ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
+    VersionedChildFetcherFn,
+};
 pub use resolver::LocalModuleResolver;
 pub use vm::{SimulationConfig, VMHarness};

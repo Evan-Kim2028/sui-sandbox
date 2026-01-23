@@ -87,12 +87,25 @@ use std::sync::Arc;
 pub type ChildFetcherFn =
     Box<dyn Fn(AccountAddress, AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
 
+/// Callback type for on-demand child object fetching with version info.
+/// Takes (parent_id, child_id) and returns Option<(type_tag, bcs_bytes, version)>.
+/// Use this for transaction replay to ensure correct version information.
+pub type VersionedChildFetcherFn =
+    Box<dyn Fn(AccountAddress, AccountAddress) -> Option<(TypeTag, Vec<u8>, u64)> + Send + Sync>;
+
 /// Callback type for key-based child object fetching.
-/// Takes (parent_id, key_type_tag, key_bcs_bytes) and returns Option<(type_tag, bcs_bytes)>.
+/// Takes (parent_id, child_id, key_type_tag, key_bcs_bytes) and returns Option<(type_tag, bcs_bytes)>.
 /// This is called when ID-based lookup fails, allowing lookup by dynamic field key content.
 /// This handles cases where package upgrades cause computed child IDs to differ from stored IDs.
-pub type KeyBasedChildFetcherFn =
-    Box<dyn Fn(AccountAddress, &TypeTag, &[u8]) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
+///
+/// For dynamic object fields (where key_type is `Wrapper<K>`), the returned type should be
+/// `Field<Wrapper<K>, ID>` and the BCS should encode the Field wrapper containing an ID
+/// reference to the actual object.
+pub type KeyBasedChildFetcherFn = Box<
+    dyn Fn(AccountAddress, AccountAddress, &TypeTag, &[u8]) -> Option<(TypeTag, Vec<u8>)>
+        + Send
+        + Sync,
+>;
 
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
@@ -1327,7 +1340,9 @@ impl SharedObjectRuntime {
                     info.key_type,
                     info.key_bytes.len()
                 );
-                if let Some(result) = key_fetcher(info.parent_id, &info.key_type, &info.key_bytes) {
+                if let Some(result) =
+                    key_fetcher(info.parent_id, child_id, &info.key_type, &info.key_bytes)
+                {
                     eprintln!(
                         "[SharedObjectRuntime] key-based fetch succeeded for child {}",
                         child_id.to_hex_literal()

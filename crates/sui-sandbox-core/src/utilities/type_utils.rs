@@ -205,6 +205,69 @@ pub fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
 ///     println!("Depends on package: {}", pkg_addr);
 /// }
 /// ```
+/// Rewrite addresses in a TypeTag using the provided alias map.
+///
+/// This is essential for transaction replay when packages have been upgraded.
+/// The alias map should contain: runtime_address -> bytecode_address mappings.
+///
+/// For example, if package `0xabc` was upgraded and is now at `0xdef`,
+/// the map would contain `{0xdef -> 0xabc}`. This allows types referencing
+/// `0xdef` to be resolved using the original bytecode at `0xabc`.
+///
+/// # Example
+///
+/// ```
+/// use sui_sandbox_core::utilities::rewrite_type_tag;
+/// use move_core_types::account_address::AccountAddress;
+/// use move_core_types::language_storage::TypeTag;
+/// use std::collections::HashMap;
+///
+/// let mut aliases = HashMap::new();
+/// aliases.insert(
+///     AccountAddress::from_hex_literal("0xdef").unwrap(),
+///     AccountAddress::from_hex_literal("0xabc").unwrap(),
+/// );
+///
+/// // A type with the upgraded address gets rewritten to use the original
+/// let type_tag = sui_sandbox_core::utilities::parse_type_tag("0xdef::foo::Bar").unwrap();
+/// let rewritten = rewrite_type_tag(type_tag, &aliases);
+/// // Now uses 0xabc instead of 0xdef
+/// ```
+pub fn rewrite_type_tag(
+    tag: TypeTag,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> TypeTag {
+    match tag {
+        TypeTag::Struct(s) => {
+            let mut s = *s;
+            // Rewrite the struct's address if it's in the alias map
+            s.address = aliases.get(&s.address).copied().unwrap_or(s.address);
+            // Recursively rewrite type parameters
+            s.type_params = s
+                .type_params
+                .into_iter()
+                .map(|t| rewrite_type_tag(t, aliases))
+                .collect();
+            TypeTag::Struct(Box::new(s))
+        }
+        TypeTag::Vector(inner) => TypeTag::Vector(Box::new(rewrite_type_tag(*inner, aliases))),
+        other => other,
+    }
+}
+
+/// Parse a type string and rewrite it using the provided alias map.
+///
+/// This combines [`parse_type_tag`] and [`rewrite_type_tag`] for convenience
+/// when working with type strings that need address rewriting.
+///
+/// Returns `None` if the type string is invalid.
+pub fn parse_and_rewrite_type(
+    type_str: &str,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> Option<TypeTag> {
+    parse_type_tag(type_str).map(|tag| rewrite_type_tag(tag, aliases))
+}
+
 pub fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<String> {
     // Framework addresses to skip
     let framework_addrs: BTreeSet<AccountAddress> = [

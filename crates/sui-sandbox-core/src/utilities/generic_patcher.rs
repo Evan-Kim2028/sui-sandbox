@@ -1086,6 +1086,10 @@ pub struct GenericObjectPatcher {
     version_registry: HashMap<String, u64>,
     /// Statistics
     patches_applied: HashMap<String, usize>,
+    /// Raw byte patches for objects that can't be decoded structurally.
+    /// Maps type pattern -> Vec<(byte_offset, value_bytes)>.
+    /// Used as a fallback when struct decoding fails.
+    raw_patches: HashMap<String, Vec<(usize, Vec<u8>)>>,
 }
 
 impl GenericObjectPatcher {
@@ -1097,6 +1101,7 @@ impl GenericObjectPatcher {
             tx_timestamp_ms: None,
             version_registry: HashMap::new(),
             patches_applied: HashMap::new(),
+            raw_patches: HashMap::new(),
         }
     }
 
@@ -1154,6 +1159,35 @@ impl GenericObjectPatcher {
         self.version_registry.insert(pattern.to_string(), version);
     }
 
+    /// Register a raw byte patch for objects that can't be decoded structurally.
+    ///
+    /// This is a fallback mechanism for complex structs where BCS decoding fails.
+    /// The patch will be applied at the specified byte offset when the type matches.
+    ///
+    /// # Arguments
+    /// * `type_pattern` - Substring to match in the type string (e.g., "::config::GlobalConfig")
+    /// * `byte_offset` - Byte offset where to write the value
+    /// * `value` - Bytes to write at the offset
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Patch the package_version field (u64) at offset 32 in Cetus GlobalConfig
+    /// patcher.add_raw_patch("::config::GlobalConfig", 32, &1u64.to_le_bytes());
+    /// ```
+    pub fn add_raw_patch(&mut self, type_pattern: &str, byte_offset: usize, value: &[u8]) {
+        self.raw_patches
+            .entry(type_pattern.to_string())
+            .or_default()
+            .push((byte_offset, value.to_vec()));
+    }
+
+    /// Convenience method to add a raw u64 patch at a specific byte offset.
+    ///
+    /// Useful for patching version fields in objects that can't be decoded structurally.
+    pub fn add_raw_u64_patch(&mut self, type_pattern: &str, byte_offset: usize, value: u64) {
+        self.add_raw_patch(type_pattern, byte_offset, &value.to_le_bytes());
+    }
+
     /// Add a patch rule
     pub fn add_rule(&mut self, rule: FieldPatchRule) {
         self.rules.push(rule);
@@ -1203,6 +1237,10 @@ impl GenericObjectPatcher {
         match self.try_patch_object(type_str, bcs_bytes) {
             Ok(patched) => patched,
             Err(e) => {
+                // Try raw byte patches as fallback when struct decoding fails
+                if let Some(patched) = self.try_raw_patches(type_str, bcs_bytes) {
+                    return patched;
+                }
                 eprintln!(
                     "[GenericPatcher] Failed to patch {}: {}",
                     type_str.chars().take(60).collect::<String>(),
@@ -1211,6 +1249,49 @@ impl GenericObjectPatcher {
                 bcs_bytes.to_vec()
             }
         }
+    }
+
+    /// Try to apply raw byte patches when struct decoding fails
+    fn try_raw_patches(&mut self, type_str: &str, bcs_bytes: &[u8]) -> Option<Vec<u8>> {
+        // Find matching raw patches
+        let mut patches_to_apply: Vec<(usize, Vec<u8>)> = Vec::new();
+        for (pattern, patches) in &self.raw_patches {
+            if type_str.contains(pattern) {
+                patches_to_apply.extend(patches.clone());
+            }
+        }
+
+        if patches_to_apply.is_empty() {
+            return None;
+        }
+
+        // Apply patches
+        let mut result = bcs_bytes.to_vec();
+        for (offset, value) in patches_to_apply {
+            if offset + value.len() <= result.len() {
+                result[offset..offset + value.len()].copy_from_slice(&value);
+                eprintln!(
+                    "[GenericPatcher] Applied raw patch at offset {} ({} bytes) for {}",
+                    offset,
+                    value.len(),
+                    type_str.chars().take(60).collect::<String>()
+                );
+                *self
+                    .patches_applied
+                    .entry("raw_patch".to_string())
+                    .or_insert(0) += 1;
+            } else {
+                eprintln!(
+                    "[GenericPatcher] Raw patch offset {} + len {} exceeds object size {} for {}",
+                    offset,
+                    value.len(),
+                    result.len(),
+                    type_str.chars().take(40).collect::<String>()
+                );
+            }
+        }
+
+        Some(result)
     }
 
     fn try_patch_object(&mut self, type_str: &str, bcs_bytes: &[u8]) -> Result<Vec<u8>> {
