@@ -4,7 +4,6 @@
 //! - Interactive PTB building and execution
 //! - LLM-driven transaction construction
 //! - Debugging and testing Move transactions
-#![allow(deprecated)] // GrpcFetcher alias is deprecated but still used for backwards compatibility
 //!
 //! This module provides an interactive simulation environment that allows an LLM to:
 //! 1. Deploy Move packages (bytecode)
@@ -42,27 +41,18 @@
 //!
 //! ## Example Usage
 //!
-//! ```ignore
-//! let mut env = SimulationEnvironment::new()?;
+//! ```no_run
+//! use sui_sandbox_core::simulation::SimulationEnvironment;
 //!
-//! // Deploy a package
-//! env.deploy_package_from_mainnet("0x1234...")?;
+//! let mut env = SimulationEnvironment::new().unwrap();
+//!
+//! // Deploy a package (requires network access)
+//! // env.deploy_package_from_mainnet("0x1234...")?;
 //!
 //! // Create objects needed for the PTB
-//! let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000)?;
+//! let coin_id = env.create_coin("0x2::sui::SUI", 1_000_000_000).unwrap();
 //!
-//! // Execute a PTB
-//! let result = env.execute_ptb(commands)?;
-//! match result {
-//!     Ok(effects) => println!("Success: {:?}", effects),
-//!     Err(SimulationError::MissingPackage { address, module }) => {
-//!         // Package not found - address contains the missing package ID
-//!     }
-//!     Err(SimulationError::MissingObject { id, expected_type }) => {
-//!         // Object not found - id contains the missing object ID
-//!     }
-//!     Err(e) => println!("Error: {}", e),
-//! }
+//! // Execute a PTB (see examples/ for complete usage)
 //! ```
 
 use anyhow::{anyhow, Result};
@@ -72,9 +62,9 @@ use move_core_types::language_storage::TypeTag;
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 
-use crate::benchmark::errors::{Phase, PhaseOptionExt, PhaseResultExt};
-use crate::benchmark::resolver::LocalModuleResolver;
-use crate::benchmark::well_known;
+use crate::errors::{Phase, PhaseOptionExt, PhaseResultExt};
+use crate::resolver::LocalModuleResolver;
+use crate::well_known;
 
 // ============================================================================
 // Coin Constants
@@ -115,13 +105,13 @@ pub struct CoinMetadata {
     /// Full type tag (e.g., "0x2::sui::SUI")
     pub type_tag: String,
 }
-use crate::benchmark::fetcher::{FetchedObjectData, Fetcher, GrpcFetcher};
-use crate::benchmark::object_runtime::ChildFetcherFn;
-use crate::benchmark::ptb::{Command, InputValue, ObjectInput, TransactionEffects};
-use crate::benchmark::vm::VMHarness;
+use crate::fetcher::{FetchedObjectData, Fetcher};
+use crate::object_runtime::ChildFetcherFn;
+use crate::ptb::{Command, InputValue, ObjectInput, TransactionEffects};
+use crate::vm::VMHarness;
 
 // Re-export EmittedEvent for convenience
-pub use crate::benchmark::natives::EmittedEvent;
+pub use crate::natives::EmittedEvent;
 
 /// Structured error types matching Sui mainnet error semantics.
 #[derive(Debug, Clone)]
@@ -136,7 +126,7 @@ pub enum SimulationError {
         #[allow(dead_code)]
         referenced_by: Option<Vec<String>>,
         /// Whether this package has known upgrades
-        upgrade_info: Option<crate::benchmark::error_context::PackageUpgradeInfo>,
+        upgrade_info: Option<crate::error_context::PackageUpgradeInfo>,
     },
 
     /// A required object is not available.
@@ -295,7 +285,7 @@ impl std::fmt::Display for SimulationError {
                 }
                 // Add abort code context
                 if let Some(context) =
-                    crate::benchmark::error_context::get_abort_code_context(*abort_code, module)
+                    crate::error_context::get_abort_code_context(*abort_code, module)
                 {
                     write!(f, " ({})", context)?;
                 }
@@ -480,7 +470,7 @@ pub struct ExecutionResult {
     /// - Gas consumed before failure
     /// - For coin operations: balances involved
     /// - For aborts: interpreted abort code meaning
-    pub error_context: Option<crate::benchmark::error_context::CommandErrorContext>,
+    pub error_context: Option<crate::error_context::CommandErrorContext>,
 
     /// Snapshot of execution state at failure time (optional).
     ///
@@ -488,7 +478,7 @@ pub struct ExecutionResult {
     /// - All objects that were loaded
     /// - Dynamic fields accessed
     /// - Summary of successful commands
-    pub state_at_failure: Option<crate::benchmark::error_context::ExecutionSnapshot>,
+    pub state_at_failure: Option<crate::error_context::ExecutionSnapshot>,
 }
 
 /// An object in the simulation environment.
@@ -597,7 +587,7 @@ pub struct PersistentState {
     pub pending_receives: Vec<SerializedPendingReceive>,
     /// Simulation configuration (epoch, gas, clock, etc.) - added in v3.
     #[serde(default)]
-    pub config: Option<crate::benchmark::vm::SimulationConfig>,
+    pub config: Option<crate::vm::SimulationConfig>,
     /// State file metadata - added in v3.
     #[serde(default)]
     pub metadata: Option<StateMetadata>,
@@ -925,7 +915,7 @@ pub struct SimulationEnvironment {
     lamport_clock: u64,
 
     /// Simulation configuration (epoch, gas, etc.).
-    config: crate::benchmark::vm::SimulationConfig,
+    config: crate::vm::SimulationConfig,
 
     /// Consensus ordering history for serialization validation.
     /// Stores recent transaction ordering entries for conflict detection.
@@ -985,7 +975,7 @@ impl SimulationEnvironment {
             tx_counter: 0,
             pending_receives: BTreeMap::new(),
             lamport_clock: 0,
-            config: crate::benchmark::vm::SimulationConfig::default(),
+            config: crate::vm::SimulationConfig::default(),
             consensus_history: Vec::new(),
             consensus_sequence: 0,
             all_events: Vec::new(),
@@ -1065,7 +1055,7 @@ impl SimulationEnvironment {
 
     /// Get the Random object for PTB execution.
     /// Returns it as a shared object input.
-    pub fn get_random_object(&self) -> Result<crate::benchmark::ptb::ObjectInput> {
+    pub fn get_random_object(&self) -> Result<crate::ptb::ObjectInput> {
         let random_id = AccountAddress::from_hex_literal(RANDOM_OBJECT_ID)
             .map_err(|e| anyhow!("Invalid random ID: {}", e))?;
 
@@ -1074,7 +1064,7 @@ impl SimulationEnvironment {
             .get(&random_id)
             .ok_or_else(|| anyhow!("Random object not found - this should not happen"))?;
 
-        Ok(crate::benchmark::ptb::ObjectInput::Shared {
+        Ok(crate::ptb::ObjectInput::Shared {
             id: random_id,
             bytes: random_obj.bcs_bytes.clone(),
             type_tag: Some(random_obj.type_tag.clone()),
@@ -1122,7 +1112,7 @@ impl SimulationEnvironment {
 
     /// Get the Clock object for PTB execution.
     /// Returns it as a shared object input.
-    pub fn get_clock_object(&self) -> Result<crate::benchmark::ptb::ObjectInput> {
+    pub fn get_clock_object(&self) -> Result<crate::ptb::ObjectInput> {
         let clock_id = AccountAddress::from_hex_literal(CLOCK_OBJECT_ID)
             .map_err(|e| anyhow!("Invalid clock ID: {}", e))?;
 
@@ -1131,33 +1121,19 @@ impl SimulationEnvironment {
             .get(&clock_id)
             .ok_or_else(|| anyhow!("Clock object not found - this should not happen"))?;
 
-        Ok(crate::benchmark::ptb::ObjectInput::Shared {
+        Ok(crate::ptb::ObjectInput::Shared {
             id: clock_id,
             bytes: clock_obj.bcs_bytes.clone(),
             type_tag: Some(clock_obj.type_tag.clone()),
         })
     }
 
-    /// Enable mainnet fetching for on-demand package/object loading.
-    pub fn with_mainnet_fetching(mut self) -> Self {
-        self.fetcher = Some(Box::new(GrpcFetcher::mainnet()));
-        self.fetcher_config = FetcherConfig::mainnet();
-        self
-    }
-
-    /// Enable mainnet fetching with archive support for historical data.
-    pub fn with_mainnet_archive_fetching(mut self) -> Self {
-        self.fetcher = Some(Box::new(GrpcFetcher::mainnet_with_archive()));
-        self.fetcher_config = FetcherConfig::mainnet_with_archive();
-        self
-    }
-
     /// Enable fetching with a specific configuration.
+    ///
+    /// Note: This method only stores the configuration. To actually enable network fetching,
+    /// use `with_fetcher()` to provide a concrete Fetcher implementation.
     pub fn with_fetcher_config(mut self, config: FetcherConfig) -> Self {
-        self.fetcher_config = config.clone();
-        if let Some(fetcher) = Self::create_fetcher_from_config(&config) {
-            self.fetcher = Some(fetcher);
-        }
+        self.fetcher_config = config;
         self
     }
 
@@ -1171,9 +1147,9 @@ impl SimulationEnvironment {
         self
     }
 
-    /// Create a boxed Fetcher from a FetcherConfig.
-    fn create_fetcher_from_config(config: &FetcherConfig) -> Option<Box<dyn Fetcher>> {
-        GrpcFetcher::from_config(config).map(|f| Box::new(f) as Box<dyn Fetcher>)
+    /// Set the fetcher (internal helper for extension traits).
+    pub fn set_fetcher(&mut self, fetcher: Box<dyn Fetcher>) {
+        self.fetcher = Some(fetcher);
     }
 
     /// Get the current fetcher configuration.
@@ -1384,7 +1360,7 @@ impl SimulationEnvironment {
     /// Create a Coin<T> object with the given balance.
     pub fn create_coin(&mut self, coin_type: &str, balance: u64) -> Result<AccountAddress> {
         // Parse the coin type
-        let inner_type = crate::benchmark::tx_replay::parse_type_tag(coin_type)?;
+        let inner_type = crate::types::parse_type_tag(coin_type)?;
 
         // Coin<T> structure: { id: UID, balance: Balance<T> }
         // UID is 32 bytes, Balance<T> is just a u64
@@ -1421,7 +1397,7 @@ impl SimulationEnvironment {
         is_shared: bool,
     ) -> Result<AccountAddress> {
         // Parse the type path into a TypeTag
-        let type_tag = crate::benchmark::tx_replay::parse_type_tag(type_path)?;
+        let type_tag = crate::types::parse_type_tag(type_path)?;
 
         // Parse the object ID
         let id = AccountAddress::from_hex_literal(object_id)
@@ -1445,7 +1421,7 @@ impl SimulationEnvironment {
     /// This is a convenience wrapper around inject_object.
     pub fn inject_synthesized(
         &mut self,
-        synthesized: &crate::benchmark::sandbox_exec::SynthesizedObject,
+        synthesized: &crate::sandbox_types::SynthesizedObject,
     ) -> Result<AccountAddress> {
         self.inject_object(
             &synthesized.type_path,
@@ -1644,13 +1620,13 @@ impl SimulationEnvironment {
     /// - Nested generics: "0x2::option::Option<0x2::coin::Coin<0x2::sui::SUI>>"
     /// - Primitive types: "u8", "u64", "bool", "address", "vector<u8>"
     pub fn parse_type_string(type_str: &str) -> Option<TypeTag> {
-        crate::benchmark::types::parse_type_string(type_str)
+        crate::types::parse_type_string(type_str)
     }
 
     /// Format a TypeTag back to a string (for debugging/display).
     /// Delegates to the canonical implementation in types module.
     pub fn format_type_tag(type_tag: &TypeTag) -> String {
-        crate::benchmark::types::format_type_tag(type_tag)
+        crate::types::format_type_tag(type_tag)
     }
 
     /// List all available packages.
@@ -1803,7 +1779,7 @@ impl SimulationEnvironment {
         inputs: Vec<InputValue>,
         commands: Vec<Command>,
     ) -> ExecutionResult {
-        use crate::benchmark::ptb::ObjectInput;
+        use crate::ptb::ObjectInput;
 
         // Extract shared objects from inputs and acquire locks
         let shared_objects: Vec<(AccountAddress, bool)> = inputs
@@ -1880,27 +1856,15 @@ impl SimulationEnvironment {
     /// - `gas_budget`: Maximum gas units allowed. Use `None` for unlimited gas.
     ///
     /// ## Example
-    /// ```ignore
-    /// let result = env.execute_ptb_with_gas_budget(
-    ///     inputs,
-    ///     commands,
-    ///     Some(10_000_000), // 10M gas units
-    /// );
-    /// if !result.success {
-    ///     if let Some(err) = &result.raw_error {
-    ///         if err.contains("out of gas") {
-    ///             println!("Transaction exceeded gas budget!");
-    ///         }
-    ///     }
-    /// }
-    /// ```
+    ///
+    /// See `examples/` directory for complete PTB execution examples.
     pub fn execute_ptb_with_gas_budget(
         &mut self,
         inputs: Vec<InputValue>,
         commands: Vec<Command>,
         gas_budget: Option<u64>,
     ) -> ExecutionResult {
-        use crate::benchmark::ptb::ObjectInput;
+        use crate::ptb::ObjectInput;
 
         // Extract shared objects from inputs and acquire locks
         let shared_objects: Vec<(AccountAddress, bool)> = inputs
@@ -2028,7 +1992,7 @@ impl SimulationEnvironment {
         }
 
         // Build VM config with correct sender and timestamp
-        let mut config = crate::benchmark::vm::SimulationConfig {
+        let mut config = crate::vm::SimulationConfig {
             sender_address: self.sender.into(),
             tx_timestamp_ms: self.timestamp_ms,
             ..Default::default()
@@ -2085,7 +2049,7 @@ impl SimulationEnvironment {
 
         // Create PTB executor with pre-published and pre-upgraded package info
         // and the current sender address for ownership validation
-        let mut executor = crate::benchmark::ptb::PTBExecutor::new_with_packages_and_sender(
+        let mut executor = crate::ptb::PTBExecutor::new_with_packages_and_sender(
             &mut harness,
             published_packages,
             upgraded_packages,
@@ -2154,8 +2118,8 @@ impl SimulationEnvironment {
 
     /// Apply object changes from transaction effects to the object store.
     /// This syncs both created and mutated object bytes back to the environment.
-    fn apply_object_changes(&mut self, effects: &crate::benchmark::ptb::TransactionEffects) {
-        use crate::benchmark::ptb::{ObjectChange, Owner};
+    fn apply_object_changes(&mut self, effects: &crate::ptb::TransactionEffects) {
+        use crate::ptb::{ObjectChange, Owner};
 
         for change in &effects.object_changes {
             match change {
@@ -2383,16 +2347,8 @@ impl SimulationEnvironment {
     /// - `object_type`: Type tag of the sent object
     ///
     /// ## Example
-    /// ```ignore
-    /// // Transaction 1: Send a coin to an escrow object
-    /// env.send_to_object(escrow_id, coin_id, coin_bytes, coin_type);
     ///
-    /// // Transaction 2: Escrow receives the coin
-    /// let result = env.execute_ptb(
-    ///     vec![escrow_input],
-    ///     vec![Command::Receive { object_id: coin_id, object_type: Some(coin_type) }],
-    /// );
-    /// ```
+    /// See `examples/` directory for Receiving object examples.
     pub fn send_to_object(
         &mut self,
         recipient_object_id: AccountAddress,
@@ -2466,26 +2422,7 @@ impl SimulationEnvironment {
     ///
     /// ## Example
     ///
-    /// ```ignore
-    /// // Try to lock a shared object for mutable access
-    /// let result = env.acquire_shared_locks(
-    ///     vec![(object_id, true)], // mutable access
-    ///     Some("tx_1".to_string()),
-    /// );
-    ///
-    /// match result {
-    ///     LockResult::Success { locks } => {
-    ///         // Execute the transaction
-    ///         let effects = env.execute_ptb(inputs, commands);
-    ///         // Release locks after execution
-    ///         env.release_shared_locks(&locks);
-    ///     }
-    ///     LockResult::Conflict { object_id, reason, .. } => {
-    ///         // Handle conflict (e.g., retry with backoff)
-    ///         println!("Lock conflict on {}: {}", object_id, reason);
-    ///     }
-    /// }
-    /// ```
+    /// See `examples/` directory for shared object locking examples.
     pub fn acquire_shared_locks(
         &mut self,
         shared_objects: Vec<(AccountAddress, bool)>,
@@ -2611,17 +2548,17 @@ impl SimulationEnvironment {
     // ============================================================================
 
     /// Get the current simulation configuration.
-    pub fn config(&self) -> &crate::benchmark::vm::SimulationConfig {
+    pub fn config(&self) -> &crate::vm::SimulationConfig {
         &self.config
     }
 
     /// Get mutable access to the simulation configuration.
-    pub fn config_mut(&mut self) -> &mut crate::benchmark::vm::SimulationConfig {
+    pub fn config_mut(&mut self) -> &mut crate::vm::SimulationConfig {
         &mut self.config
     }
 
     /// Set the simulation configuration.
-    pub fn set_config(&mut self, config: crate::benchmark::vm::SimulationConfig) {
+    pub fn set_config(&mut self, config: crate::vm::SimulationConfig) {
         self.config = config;
     }
 
@@ -2882,20 +2819,6 @@ impl SimulationEnvironment {
             }
         }
         acc
-    }
-
-    /// Execute a PTB with automatic shared object locking.
-    ///
-    /// Note: This is now an alias for `execute_ptb()` since locking is integrated
-    /// directly into the main execution path. All PTB executions automatically
-    /// handle shared object locking.
-    #[deprecated(note = "Use execute_ptb() directly - locking is now automatic")]
-    pub fn execute_ptb_with_locking(
-        &mut self,
-        inputs: Vec<InputValue>,
-        commands: Vec<Command>,
-    ) -> ExecutionResult {
-        self.execute_ptb(inputs, commands)
     }
 
     /// Parse an error string into a structured SimulationError.
@@ -3281,7 +3204,7 @@ impl SimulationEnvironment {
         specific_id: Option<[u8; 32]>,
     ) -> Result<AccountAddress> {
         // Parse the object type
-        let type_tag = crate::benchmark::tx_replay::parse_type_tag(object_type)?;
+        let type_tag = crate::types::parse_type_tag(object_type)?;
 
         // Generate or use specific ID
         let id = if let Some(bytes) = specific_id {
@@ -3623,7 +3546,7 @@ impl SimulationEnvironment {
         // Parse type args
         let parsed_type_args: Vec<TypeTag> = type_args
             .iter()
-            .map(|s| crate::benchmark::tx_replay::parse_type_tag(s))
+            .map(|s| crate::types::parse_type_tag(s))
             .collect::<Result<Vec<_>, _>>()?;
 
         // Build the MoveCall command
@@ -3633,7 +3556,7 @@ impl SimulationEnvironment {
             function: function_id,
             type_args: parsed_type_args,
             args: (0..args.len())
-                .map(|i| crate::benchmark::ptb::Argument::Input(i as u16))
+                .map(|i| crate::ptb::Argument::Input(i as u16))
                 .collect(),
         };
 
@@ -3917,7 +3840,7 @@ impl SimulationEnvironment {
         for obj in &state.objects {
             let id = AccountAddress::from_hex_literal(&obj.id)
                 .map_err(|e| anyhow!("Invalid object ID {}: {}", obj.id, e))?;
-            let type_tag = crate::benchmark::tx_replay::parse_type_tag(&obj.type_tag)
+            let type_tag = crate::types::parse_type_tag(&obj.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", obj.type_tag, e))?;
             let bcs_bytes = base64::engine::general_purpose::STANDARD
                 .decode(&obj.bcs_bytes_b64)
@@ -3959,7 +3882,7 @@ impl SimulationEnvironment {
                 .map_err(|e| anyhow!("Invalid parent ID {}: {}", df.parent_id, e))?;
             let child_id = AccountAddress::from_hex_literal(&df.child_id)
                 .map_err(|e| anyhow!("Invalid child ID {}: {}", df.child_id, e))?;
-            let type_tag = crate::benchmark::tx_replay::parse_type_tag(&df.type_tag)
+            let type_tag = crate::types::parse_type_tag(&df.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", df.type_tag, e))?;
             let value = base64::engine::general_purpose::STANDARD
                 .decode(&df.value_b64)
@@ -3975,7 +3898,7 @@ impl SimulationEnvironment {
                 .map_err(|e| anyhow!("Invalid recipient ID {}: {}", pr.recipient_id, e))?;
             let sent_id = AccountAddress::from_hex_literal(&pr.sent_id)
                 .map_err(|e| anyhow!("Invalid sent ID {}: {}", pr.sent_id, e))?;
-            let type_tag = crate::benchmark::tx_replay::parse_type_tag(&pr.type_tag)
+            let type_tag = crate::types::parse_type_tag(&pr.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", pr.type_tag, e))?;
             let object_bytes = base64::engine::general_purpose::STANDARD
                 .decode(&pr.object_bytes_b64)
@@ -3990,13 +3913,11 @@ impl SimulationEnvironment {
             self.config = config;
         }
 
-        // Load and restore fetcher config - v4+
-        // If the saved state had fetching enabled, we auto-reconnect
+        // Load fetcher config - v4+
+        // Note: The fetcher itself must be set externally using set_fetcher()
+        // since network fetchers are not available in sui-sandbox-core.
         if let Some(fetcher_config) = state.fetcher_config {
-            if fetcher_config.enabled {
-                self.fetcher_config = fetcher_config.clone();
-                self.fetcher = Self::create_fetcher_from_config(&fetcher_config);
-            }
+            self.fetcher_config = fetcher_config;
         }
 
         Ok(())

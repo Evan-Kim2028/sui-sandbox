@@ -25,16 +25,21 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```no_run
+//! use sui_sandbox_core::validator::Validator;
+//! use sui_sandbox_core::resolver::LocalModuleResolver;
+//! use move_core_types::account_address::AccountAddress;
+//!
 //! let resolver = LocalModuleResolver::new();
 //! // ... load modules into resolver ...
 //! let validator = Validator::new(&resolver);
 //!
 //! // Validate a target function exists and is callable
-//! let module = validator.validate_target(addr, "my_module", "my_function")?;
+//! let addr = AccountAddress::from_hex_literal("0x2").unwrap();
+//! let module = validator.validate_target(addr, "my_module", "my_function");
 //!
 //! // Resolve type layouts for BCS serialization
-//! let layout = validator.resolve_type_layout(&type_tag)?;
+//! // let layout = validator.resolve_type_layout(&type_tag);
 //! ```
 
 use anyhow::{anyhow, Context, Result};
@@ -48,7 +53,7 @@ use move_core_types::annotated_value::{
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 
-use crate::benchmark::resolver::LocalModuleResolver;
+use crate::resolver::LocalModuleResolver;
 
 pub struct Validator<'a> {
     resolver: &'a LocalModuleResolver,

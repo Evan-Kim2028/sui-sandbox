@@ -23,6 +23,15 @@ move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.6
 move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-trace-format" }
 move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-symbol-pool" }
 
+# Bytecode disassembly for debugging
+move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-disassembler" }
+move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-bytecode-source-map" }
+move-ir-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-ir-types" }
+move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-command-line-common" }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+
 # Native function support
 move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-stdlib-natives" }
 sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-natives-latest" }

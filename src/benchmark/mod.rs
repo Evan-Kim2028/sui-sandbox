@@ -42,12 +42,11 @@
 //!
 //! See `docs/ARCHITECTURE.md` for detailed architecture documentation.
 
+// Local modules that remain in main crate (depend on DataFetcher or other main-crate types)
 pub mod bytecode_analyzer;
 pub mod constructor_map;
-pub mod errors;
 pub mod fetcher;
 pub mod mm2;
-pub mod object_patcher;
 pub mod output;
 pub mod package_builder;
 pub mod phases;
@@ -56,20 +55,26 @@ pub mod runner;
 pub mod sandbox;
 pub mod sandbox_exec;
 pub mod session;
-pub mod simulation;
-pub mod state_layer;
-pub mod state_source;
 pub mod storage_log;
 pub mod tx_replay;
-pub mod validator;
 
 // Re-export modules from sui-sandbox-core
 pub use sui_sandbox_core::error_context;
+pub use sui_sandbox_core::errors;
 pub use sui_sandbox_core::natives;
+pub use sui_sandbox_core::object_patcher;
 pub use sui_sandbox_core::object_runtime;
 pub use sui_sandbox_core::ptb;
 pub use sui_sandbox_core::resolver;
+pub use sui_sandbox_core::sandbox_types;
+pub use sui_sandbox_core::simulation;
+pub use sui_sandbox_core::state_layer;
+pub use sui_sandbox_core::state_source;
 pub use sui_sandbox_core::sui_object_runtime;
 pub use sui_sandbox_core::types;
+pub use sui_sandbox_core::validator;
 pub use sui_sandbox_core::vm;
 pub use sui_sandbox_core::well_known;
+
+// Also re-export fetcher types from sui-sandbox-core for convenience
+pub use sui_sandbox_core::fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};

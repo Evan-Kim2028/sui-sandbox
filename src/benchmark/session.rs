@@ -2,26 +2,28 @@
 //!
 //! This module provides `SimulationSession` - a wrapper that separates runtime concerns
 //! from persistent state. This enables cleaner save/load semantics where:
-#![allow(deprecated)] // GrpcFetcher alias is deprecated but still used for backwards compatibility
 //!
 //! - `SimulationEnvironment` holds the persistent state (objects, modules, coins, config)
 //! - `SimulationSession` holds runtime components (fetcher, callbacks) plus the environment
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```no_run
+//! use sui_move_interface_extractor::benchmark::session::SimulationSession;
+//!
 //! // Create a session with mainnet fetching
-//! let session = SimulationSession::new()?
+//! let session = SimulationSession::new()
+//!     .expect("session creation")
 //!     .with_mainnet_fetching();
 //!
 //! // Use the session for operations
-//! session.deploy_package_from_mainnet("0x...")?;
+//! // session.deploy_package_from_mainnet("0x...");
 //!
 //! // Save just the state (runtime components are recreated on load)
-//! session.save_state("./my-simulation.json")?;
+//! session.save_state("./my-simulation.json").unwrap();
 //!
 //! // Later: load the state into a new session
-//! let session2 = SimulationSession::from_state_file("./my-simulation.json")?;
+//! let session2 = SimulationSession::from_state_file("./my-simulation.json");
 //! // The fetcher is automatically restored based on saved FetcherConfig
 //! ```
 //!
@@ -38,7 +40,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::benchmark::fetcher::{Fetcher, GrpcFetcher};
+use crate::benchmark::fetcher::{Fetcher, NetworkFetcher};
 use crate::benchmark::object_runtime::ChildFetcherFn;
 use crate::benchmark::simulation::{FetcherConfig, PersistentState, SimulationEnvironment};
 
@@ -70,14 +72,14 @@ impl SimulationSession {
 
     /// Enable mainnet fetching for on-demand package/object loading.
     pub fn with_mainnet_fetching(mut self) -> Self {
-        self.fetcher = Some(Box::new(GrpcFetcher::mainnet()));
+        self.fetcher = Some(Box::new(NetworkFetcher::mainnet()));
         self.fetcher_config = FetcherConfig::mainnet();
         self
     }
 
     /// Enable mainnet fetching with archive support for historical data.
     pub fn with_mainnet_archive_fetching(mut self) -> Self {
-        self.fetcher = Some(Box::new(GrpcFetcher::mainnet_with_archive()));
+        self.fetcher = Some(Box::new(NetworkFetcher::mainnet_with_archive()));
         self.fetcher_config = FetcherConfig::mainnet_with_archive();
         self
     }
@@ -85,7 +87,7 @@ impl SimulationSession {
     /// Enable fetching with a specific configuration.
     pub fn with_fetcher_config(mut self, config: FetcherConfig) -> Self {
         self.fetcher_config = config.clone();
-        if let Some(fetcher) = GrpcFetcher::from_config(&config) {
+        if let Some(fetcher) = NetworkFetcher::from_config(&config) {
             self.fetcher = Some(Box::new(fetcher));
         }
         self
@@ -169,7 +171,7 @@ impl SimulationSession {
         if let Some(config) = self.env.export_state().fetcher_config {
             if config.enabled {
                 self.fetcher_config = config.clone();
-                if let Some(fetcher) = GrpcFetcher::from_config(&config) {
+                if let Some(fetcher) = NetworkFetcher::from_config(&config) {
                     self.fetcher = Some(Box::new(fetcher));
                 }
             }

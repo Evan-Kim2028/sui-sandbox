@@ -147,7 +147,7 @@ pub fn type_cache_stats() -> TypeCacheStats {
 ///
 /// # Examples
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{format_type_tag, coin_sui_type};
+/// use sui_sandbox_core::types::{format_type_tag, coin_sui_type};
 /// use move_core_types::language_storage::TypeTag;
 ///
 /// let tag = TypeTag::U64;
@@ -200,7 +200,7 @@ pub const COIN_SUI_TYPE_STR: &str = "0x2::coin::Coin<0x2::sui::SUI>";
 ///
 /// # Example
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{sui_type, format_type_tag};
+/// use sui_sandbox_core::types::{sui_type, format_type_tag};
 ///
 /// let sui = sui_type();
 /// assert_eq!(format_type_tag(&sui), "0x2::sui::SUI");
@@ -221,7 +221,7 @@ pub fn sui_type() -> TypeTag {
 ///
 /// # Example
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{coin_type, sui_type, format_type_tag};
+/// use sui_sandbox_core::types::{coin_type, sui_type, format_type_tag};
 ///
 /// let coin_sui = coin_type(sui_type());
 /// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
@@ -242,7 +242,7 @@ pub fn coin_type(inner: TypeTag) -> TypeTag {
 ///
 /// # Example
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{coin_sui_type, format_type_tag};
+/// use sui_sandbox_core::types::{coin_sui_type, format_type_tag};
 ///
 /// let coin_sui = coin_sui_type();
 /// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
@@ -289,7 +289,7 @@ pub fn coin_struct_tag(inner: TypeTag) -> StructTag {
 ///
 /// # Examples
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{parse_type_string, coin_sui_type};
+/// use sui_sandbox_core::types::{parse_type_string, coin_sui_type};
 /// use move_core_types::language_storage::TypeTag;
 ///
 /// let tag = parse_type_string("u64").unwrap();
@@ -433,7 +433,7 @@ pub fn parse_type_args(args_str: &str) -> Vec<TypeTag> {
 /// # Examples
 ///
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::{parse_type_tag, coin_sui_type};
+/// use sui_sandbox_core::types::{parse_type_tag, coin_sui_type};
 /// use move_core_types::language_storage::TypeTag;
 ///
 /// let tag = parse_type_tag("u64").unwrap();
@@ -585,7 +585,7 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 ///
 /// # Examples
 /// ```
-/// use sui_move_interface_extractor::benchmark::types::normalize_address;
+/// use sui_sandbox_core::types::normalize_address;
 ///
 /// let normalized = normalize_address("0x2").unwrap();
 /// assert!(normalized.starts_with("0x"));

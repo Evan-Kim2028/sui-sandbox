@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use crate::args::PtbEvalArgs;
+use crate::benchmark::fetcher::SimulationEnvironmentExt;
 use crate::benchmark::simulation::{SimulationEnvironment, SimulationError};
 use crate::benchmark::tx_replay::{
     build_address_aliases_for_test, to_ptb_commands_with_objects_and_aliases, uses_only_framework,

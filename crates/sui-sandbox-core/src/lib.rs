@@ -42,16 +42,25 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod error_context;
+pub mod errors;
+pub mod fetcher;
 pub mod natives;
+pub mod object_patcher;
 pub mod object_runtime;
 pub mod ptb;
 pub mod resolver;
+pub mod sandbox_types;
+pub mod simulation;
+pub mod state_layer;
+pub mod state_source;
 pub mod sui_object_runtime;
 pub mod types;
+pub mod validator;
 pub mod vm;
 pub mod well_known;
 
 // Re-export main types at crate root for convenience
+pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};
 pub use object_runtime::{ObjectRuntime, SharedObjectRuntime};
 pub use resolver::LocalModuleResolver;
 pub use vm::{SimulationConfig, VMHarness};

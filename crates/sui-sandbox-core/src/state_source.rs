@@ -16,13 +16,15 @@
 //!
 //! ## Example Usage
 //!
-//! ```ignore
+//! ```no_run
+//! use sui_sandbox_core::simulation::SimulationEnvironment;
+//!
 //! // Create with local state (default)
-//! let env = SimulationEnvironment::new()?;
+//! let env = SimulationEnvironment::new().unwrap();
 //!
 //! // Create with custom state source
-//! let state_source = Arc::new(MyCustomStateSource::new());
-//! let env = SimulationEnvironment::with_state_source(state_source)?;
+//! // let state_source = Arc::new(MyCustomStateSource::new());
+//! // let env = SimulationEnvironment::with_state_source(state_source)?;
 //! ```
 
 use anyhow::Result;
@@ -283,7 +285,7 @@ impl ObjectData {
 // Local State Source Implementation
 // =============================================================================
 
-use crate::benchmark::resolver::{LocalModuleResolver, ModuleProvider};
+use crate::resolver::{LocalModuleResolver, ModuleProvider};
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 

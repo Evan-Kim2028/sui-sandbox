@@ -18,7 +18,7 @@
 //! ## Example
 //!
 //! ```
-//! use sui_move_interface_extractor::benchmark::ptb::{Command, Argument};
+//! use sui_sandbox_core::ptb::{Command, Argument};
 //! use move_core_types::account_address::AccountAddress;
 //! use move_core_types::identifier::Identifier;
 //!

@@ -1395,14 +1395,17 @@ fn context_stack_is_empty(stack: &ContextStack) -> bool {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use crate::benchmark::errors::{Phase, PhaseResultExt};
+/// ```
+/// use sui_sandbox_core::errors::{Phase, PhaseResultExt};
+/// use anyhow::anyhow;
 ///
-/// fn load_module(path: &str) -> anyhow::Result<Module> {
-///     let bytes = std::fs::read(path)
-///         .with_phase(Phase::Build, "reading module file")?;
-///     // ...
+/// fn example() -> anyhow::Result<()> {
+///     let result: Result<(), _> = Err(anyhow!("file not found"));
+///     result.with_phase(Phase::Build, "reading module file")
 /// }
+///
+/// let err = example().unwrap_err();
+/// assert!(err.to_string().contains("[build]"));
 /// ```
 pub trait PhaseResultExt<T> {
     /// Add phase context to an error.
@@ -1463,10 +1466,12 @@ impl<T> PhaseOptionExt<T> for Option<T> {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use crate::benchmark::errors::{Phase, phase_error};
+/// ```
+/// use sui_sandbox_core::errors::{Phase, phase_error};
 ///
-/// return Err(phase_error(Phase::Execution, "VM crashed during execution"));
+/// let err = phase_error(Phase::Execution, "VM crashed during execution");
+/// assert!(err.to_string().contains("[execution]"));
+/// assert!(err.to_string().contains("VM crashed"));
 /// ```
 #[inline]
 pub fn phase_error(phase: Phase, message: impl std::fmt::Display) -> anyhow::Error {
@@ -1477,7 +1482,7 @@ pub fn phase_error(phase: Phase, message: impl std::fmt::Display) -> anyhow::Err
 #[macro_export]
 macro_rules! phase_err {
     ($phase:expr, $($arg:tt)*) => {
-        $crate::benchmark::errors::phase_error($phase, format!($($arg)*))
+        $crate::errors::phase_error($phase, format!($($arg)*))
     };
 }
 
@@ -1514,9 +1519,9 @@ pub use crate::phase_err;
 /// to include contextual information about the command, objects, etc.
 ///
 /// # Example
-/// ```ignore
-/// use crate::benchmark::errors::{phase_error_with_context, Phase};
-/// use crate::benchmark::error_context::{ExecutionContext, ObjectContext};
+/// ```
+/// use sui_sandbox_core::errors::{phase_error_with_context, Phase};
+/// use sui_sandbox_core::error_context::{ExecutionContext, ObjectContext};
 ///
 /// let ctx = ExecutionContext::new()
 ///     .at_command(3, "MoveCall 0x2::coin::split")
@@ -1527,6 +1532,8 @@ pub use crate::phase_err;
 ///     "insufficient balance",
 ///     ctx
 /// );
+/// assert!(err.to_string().contains("[execution]"));
+/// assert!(err.to_string().contains("insufficient balance"));
 /// ```
 pub fn phase_error_with_context(
     phase: Phase,

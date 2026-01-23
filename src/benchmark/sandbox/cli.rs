@@ -7,6 +7,7 @@ use std::io::Read;
 
 use super::{execute_request, SandboxRequest, SandboxResponse};
 use crate::args::SandboxExecArgs;
+use crate::benchmark::fetcher::SimulationEnvironmentExt;
 use crate::benchmark::simulation::SimulationEnvironment;
 
 /// Run the sandbox execution command.

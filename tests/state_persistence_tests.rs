@@ -15,6 +15,7 @@
 
 use move_core_types::account_address::AccountAddress;
 use std::path::PathBuf;
+use sui_move_interface_extractor::benchmark::fetcher::SimulationEnvironmentExt;
 use sui_move_interface_extractor::benchmark::sandbox::{execute_request, SandboxRequest};
 use sui_move_interface_extractor::benchmark::simulation::{PersistentState, SimulationEnvironment};
 use tempfile::TempDir;
@@ -314,17 +315,22 @@ fn test_fetcher_config_round_trip_mainnet() {
         env.save_state(&path).expect("save");
     }
 
-    // Load into a fresh env and verify fetcher is reconnected
+    // Load into a fresh env - fetcher config is restored but fetcher needs manual reconnection
     let mut env2 = SimulationEnvironment::new().expect("create env");
     env2.load_state(&path).expect("load");
 
-    assert!(
-        env2.is_fetching_enabled(),
-        "fetcher should be auto-reconnected"
-    );
-    let fc = env2.fetcher_config();
+    // Fetcher config should be restored - clone before moving env2
+    let fc = env2.fetcher_config().clone();
     assert!(fc.enabled);
     assert_eq!(fc.network, Some("mainnet".to_string()));
+
+    // Manual reconnection using the extension trait
+    // (auto-reconnection was removed when NetworkFetcher moved to main crate)
+    let env2 = env2.with_network_fetcher_config(fc);
+    assert!(
+        env2.is_fetching_enabled(),
+        "fetcher should be reconnected after manual call"
+    );
 }
 
 #[test]
@@ -347,13 +353,16 @@ fn test_fetcher_config_round_trip_with_custom_config() {
         env.save_state(&path).expect("save");
     }
 
-    // Load and verify
+    // Load and verify - config is restored, but fetcher needs manual reconnection
     let mut env2 = SimulationEnvironment::new().expect("create env");
     env2.load_state(&path).expect("load");
 
-    assert!(env2.is_fetching_enabled());
-    let fc = env2.fetcher_config();
+    let fc = env2.fetcher_config().clone();
     assert_eq!(fc.network, Some("testnet".to_string()));
+
+    // Manual reconnection
+    let env2 = env2.with_network_fetcher_config(fc);
+    assert!(env2.is_fetching_enabled());
 }
 
 #[test]
@@ -368,11 +377,16 @@ fn test_fetcher_config_from_state_file() {
         env.save_state(&path).expect("save");
     }
 
-    // Use from_state_file and verify fetcher is restored
+    // Use from_state_file - fetcher config is restored but needs manual reconnection
     let env = SimulationEnvironment::from_state_file(&path).expect("load");
+    let fc = env.fetcher_config().clone();
+    assert!(fc.enabled, "fetcher config should be restored");
+
+    // Manual reconnection using the extension trait
+    let env = env.with_network_fetcher_config(fc);
     assert!(
         env.is_fetching_enabled(),
-        "fetcher should be restored from state file"
+        "fetcher should be enabled after manual reconnection"
     );
 }
 

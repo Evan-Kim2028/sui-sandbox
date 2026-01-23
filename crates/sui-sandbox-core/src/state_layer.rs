@@ -27,22 +27,24 @@
 //! The state layering is designed to be used with the existing SimulationEnvironment
 //! by wrapping state modifications in transaction contexts:
 //!
-//! ```ignore
-//! let mut env = SimulationEnvironment::new()?;
+//! ```no_run
+//! use sui_sandbox_core::simulation::SimulationEnvironment;
+//!
+//! let env = SimulationEnvironment::new().unwrap();
 //!
 //! // Start a transaction
-//! let mut tx = env.begin_transaction();
+//! // let mut tx = env.begin_transaction();
 //!
 //! // Make changes (these go to transaction layer)
-//! tx.create_object(...)?;
-//! tx.call_function(...)?;
+//! // tx.create_object(...)?;
+//! // tx.call_function(...)?;
 //!
 //! // Commit or rollback
-//! if successful {
-//!     tx.commit()?;  // Merges into session layer
-//! } else {
-//!     tx.rollback(); // Discards transaction layer changes
-//! }
+//! // if successful {
+//! //     tx.commit()?;  // Merges into session layer
+//! // } else {
+//! //     tx.rollback(); // Discards transaction layer changes
+//! // }
 //! ```
 
 use move_core_types::account_address::AccountAddress;

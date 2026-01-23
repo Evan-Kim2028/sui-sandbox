@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```
-//! use sui_move_interface_extractor::benchmark::error_context::{ExecutionContext, ObjectContext};
+//! use sui_sandbox_core::error_context::{ExecutionContext, ObjectContext};
 //!
 //! let ctx = ExecutionContext::new()
 //!     .at_command(3, "MoveCall 0x2::coin::split")
