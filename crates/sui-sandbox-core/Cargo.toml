@@ -47,6 +47,15 @@ fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0
 # VM extension support
 better_any = "0.1"
 
+# Parallel processing
+rayon = "1.10"
+
+# Unique IDs for logging
+uuid = { version = "1", features = ["v4"] }
+
+# Home directory detection
+dirs = "5"
+
 # Workspace crates
 sui-sandbox-types = { path = "../sui-types" }
 sui-data-fetcher = { path = "../sui-data-fetcher" }

@@ -6,11 +6,13 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
-//! use sui_move_interface_extractor::benchmark::output::{OutputFormatter, OutputFormat};
+//! ```
+//! use sui_sandbox_core::output::{OutputFormatter, OutputFormat};
 //!
 //! let formatter = OutputFormatter::new(OutputFormat::Json);
-//! let output = formatter.format(&results)?;
+//! let results = vec!["hello", "world"];
+//! let output = formatter.format_value(&results).unwrap();
+//! assert!(output.contains("hello"));
 //! ```
 
 use anyhow::Result;
