@@ -29,6 +29,9 @@ pub mod utilities;
 
 // Re-export main types
 pub use conversion::grpc_to_fetched_transaction;
-pub use graphql::GraphQLClient;
+pub use graphql::{GraphQLClient, JsonRpcClient, LoadedChildObject};
 pub use grpc::GrpcClient;
-pub use utilities::{collect_historical_versions, create_grpc_client};
+pub use utilities::{
+    collect_historical_versions, create_grpc_client, prefetch_dynamic_fields,
+    prefetch_dynamic_fields_default, DynamicFieldKey, PrefetchedChild, PrefetchedDynamicFields,
+};

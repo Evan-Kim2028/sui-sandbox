@@ -5,31 +5,32 @@ edition = "2021"
 description = "Data fetching layer for Sui network (GraphQL, gRPC, cache)"
 
 [dependencies]
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.22"
-ureq = { version = "2.9", features = ["json"] }
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4.3"
-
-# Workspace dependencies
-sui-sandbox-types = { path = "../sui-types" }
+# Core utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+ureq.workspace = true
+chrono.workspace = true
+hex.workspace = true
 
 # Async runtime
-tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "sync"] }
-tokio-stream = "0.1"
-futures = "0.3"
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
 
 # gRPC
-tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
-prost = "0.13"
-prost-types = "0.13"
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
 
-# Sui types (for ObjectID, etc.)
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-types" }
+# Sui types
+move-core-types.workspace = true
+sui-types.workspace = true
+
+# Workspace crates
+sui-sandbox-types.workspace = true
 
 [build-dependencies]
-tonic-build = "0.12"
-prost-build = "0.13"
+tonic-build.workspace = true
+prost-build.workspace = true

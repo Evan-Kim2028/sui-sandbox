@@ -353,6 +353,7 @@ mod tests {
             gas_price: Some(1),
             checkpoint: Some(100),
             timestamp_ms: Some(1234567890),
+            epoch: None,
             inputs: vec![GrpcInput::Pure {
                 bytes: vec![1, 2, 3],
             }],
@@ -391,6 +392,7 @@ mod tests {
             gas_price: Some(1),
             checkpoint: None,
             timestamp_ms: None,
+            epoch: None,
             inputs: vec![],
             commands: vec![],
             status: Some("failure".to_string()),

@@ -412,25 +412,28 @@ pub struct GrpcCheckpoint {
     pub sequence_number: u64,
     pub digest: String,
     pub timestamp_ms: Option<u64>,
+    /// The epoch this checkpoint belongs to.
+    pub epoch: u64,
     pub transactions: Vec<GrpcTransaction>,
 }
 
 impl GrpcCheckpoint {
     fn from_proto(proto: proto::Checkpoint) -> Self {
-        let timestamp_ms = proto
-            .summary
-            .as_ref()
+        let summary = proto.summary.as_ref();
+        let timestamp_ms = summary
             .and_then(|s| s.timestamp.as_ref())
             .map(|t| (t.seconds as u64) * 1000 + (t.nanos as u64) / 1_000_000);
+        let epoch = summary.and_then(|s| s.epoch).unwrap_or(0);
 
         Self {
             sequence_number: proto.sequence_number.unwrap_or(0),
             digest: proto.digest.unwrap_or_default(),
             timestamp_ms,
+            epoch,
             transactions: proto
                 .transactions
                 .into_iter()
-                .map(GrpcTransaction::from_proto)
+                .map(|tx| GrpcTransaction::from_proto(tx).with_epoch(epoch))
                 .collect(),
         }
     }
@@ -445,6 +448,9 @@ pub struct GrpcTransaction {
     pub gas_price: Option<u64>,
     pub checkpoint: Option<u64>,
     pub timestamp_ms: Option<u64>,
+    /// The epoch this transaction executed in.
+    /// This is populated when fetched via checkpoint, None for direct transaction fetch.
+    pub epoch: Option<u64>,
     pub inputs: Vec<GrpcInput>,
     pub commands: Vec<GrpcCommand>,
     pub status: Option<String>,
@@ -659,6 +665,7 @@ impl GrpcTransaction {
             gas_price: gas_payment.and_then(|g| g.price),
             checkpoint: proto.checkpoint,
             timestamp_ms,
+            epoch: None, // Will be set by checkpoint when fetched via checkpoint
             inputs,
             commands,
             status,
@@ -668,6 +675,12 @@ impl GrpcTransaction {
             created_objects,
             unchanged_consensus_objects,
         }
+    }
+
+    /// Create a copy with the epoch set.
+    pub fn with_epoch(mut self, epoch: u64) -> Self {
+        self.epoch = Some(epoch);
+        self
     }
 
     /// Check if this is a programmable transaction (not a system tx).
@@ -976,36 +989,65 @@ fn extract_move_struct_from_object_bcs(bcs: &[u8], object_id: &str) -> Option<Ve
         return None;
     }
 
-    // Search for the object_id in the BCS data
+    // Collect ALL positions where the object_id appears in the BCS data
+    let mut matches: Vec<usize> = Vec::new();
     for i in 0..bcs.len().saturating_sub(32) {
         if &bcs[i..i + 32] == id_bytes.as_slice() {
-            // Found the UID at position i
-            // The Vec<u8> length prefix is just before the UID (1-3 bytes ULEB128)
+            matches.push(i);
+        }
+    }
 
-            // Try reading ULEB128 starting from different positions before i
-            // Start with 2 bytes (most common for structs 128-16K bytes)
-            for prefix_start_offset in [2, 1, 3] {
-                if i >= prefix_start_offset {
-                    let len_start = i - prefix_start_offset;
-                    if let Some((len, bytes_read)) = read_uleb128(&bcs[len_start..]) {
-                        // Check if this ULEB128 ends exactly at position i
-                        if len_start + bytes_read == i {
-                            // Valid length prefix found
-                            let contents_end = i + len;
-                            if contents_end <= bcs.len() {
-                                return Some(bcs[i..contents_end].to_vec());
+    if matches.is_empty() {
+        return None;
+    }
+
+    // Try each match position, looking for the best ULEB128 length prefix
+    // The correct position will have a ULEB128 that:
+    // 1. Ends exactly at the UID position
+    // 2. Specifies a length that fits within the remaining BCS data
+    // We prefer LARGER lengths because smaller lengths might be coincidental byte patterns
+    let mut best_result: Option<(usize, usize, usize)> = None; // (pos, len, offset)
+
+    for &i in &matches {
+        // Try reading ULEB128 starting from different positions before i
+        // Try offsets 1-5 bytes (ULEB128 can encode up to 2^35 with 5 bytes)
+        for prefix_start_offset in 1..=5 {
+            if i >= prefix_start_offset {
+                let len_start = i - prefix_start_offset;
+                if let Some((len, bytes_read)) = read_uleb128(&bcs[len_start..]) {
+                    // Check if this ULEB128 ends exactly at position i
+                    if len_start + bytes_read == i {
+                        // Valid length prefix found
+                        let contents_end = i + len;
+                        if contents_end <= bcs.len() {
+                            // Additional validation: len should be substantial (at least a UID)
+                            if len >= 32 {
+                                // Prefer the largest valid length we find
+                                if best_result.is_none() || len > best_result.unwrap().1 {
+                                    best_result = Some((i, len, prefix_start_offset));
+                                }
                             }
                         }
                     }
                 }
             }
-
-            // Fallback: can't find valid length prefix, return from UID to end
-            return Some(bcs[i..].to_vec());
         }
     }
 
-    None
+    if let Some((i, len, _offset)) = best_result {
+        let contents_end = i + len;
+        return Some(bcs[i..contents_end].to_vec());
+    }
+
+    // Fallback: use the first match position and return from UID to end
+    // This handles cases where we can't find a valid ULEB128 prefix
+    let i = matches[0];
+    eprintln!(
+        "[BCS extract] No valid ULEB128 found, falling back: pos {} returning {} bytes",
+        i,
+        bcs.len() - i
+    );
+    Some(bcs[i..].to_vec())
 }
 
 /// Read a ULEB128 encoded unsigned integer.
@@ -1174,6 +1216,7 @@ mod tests {
             gas_price: Some(1),
             checkpoint: None,
             timestamp_ms: None,
+            epoch: None,
             inputs: vec![],
             commands: vec![GrpcCommand::MoveCall {
                 package: "0x2".to_string(),
@@ -1202,6 +1245,7 @@ mod tests {
             gas_price: Some(1),
             checkpoint: None,
             timestamp_ms: None,
+            epoch: None,
             inputs: vec![],
             execution_error: None,
             commands: vec![],
@@ -1224,6 +1268,7 @@ mod tests {
             gas_price: Some(1),
             checkpoint: None,
             timestamp_ms: None,
+            epoch: None,
             inputs: vec![],
             commands: vec![],
             status: None,
@@ -1246,6 +1291,7 @@ mod tests {
             gas_price: None,
             checkpoint: None,
             timestamp_ms: None,
+            epoch: None,
             inputs: vec![],
             commands: vec![],
             status: None,

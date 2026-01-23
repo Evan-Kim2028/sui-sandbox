@@ -2307,6 +2307,135 @@ impl GraphQLClient {
     }
 }
 
+// =============================================================================
+// JSON-RPC Client for sui_getLoadedChildObjects
+// =============================================================================
+
+/// A loaded child object returned by sui_getLoadedChildObjects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadedChildObject {
+    /// Object ID of the child object
+    pub object_id: String,
+    /// Sequence number (version) at which the object was loaded
+    pub sequence_number: u64,
+}
+
+/// JSON-RPC client for Sui Full Node API calls not available in GraphQL.
+pub struct JsonRpcClient {
+    endpoint: String,
+}
+
+impl JsonRpcClient {
+    /// Create a client for mainnet.
+    pub fn mainnet() -> Self {
+        Self {
+            endpoint: "https://fullnode.mainnet.sui.io:443".to_string(),
+        }
+    }
+
+    /// Create a client for testnet.
+    pub fn testnet() -> Self {
+        Self {
+            endpoint: "https://fullnode.testnet.sui.io:443".to_string(),
+        }
+    }
+
+    /// Create a client with a custom endpoint.
+    pub fn new(endpoint: &str) -> Self {
+        Self {
+            endpoint: endpoint.to_string(),
+        }
+    }
+
+    /// Execute a JSON-RPC call.
+    fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        });
+
+        let response: Value = ureq::post(&self.endpoint)
+            .set("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| anyhow!("JSON-RPC request failed: {}", e))?
+            .into_json()
+            .map_err(|e| anyhow!("Failed to parse JSON-RPC response: {}", e))?;
+
+        // Check for JSON-RPC errors
+        if let Some(error) = response.get("error") {
+            let msg = error
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+            return Err(anyhow!("JSON-RPC error {}: {}", code, msg));
+        }
+
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow!("No result in JSON-RPC response"))
+    }
+
+    /// Get loaded child objects for a transaction.
+    ///
+    /// This returns all child objects that were dynamically loaded during transaction
+    /// execution (via dynamic_object_field lookups, etc). This is essential for
+    /// historical transaction replay when the `unchanged_loaded_runtime_objects`
+    /// field doesn't include all dynamically accessed children.
+    ///
+    /// # Arguments
+    /// * `tx_digest` - The transaction digest (Base58 encoded)
+    ///
+    /// # Returns
+    /// A vector of (object_id, version) pairs for each loaded child object.
+    pub fn get_loaded_child_objects(&self, tx_digest: &str) -> Result<Vec<LoadedChildObject>> {
+        let params = serde_json::json!([tx_digest]);
+        let result = self.rpc_call("sui_getLoadedChildObjects", params)?;
+
+        // Parse the response
+        // Format: { "loadedChildObjects": [{ "objectId": "0x...", "sequenceNumber": "123" }] }
+        let loaded = result
+            .get("loadedChildObjects")
+            .and_then(|l| l.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|obj| {
+                        let object_id = obj.get("objectId").and_then(|o| o.as_str())?.to_string();
+                        // sequenceNumber can be a string or number
+                        let sequence_number = obj.get("sequenceNumber").and_then(|s| {
+                            s.as_u64()
+                                .or_else(|| s.as_str().and_then(|ss| ss.parse().ok()))
+                        })?;
+                        Some(LoadedChildObject {
+                            object_id,
+                            sequence_number,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(loaded)
+    }
+
+    /// Get loaded child objects with version map.
+    ///
+    /// Convenience wrapper that returns a HashMap for easy lookup.
+    pub fn get_loaded_child_objects_map(
+        &self,
+        tx_digest: &str,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let loaded = self.get_loaded_child_objects(tx_digest)?;
+        Ok(loaded
+            .into_iter()
+            .map(|obj| (obj.object_id, obj.sequence_number))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
