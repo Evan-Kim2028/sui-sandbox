@@ -84,20 +84,12 @@ async fn build_sui_client(args: &Args) -> Result<sui_sdk::SuiClient> {
 
 /// Run transaction replay mode.
 ///
-/// Note: Download functionality has been removed in v0.6.0. Transactions must be
-/// pre-cached in the cache directory. Use the DataFetcher API to download transactions.
+/// Transactions must be pre-cached in the cache directory.
 fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Result<()> {
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
     use sui_move_interface_extractor::benchmark::tx_replay::{
-        replay_parallel, CachedTransaction, TransactionCache,
+        replay_parallel, uses_only_framework, CachedTransaction, TransactionCache,
     };
-
-    // Download-only mode is no longer supported via CLI
-    if args.download_only {
-        return Err(anyhow!(
-            "Download mode has been removed in v0.6.0. Use the DataFetcher API to download transactions."
-        ));
-    }
 
     // Handle cache operations
     let cache_dir = args.cache_dir.as_ref().ok_or_else(|| {
@@ -108,8 +100,8 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
 
     // Clear cache if requested
     if args.clear_cache {
-        let cleared = cache.clear()?;
-        eprintln!("Cleared {} cached transactions", cleared);
+        cache.clear()?;
+        eprintln!("Cleared cached transactions");
         return Ok(());
     }
 
@@ -122,7 +114,7 @@ fn run_tx_replay(args: &sui_move_interface_extractor::args::TxReplayArgs) -> Res
         match cache.load(digest) {
             Ok(cached) => {
                 // Filter to framework-only if requested
-                if args.framework_only && !cached.transaction.uses_only_framework() {
+                if args.framework_only && !uses_only_framework(&cached.transaction) {
                     continue;
                 }
                 cached_txs.push(cached);
@@ -187,6 +179,9 @@ fn run_tx_replay_with_cached_transactions(
     cached_txs: Vec<sui_move_interface_extractor::benchmark::tx_replay::CachedTransaction>,
 ) -> Result<()> {
     use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+    use sui_move_interface_extractor::benchmark::tx_replay::{
+        replay_with_objects, summary, third_party_packages,
+    };
     use sui_move_interface_extractor::benchmark::vm::VMHarness;
 
     eprintln!("Processing {} transactions...\n", cached_txs.len());
@@ -205,14 +200,14 @@ fn run_tx_replay_with_cached_transactions(
         let tx = &cached.transaction;
 
         // Print summary
-        println!("{}", tx.summary());
+        println!("{}", summary(tx));
 
         if args.verbose {
             println!("  Commands: {}", tx.commands.len());
             println!("  Inputs: {}", tx.inputs.len());
 
             // Show packages used
-            let third_party = tx.third_party_packages();
+            let third_party = third_party_packages(tx);
             if third_party.is_empty() {
                 println!("  Packages: framework only");
             } else {
@@ -274,7 +269,7 @@ fn run_tx_replay_with_cached_transactions(
             total_replayed += 1;
 
             match VMHarness::new(&resolver, false) {
-                Ok(mut harness) => match tx.replay_with_objects(&mut harness, &cached.objects) {
+                Ok(mut harness) => match replay_with_objects(tx, &mut harness, &cached.objects) {
                     Ok(result) => {
                         if result.local_success {
                             total_success += 1;

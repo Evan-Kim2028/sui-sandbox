@@ -1,0 +1,13 @@
+[package]
+name = "sui-sandbox-types"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types for sui-sandbox workspace"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+# Move types for AccountAddress
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-core-types" }

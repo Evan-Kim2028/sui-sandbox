@@ -4,7 +4,7 @@ version = "0.7.1"
 edition = "2021"
 
 [workspace]
-members = ["crates/pyo3-bindings"]
+members = ["crates/sui-types", "crates/sui-data-fetcher", "crates/sui-package-extractor", "crates/sui-sandbox-core"]
 
 [dependencies]
 anyhow = "1"
@@ -79,6 +79,11 @@ dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+# Workspace crates
+sui-sandbox-types = { path = "crates/sui-types" }
+sui-data-fetcher = { path = "crates/sui-data-fetcher" }
+sui-package-extractor = { path = "crates/sui-package-extractor" }
+
 # gRPC support for real-time transaction streaming
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 prost = "0.13"
@@ -111,3 +116,11 @@ path = "examples/scallop_deposit.rs"
 [[example]]
 name = "deepbook_replay"
 path = "examples/deepbook_replay.rs"
+
+[[example]]
+name = "kriya_swap"
+path = "examples/kriya_swap.rs"
+
+[[example]]
+name = "inspect_df"
+path = "examples/inspect_df.rs"

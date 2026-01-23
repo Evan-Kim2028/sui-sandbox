@@ -35,20 +35,22 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```no_run
 //! use sui_move_interface_extractor::cache::CacheManager;
 //!
 //! // Create cache manager
-//! let mut cache = CacheManager::new(".tx-cache")?;
+//! let mut cache = CacheManager::new(".tx-cache").unwrap();
 //!
 //! // Read-path: Check cache first
-//! if let Some(pkg) = cache.get_package("0x2")? {
+//! if let Some(pkg) = cache.get_package("0x2").unwrap() {
 //!     println!("Found {} modules, version {}", pkg.modules.len(), pkg.version);
 //! }
 //!
 //! // Write-path: Cache network fetches
-//! cache.put_package("0x123", 1, modules)?;
-//! cache.put_object("0xabc", 5, Some("0x2::coin::Coin<0x2::sui::SUI>"), bcs_bytes)?;
+//! let modules: Vec<(String, Vec<u8>)> = vec![];
+//! let bcs_bytes: Vec<u8> = vec![];
+//! cache.put_package("0x123", 1, modules).unwrap();
+//! cache.put_object("0xabc", 5, Some("0x2::coin::Coin<0x2::sui::SUI>".to_string()), bcs_bytes).unwrap();
 //! ```
 
 mod index;
@@ -59,8 +61,8 @@ pub use index::{CachedObjectEntry, CachedPackageEntry};
 pub use manager::{CacheManager, CachedObject, CachedPackage};
 pub use normalize::normalize_address;
 
-// Re-export the canonical CachedTransaction from tx_replay for use elsewhere
-pub use crate::benchmark::tx_replay::{CachedTransaction, TransactionCache};
+// Re-export the canonical CachedTransaction from sui-sandbox-types
+pub use sui_sandbox_types::{CachedTransaction, TransactionCache};
 
 /// Statistics about the cache contents.
 #[derive(Debug, Clone, Default)]

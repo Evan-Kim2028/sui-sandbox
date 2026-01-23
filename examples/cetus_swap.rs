@@ -559,11 +559,13 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
     harness.set_address_aliases(address_aliases.clone());
 
-    let result = cached.transaction.replay_with_objects_and_aliases(
-        &mut harness,
-        &cached.objects,
-        &address_aliases,
-    )?;
+    let result =
+        sui_move_interface_extractor::benchmark::tx_replay::replay_with_objects_and_aliases(
+            &cached.transaction,
+            &mut harness,
+            &cached.objects,
+            &address_aliases,
+        )?;
 
     println!(
         "\n  Local execution: {}",

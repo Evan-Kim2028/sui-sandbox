@@ -18,14 +18,8 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
-//! // Load a cached transaction
-//! let cache = TransactionCache::new(".tx-cache")?;
-//! let cached = cache.load("digest_here")?;
-//!
-//! // Replay it locally
-//! let result = cached.transaction.replay(&mut harness)?;
-//! ```
+//! See `examples/` for complete transaction replay examples.
+//! Requires a `.tx-cache` directory with cached transaction data.
 //!
 //! ## Known Limitations: Dynamic Field Traversal
 //!
@@ -50,7 +44,7 @@ use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::benchmark::ptb::{Argument, Command, InputValue, ObjectInput};
 use crate::benchmark::vm::VMHarness;
@@ -62,371 +56,16 @@ pub use crate::benchmark::types::{
     type_cache_size as type_tag_cache_size,
 };
 
-/// Object ID type (32-byte address)
-pub type ObjectID = AccountAddress;
+// ============================================================================
+// Re-export all types from sui-sandbox-types
+// ============================================================================
 
-/// Transaction digest (32 bytes, base58 encoded in JSON)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TransactionDigest(pub String);
-
-impl TransactionDigest {
-    pub fn new(digest: impl Into<String>) -> Self {
-        Self(digest.into())
-    }
-}
-
-/// Represents a fetched transaction from the Sui network.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FetchedTransaction {
-    /// Transaction digest
-    pub digest: TransactionDigest,
-
-    /// Sender address
-    pub sender: AccountAddress,
-
-    /// Gas budget
-    pub gas_budget: u64,
-
-    /// Gas price
-    pub gas_price: u64,
-
-    /// The PTB commands in this transaction
-    pub commands: Vec<PtbCommand>,
-
-    /// Input objects (owned, shared, immutable)
-    pub inputs: Vec<TransactionInput>,
-
-    /// Transaction effects (for comparison)
-    pub effects: Option<TransactionEffectsSummary>,
-
-    /// Timestamp (milliseconds since epoch)
-    pub timestamp_ms: Option<u64>,
-
-    /// Checkpoint that included this transaction
-    pub checkpoint: Option<u64>,
-}
-
-/// A command in a Programmable Transaction Block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum PtbCommand {
-    /// Move function call
-    MoveCall {
-        package: String,
-        module: String,
-        function: String,
-        type_arguments: Vec<String>,
-        arguments: Vec<PtbArgument>,
-    },
-
-    /// Split coins
-    SplitCoins {
-        coin: PtbArgument,
-        amounts: Vec<PtbArgument>,
-    },
-
-    /// Merge coins
-    MergeCoins {
-        destination: PtbArgument,
-        sources: Vec<PtbArgument>,
-    },
-
-    /// Transfer objects
-    TransferObjects {
-        objects: Vec<PtbArgument>,
-        address: PtbArgument,
-    },
-
-    /// Make move vector
-    MakeMoveVec {
-        type_arg: Option<String>,
-        elements: Vec<PtbArgument>,
-    },
-
-    /// Publish new package
-    Publish {
-        modules: Vec<String>, // base64 encoded
-        dependencies: Vec<String>,
-    },
-
-    /// Upgrade package
-    Upgrade {
-        modules: Vec<String>,
-        package: String,
-        ticket: PtbArgument,
-    },
-}
-
-/// Argument reference in a PTB command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum PtbArgument {
-    /// Reference to a transaction input
-    Input { index: u16 },
-
-    /// Reference to a previous command result
-    Result { index: u16 },
-
-    /// Reference to a nested result (for multi-return functions)
-    NestedResult { index: u16, result_index: u16 },
-
-    /// Gas coin (special input)
-    GasCoin,
-}
-
-/// Transaction input object or pure value.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum TransactionInput {
-    /// Pure BCS-encoded value
-    Pure {
-        #[serde(with = "base64_bytes")]
-        bytes: Vec<u8>,
-    },
-
-    /// Object reference (owned)
-    Object {
-        object_id: String,
-        version: u64,
-        digest: String,
-    },
-
-    /// Shared object reference
-    SharedObject {
-        object_id: String,
-        initial_shared_version: u64,
-        mutable: bool,
-    },
-
-    /// Immutable object (e.g., package, Clock)
-    ImmutableObject {
-        object_id: String,
-        version: u64,
-        digest: String,
-    },
-
-    /// Receiving object
-    Receiving {
-        object_id: String,
-        version: u64,
-        digest: String,
-    },
-}
-
-/// Summary of transaction effects for comparison.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TransactionEffectsSummary {
-    /// Transaction status
-    pub status: TransactionStatus,
-
-    /// Created object IDs
-    pub created: Vec<String>,
-
-    /// Mutated object IDs
-    pub mutated: Vec<String>,
-
-    /// Deleted object IDs
-    pub deleted: Vec<String>,
-
-    /// Wrapped object IDs
-    pub wrapped: Vec<String>,
-
-    /// Unwrapped object IDs
-    pub unwrapped: Vec<String>,
-
-    /// Gas used
-    pub gas_used: GasSummary,
-
-    /// Events emitted
-    pub events_count: usize,
-
-    /// Shared object versions at transaction time (object_id -> version)
-    /// This is extracted from effects.sharedObjects for historical replay.
-    #[serde(default)]
-    pub shared_object_versions: std::collections::HashMap<String, u64>,
-}
-
-/// Transaction execution status.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TransactionStatus {
-    Success,
-    Failure { error: String },
-}
-
-/// Gas usage summary.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GasSummary {
-    pub computation_cost: u64,
-    pub storage_cost: u64,
-    pub storage_rebate: u64,
-    pub non_refundable_storage_fee: u64,
-}
-
-/// Result of replaying a transaction locally.
-#[derive(Debug, Clone, Serialize)]
-pub struct ReplayResult {
-    /// Original transaction digest
-    pub digest: TransactionDigest,
-
-    /// Whether local execution succeeded
-    pub local_success: bool,
-
-    /// Local execution error (if any)
-    pub local_error: Option<String>,
-
-    /// Comparison with on-chain effects
-    pub comparison: Option<EffectsComparison>,
-
-    /// Commands that were executed
-    pub commands_executed: usize,
-
-    /// Commands that failed
-    pub commands_failed: usize,
-}
-
-/// Comparison between local and on-chain effects.
-#[derive(Debug, Clone, Serialize)]
-pub struct EffectsComparison {
-    /// Status match (both success or both failure)
-    pub status_match: bool,
-
-    /// Created objects count match
-    pub created_count_match: bool,
-
-    /// Mutated objects count match
-    pub mutated_count_match: bool,
-
-    /// Deleted objects count match
-    pub deleted_count_match: bool,
-
-    /// Overall match score (0.0 - 1.0)
-    pub match_score: f64,
-
-    /// Notes about differences
-    pub notes: Vec<String>,
-}
-
-impl EffectsComparison {
-    /// Create a comparison between local and on-chain effects.
-    ///
-    /// Note: On-chain effects always include gas object mutations (from gas consumption).
-    /// Our local execution doesn't track gas, so we adjust for this when comparing
-    /// mutated object counts.
-    pub fn compare(
-        on_chain: &TransactionEffectsSummary,
-        local_success: bool,
-        local_created: usize,
-        local_mutated: usize,
-        local_deleted: usize,
-    ) -> Self {
-        let mut notes = Vec::new();
-        let mut match_points = 0.0;
-        let total_points = 4.0;
-
-        // Compare status
-        let status_match = matches!(
-            (&on_chain.status, local_success),
-            (TransactionStatus::Success, true) | (TransactionStatus::Failure { .. }, false)
-        );
-        if status_match {
-            match_points += 1.0;
-        } else {
-            notes.push(format!(
-                "Status mismatch: on-chain={:?}, local={}",
-                on_chain.status,
-                if local_success { "success" } else { "failure" }
-            ));
-        }
-
-        // Compare created count
-        let created_count_match = on_chain.created.len() == local_created;
-        if created_count_match {
-            match_points += 1.0;
-        } else {
-            notes.push(format!(
-                "Created count mismatch: on-chain={}, local={}",
-                on_chain.created.len(),
-                local_created
-            ));
-        }
-
-        // Compare mutated count
-        // On-chain always includes gas object mutation (1 or more objects for gas).
-        // Our local execution doesn't track gas, so we allow for this difference.
-        // Consider it a match if:
-        // - exact match, OR
-        // - on-chain has 1 more (gas object), OR
-        // - on-chain has 2 more (gas object + gas payment split scenarios)
-        let on_chain_mutated = on_chain.mutated.len();
-        let mutated_diff = on_chain_mutated as isize - local_mutated as isize;
-        let mutated_count_match = mutated_diff == 0 || mutated_diff == 1 || mutated_diff == 2;
-        if mutated_count_match {
-            match_points += 1.0;
-        } else {
-            notes.push(format!(
-                "Mutated count mismatch: on-chain={}, local={} (diff={})",
-                on_chain_mutated, local_mutated, mutated_diff
-            ));
-        }
-
-        // Compare deleted count
-        let deleted_count_match = on_chain.deleted.len() == local_deleted;
-        if deleted_count_match {
-            match_points += 1.0;
-        } else {
-            notes.push(format!(
-                "Deleted count mismatch: on-chain={}, local={}",
-                on_chain.deleted.len(),
-                local_deleted
-            ));
-        }
-
-        let match_score = match_points / total_points;
-
-        Self {
-            status_match,
-            created_count_match,
-            mutated_count_match,
-            deleted_count_match,
-            match_score,
-            notes,
-        }
-    }
-}
-
-/// Full object data returned from RPC.
-#[derive(Debug, Clone)]
-pub struct FetchedObject {
-    /// BCS bytes of the object content.
-    pub bcs_bytes: Vec<u8>,
-    /// Type string (e.g., "0x2::coin::Coin<0x2::sui::SUI>").
-    pub type_string: Option<String>,
-    /// Whether the object is shared.
-    pub is_shared: bool,
-    /// Whether the object is immutable.
-    pub is_immutable: bool,
-    /// Object version.
-    pub version: u64,
-}
-
-/// Entry for a dynamic field child (from JSON-RPC `suix_getDynamicFields`).
-#[derive(Debug, Clone)]
-pub struct DynamicFieldEntry {
-    /// Type of the key/name (e.g., "u64", "0x2::object::ID")
-    pub name_type: String,
-    /// JSON value of the key/name
-    pub name_json: Option<serde_json::Value>,
-    /// BCS-encoded key bytes
-    pub name_bcs: Option<Vec<u8>>,
-    /// Object ID of the dynamic field wrapper
-    pub object_id: String,
-    /// Full type of the stored value
-    pub object_type: Option<String>,
-    /// Version of the wrapper object
-    pub version: Option<u64>,
-    /// Digest of the wrapper object
-    pub digest: Option<String>,
-}
+pub use sui_sandbox_types::{
+    transaction::base64_bytes, CachedDynamicField, CachedTransaction, DynamicFieldEntry,
+    EffectsComparison, FetchedObject, FetchedTransaction, GasSummary, ObjectID, PtbArgument,
+    PtbCommand, ReplayResult, TransactionCache, TransactionDigest, TransactionEffectsSummary,
+    TransactionInput, TransactionStatus,
+};
 
 // ============================================================================
 // Dynamic Field ID Derivation
@@ -455,13 +94,16 @@ pub struct DynamicFieldEntry {
 /// The derived ObjectID (32 bytes) as an AccountAddress
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::tx_replay::derive_dynamic_field_id;
+/// use move_core_types::account_address::AccountAddress;
 /// use move_core_types::language_storage::TypeTag;
 ///
-/// let parent = AccountAddress::from_hex_literal("0x6dd50d...").unwrap();
+/// let parent = AccountAddress::from_hex_literal("0x2").unwrap();
 /// let key: u64 = 481316;
 /// let key_bytes = bcs::to_bytes(&key).unwrap();
 /// let obj_id = derive_dynamic_field_id(parent, &TypeTag::U64, &key_bytes).unwrap();
+/// assert!(obj_id.to_hex_literal().starts_with("0x"));
 /// ```
 pub fn derive_dynamic_field_id(
     parent: AccountAddress,
@@ -507,323 +149,6 @@ pub fn derive_dynamic_field_id_u64(parent: AccountAddress, key: u64) -> Result<A
     let key_bytes =
         bcs::to_bytes(&key).map_err(|e| anyhow!("Failed to BCS-serialize u64 key: {}", e))?;
     derive_dynamic_field_id(parent, &TypeTag::U64, &key_bytes)
-}
-
-// ============================================================================
-// Transaction Cache
-// ============================================================================
-
-/// Cached transaction data including packages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedTransaction {
-    /// The fetched transaction
-    pub transaction: FetchedTransaction,
-    /// Cached package bytecode (package_id -> [(module_name, module_bytes_base64)])
-    pub packages: std::collections::HashMap<String, Vec<(String, String)>>,
-    /// Input object data (object_id -> bytes_base64)
-    pub objects: std::collections::HashMap<String, String>,
-    /// Object type information (object_id -> type_string)
-    #[serde(default)]
-    pub object_types: std::collections::HashMap<String, String>,
-    /// Object versions at transaction time (object_id -> version)
-    #[serde(default)]
-    pub object_versions: std::collections::HashMap<String, u64>,
-    /// Historical object data at transaction-time versions (object_id -> bytes_base64)
-    /// These are objects fetched at their specific version from gRPC archive
-    #[serde(default)]
-    pub historical_objects: std::collections::HashMap<String, String>,
-    /// Dynamic field children (child_id -> CachedDynamicField)
-    /// Pre-fetched dynamic field data for replay
-    #[serde(default)]
-    pub dynamic_field_children: std::collections::HashMap<String, CachedDynamicField>,
-    /// Package upgrade mappings (original_address -> upgraded_address)
-    /// Maps original package addresses to their upgraded versions
-    #[serde(default)]
-    pub package_upgrades: std::collections::HashMap<String, String>,
-    /// Cache timestamp
-    pub cached_at: u64,
-}
-
-/// Cached dynamic field child data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CachedDynamicField {
-    /// Parent object ID
-    pub parent_id: String,
-    /// Type string of the dynamic field
-    pub type_string: String,
-    /// BCS bytes (base64 encoded)
-    pub bcs_base64: String,
-    /// Version at which this was fetched
-    pub version: u64,
-}
-
-impl CachedTransaction {
-    /// Create a new cached transaction.
-    pub fn new(tx: FetchedTransaction) -> Self {
-        Self {
-            transaction: tx,
-            packages: std::collections::HashMap::new(),
-            objects: std::collections::HashMap::new(),
-            object_types: std::collections::HashMap::new(),
-            object_versions: std::collections::HashMap::new(),
-            historical_objects: std::collections::HashMap::new(),
-            dynamic_field_children: std::collections::HashMap::new(),
-            package_upgrades: std::collections::HashMap::new(),
-            cached_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-        }
-    }
-
-    /// Add package bytecode to the cache.
-    pub fn add_package(&mut self, package_id: String, modules: Vec<(String, Vec<u8>)>) {
-        use base64::Engine;
-        let encoded: Vec<(String, String)> = modules
-            .into_iter()
-            .map(|(name, bytes)| {
-                (
-                    name,
-                    base64::engine::general_purpose::STANDARD.encode(&bytes),
-                )
-            })
-            .collect();
-        self.packages.insert(package_id, encoded);
-    }
-
-    /// Add object data to the cache.
-    pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
-        use base64::Engine;
-        self.objects.insert(
-            object_id,
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
-        );
-    }
-
-    /// Add object data with type information to the cache.
-    pub fn add_object_with_type(
-        &mut self,
-        object_id: String,
-        bytes: Vec<u8>,
-        object_type: Option<String>,
-    ) {
-        use base64::Engine;
-        self.objects.insert(
-            object_id.clone(),
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
-        );
-        if let Some(type_str) = object_type {
-            self.object_types.insert(object_id, type_str);
-        }
-    }
-
-    /// Get decoded package modules.
-    pub fn get_package_modules(&self, package_id: &str) -> Option<Vec<(String, Vec<u8>)>> {
-        use base64::Engine;
-        self.packages.get(package_id).map(|modules| {
-            modules
-                .iter()
-                .filter_map(|(name, b64)| {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .ok()
-                        .map(|bytes| (name.clone(), bytes))
-                })
-                .collect()
-        })
-    }
-
-    /// Get decoded object bytes.
-    pub fn get_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
-        use base64::Engine;
-        self.objects
-            .get(object_id)
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-    }
-
-    /// Get historical object bytes (at transaction-time version).
-    /// Falls back to regular objects if no historical version is cached.
-    pub fn get_historical_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
-        use base64::Engine;
-        // Try historical first, then fall back to regular objects
-        self.historical_objects
-            .get(object_id)
-            .or_else(|| self.objects.get(object_id))
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-    }
-
-    /// Get object version at transaction time.
-    pub fn get_object_version(&self, object_id: &str) -> Option<u64> {
-        self.object_versions.get(object_id).copied()
-    }
-
-    /// Add historical object data to the cache.
-    pub fn add_historical_object(&mut self, object_id: String, bytes: Vec<u8>, version: u64) {
-        use base64::Engine;
-        self.historical_objects.insert(
-            object_id.clone(),
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
-        );
-        self.object_versions.insert(object_id, version);
-    }
-
-    /// Add a dynamic field child to the cache.
-    pub fn add_dynamic_field_child(
-        &mut self,
-        child_id: String,
-        parent_id: String,
-        type_string: String,
-        bytes: Vec<u8>,
-        version: u64,
-    ) {
-        use base64::Engine;
-        self.dynamic_field_children.insert(
-            child_id,
-            CachedDynamicField {
-                parent_id,
-                type_string,
-                bcs_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                version,
-            },
-        );
-    }
-
-    /// Get decoded dynamic field child data.
-    pub fn get_dynamic_field_child(
-        &self,
-        child_id: &str,
-    ) -> Option<(String, String, Vec<u8>, u64)> {
-        use base64::Engine;
-        self.dynamic_field_children.get(child_id).and_then(|df| {
-            base64::engine::general_purpose::STANDARD
-                .decode(&df.bcs_base64)
-                .ok()
-                .map(|bytes| {
-                    (
-                        df.parent_id.clone(),
-                        df.type_string.clone(),
-                        bytes,
-                        df.version,
-                    )
-                })
-        })
-    }
-
-    /// Get all dynamic field children for a parent.
-    pub fn get_dynamic_fields_for_parent(
-        &self,
-        parent_id: &str,
-    ) -> Vec<(String, String, Vec<u8>, u64)> {
-        use base64::Engine;
-        self.dynamic_field_children
-            .iter()
-            .filter(|(_, df)| df.parent_id == parent_id)
-            .filter_map(|(child_id, df)| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(&df.bcs_base64)
-                    .ok()
-                    .map(|bytes| (child_id.clone(), df.type_string.clone(), bytes, df.version))
-            })
-            .collect()
-    }
-
-    /// Add a package upgrade mapping.
-    pub fn add_package_upgrade(&mut self, original_address: String, upgraded_address: String) {
-        self.package_upgrades
-            .insert(original_address, upgraded_address);
-    }
-
-    /// Get the upgraded package address for an original address.
-    pub fn get_upgraded_package(&self, original_address: &str) -> Option<&String> {
-        self.package_upgrades.get(original_address)
-    }
-
-    /// Get objects map with historical objects merged in.
-    /// Historical objects take precedence over regular objects.
-    pub fn get_merged_objects(&self) -> std::collections::HashMap<String, String> {
-        let mut merged = self.objects.clone();
-        for (id, b64) in &self.historical_objects {
-            merged.insert(id.clone(), b64.clone());
-        }
-        merged
-    }
-
-    /// Convert to PTB commands using cached object data.
-    pub fn to_ptb_commands(&self) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        self.transaction.to_ptb_commands_with_objects(&self.objects)
-    }
-}
-
-/// Transaction cache for storing fetched transactions and their dependencies.
-pub struct TransactionCache {
-    /// Cache directory path
-    cache_dir: std::path::PathBuf,
-}
-
-impl TransactionCache {
-    /// Create a new transaction cache with the given directory.
-    pub fn new(cache_dir: impl Into<std::path::PathBuf>) -> Result<Self> {
-        let cache_dir = cache_dir.into();
-        std::fs::create_dir_all(&cache_dir)?;
-        Ok(Self { cache_dir })
-    }
-
-    /// Get the cache file path for a transaction digest.
-    fn cache_path(&self, digest: &str) -> std::path::PathBuf {
-        self.cache_dir.join(format!("{}.json", digest))
-    }
-
-    /// Check if a transaction is cached.
-    pub fn has(&self, digest: &str) -> bool {
-        self.cache_path(digest).exists()
-    }
-
-    /// Load a cached transaction.
-    pub fn load(&self, digest: &str) -> Result<CachedTransaction> {
-        let path = self.cache_path(digest);
-        let content = std::fs::read_to_string(&path)?;
-        let cached: CachedTransaction = serde_json::from_str(&content)?;
-        Ok(cached)
-    }
-
-    /// Save a transaction to the cache.
-    pub fn save(&self, cached: &CachedTransaction) -> Result<()> {
-        let path = self.cache_path(&cached.transaction.digest.0);
-        let content = serde_json::to_string_pretty(cached)?;
-        std::fs::write(&path, content)?;
-        Ok(())
-    }
-
-    /// List all cached transaction digests.
-    pub fn list(&self) -> Result<Vec<String>> {
-        let mut digests = Vec::new();
-        for entry in std::fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Some(stem) = path.file_stem() {
-                    digests.push(stem.to_string_lossy().to_string());
-                }
-            }
-        }
-        Ok(digests)
-    }
-
-    /// Get the number of cached transactions.
-    pub fn count(&self) -> usize {
-        self.list().map(|l| l.len()).unwrap_or(0)
-    }
-
-    /// Clear all cached transactions.
-    pub fn clear(&self) -> Result<usize> {
-        let digests = self.list()?;
-        let count = digests.len();
-        for digest in digests {
-            let path = self.cache_path(&digest);
-            std::fs::remove_file(path)?;
-        }
-        Ok(count)
-    }
 }
 
 // ============================================================================
@@ -941,7 +266,8 @@ pub fn replay_parallel(
             // Create harness and replay with address rewriting
             match VMHarness::new(&local_resolver, false) {
                 Ok(mut harness) => {
-                    match cached.transaction.replay_with_objects_and_aliases(
+                    match replay_with_objects_and_aliases(
+                        &cached.transaction,
                         &mut harness,
                         &cached.objects,
                         &address_aliases,
@@ -1000,634 +326,614 @@ pub fn replay_parallel(
     })
 }
 
-impl FetchedTransaction {
-    /// Convert this transaction to PTB commands for local execution.
-    pub fn to_ptb_commands(&self) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        // Use a large default balance for simulation (1 billion SUI = 10^18 MIST)
-        // This ensures SplitCoins won't fail due to insufficient balance
-        // The actual gas coin balance on-chain is typically much larger than gas_budget
-        const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000; // 1B SUI in MIST
-        self.to_ptb_commands_internal(DEFAULT_GAS_BALANCE, &std::collections::HashMap::new())
-    }
+// ============================================================================
+// FetchedTransaction Extension Methods
+// ============================================================================
 
-    /// Convert this transaction to PTB commands using cached object data.
-    pub fn to_ptb_commands_with_objects(
-        &self,
-        cached_objects: &std::collections::HashMap<String, String>,
-    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
-        self.to_ptb_commands_internal(DEFAULT_GAS_BALANCE, cached_objects)
-    }
+// These are extension functions that work on FetchedTransaction but depend on
+// VM and PTB types that can't be in sui-sandbox-types.
 
-    /// Convert this transaction to PTB commands with address rewriting.
-    /// The aliases map on-chain package addresses to bytecode self-addresses.
-    pub fn to_ptb_commands_with_objects_and_aliases(
-        &self,
-        cached_objects: &std::collections::HashMap<String, String>,
-        address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
-    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
-        self.to_ptb_commands_internal_with_aliases(
-            DEFAULT_GAS_BALANCE,
-            cached_objects,
-            address_aliases,
-        )
-    }
-
-    /// Convert this transaction to PTB commands, providing a gas coin with specified balance.
-    pub fn to_ptb_commands_with_gas_budget(
-        &self,
-        gas_balance: u64,
-    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        self.to_ptb_commands_internal(gas_balance, &std::collections::HashMap::new())
-    }
-
-    /// Internal method that converts to PTB commands with gas balance and optional cached objects.
-    fn to_ptb_commands_internal(
-        &self,
-        gas_balance: u64,
-        cached_objects: &std::collections::HashMap<String, String>,
-    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        use base64::Engine;
-        let mut inputs = Vec::new();
-        let mut commands = Vec::new();
-
-        // Helper to get object bytes from cache
-        let get_object_bytes = |object_id: &str| -> Vec<u8> {
-            cached_objects
-                .get(object_id)
-                .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-                .unwrap_or_else(|| vec![0u8; 32]) // Fallback placeholder
-        };
-
-        // Check if any command uses GasCoin
-        let uses_gas_coin = self.commands.iter().any(|cmd| match cmd {
-            PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
-            PtbCommand::MergeCoins {
-                destination,
-                sources,
-            } => {
-                matches!(destination, PtbArgument::GasCoin)
-                    || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
-            }
-            PtbCommand::TransferObjects { objects, .. } => {
-                objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
-            }
-            _ => false,
-        });
-
-        // Input index offset: if we prepend GasCoin, all other input indices shift by 1
-        let input_offset: u16 = if uses_gas_coin { 1 } else { 0 };
-
-        // If uses GasCoin, prepend a synthetic gas coin object
-        if uses_gas_coin {
-            // Create a synthetic Coin<SUI> with the gas budget as balance
-            // Coin<T> layout: id (UID = 32 bytes) + balance (u64 = 8 bytes) = 40 bytes
-            let mut gas_coin_bytes = vec![0u8; 32]; // UID (placeholder)
-            gas_coin_bytes.extend_from_slice(&gas_balance.to_le_bytes()); // Balance
-            inputs.push(InputValue::Object(ObjectInput::Owned {
-                id: AccountAddress::ZERO, // Placeholder gas coin ID
-                bytes: gas_coin_bytes,
-                type_tag: None, // Gas coin type is known to be Coin<SUI>
-            }));
-        }
-
-        // Convert inputs, using cached object data when available
-        for input in &self.inputs {
-            match input {
-                TransactionInput::Pure { bytes } => {
-                    inputs.push(InputValue::Pure(bytes.clone()));
-                }
-                TransactionInput::Object { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::SharedObject { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Shared {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::ImmutableObject { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    // Use ImmRef for immutable objects (e.g., packages, Clock)
-                    inputs.push(InputValue::Object(ObjectInput::ImmRef {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::Receiving { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    // Receiving objects are treated as owned for replay purposes
-                    inputs.push(InputValue::Object(ObjectInput::Owned {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-            }
-        }
-
-        // Helper to convert arguments with input offset
-        let convert_arg = |arg: &PtbArgument| -> Argument {
-            match arg {
-                PtbArgument::Input { index } => Argument::Input(index + input_offset),
-                PtbArgument::Result { index } => Argument::Result(*index),
-                PtbArgument::NestedResult {
-                    index,
-                    result_index,
-                } => Argument::NestedResult(*index, *result_index),
-                PtbArgument::GasCoin => Argument::Input(0), // GasCoin is always input 0 (prepended)
-            }
-        };
-
-        // Convert commands (with input offset if using GasCoin)
-        for cmd in &self.commands {
-            match cmd {
-                PtbCommand::MoveCall {
-                    package,
-                    module,
-                    function,
-                    type_arguments,
-                    arguments,
-                } => {
-                    let package_addr = AccountAddress::from_hex_literal(package)
-                        .map_err(|e| anyhow!("Invalid package address: {}", e))?;
-                    let module_id = Identifier::new(module.clone())
-                        .map_err(|e| anyhow!("Invalid module name: {}", e))?;
-                    let function_id = Identifier::new(function.clone())
-                        .map_err(|e| anyhow!("Invalid function name: {}", e))?;
-
-                    // Parse type arguments from RPC strings
-                    let type_args: Vec<TypeTag> = type_arguments
-                        .iter()
-                        .filter_map(|s| parse_type_tag(s).ok())
-                        .collect();
-
-                    // Convert arguments
-                    let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
-
-                    commands.push(Command::MoveCall {
-                        package: package_addr,
-                        module: module_id,
-                        function: function_id,
-                        type_args,
-                        args,
-                    });
-                }
-
-                PtbCommand::SplitCoins { coin, amounts } => {
-                    let coin_arg = convert_arg(coin);
-                    let amount_args: Vec<Argument> = amounts.iter().map(&convert_arg).collect();
-                    commands.push(Command::SplitCoins {
-                        coin: coin_arg,
-                        amounts: amount_args,
-                    });
-                }
-
-                PtbCommand::MergeCoins {
-                    destination,
-                    sources,
-                } => {
-                    let dest_arg = convert_arg(destination);
-                    let source_args: Vec<Argument> = sources.iter().map(&convert_arg).collect();
-                    commands.push(Command::MergeCoins {
-                        destination: dest_arg,
-                        sources: source_args,
-                    });
-                }
-
-                PtbCommand::TransferObjects { objects, address } => {
-                    let obj_args: Vec<Argument> = objects.iter().map(&convert_arg).collect();
-                    let addr_arg = convert_arg(address);
-                    commands.push(Command::TransferObjects {
-                        objects: obj_args,
-                        address: addr_arg,
-                    });
-                }
-
-                PtbCommand::MakeMoveVec { type_arg, elements } => {
-                    let type_tag = type_arg.as_ref().and_then(|s| parse_type_tag(s).ok());
-                    let elem_args: Vec<Argument> = elements.iter().map(&convert_arg).collect();
-                    commands.push(Command::MakeMoveVec {
-                        type_tag,
-                        elements: elem_args,
-                    });
-                }
-
-                PtbCommand::Publish { .. } | PtbCommand::Upgrade { .. } => {
-                    // Skip publish/upgrade for now
-                }
-            }
-        }
-
-        Ok((inputs, commands))
-    }
-
-    /// Internal method with address aliasing support for package upgrades.
-    fn to_ptb_commands_internal_with_aliases(
-        &self,
-        gas_balance: u64,
-        cached_objects: &std::collections::HashMap<String, String>,
-        address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
-    ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-        use base64::Engine;
-        let mut inputs = Vec::new();
-        let mut commands = Vec::new();
-
-        // Helper to get object bytes from cache
-        let get_object_bytes = |object_id: &str| -> Vec<u8> {
-            cached_objects
-                .get(object_id)
-                .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-                .unwrap_or_else(|| vec![0u8; 32])
-        };
-
-        // Helper to rewrite address if aliased
-        let rewrite_addr = |addr: AccountAddress| -> AccountAddress {
-            address_aliases.get(&addr).copied().unwrap_or(addr)
-        };
-
-        // Helper to rewrite addresses in type tags
-        fn rewrite_type_tag(
-            tag: TypeTag,
-            aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
-        ) -> TypeTag {
-            match tag {
-                TypeTag::Struct(s) => {
-                    let mut s = *s;
-                    s.address = aliases.get(&s.address).copied().unwrap_or(s.address);
-                    s.type_params = s
-                        .type_params
-                        .into_iter()
-                        .map(|t| rewrite_type_tag(t, aliases))
-                        .collect();
-                    TypeTag::Struct(Box::new(s))
-                }
-                TypeTag::Vector(inner) => {
-                    TypeTag::Vector(Box::new(rewrite_type_tag(*inner, aliases)))
-                }
-                other => other,
-            }
-        }
-
-        // Check if any command uses GasCoin
-        let uses_gas_coin = self.commands.iter().any(|cmd| match cmd {
-            PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
-            PtbCommand::MergeCoins {
-                destination,
-                sources,
-            } => {
-                matches!(destination, PtbArgument::GasCoin)
-                    || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
-            }
-            PtbCommand::TransferObjects { objects, .. } => {
-                objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
-            }
-            _ => false,
-        });
-
-        let input_offset: u16 = if uses_gas_coin { 1 } else { 0 };
-
-        if uses_gas_coin {
-            let mut gas_coin_bytes = vec![0u8; 32];
-            gas_coin_bytes.extend_from_slice(&gas_balance.to_le_bytes());
-            inputs.push(InputValue::Object(ObjectInput::Owned {
-                id: AccountAddress::ZERO,
-                bytes: gas_coin_bytes,
-                type_tag: None,
-            }));
-        }
-
-        // Convert inputs
-        for input in &self.inputs {
-            match input {
-                TransactionInput::Pure { bytes } => {
-                    inputs.push(InputValue::Pure(bytes.clone()));
-                }
-                TransactionInput::Object { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::SharedObject { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Shared {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::ImmutableObject { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::ImmRef {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-                TransactionInput::Receiving { object_id, .. } => {
-                    let id =
-                        AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                    let bytes = get_object_bytes(object_id);
-                    inputs.push(InputValue::Object(ObjectInput::Owned {
-                        id,
-                        bytes,
-                        type_tag: None,
-                    }));
-                }
-            }
-        }
-
-        let convert_arg = |arg: &PtbArgument| -> Argument {
-            match arg {
-                PtbArgument::Input { index } => Argument::Input(index + input_offset),
-                PtbArgument::Result { index } => Argument::Result(*index),
-                PtbArgument::NestedResult {
-                    index,
-                    result_index,
-                } => Argument::NestedResult(*index, *result_index),
-                PtbArgument::GasCoin => Argument::Input(0),
-            }
-        };
-
-        // Convert commands with address rewriting
-        for cmd in &self.commands {
-            match cmd {
-                PtbCommand::MoveCall {
-                    package,
-                    module,
-                    function,
-                    type_arguments,
-                    arguments,
-                } => {
-                    let package_addr = AccountAddress::from_hex_literal(package)
-                        .map_err(|e| anyhow!("Invalid package address: {}", e))?;
-                    // Rewrite package address to bytecode self-address
-                    let rewritten_package = rewrite_addr(package_addr);
-                    let module_id = Identifier::new(module.clone())
-                        .map_err(|e| anyhow!("Invalid module name: {}", e))?;
-                    let function_id = Identifier::new(function.clone())
-                        .map_err(|e| anyhow!("Invalid function name: {}", e))?;
-
-                    // Parse and rewrite type arguments
-                    let type_args: Vec<TypeTag> = type_arguments
-                        .iter()
-                        .filter_map(|s| parse_type_tag(s).ok())
-                        .map(|t| rewrite_type_tag(t, address_aliases))
-                        .collect();
-
-                    let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
-
-                    commands.push(Command::MoveCall {
-                        package: rewritten_package,
-                        module: module_id,
-                        function: function_id,
-                        type_args,
-                        args,
-                    });
-                }
-
-                PtbCommand::SplitCoins { coin, amounts } => {
-                    commands.push(Command::SplitCoins {
-                        coin: convert_arg(coin),
-                        amounts: amounts.iter().map(&convert_arg).collect(),
-                    });
-                }
-
-                PtbCommand::MergeCoins {
-                    destination,
-                    sources,
-                } => {
-                    commands.push(Command::MergeCoins {
-                        destination: convert_arg(destination),
-                        sources: sources.iter().map(&convert_arg).collect(),
-                    });
-                }
-
-                PtbCommand::TransferObjects { objects, address } => {
-                    commands.push(Command::TransferObjects {
-                        objects: objects.iter().map(&convert_arg).collect(),
-                        address: convert_arg(address),
-                    });
-                }
-
-                PtbCommand::MakeMoveVec { type_arg, elements } => {
-                    let type_tag = type_arg
-                        .as_ref()
-                        .and_then(|s| parse_type_tag(s).ok())
-                        .map(|t| rewrite_type_tag(t, address_aliases));
-                    commands.push(Command::MakeMoveVec {
-                        type_tag,
-                        elements: elements.iter().map(&convert_arg).collect(),
-                    });
-                }
-
-                PtbCommand::Publish { .. } | PtbCommand::Upgrade { .. } => {
-                    // Skip publish/upgrade
-                }
-            }
-        }
-
-        Ok((inputs, commands))
-    }
-
-    /// Replay this transaction in the local VM.
-    ///
-    /// This method executes the transaction commands using PTBExecutor and compares
-    /// the results with on-chain effects.
-    pub fn replay(&self, harness: &mut VMHarness) -> Result<ReplayResult> {
-        self.replay_with_objects(harness, &std::collections::HashMap::new())
-    }
-
-    /// Replay this transaction using cached object data.
-    pub fn replay_with_objects(
-        &self,
-        harness: &mut VMHarness,
-        cached_objects: &std::collections::HashMap<String, String>,
-    ) -> Result<ReplayResult> {
-        self.replay_with_objects_and_aliases(
-            harness,
-            cached_objects,
-            &std::collections::HashMap::new(),
-        )
-    }
-
-    /// Replay this transaction using cached object data and address aliases.
-    /// The aliases map on-chain package addresses to bytecode self-addresses.
-    pub fn replay_with_objects_and_aliases(
-        &self,
-        harness: &mut VMHarness,
-        cached_objects: &std::collections::HashMap<String, String>,
-        address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
-    ) -> Result<ReplayResult> {
-        use crate::benchmark::ptb::PTBExecutor;
-
-        let (inputs, commands) =
-            self.to_ptb_commands_with_objects_and_aliases(cached_objects, address_aliases)?;
-        let commands_count = commands.len();
-
-        // Execute using PTBExecutor
-        let mut executor = PTBExecutor::new(harness);
-
-        // Add inputs to executor
-        for input in &inputs {
-            executor.add_input(input.clone());
-        }
-
-        // Execute commands
-        let effects = match executor.execute_commands(&commands) {
-            Ok(effects) => effects,
-            Err(e) => {
-                return Ok(ReplayResult {
-                    digest: self.digest.clone(),
-                    local_success: false,
-                    local_error: Some(e.to_string()),
-                    comparison: None,
-                    commands_executed: 0,
-                    commands_failed: commands_count,
-                });
-            }
-        };
-
-        // Compare with on-chain effects using the new comparison method
-        let comparison = self.effects.as_ref().map(|on_chain| {
-            EffectsComparison::compare(
-                on_chain,
-                effects.success,
-                effects.created.len(),
-                effects.mutated.len(),
-                effects.deleted.len(),
-            )
-        });
-
-        Ok(ReplayResult {
-            digest: self.digest.clone(),
-            local_success: effects.success,
-            local_error: effects.error,
-            comparison,
-            commands_executed: if effects.success { commands_count } else { 0 },
-            commands_failed: if effects.success { 0 } else { commands_count },
-        })
-    }
-
-    /// Check if this transaction uses only framework packages (0x1, 0x2, 0x3).
-    pub fn uses_only_framework(&self) -> bool {
-        let framework_addrs = [
-            "0x0000000000000000000000000000000000000000000000000000000000000001",
-            "0x0000000000000000000000000000000000000000000000000000000000000002",
-            "0x0000000000000000000000000000000000000000000000000000000000000003",
-            "0x1",
-            "0x2",
-            "0x3",
-        ];
-
-        for cmd in &self.commands {
-            if let PtbCommand::MoveCall { package, .. } = cmd {
-                let is_framework = framework_addrs
-                    .iter()
-                    .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
-                if !is_framework {
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    /// Get a list of third-party packages used by this transaction.
-    pub fn third_party_packages(&self) -> Vec<String> {
-        let framework_addrs = [
-            "0x0000000000000000000000000000000000000000000000000000000000000001",
-            "0x0000000000000000000000000000000000000000000000000000000000000002",
-            "0x0000000000000000000000000000000000000000000000000000000000000003",
-            "0x1",
-            "0x2",
-            "0x3",
-        ];
-
-        let mut packages = std::collections::BTreeSet::new();
-        for cmd in &self.commands {
-            if let PtbCommand::MoveCall { package, .. } = cmd {
-                let is_framework = framework_addrs
-                    .iter()
-                    .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
-                if !is_framework {
-                    packages.insert(package.clone());
-                }
-            }
-        }
-        packages.into_iter().collect()
-    }
-
-    /// Get a summary of this transaction for display.
-    pub fn summary(&self) -> String {
-        let status = self
-            .effects
-            .as_ref()
-            .map(|e| match &e.status {
-                TransactionStatus::Success => "success".to_string(),
-                TransactionStatus::Failure { error } => format!("failed: {}", error),
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        format!(
-            "Transaction {} from {} ({} commands, status: {})",
-            self.digest.0,
-            self.sender.to_hex_literal(),
-            self.commands.len(),
-            status
-        )
-    }
+/// Convert a FetchedTransaction to PTB commands for local execution.
+pub fn to_ptb_commands(tx: &FetchedTransaction) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    // Use a large default balance for simulation (1 billion SUI = 10^18 MIST)
+    // This ensures SplitCoins won't fail due to insufficient balance
+    // The actual gas coin balance on-chain is typically much larger than gas_budget
+    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000; // 1B SUI in MIST
+    to_ptb_commands_internal(tx, DEFAULT_GAS_BALANCE, &std::collections::HashMap::new())
 }
 
-/// Helper module for base64 serialization.
-mod base64_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
+/// Convert a FetchedTransaction to PTB commands using cached object data.
+pub fn to_ptb_commands_with_objects(
+    tx: &FetchedTransaction,
+    cached_objects: &std::collections::HashMap<String, String>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
+    to_ptb_commands_internal(tx, DEFAULT_GAS_BALANCE, cached_objects)
+}
 
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        use base64::Engine;
-        let s = base64::engine::general_purpose::STANDARD.encode(bytes);
-        serializer.serialize_str(&s)
+/// Convert a FetchedTransaction to PTB commands with address rewriting.
+/// The aliases map on-chain package addresses to bytecode self-addresses.
+pub fn to_ptb_commands_with_objects_and_aliases(
+    tx: &FetchedTransaction,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
+    to_ptb_commands_internal_with_aliases(tx, DEFAULT_GAS_BALANCE, cached_objects, address_aliases)
+}
+
+/// Convert to PTB commands with gas budget.
+pub fn to_ptb_commands_with_gas_budget(
+    tx: &FetchedTransaction,
+    gas_balance: u64,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    to_ptb_commands_internal(tx, gas_balance, &std::collections::HashMap::new())
+}
+
+/// Internal method that converts to PTB commands with gas balance and optional cached objects.
+fn to_ptb_commands_internal(
+    tx: &FetchedTransaction,
+    gas_balance: u64,
+    cached_objects: &std::collections::HashMap<String, String>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    let mut inputs = Vec::new();
+    let mut commands = Vec::new();
+
+    // Helper to get object bytes from cache
+    let get_object_bytes = |object_id: &str| -> Vec<u8> {
+        cached_objects
+            .get(object_id)
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .unwrap_or_else(|| vec![0u8; 32]) // Fallback placeholder
+    };
+
+    // Check if any command uses GasCoin
+    let uses_gas_coin = tx.commands.iter().any(|cmd| match cmd {
+        PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
+        PtbCommand::MergeCoins {
+            destination,
+            sources,
+        } => {
+            matches!(destination, PtbArgument::GasCoin)
+                || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
+        }
+        PtbCommand::TransferObjects { objects, .. } => {
+            objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
+        }
+        _ => false,
+    });
+
+    // Input index offset: if we prepend GasCoin, all other input indices shift by 1
+    let input_offset: u16 = if uses_gas_coin { 1 } else { 0 };
+
+    // If uses GasCoin, prepend a synthetic gas coin object
+    if uses_gas_coin {
+        // Create a synthetic Coin<SUI> with the gas budget as balance
+        // Coin<T> layout: id (UID = 32 bytes) + balance (u64 = 8 bytes) = 40 bytes
+        let mut gas_coin_bytes = vec![0u8; 32]; // UID (placeholder)
+        gas_coin_bytes.extend_from_slice(&gas_balance.to_le_bytes()); // Balance
+        inputs.push(InputValue::Object(ObjectInput::Owned {
+            id: AccountAddress::ZERO, // Placeholder gas coin ID
+            bytes: gas_coin_bytes,
+            type_tag: None, // Gas coin type is known to be Coin<SUI>
+        }));
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use base64::Engine;
-        let s = String::deserialize(deserializer)?;
-        base64::engine::general_purpose::STANDARD
-            .decode(&s)
-            .map_err(serde::de::Error::custom)
+    // Convert inputs, using cached object data when available
+    for input in &tx.inputs {
+        match input {
+            TransactionInput::Pure { bytes } => {
+                inputs.push(InputValue::Pure(bytes.clone()));
+            }
+            TransactionInput::Object { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::Owned {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::SharedObject { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::Shared {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::ImmutableObject { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                // Use ImmRef for immutable objects (e.g., packages, Clock)
+                inputs.push(InputValue::Object(ObjectInput::ImmRef {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::Receiving { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                // Receiving objects are treated as owned for replay purposes
+                inputs.push(InputValue::Object(ObjectInput::Owned {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+        }
     }
+
+    // Helper to convert arguments with input offset
+    let convert_arg = |arg: &PtbArgument| -> Argument {
+        match arg {
+            PtbArgument::Input { index } => Argument::Input(index + input_offset),
+            PtbArgument::Result { index } => Argument::Result(*index),
+            PtbArgument::NestedResult {
+                index,
+                result_index,
+            } => Argument::NestedResult(*index, *result_index),
+            PtbArgument::GasCoin => Argument::Input(0), // GasCoin is always input 0 (prepended)
+        }
+    };
+
+    // Convert commands (with input offset if using GasCoin)
+    for cmd in &tx.commands {
+        match cmd {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
+                let package_addr = AccountAddress::from_hex_literal(package)
+                    .map_err(|e| anyhow!("Invalid package address: {}", e))?;
+                let module_id = Identifier::new(module.clone())
+                    .map_err(|e| anyhow!("Invalid module name: {}", e))?;
+                let function_id = Identifier::new(function.clone())
+                    .map_err(|e| anyhow!("Invalid function name: {}", e))?;
+
+                // Parse type arguments from RPC strings
+                let type_args: Vec<TypeTag> = type_arguments
+                    .iter()
+                    .filter_map(|s| parse_type_tag(s).ok())
+                    .collect();
+
+                // Convert arguments
+                let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
+
+                commands.push(Command::MoveCall {
+                    package: package_addr,
+                    module: module_id,
+                    function: function_id,
+                    type_args,
+                    args,
+                });
+            }
+
+            PtbCommand::SplitCoins { coin, amounts } => {
+                let coin_arg = convert_arg(coin);
+                let amount_args: Vec<Argument> = amounts.iter().map(&convert_arg).collect();
+                commands.push(Command::SplitCoins {
+                    coin: coin_arg,
+                    amounts: amount_args,
+                });
+            }
+
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
+                let dest_arg = convert_arg(destination);
+                let source_args: Vec<Argument> = sources.iter().map(&convert_arg).collect();
+                commands.push(Command::MergeCoins {
+                    destination: dest_arg,
+                    sources: source_args,
+                });
+            }
+
+            PtbCommand::TransferObjects { objects, address } => {
+                let obj_args: Vec<Argument> = objects.iter().map(&convert_arg).collect();
+                let addr_arg = convert_arg(address);
+                commands.push(Command::TransferObjects {
+                    objects: obj_args,
+                    address: addr_arg,
+                });
+            }
+
+            PtbCommand::MakeMoveVec { type_arg, elements } => {
+                let type_tag = type_arg.as_ref().and_then(|s| parse_type_tag(s).ok());
+                let elem_args: Vec<Argument> = elements.iter().map(&convert_arg).collect();
+                commands.push(Command::MakeMoveVec {
+                    type_tag,
+                    elements: elem_args,
+                });
+            }
+
+            PtbCommand::Publish { .. } | PtbCommand::Upgrade { .. } => {
+                // Skip publish/upgrade for now
+            }
+        }
+    }
+
+    Ok((inputs, commands))
+}
+
+/// Internal method with address aliasing support for package upgrades.
+fn to_ptb_commands_internal_with_aliases(
+    tx: &FetchedTransaction,
+    gas_balance: u64,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    let mut inputs = Vec::new();
+    let mut commands = Vec::new();
+
+    // Helper to get object bytes from cache
+    let get_object_bytes = |object_id: &str| -> Vec<u8> {
+        cached_objects
+            .get(object_id)
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .unwrap_or_else(|| vec![0u8; 32])
+    };
+
+    // Helper to rewrite address if aliased
+    let rewrite_addr = |addr: AccountAddress| -> AccountAddress {
+        address_aliases.get(&addr).copied().unwrap_or(addr)
+    };
+
+    // Helper to rewrite addresses in type tags
+    fn rewrite_type_tag(
+        tag: TypeTag,
+        aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+    ) -> TypeTag {
+        match tag {
+            TypeTag::Struct(s) => {
+                let mut s = *s;
+                s.address = aliases.get(&s.address).copied().unwrap_or(s.address);
+                s.type_params = s
+                    .type_params
+                    .into_iter()
+                    .map(|t| rewrite_type_tag(t, aliases))
+                    .collect();
+                TypeTag::Struct(Box::new(s))
+            }
+            TypeTag::Vector(inner) => TypeTag::Vector(Box::new(rewrite_type_tag(*inner, aliases))),
+            other => other,
+        }
+    }
+
+    // Check if any command uses GasCoin
+    let uses_gas_coin = tx.commands.iter().any(|cmd| match cmd {
+        PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
+        PtbCommand::MergeCoins {
+            destination,
+            sources,
+        } => {
+            matches!(destination, PtbArgument::GasCoin)
+                || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
+        }
+        PtbCommand::TransferObjects { objects, .. } => {
+            objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
+        }
+        _ => false,
+    });
+
+    let input_offset: u16 = if uses_gas_coin { 1 } else { 0 };
+
+    if uses_gas_coin {
+        let mut gas_coin_bytes = vec![0u8; 32];
+        gas_coin_bytes.extend_from_slice(&gas_balance.to_le_bytes());
+        inputs.push(InputValue::Object(ObjectInput::Owned {
+            id: AccountAddress::ZERO,
+            bytes: gas_coin_bytes,
+            type_tag: None,
+        }));
+    }
+
+    // Convert inputs
+    for input in &tx.inputs {
+        match input {
+            TransactionInput::Pure { bytes } => {
+                inputs.push(InputValue::Pure(bytes.clone()));
+            }
+            TransactionInput::Object { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::Owned {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::SharedObject { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::Shared {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::ImmutableObject { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::ImmRef {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+            TransactionInput::Receiving { object_id, .. } => {
+                let id =
+                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
+                let bytes = get_object_bytes(object_id);
+                inputs.push(InputValue::Object(ObjectInput::Owned {
+                    id,
+                    bytes,
+                    type_tag: None,
+                }));
+            }
+        }
+    }
+
+    let convert_arg = |arg: &PtbArgument| -> Argument {
+        match arg {
+            PtbArgument::Input { index } => Argument::Input(index + input_offset),
+            PtbArgument::Result { index } => Argument::Result(*index),
+            PtbArgument::NestedResult {
+                index,
+                result_index,
+            } => Argument::NestedResult(*index, *result_index),
+            PtbArgument::GasCoin => Argument::Input(0),
+        }
+    };
+
+    // Convert commands with address rewriting
+    for cmd in &tx.commands {
+        match cmd {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
+                let package_addr = AccountAddress::from_hex_literal(package)
+                    .map_err(|e| anyhow!("Invalid package address: {}", e))?;
+                // Rewrite package address to bytecode self-address
+                let rewritten_package = rewrite_addr(package_addr);
+                let module_id = Identifier::new(module.clone())
+                    .map_err(|e| anyhow!("Invalid module name: {}", e))?;
+                let function_id = Identifier::new(function.clone())
+                    .map_err(|e| anyhow!("Invalid function name: {}", e))?;
+
+                // Parse and rewrite type arguments
+                let type_args: Vec<TypeTag> = type_arguments
+                    .iter()
+                    .filter_map(|s| parse_type_tag(s).ok())
+                    .map(|t| rewrite_type_tag(t, address_aliases))
+                    .collect();
+
+                let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
+
+                commands.push(Command::MoveCall {
+                    package: rewritten_package,
+                    module: module_id,
+                    function: function_id,
+                    type_args,
+                    args,
+                });
+            }
+
+            PtbCommand::SplitCoins { coin, amounts } => {
+                commands.push(Command::SplitCoins {
+                    coin: convert_arg(coin),
+                    amounts: amounts.iter().map(&convert_arg).collect(),
+                });
+            }
+
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
+                commands.push(Command::MergeCoins {
+                    destination: convert_arg(destination),
+                    sources: sources.iter().map(&convert_arg).collect(),
+                });
+            }
+
+            PtbCommand::TransferObjects { objects, address } => {
+                commands.push(Command::TransferObjects {
+                    objects: objects.iter().map(&convert_arg).collect(),
+                    address: convert_arg(address),
+                });
+            }
+
+            PtbCommand::MakeMoveVec { type_arg, elements } => {
+                let type_tag = type_arg
+                    .as_ref()
+                    .and_then(|s| parse_type_tag(s).ok())
+                    .map(|t| rewrite_type_tag(t, address_aliases));
+                commands.push(Command::MakeMoveVec {
+                    type_tag,
+                    elements: elements.iter().map(&convert_arg).collect(),
+                });
+            }
+
+            PtbCommand::Publish { .. } | PtbCommand::Upgrade { .. } => {
+                // Skip publish/upgrade
+            }
+        }
+    }
+
+    Ok((inputs, commands))
+}
+
+/// Replay a transaction in the local VM.
+///
+/// This method executes the transaction commands using PTBExecutor and compares
+/// the results with on-chain effects.
+pub fn replay(tx: &FetchedTransaction, harness: &mut VMHarness) -> Result<ReplayResult> {
+    replay_with_objects(tx, harness, &std::collections::HashMap::new())
+}
+
+/// Replay a transaction using cached object data.
+pub fn replay_with_objects(
+    tx: &FetchedTransaction,
+    harness: &mut VMHarness,
+    cached_objects: &std::collections::HashMap<String, String>,
+) -> Result<ReplayResult> {
+    replay_with_objects_and_aliases(
+        tx,
+        harness,
+        cached_objects,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Replay a transaction using cached object data and address aliases.
+/// The aliases map on-chain package addresses to bytecode self-addresses.
+pub fn replay_with_objects_and_aliases(
+    tx: &FetchedTransaction,
+    harness: &mut VMHarness,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> Result<ReplayResult> {
+    use crate::benchmark::ptb::PTBExecutor;
+
+    let (inputs, commands) =
+        to_ptb_commands_with_objects_and_aliases(tx, cached_objects, address_aliases)?;
+    let commands_count = commands.len();
+
+    // Execute using PTBExecutor
+    let mut executor = PTBExecutor::new(harness);
+
+    // Add inputs to executor
+    for input in &inputs {
+        executor.add_input(input.clone());
+    }
+
+    // Execute commands
+    let effects = match executor.execute_commands(&commands) {
+        Ok(effects) => effects,
+        Err(e) => {
+            return Ok(ReplayResult {
+                digest: tx.digest.clone(),
+                local_success: false,
+                local_error: Some(e.to_string()),
+                comparison: None,
+                commands_executed: 0,
+                commands_failed: commands_count,
+            });
+        }
+    };
+
+    // Compare with on-chain effects using the new comparison method
+    let comparison = tx.effects.as_ref().map(|on_chain| {
+        EffectsComparison::compare(
+            on_chain,
+            effects.success,
+            effects.created.len(),
+            effects.mutated.len(),
+            effects.deleted.len(),
+        )
+    });
+
+    Ok(ReplayResult {
+        digest: tx.digest.clone(),
+        local_success: effects.success,
+        local_error: effects.error,
+        comparison,
+        commands_executed: if effects.success { commands_count } else { 0 },
+        commands_failed: if effects.success { 0 } else { commands_count },
+    })
+}
+
+/// Check if a transaction uses only framework packages (0x1, 0x2, 0x3).
+pub fn uses_only_framework(tx: &FetchedTransaction) -> bool {
+    let framework_addrs = [
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+        "0x1",
+        "0x2",
+        "0x3",
+    ];
+
+    for cmd in &tx.commands {
+        if let PtbCommand::MoveCall { package, .. } = cmd {
+            let is_framework = framework_addrs
+                .iter()
+                .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
+            if !is_framework {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Get a list of third-party packages used by a transaction.
+pub fn third_party_packages(tx: &FetchedTransaction) -> Vec<String> {
+    let framework_addrs = [
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000000000000000000000000000002",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+        "0x1",
+        "0x2",
+        "0x3",
+    ];
+
+    let mut packages = std::collections::BTreeSet::new();
+    for cmd in &tx.commands {
+        if let PtbCommand::MoveCall { package, .. } = cmd {
+            let is_framework = framework_addrs
+                .iter()
+                .any(|addr| package == *addr || package.to_lowercase() == addr.to_lowercase());
+            if !is_framework {
+                packages.insert(package.clone());
+            }
+        }
+    }
+    packages.into_iter().collect()
+}
+
+/// Get a summary of a transaction for display.
+pub fn summary(tx: &FetchedTransaction) -> String {
+    let status = tx
+        .effects
+        .as_ref()
+        .map(|e| match &e.status {
+            TransactionStatus::Success => "success".to_string(),
+            TransactionStatus::Failure { error } => format!("failed: {}", error),
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    format!(
+        "Transaction {} from {} ({} commands, status: {})",
+        tx.digest.0,
+        tx.sender.to_hex_literal(),
+        tx.commands.len(),
+        status
+    )
+}
+
+/// Convert CachedTransaction to PTB commands using cached object data.
+pub fn cached_to_ptb_commands(
+    cached: &CachedTransaction,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    to_ptb_commands_with_objects(&cached.transaction, &cached.objects)
 }
 
 #[cfg(test)]
@@ -1750,7 +1056,6 @@ pub fn graphql_to_fetched_transaction(
     tx: &crate::graphql::GraphQLTransaction,
 ) -> Result<FetchedTransaction> {
     use crate::graphql::GraphQLTransactionInput;
-    use base64::Engine;
     use move_core_types::account_address::AccountAddress;
 
     // Parse sender address
@@ -2156,7 +1461,6 @@ fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<AccountAddress> {
 fn extract_all_dependencies(
     packages: &std::collections::HashMap<String, Vec<(String, String)>>,
 ) -> std::collections::BTreeSet<String> {
-    use base64::Engine;
     use std::collections::BTreeSet;
 
     let mut all_deps: BTreeSet<String> = BTreeSet::new();
@@ -2198,7 +1502,6 @@ pub fn fetch_and_cache_transaction(
     fetch_dynamic_fields: bool,
 ) -> Result<CachedTransaction> {
     use crate::graphql::GraphQLTransactionInput;
-    use base64::Engine;
     use std::collections::BTreeSet;
 
     // Maximum depth for transitive dependency resolution

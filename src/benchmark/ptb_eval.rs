@@ -16,7 +16,8 @@ use std::io::Write;
 use crate::args::PtbEvalArgs;
 use crate::benchmark::simulation::{SimulationEnvironment, SimulationError};
 use crate::benchmark::tx_replay::{
-    build_address_aliases_for_test, CachedTransaction, TransactionCache,
+    build_address_aliases_for_test, to_ptb_commands_with_objects_and_aliases, uses_only_framework,
+    CachedTransaction, TransactionCache,
 };
 
 /// Result of evaluating a single PTB.
@@ -220,7 +221,7 @@ fn evaluate_transaction(
     show_healing: bool,
 ) -> PtbEvalReport {
     let digest = cached.transaction.digest.0.clone();
-    let is_framework_only = cached.transaction.uses_only_framework();
+    let is_framework_only = uses_only_framework(&cached.transaction);
     let command_count = cached.transaction.commands.len();
     let input_count = cached.transaction.inputs.len();
 
@@ -276,9 +277,11 @@ fn evaluate_transaction(
     let address_aliases = build_address_aliases_for_test(cached);
 
     // Convert to PTB commands
-    let ptb_result = cached
-        .transaction
-        .to_ptb_commands_with_objects_and_aliases(&cached.objects, &address_aliases);
+    let ptb_result = to_ptb_commands_with_objects_and_aliases(
+        &cached.transaction,
+        &cached.objects,
+        &address_aliases,
+    );
 
     let (inputs, commands) = match ptb_result {
         Ok(ic) => ic,
@@ -530,7 +533,7 @@ pub fn run_ptb_eval(args: &PtbEvalArgs) -> Result<()> {
             }
         };
 
-        let is_framework_only = cached.transaction.uses_only_framework();
+        let is_framework_only = uses_only_framework(&cached.transaction);
 
         // Apply filters
         if args.framework_only && !is_framework_only {

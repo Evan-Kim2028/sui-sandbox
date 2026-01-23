@@ -1,0 +1,835 @@
+//! Transaction types for Sui sandbox.
+//!
+//! This module contains the core transaction types used throughout the sui-sandbox
+//! workspace for transaction replay and caching.
+
+use base64::Engine;
+use move_core_types::account_address::AccountAddress;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Object ID type (32-byte address)
+pub type ObjectID = AccountAddress;
+
+/// Transaction digest (32 bytes, base58 encoded in JSON)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TransactionDigest(pub String);
+
+impl TransactionDigest {
+    pub fn new(digest: impl Into<String>) -> Self {
+        Self(digest.into())
+    }
+}
+
+/// Represents a fetched transaction from the Sui network.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchedTransaction {
+    /// Transaction digest
+    pub digest: TransactionDigest,
+
+    /// Sender address
+    pub sender: AccountAddress,
+
+    /// Gas budget
+    pub gas_budget: u64,
+
+    /// Gas price
+    pub gas_price: u64,
+
+    /// The PTB commands in this transaction
+    pub commands: Vec<PtbCommand>,
+
+    /// Input objects (owned, shared, immutable)
+    pub inputs: Vec<TransactionInput>,
+
+    /// Transaction effects (for comparison)
+    pub effects: Option<TransactionEffectsSummary>,
+
+    /// Timestamp (milliseconds since epoch)
+    pub timestamp_ms: Option<u64>,
+
+    /// Checkpoint that included this transaction
+    pub checkpoint: Option<u64>,
+}
+
+/// A command in a Programmable Transaction Block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PtbCommand {
+    /// Move function call
+    MoveCall {
+        package: String,
+        module: String,
+        function: String,
+        type_arguments: Vec<String>,
+        arguments: Vec<PtbArgument>,
+    },
+
+    /// Split coins
+    SplitCoins {
+        coin: PtbArgument,
+        amounts: Vec<PtbArgument>,
+    },
+
+    /// Merge coins
+    MergeCoins {
+        destination: PtbArgument,
+        sources: Vec<PtbArgument>,
+    },
+
+    /// Transfer objects
+    TransferObjects {
+        objects: Vec<PtbArgument>,
+        address: PtbArgument,
+    },
+
+    /// Make move vector
+    MakeMoveVec {
+        type_arg: Option<String>,
+        elements: Vec<PtbArgument>,
+    },
+
+    /// Publish new package
+    Publish {
+        modules: Vec<String>, // base64 encoded
+        dependencies: Vec<String>,
+    },
+
+    /// Upgrade package
+    Upgrade {
+        modules: Vec<String>,
+        package: String,
+        ticket: PtbArgument,
+    },
+}
+
+/// Argument reference in a PTB command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PtbArgument {
+    /// Reference to a transaction input
+    Input { index: u16 },
+
+    /// Reference to a previous command result
+    Result { index: u16 },
+
+    /// Reference to a nested result (for multi-return functions)
+    NestedResult { index: u16, result_index: u16 },
+
+    /// Gas coin (special input)
+    GasCoin,
+}
+
+/// Transaction input object or pure value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TransactionInput {
+    /// Pure BCS-encoded value
+    Pure {
+        #[serde(with = "base64_bytes")]
+        bytes: Vec<u8>,
+    },
+
+    /// Object reference (owned)
+    Object {
+        object_id: String,
+        version: u64,
+        digest: String,
+    },
+
+    /// Shared object reference
+    SharedObject {
+        object_id: String,
+        initial_shared_version: u64,
+        mutable: bool,
+    },
+
+    /// Immutable object (e.g., package, Clock)
+    ImmutableObject {
+        object_id: String,
+        version: u64,
+        digest: String,
+    },
+
+    /// Receiving object
+    Receiving {
+        object_id: String,
+        version: u64,
+        digest: String,
+    },
+}
+
+/// Summary of transaction effects for comparison.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionEffectsSummary {
+    /// Transaction status
+    pub status: TransactionStatus,
+
+    /// Created object IDs
+    pub created: Vec<String>,
+
+    /// Mutated object IDs
+    pub mutated: Vec<String>,
+
+    /// Deleted object IDs
+    pub deleted: Vec<String>,
+
+    /// Wrapped object IDs
+    pub wrapped: Vec<String>,
+
+    /// Unwrapped object IDs
+    pub unwrapped: Vec<String>,
+
+    /// Gas used
+    pub gas_used: GasSummary,
+
+    /// Events emitted
+    pub events_count: usize,
+
+    /// Shared object versions at transaction time (object_id -> version)
+    /// This is extracted from effects.sharedObjects for historical replay.
+    #[serde(default)]
+    pub shared_object_versions: HashMap<String, u64>,
+}
+
+/// Transaction execution status.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TransactionStatus {
+    Success,
+    Failure { error: String },
+}
+
+/// Gas usage summary.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GasSummary {
+    pub computation_cost: u64,
+    pub storage_cost: u64,
+    pub storage_rebate: u64,
+    pub non_refundable_storage_fee: u64,
+}
+
+/// Result of replaying a transaction locally.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayResult {
+    /// Original transaction digest
+    pub digest: TransactionDigest,
+
+    /// Whether local execution succeeded
+    pub local_success: bool,
+
+    /// Local execution error (if any)
+    pub local_error: Option<String>,
+
+    /// Comparison with on-chain effects
+    pub comparison: Option<EffectsComparison>,
+
+    /// Commands that were executed
+    pub commands_executed: usize,
+
+    /// Commands that failed
+    pub commands_failed: usize,
+}
+
+/// Comparison between local and on-chain effects.
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectsComparison {
+    /// Status match (both success or both failure)
+    pub status_match: bool,
+
+    /// Created objects count match
+    pub created_count_match: bool,
+
+    /// Mutated objects count match
+    pub mutated_count_match: bool,
+
+    /// Deleted objects count match
+    pub deleted_count_match: bool,
+
+    /// Overall match score (0.0 - 1.0)
+    pub match_score: f64,
+
+    /// Notes about differences
+    pub notes: Vec<String>,
+}
+
+impl EffectsComparison {
+    /// Create a comparison between local and on-chain effects.
+    ///
+    /// Note: On-chain effects always include gas object mutations (from gas consumption).
+    /// Our local execution doesn't track gas, so we adjust for this when comparing
+    /// mutated object counts.
+    pub fn compare(
+        on_chain: &TransactionEffectsSummary,
+        local_success: bool,
+        local_created: usize,
+        local_mutated: usize,
+        local_deleted: usize,
+    ) -> Self {
+        let mut notes = Vec::new();
+        let mut match_points = 0.0;
+        let total_points = 4.0;
+
+        // Compare status
+        let status_match = matches!(
+            (&on_chain.status, local_success),
+            (TransactionStatus::Success, true) | (TransactionStatus::Failure { .. }, false)
+        );
+        if status_match {
+            match_points += 1.0;
+        } else {
+            notes.push(format!(
+                "Status mismatch: on-chain={:?}, local={}",
+                on_chain.status,
+                if local_success { "success" } else { "failure" }
+            ));
+        }
+
+        // Compare created count
+        let created_count_match = on_chain.created.len() == local_created;
+        if created_count_match {
+            match_points += 1.0;
+        } else {
+            notes.push(format!(
+                "Created count mismatch: on-chain={}, local={}",
+                on_chain.created.len(),
+                local_created
+            ));
+        }
+
+        // Compare mutated count
+        // On-chain always includes gas object mutation (1 or more objects for gas).
+        // Our local execution doesn't track gas, so we allow for this difference.
+        // Consider it a match if:
+        // - exact match, OR
+        // - on-chain has 1 more (gas object), OR
+        // - on-chain has 2 more (gas object + gas payment split scenarios)
+        let on_chain_mutated = on_chain.mutated.len();
+        let mutated_diff = on_chain_mutated as isize - local_mutated as isize;
+        let mutated_count_match = mutated_diff == 0 || mutated_diff == 1 || mutated_diff == 2;
+        if mutated_count_match {
+            match_points += 1.0;
+        } else {
+            notes.push(format!(
+                "Mutated count mismatch: on-chain={}, local={} (diff={})",
+                on_chain_mutated, local_mutated, mutated_diff
+            ));
+        }
+
+        // Compare deleted count
+        let deleted_count_match = on_chain.deleted.len() == local_deleted;
+        if deleted_count_match {
+            match_points += 1.0;
+        } else {
+            notes.push(format!(
+                "Deleted count mismatch: on-chain={}, local={}",
+                on_chain.deleted.len(),
+                local_deleted
+            ));
+        }
+
+        let match_score = match_points / total_points;
+
+        Self {
+            status_match,
+            created_count_match,
+            mutated_count_match,
+            deleted_count_match,
+            match_score,
+            notes,
+        }
+    }
+}
+
+/// Full object data returned from RPC.
+#[derive(Debug, Clone)]
+pub struct FetchedObject {
+    /// BCS bytes of the object content.
+    pub bcs_bytes: Vec<u8>,
+    /// Type string (e.g., "0x2::coin::Coin<0x2::sui::SUI>").
+    pub type_string: Option<String>,
+    /// Whether the object is shared.
+    pub is_shared: bool,
+    /// Whether the object is immutable.
+    pub is_immutable: bool,
+    /// Object version.
+    pub version: u64,
+}
+
+/// Entry for a dynamic field child (from JSON-RPC `suix_getDynamicFields`).
+#[derive(Debug, Clone)]
+pub struct DynamicFieldEntry {
+    /// Type of the key/name (e.g., "u64", "0x2::object::ID")
+    pub name_type: String,
+    /// JSON value of the key/name
+    pub name_json: Option<serde_json::Value>,
+    /// BCS-encoded key bytes
+    pub name_bcs: Option<Vec<u8>>,
+    /// Object ID of the dynamic field wrapper
+    pub object_id: String,
+    /// Full type of the stored value
+    pub object_type: Option<String>,
+    /// Version of the wrapper object
+    pub version: Option<u64>,
+    /// Digest of the wrapper object
+    pub digest: Option<String>,
+}
+
+// ============================================================================
+// Transaction Cache Types
+// ============================================================================
+
+/// Cached transaction data including packages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedTransaction {
+    /// The fetched transaction
+    pub transaction: FetchedTransaction,
+    /// Cached package bytecode (package_id -> [(module_name, module_bytes_base64)])
+    pub packages: HashMap<String, Vec<(String, String)>>,
+    /// Input object data (object_id -> bytes_base64)
+    pub objects: HashMap<String, String>,
+    /// Object type information (object_id -> type_string)
+    #[serde(default)]
+    pub object_types: HashMap<String, String>,
+    /// Object versions at transaction time (object_id -> version)
+    #[serde(default)]
+    pub object_versions: HashMap<String, u64>,
+    /// Historical object data at transaction-time versions (object_id -> bytes_base64)
+    /// These are objects fetched at their specific version from gRPC archive
+    #[serde(default)]
+    pub historical_objects: HashMap<String, String>,
+    /// Dynamic field children (child_id -> CachedDynamicField)
+    /// Pre-fetched dynamic field data for replay
+    #[serde(default)]
+    pub dynamic_field_children: HashMap<String, CachedDynamicField>,
+    /// Package upgrade mappings (original_address -> upgraded_address)
+    /// Maps original package addresses to their upgraded versions
+    #[serde(default)]
+    pub package_upgrades: HashMap<String, String>,
+    /// Cache timestamp
+    pub cached_at: u64,
+}
+
+/// Cached dynamic field child data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedDynamicField {
+    /// Parent object ID
+    pub parent_id: String,
+    /// Type string of the dynamic field
+    pub type_string: String,
+    /// BCS bytes (base64 encoded)
+    pub bcs_base64: String,
+    /// Version at which this was fetched
+    pub version: u64,
+}
+
+impl CachedTransaction {
+    /// Create a new cached transaction.
+    pub fn new(tx: FetchedTransaction) -> Self {
+        Self {
+            transaction: tx,
+            packages: HashMap::new(),
+            objects: HashMap::new(),
+            object_types: HashMap::new(),
+            object_versions: HashMap::new(),
+            historical_objects: HashMap::new(),
+            dynamic_field_children: HashMap::new(),
+            package_upgrades: HashMap::new(),
+            cached_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        }
+    }
+
+    /// Add package bytecode to the cache.
+    pub fn add_package(&mut self, package_id: String, modules: Vec<(String, Vec<u8>)>) {
+        let encoded: Vec<(String, String)> = modules
+            .into_iter()
+            .map(|(name, bytes)| {
+                (
+                    name,
+                    base64::engine::general_purpose::STANDARD.encode(&bytes),
+                )
+            })
+            .collect();
+        self.packages.insert(package_id, encoded);
+    }
+
+    /// Add object data to the cache.
+    pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
+        self.objects.insert(
+            object_id,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+    }
+
+    /// Add object data with type information to the cache.
+    pub fn add_object_with_type(
+        &mut self,
+        object_id: String,
+        bytes: Vec<u8>,
+        object_type: Option<String>,
+    ) {
+        self.objects.insert(
+            object_id.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+        if let Some(type_str) = object_type {
+            self.object_types.insert(object_id, type_str);
+        }
+    }
+
+    /// Get decoded package modules.
+    pub fn get_package_modules(&self, package_id: &str) -> Option<Vec<(String, Vec<u8>)>> {
+        self.packages.get(package_id).map(|modules| {
+            modules
+                .iter()
+                .filter_map(|(name, b64)| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .ok()
+                        .map(|bytes| (name.clone(), bytes))
+                })
+                .collect()
+        })
+    }
+
+    /// Get decoded object bytes.
+    pub fn get_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
+        self.objects
+            .get(object_id)
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+    }
+
+    /// Get historical object bytes (at transaction-time version).
+    /// Falls back to regular objects if no historical version is cached.
+    pub fn get_historical_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
+        // Try historical first, then fall back to regular objects
+        self.historical_objects
+            .get(object_id)
+            .or_else(|| self.objects.get(object_id))
+            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+    }
+
+    /// Get object version at transaction time.
+    pub fn get_object_version(&self, object_id: &str) -> Option<u64> {
+        self.object_versions.get(object_id).copied()
+    }
+
+    /// Add historical object data to the cache.
+    pub fn add_historical_object(&mut self, object_id: String, bytes: Vec<u8>, version: u64) {
+        self.historical_objects.insert(
+            object_id.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+        self.object_versions.insert(object_id, version);
+    }
+
+    /// Add a dynamic field child to the cache.
+    pub fn add_dynamic_field_child(
+        &mut self,
+        child_id: String,
+        parent_id: String,
+        type_string: String,
+        bytes: Vec<u8>,
+        version: u64,
+    ) {
+        self.dynamic_field_children.insert(
+            child_id,
+            CachedDynamicField {
+                parent_id,
+                type_string,
+                bcs_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                version,
+            },
+        );
+    }
+
+    /// Get decoded dynamic field child data.
+    pub fn get_dynamic_field_child(
+        &self,
+        child_id: &str,
+    ) -> Option<(String, String, Vec<u8>, u64)> {
+        self.dynamic_field_children.get(child_id).and_then(|df| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&df.bcs_base64)
+                .ok()
+                .map(|bytes| {
+                    (
+                        df.parent_id.clone(),
+                        df.type_string.clone(),
+                        bytes,
+                        df.version,
+                    )
+                })
+        })
+    }
+
+    /// Get all dynamic field children for a parent.
+    pub fn get_dynamic_fields_for_parent(
+        &self,
+        parent_id: &str,
+    ) -> Vec<(String, String, Vec<u8>, u64)> {
+        self.dynamic_field_children
+            .iter()
+            .filter(|(_, df)| df.parent_id == parent_id)
+            .filter_map(|(child_id, df)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(&df.bcs_base64)
+                    .ok()
+                    .map(|bytes| (child_id.clone(), df.type_string.clone(), bytes, df.version))
+            })
+            .collect()
+    }
+
+    /// Add a package upgrade mapping.
+    pub fn add_package_upgrade(&mut self, original_address: String, upgraded_address: String) {
+        self.package_upgrades
+            .insert(original_address, upgraded_address);
+    }
+
+    /// Get the upgraded package address for an original address.
+    pub fn get_upgraded_package(&self, original_address: &str) -> Option<&String> {
+        self.package_upgrades.get(original_address)
+    }
+
+    /// Get objects map with historical objects merged in.
+    /// Historical objects take precedence over regular objects.
+    pub fn get_merged_objects(&self) -> HashMap<String, String> {
+        let mut merged = self.objects.clone();
+        for (id, b64) in &self.historical_objects {
+            merged.insert(id.clone(), b64.clone());
+        }
+        merged
+    }
+}
+
+/// Transaction cache for storing fetched transactions and their dependencies.
+pub struct TransactionCache {
+    /// Cache directory path
+    cache_dir: std::path::PathBuf,
+}
+
+impl TransactionCache {
+    /// Create a new transaction cache with the given directory.
+    pub fn new(cache_dir: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+        let cache_dir = cache_dir.into();
+        std::fs::create_dir_all(&cache_dir)?;
+        Ok(Self { cache_dir })
+    }
+
+    /// Get the cache file path for a transaction digest.
+    fn cache_path(&self, digest: &str) -> std::path::PathBuf {
+        self.cache_dir.join(format!("{}.json", digest))
+    }
+
+    /// Check if a transaction is cached.
+    pub fn has(&self, digest: &str) -> bool {
+        self.cache_path(digest).exists()
+    }
+
+    /// Load a cached transaction.
+    pub fn load(&self, digest: &str) -> std::io::Result<CachedTransaction> {
+        let path = self.cache_path(digest);
+        let content = std::fs::read_to_string(&path)?;
+        let cached: CachedTransaction = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(cached)
+    }
+
+    /// Save a transaction to the cache.
+    pub fn save(&self, cached: &CachedTransaction) -> std::io::Result<()> {
+        let path = self.cache_path(&cached.transaction.digest.0);
+        let content = serde_json::to_string_pretty(cached)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// List all cached transaction digests.
+    pub fn list(&self) -> std::io::Result<Vec<String>> {
+        let mut digests = Vec::new();
+        for entry in std::fs::read_dir(&self.cache_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Some(stem) = path.file_stem() {
+                    digests.push(stem.to_string_lossy().to_string());
+                }
+            }
+        }
+        Ok(digests)
+    }
+
+    /// Get the number of cached transactions.
+    pub fn count(&self) -> usize {
+        self.list().map(|l| l.len()).unwrap_or(0)
+    }
+
+    /// Clear all cached transactions.
+    pub fn clear(&self) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(&self.cache_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                std::fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get cache directory path.
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+}
+
+// ============================================================================
+// Serde helpers
+// ============================================================================
+
+/// Serde helper for base64 encoding/decoding Vec<u8>
+pub mod base64_bytes {
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&s)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_digest_new() {
+        let digest = TransactionDigest::new("abc123");
+        assert_eq!(digest.0, "abc123");
+    }
+
+    #[test]
+    fn test_cached_transaction_new() {
+        let tx = FetchedTransaction {
+            digest: TransactionDigest::new("test"),
+            sender: AccountAddress::ZERO,
+            gas_budget: 1000,
+            gas_price: 1,
+            commands: vec![],
+            inputs: vec![],
+            effects: None,
+            timestamp_ms: None,
+            checkpoint: None,
+        };
+
+        let cached = CachedTransaction::new(tx);
+        assert!(cached.packages.is_empty());
+        assert!(cached.objects.is_empty());
+        assert!(cached.cached_at > 0);
+    }
+
+    #[test]
+    fn test_cached_transaction_add_package() {
+        let tx = FetchedTransaction {
+            digest: TransactionDigest::new("test"),
+            sender: AccountAddress::ZERO,
+            gas_budget: 1000,
+            gas_price: 1,
+            commands: vec![],
+            inputs: vec![],
+            effects: None,
+            timestamp_ms: None,
+            checkpoint: None,
+        };
+
+        let mut cached = CachedTransaction::new(tx);
+        cached.add_package(
+            "0x2".to_string(),
+            vec![("module1".to_string(), vec![1, 2, 3])],
+        );
+
+        let modules = cached.get_package_modules("0x2").unwrap();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].0, "module1");
+        assert_eq!(modules[0].1, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_cached_transaction_add_object() {
+        let tx = FetchedTransaction {
+            digest: TransactionDigest::new("test"),
+            sender: AccountAddress::ZERO,
+            gas_budget: 1000,
+            gas_price: 1,
+            commands: vec![],
+            inputs: vec![],
+            effects: None,
+            timestamp_ms: None,
+            checkpoint: None,
+        };
+
+        let mut cached = CachedTransaction::new(tx);
+        cached.add_object("0x123".to_string(), vec![4, 5, 6]);
+
+        let bytes = cached.get_object_bytes("0x123").unwrap();
+        assert_eq!(bytes, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_effects_comparison_all_match() {
+        let effects = TransactionEffectsSummary {
+            status: TransactionStatus::Success,
+            created: vec!["0x1".to_string()],
+            mutated: vec!["0x2".to_string(), "0x3".to_string()], // +1 for gas
+            deleted: vec![],
+            wrapped: vec![],
+            unwrapped: vec![],
+            gas_used: GasSummary::default(),
+            events_count: 0,
+            shared_object_versions: HashMap::new(),
+        };
+
+        let comparison = EffectsComparison::compare(&effects, true, 1, 1, 0);
+        assert!(comparison.status_match);
+        assert!(comparison.created_count_match);
+        assert!(comparison.mutated_count_match); // allows +1 for gas
+        assert!(comparison.deleted_count_match);
+        assert_eq!(comparison.match_score, 1.0);
+    }
+
+    #[test]
+    fn test_effects_comparison_status_mismatch() {
+        let effects = TransactionEffectsSummary {
+            status: TransactionStatus::Success,
+            created: vec![],
+            mutated: vec![],
+            deleted: vec![],
+            wrapped: vec![],
+            unwrapped: vec![],
+            gas_used: GasSummary::default(),
+            events_count: 0,
+            shared_object_versions: HashMap::new(),
+        };
+
+        let comparison = EffectsComparison::compare(&effects, false, 0, 0, 0);
+        assert!(!comparison.status_match);
+        assert!(comparison
+            .notes
+            .iter()
+            .any(|n| n.contains("Status mismatch")));
+    }
+}
