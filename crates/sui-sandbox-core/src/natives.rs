@@ -1447,7 +1447,7 @@ fn check_shared_state_for_child_with_fetch(
         }
 
         // Not in cache - try on-demand fetching
-        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
             eprintln!(
                 "[check_shared_state_for_child_with_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
                 child_id.to_hex_literal(),
@@ -1502,7 +1502,7 @@ fn check_shared_state_for_child_with_type_and_fetch(
         }
 
         // Not in cache - try on-demand fetching
-        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
             eprintln!(
                 "[check_shared_state_for_child_with_type_and_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
                 child_id.to_hex_literal(),
@@ -1650,6 +1650,13 @@ fn add_dynamic_field_natives(
                 );
             }
 
+            // Record the computed child info for key-based fallback lookup.
+            // This is essential for handling package upgrades where the computed hash
+            // differs from the stored child object's hash due to type address changes.
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                shared.record_computed_child(child_id, parent, key_tag, key_bytes);
+            }
+
             Ok(NativeResult::ok(
                 InternalGas::new(0),
                 smallvec![Value::address(child_id)],
@@ -1718,6 +1725,8 @@ fn add_dynamic_field_natives(
             use move_vm_types::values::StructRef;
 
             eprintln!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
+            use std::io::Write;
+            std::io::stderr().flush().ok();
 
             let child_ty = ty_args.pop().ok_or_else(|| {
                 eprintln!("[borrow_child_object] ERROR: no type arg");
@@ -1805,7 +1814,7 @@ fn add_dynamic_field_natives(
 
                 // If not in shared state, try on-demand fetching
                 let child_bytes_opt = if child_bytes_opt.is_none() {
-                    if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+                    if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
                         eprintln!(
                             "[borrow_child_object] on-demand fetch succeeded, {} bytes, type={:?}",
                             fetched_bytes.len(),
@@ -1832,35 +1841,13 @@ fn add_dynamic_field_natives(
                         _ => 0,
                     };
 
-                    // Log detailed info for all Field types
+                    // Validate Field struct layout (silent unless incorrect)
                     let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
-                    if is_field_type {
+                    if is_field_type && layout_field_count != 3 {
                         eprintln!(
-                            "[borrow_child_object] Field type detected: child_tag={:?}",
-                            child_tag
+                            "[borrow_child_object] WARNING: Field layout has {} fields, expected 3!",
+                            layout_field_count
                         );
-                        eprintln!(
-                            "[borrow_child_object] layout has {} fields, bytes len={}",
-                            layout_field_count, child_bytes.len()
-                        );
-
-                        // Validate Field struct layout - should have exactly 3 fields: id, name, value
-                        if layout_field_count != 3 {
-                            eprintln!(
-                                "[borrow_child_object] WARNING: Field layout has {} fields, expected 3!",
-                                layout_field_count
-                            );
-                            eprintln!("[borrow_child_object] Full layout: {:?}", type_layout);
-                        }
-
-                        // Log raw bytes structure
-                        if child_bytes.len() >= 40 {
-                            eprintln!("[borrow_child_object] bytes 0-32 (id/UID): {:02x?}", &child_bytes[0..32]);
-                            eprintln!("[borrow_child_object] bytes 32-40 (name): {:02x?}", &child_bytes[32..40]);
-                            if child_bytes.len() >= 72 {
-                                eprintln!("[borrow_child_object] bytes 40-72 (value start): {:02x?}", &child_bytes[40..72]);
-                            }
-                        }
                     }
 
                     // Deserialize the bytes into a Move Value
@@ -1902,6 +1889,11 @@ fn add_dynamic_field_natives(
             }
 
             // Child doesn't exist in either local or shared state
+            eprintln!(
+                "[borrow_child_object] FINAL: child not found, returning E_FIELD_DOES_NOT_EXIST, parent={}, child_id={}",
+                parent.to_hex_literal(),
+                child_id.to_hex_literal()
+            );
             Ok(NativeResult::err(
                 InternalGas::new(0),
                 E_FIELD_DOES_NOT_EXIST,
@@ -1979,7 +1971,7 @@ fn add_dynamic_field_natives(
 
                 // If not in shared state, try on-demand fetching
                 let child_bytes_opt = if child_bytes_opt.is_none() {
-                    if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+                    if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
                         eprintln!("[borrow_child_object_mut] on-demand fetch succeeded, {} bytes, type={:?}", fetched_bytes.len(), fetched_tag);
                         shared
                             .shared_state()
@@ -2001,41 +1993,13 @@ fn add_dynamic_field_natives(
                         _ => 0,
                     };
 
-                    // Log detailed info for all Field types (not just PoolInner)
+                    // Validate Field struct layout (silent unless incorrect)
                     let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
-                    if is_field_type {
+                    if is_field_type && layout_field_count != 3 {
                         eprintln!(
-                            "[borrow_child_object_mut] Field type detected: child_tag={:?}",
-                            child_tag
+                            "[borrow_child_object_mut] WARNING: Field layout has {} fields, expected 3!",
+                            layout_field_count
                         );
-                        eprintln!(
-                            "[borrow_child_object_mut] child_ty (Move Type): {:?}",
-                            child_ty
-                        );
-                        eprintln!(
-                            "[borrow_child_object_mut] layout has {} fields, bytes len={}",
-                            layout_field_count, child_bytes.len()
-                        );
-                        // Print the actual layout structure
-                        eprintln!("[borrow_child_object_mut] Full layout structure: {:?}", type_layout);
-
-                        // Validate Field struct layout - should have exactly 3 fields: id, name, value
-                        if layout_field_count != 3 {
-                            eprintln!(
-                                "[borrow_child_object_mut] WARNING: Field layout has {} fields, expected 3!",
-                                layout_field_count
-                            );
-                            eprintln!("[borrow_child_object_mut] Full layout: {:?}", type_layout);
-                        }
-
-                        // Log raw bytes structure
-                        if child_bytes.len() >= 40 {
-                            eprintln!("[borrow_child_object_mut] bytes 0-32 (id/UID): {:02x?}", &child_bytes[0..32]);
-                            eprintln!("[borrow_child_object_mut] bytes 32-40 (name): {:02x?}", &child_bytes[32..40]);
-                            if child_bytes.len() >= 72 {
-                                eprintln!("[borrow_child_object_mut] bytes 40-72 (value start): {:02x?}", &child_bytes[40..72]);
-                            }
-                        }
                     }
 
                     // Deserialize the bytes into a Move Value

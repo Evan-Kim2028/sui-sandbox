@@ -81,10 +81,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Callback type for on-demand child object fetching.
-/// Takes (child_object_id) and returns Option<(type_tag, bcs_bytes)>.
+/// Callback type for on-demand child object fetching by computed ID.
+/// Takes (parent_id, child_id) and returns Option<(type_tag, bcs_bytes)>.
 /// This is called when a child object is requested but not found in the preloaded set.
-pub type ChildFetcherFn = Box<dyn Fn(AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
+pub type ChildFetcherFn =
+    Box<dyn Fn(AccountAddress, AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
+
+/// Callback type for key-based child object fetching.
+/// Takes (parent_id, key_type_tag, key_bcs_bytes) and returns Option<(type_tag, bcs_bytes)>.
+/// This is called when ID-based lookup fails, allowing lookup by dynamic field key content.
+/// This handles cases where package upgrades cause computed child IDs to differ from stored IDs.
+pub type KeyBasedChildFetcherFn =
+    Box<dyn Fn(AccountAddress, &TypeTag, &[u8]) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
 
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
@@ -1071,6 +1079,18 @@ impl ObjectRuntimeState {
     }
 }
 
+/// Information about how a child_id was computed from parent + key.
+/// Used for key-based fallback lookup when hash doesn't match stored data.
+#[derive(Debug, Clone)]
+pub struct ComputedChildInfo {
+    /// Parent object ID
+    pub parent_id: AccountAddress,
+    /// Type tag of the key (rewritten to runtime addresses)
+    pub key_type: TypeTag,
+    /// BCS-serialized key bytes
+    pub key_bytes: Vec<u8>,
+}
+
 /// A shareable ObjectRuntime that persists state across VM sessions.
 ///
 /// This wraps ObjectRuntimeState in Arc<Mutex> and provides a VM extension
@@ -1089,11 +1109,17 @@ pub struct SharedObjectRuntime {
     /// Optional callback for on-demand child fetching from network/archive.
     /// Called when a child object is requested but not found in shared state.
     child_fetcher: Option<Arc<ChildFetcherFn>>,
+    /// Optional callback for key-based child fetching.
+    /// Called when ID-based lookup fails, allowing lookup by dynamic field key.
+    key_based_child_fetcher: Option<Arc<KeyBasedChildFetcherFn>>,
     /// Track all child object IDs that were accessed during execution (for tracing).
     /// This is used to discover which children need to be fetched for historical replay.
     accessed_children: Arc<Mutex<HashSet<AccountAddress>>>,
     /// Address aliases for package upgrades (bytecode address -> runtime/storage address).
     address_aliases: HashMap<AccountAddress, AccountAddress>,
+    /// Mapping from computed child_id -> (parent, key_type, key_bytes).
+    /// Populated during hash_type_and_key calls, used for key-based fallback lookup.
+    computed_child_keys: Mutex<HashMap<AccountAddress, ComputedChildInfo>>,
 }
 
 // Mark as a native extension
@@ -1111,8 +1137,10 @@ impl SharedObjectRuntime {
             shared_state,
             local,
             child_fetcher: None,
+            key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1126,8 +1154,10 @@ impl SharedObjectRuntime {
             shared_state,
             local: ObjectRuntime::new(),
             child_fetcher: Some(Arc::new(fetcher)),
+            key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1141,14 +1171,22 @@ impl SharedObjectRuntime {
             shared_state,
             local: ObjectRuntime::new(),
             child_fetcher: None,
+            key_based_child_fetcher: None,
             accessed_children,
             address_aliases: HashMap::new(),
+            computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Set the child fetcher callback.
+    /// Set the child fetcher callback (ID-based lookup).
     pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
         self.child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Set the key-based child fetcher callback.
+    /// This is called when ID-based lookup fails, allowing lookup by dynamic field key.
+    pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
+        self.key_based_child_fetcher = Some(Arc::new(fetcher));
     }
 
     /// Set address aliases for package upgrades.
@@ -1206,6 +1244,11 @@ impl SharedObjectRuntime {
         self.child_fetcher.as_ref()
     }
 
+    /// Get the key-based child fetcher if set.
+    pub fn key_based_child_fetcher(&self) -> Option<&Arc<KeyBasedChildFetcherFn>> {
+        self.key_based_child_fetcher.as_ref()
+    }
+
     /// Get access to the shared state for external queries.
     pub fn shared_state(&self) -> &Arc<Mutex<ObjectRuntimeState>> {
         &self.shared_state
@@ -1229,22 +1272,72 @@ impl SharedObjectRuntime {
         self.shared_state.lock().has_child(parent, child_id)
     }
 
+    /// Record the computed child key info for later key-based fallback lookup.
+    /// Called from hash_type_and_key native function.
+    pub fn record_computed_child(
+        &self,
+        child_id: AccountAddress,
+        parent_id: AccountAddress,
+        key_type: TypeTag,
+        key_bytes: Vec<u8>,
+    ) {
+        self.computed_child_keys.lock().insert(
+            child_id,
+            ComputedChildInfo {
+                parent_id,
+                key_type,
+                key_bytes,
+            },
+        );
+    }
+
+    /// Get the computed child info for a child_id if available.
+    pub fn get_computed_child_info(&self, child_id: &AccountAddress) -> Option<ComputedChildInfo> {
+        self.computed_child_keys.lock().get(child_id).cloned()
+    }
+
     /// Try to fetch a child object on-demand if a fetcher is configured.
     /// Returns Some((type_tag, bytes)) if successfully fetched, None otherwise.
     /// Also records the child access for tracing purposes.
-    pub fn try_fetch_child(&self, child_id: AccountAddress) -> Option<(TypeTag, Vec<u8>)> {
+    pub fn try_fetch_child(
+        &self,
+        parent_id: AccountAddress,
+        child_id: AccountAddress,
+    ) -> Option<(TypeTag, Vec<u8>)> {
         // Always record the access for tracing
         self.record_child_access(child_id);
 
+        // First try ID-based fetcher
         if let Some(fetcher) = &self.child_fetcher {
             eprintln!(
                 "[SharedObjectRuntime] on-demand fetching child {}",
                 child_id.to_hex_literal()
             );
-            fetcher(child_id)
-        } else {
-            None
+            if let Some(result) = fetcher(parent_id, child_id) {
+                return Some(result);
+            }
         }
+
+        // If ID-based lookup failed, try key-based lookup
+        if let Some(key_fetcher) = &self.key_based_child_fetcher {
+            if let Some(info) = self.get_computed_child_info(&child_id) {
+                eprintln!(
+                    "[SharedObjectRuntime] trying key-based fallback for child {} (key_type={:?}, key_len={})",
+                    child_id.to_hex_literal(),
+                    info.key_type,
+                    info.key_bytes.len()
+                );
+                if let Some(result) = key_fetcher(info.parent_id, &info.key_type, &info.key_bytes) {
+                    eprintln!(
+                        "[SharedObjectRuntime] key-based fetch succeeded for child {}",
+                        child_id.to_hex_literal()
+                    );
+                    return Some(result);
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -1254,8 +1347,10 @@ impl Default for SharedObjectRuntime {
             shared_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
             local: ObjectRuntime::new(),
             child_fetcher: None,
+            key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
 }

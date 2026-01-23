@@ -36,7 +36,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
-use crate::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
+use crate::object_runtime::{
+    ChildFetcherFn, KeyBasedChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime,
+};
 use crate::resolver::LocalModuleResolver;
 use crate::sui_object_runtime;
 use sui_protocol_config::ProtocolConfig;
@@ -1264,9 +1266,12 @@ pub struct VMHarness<'a> {
     /// Shared dynamic field state that persists across VM sessions.
     /// Used to track Table/Bag entries throughout PTB execution.
     shared_df_state: Arc<Mutex<ObjectRuntimeState>>,
-    /// Optional callback for on-demand child object fetching.
+    /// Optional callback for on-demand child object fetching (ID-based).
     /// Used for fetching dynamic field children from network/archive when not preloaded.
     child_fetcher: Option<Arc<ChildFetcherFn>>,
+    /// Optional callback for key-based child object fetching.
+    /// Used as fallback when ID-based lookup fails due to package upgrade type mismatches.
+    key_based_child_fetcher: Option<Arc<KeyBasedChildFetcherFn>>,
     /// Track all child object IDs accessed during execution (for tracing).
     /// This persists across multiple sessions for the lifetime of the harness.
     accessed_children: Arc<Mutex<std::collections::HashSet<AccountAddress>>>,
@@ -1331,6 +1336,7 @@ impl<'a> VMHarness<'a> {
             config,
             shared_df_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
             child_fetcher: None,
+            key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(std::collections::HashSet::new())),
             address_aliases: std::collections::HashMap::new(),
             protocol_config,
@@ -1365,7 +1371,7 @@ impl<'a> VMHarness<'a> {
             let sui_fetcher: sui_object_runtime::ChildFetchFn =
                 std::sync::Arc::new(move |child_id: sui_types::base_types::ObjectID| {
                     let addr = AccountAddress::new(child_id.into_bytes());
-                    fetcher_arc(addr).map(|(type_tag, bytes)| {
+                    fetcher_arc(addr, addr).map(|(type_tag, bytes)| {
                         // Use default version and parent
                         (type_tag, bytes, 1u64, child_id)
                     })
@@ -1394,6 +1400,13 @@ impl<'a> VMHarness<'a> {
     /// Clear the child fetcher callback.
     pub fn clear_child_fetcher(&mut self) {
         self.child_fetcher = None;
+    }
+
+    /// Set a key-based child fetcher for handling package upgrade type mismatches.
+    /// This callback is called when ID-based lookup fails, allowing lookup by
+    /// dynamic field key content instead of computed hash.
+    pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
+        self.key_based_child_fetcher = Some(Arc::new(fetcher));
     }
 
     /// Register an input object for Sui natives mode.
@@ -1540,7 +1553,17 @@ impl<'a> VMHarness<'a> {
         // If we have a child fetcher, clone the Arc and wrap it in a new Box for the runtime
         if let Some(fetcher_arc) = &self.child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
-            shared_runtime.set_child_fetcher(Box::new(move |child_id| fetcher_clone(child_id)));
+            shared_runtime.set_child_fetcher(Box::new(move |parent_id, child_id| {
+                fetcher_clone(parent_id, child_id)
+            }));
+        }
+
+        // If we have a key-based child fetcher, set it up as fallback
+        if let Some(fetcher_arc) = &self.key_based_child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            shared_runtime.set_key_based_child_fetcher(Box::new(
+                move |parent_id, key_type, key_bytes| fetcher_clone(parent_id, key_type, key_bytes),
+            ));
         }
 
         // Pass address aliases to enable type tag rewriting for upgraded packages.

@@ -1197,7 +1197,9 @@ impl SimulationEnvironment {
         // Set up on-demand child fetcher if configured
         if let Some(ref fetcher_arc) = self.child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
-            harness.set_child_fetcher(Box::new(move |child_id| fetcher_clone(child_id)));
+            harness.set_child_fetcher(Box::new(move |parent_id, child_id| {
+                fetcher_clone(parent_id, child_id)
+            }));
         }
 
         // Preload dynamic field state from the environment.
