@@ -574,19 +574,132 @@ impl<'a> BcsDecoder<'a> {
                 name,
                 type_args,
             } => {
+                let type_str = format!("{}::{}::{}", address.to_hex_literal(), module, name);
+
                 // Special handling for well-known types
+
+                // UID is just a wrapper around ID, which is a 32-byte address
                 if is_uid_type(address, module, name) {
-                    // UID is just a wrapper around ID, which is address
                     let mut bytes = [0u8; 32];
                     bytes.copy_from_slice(self.read_bytes(32)?);
                     return Ok(DynamicValue::Struct {
-                        type_name: format!("{}::{}::{}", address.to_hex_literal(), module, name),
+                        type_name: type_str,
                         fields: vec![("id".to_string(), DynamicValue::Address(bytes))],
                     });
                 }
 
+                // Option<T> is serialized as a vector with 0 or 1 elements
+                // None = length 0, Some(x) = length 1 + x's bytes
+                if is_option_type(address, module, name) {
+                    let len = self.read_uleb128()?;
+                    if len == 0 {
+                        return Ok(DynamicValue::Struct {
+                            type_name: type_str,
+                            fields: vec![("vec".to_string(), DynamicValue::Vector(vec![]))],
+                        });
+                    } else if len == 1 {
+                        let inner_type = type_args.first().cloned().unwrap_or(MoveType::U8);
+                        let inner_value = self.decode(&inner_type)?;
+                        return Ok(DynamicValue::Struct {
+                            type_name: type_str,
+                            fields: vec![(
+                                "vec".to_string(),
+                                DynamicValue::Vector(vec![inner_value]),
+                            )],
+                        });
+                    } else {
+                        // Show more context about what went wrong
+                        return Err(anyhow!(
+                            "Invalid Option length: {} (bytes at cursor-1: {:02x?})",
+                            len,
+                            &self.data
+                                [(self.cursor.saturating_sub(5))..self.cursor.min(self.data.len())]
+                        ));
+                    }
+                }
+
+                // TypeName is a wrapper around a String (ASCII bytes)
+                if is_type_name_type(address, module, name) {
+                    let len = self.read_uleb128()? as usize;
+                    let bytes = self.read_bytes(len)?.to_vec();
+                    return Ok(DynamicValue::Struct {
+                        type_name: type_str,
+                        fields: vec![("name".to_string(), DynamicValue::RawBytes(bytes))],
+                    });
+                }
+
+                // String types are length-prefixed byte vectors
+                if is_string_type(address, module, name) {
+                    let len = self.read_uleb128()? as usize;
+                    let bytes = self.read_bytes(len)?.to_vec();
+                    return Ok(DynamicValue::Struct {
+                        type_name: type_str,
+                        fields: vec![("bytes".to_string(), DynamicValue::RawBytes(bytes))],
+                    });
+                }
+
+                // Special handling for Sui framework dynamic field wrappers (Table, Bag, etc.)
+                // These all have layout: { id: UID, size: u64 } = 40 bytes
+                // The type parameters are "phantom" - they don't appear in the BCS data.
+                if is_sui_table_type(address, module, name) {
+                    let mut id_bytes = [0u8; 32];
+                    id_bytes.copy_from_slice(self.read_bytes(32)?);
+                    let size = self.read_u64()?;
+                    return Ok(DynamicValue::Struct {
+                        type_name: type_str,
+                        fields: vec![
+                            ("id".to_string(), DynamicValue::Address(id_bytes)),
+                            ("size".to_string(), DynamicValue::U64(size)),
+                        ],
+                    });
+                }
+
+                // Special handling for custom dynamic field wrapper types (WitTable, AcTable, etc.)
+                // These follow the same pattern as Sui's Table: { id: UID, size: u64 } = 40 bytes
+                // We check this BEFORE looking up the struct layout because these types have
+                // phantom type parameters that aren't part of the BCS data.
+                //
+                // IMPORTANT: Check if we have a layout for this type first. If we do, check
+                // if the fields are all serializable or if some are phantom types.
+                if is_custom_table_like_type(name) {
+                    // Check the registry for actual layout
+                    if let Some(layout) = self.registry.get_layout(&type_str) {
+                        // Check if all type parameters in the layout are phantom
+                        // (i.e., there are TypeParameter fields that reference type args)
+                        let has_phantom_params = layout
+                            .fields
+                            .iter()
+                            .any(|f| matches!(&f.field_type, MoveType::TypeParameter(_)));
+                        if has_phantom_params {
+                            // Has phantom type parameters - use assumed UID+size
+                            let mut id_bytes = [0u8; 32];
+                            id_bytes.copy_from_slice(self.read_bytes(32)?);
+                            let size = self.read_u64()?;
+                            return Ok(DynamicValue::Struct {
+                                type_name: type_str,
+                                fields: vec![
+                                    ("id".to_string(), DynamicValue::Address(id_bytes)),
+                                    ("size".to_string(), DynamicValue::U64(size)),
+                                ],
+                            });
+                        }
+                        // No phantom params - fall through to use actual layout
+                    } else {
+                        // No layout found - use assumed UID+size
+                        let mut id_bytes = [0u8; 32];
+                        id_bytes.copy_from_slice(self.read_bytes(32)?);
+                        let size = self.read_u64()?;
+                        return Ok(DynamicValue::Struct {
+                            type_name: type_str,
+                            fields: vec![
+                                ("id".to_string(), DynamicValue::Address(id_bytes)),
+                                ("size".to_string(), DynamicValue::U64(size)),
+                            ],
+                        });
+                    }
+                }
+
                 // Look up the struct layout
-                let type_str = format!("{}::{}::{}", address.to_hex_literal(), module, name);
                 let layout = self
                     .registry
                     .get_layout(&type_str)
@@ -667,10 +780,29 @@ impl<'a> BcsDecoder<'a> {
         // Set type args for this struct
         let saved_type_args = std::mem::replace(&mut self.type_args, type_args);
 
+        let struct_name = format!(
+            "{}::{}::{}",
+            layout.address.to_hex_literal(),
+            layout.module,
+            layout.name
+        );
+
         let mut fields = Vec::with_capacity(layout.fields.len());
-        for field in &layout.fields {
+        for (idx, field) in layout.fields.iter().enumerate() {
             let resolved_type = self.substitute_type_params(&field.field_type);
-            let value = self.decode(&resolved_type)?;
+            let cursor_before = self.cursor;
+            let value = self.decode(&resolved_type).map_err(|e| {
+                anyhow!(
+                    "Failed decoding field #{} '{}' (type {:?}) of {} at cursor {} (total len {}): {}",
+                    idx,
+                    field.name,
+                    resolved_type,
+                    struct_name,
+                    cursor_before,
+                    self.data.len(),
+                    e
+                )
+            })?;
             fields.push((field.name.clone(), value));
         }
 
@@ -678,12 +810,7 @@ impl<'a> BcsDecoder<'a> {
         self.type_args = saved_type_args;
 
         Ok(DynamicValue::Struct {
-            type_name: format!(
-                "{}::{}::{}",
-                layout.address.to_hex_literal(),
-                layout.module,
-                layout.name
-            ),
+            type_name: struct_name,
             fields,
         })
     }
@@ -759,6 +886,60 @@ impl<'a> BcsDecoder<'a> {
 fn is_uid_type(address: &AccountAddress, module: &str, name: &str) -> bool {
     let sui_framework = AccountAddress::from_hex_literal("0x2").unwrap_or(AccountAddress::ZERO);
     *address == sui_framework && module == "object" && name == "UID"
+}
+
+/// Check if this is the Option type (0x1::option::Option)
+fn is_option_type(address: &AccountAddress, module: &str, name: &str) -> bool {
+    let std_addr = AccountAddress::from_hex_literal("0x1").unwrap_or(AccountAddress::ZERO);
+    *address == std_addr && module == "option" && name == "Option"
+}
+
+/// Check if this is the TypeName type (0x1::type_name::TypeName)
+fn is_type_name_type(address: &AccountAddress, module: &str, name: &str) -> bool {
+    let std_addr = AccountAddress::from_hex_literal("0x1").unwrap_or(AccountAddress::ZERO);
+    *address == std_addr && module == "type_name" && name == "TypeName"
+}
+
+/// Check if this is the String type (0x1::string::String or 0x1::ascii::String)
+fn is_string_type(address: &AccountAddress, module: &str, name: &str) -> bool {
+    let std_addr = AccountAddress::from_hex_literal("0x1").unwrap_or(AccountAddress::ZERO);
+    *address == std_addr && (module == "string" || module == "ascii") && name == "String"
+}
+
+/// Check if this is a Sui framework dynamic field wrapper type (Table, Bag, etc.)
+/// These types all have the same BCS layout: { id: UID, size: u64 } = 40 bytes
+fn is_sui_table_type(address: &AccountAddress, module: &str, name: &str) -> bool {
+    let sui_framework = AccountAddress::from_hex_literal("0x2").unwrap_or(AccountAddress::ZERO);
+    if *address != sui_framework {
+        return false;
+    }
+    matches!(
+        (module, name),
+        ("table", "Table")
+            | ("object_table", "ObjectTable")
+            | ("bag", "Bag")
+            | ("object_bag", "ObjectBag")
+            | ("linked_table", "LinkedTable")
+            | ("table_vec", "TableVec")
+            | ("vec_set", "VecSet")
+            | ("vec_map", "VecMap")
+    )
+}
+
+/// Check if this appears to be a custom dynamic field wrapper type.
+/// These are types that wrap Table/Bag-like functionality with a different package address.
+/// Common patterns: WitTable, AcTable, BalanceBag, etc.
+/// Returns true if the type name matches common wrapper patterns.
+fn is_custom_table_like_type(name: &str) -> bool {
+    // Exact matches for known custom table types
+    matches!(
+        name,
+        "WitTable" | "AcTable" | "BalanceBag" | "CustomTable" | "LinkedTable" | "TypeTable"
+    ) || {
+        // Pattern-based fallback for other table-like types
+        let name_lower = name.to_lowercase();
+        name_lower.ends_with("table") || name_lower.ends_with("bag")
+    }
 }
 
 // =============================================================================
@@ -938,79 +1119,19 @@ impl GenericObjectPatcher {
         }
     }
 
-    /// Scan a module's bytecode to find version constants used in comparisons.
+    /// Reserved for future version scanning functionality.
     ///
-    /// This is more robust than just looking at constant values - it analyzes
-    /// how constants are actually used in the bytecode to find version checks.
+    /// Note: Automatic version detection via bytecode scanning was removed because
+    /// heuristics like "scan for U64 constants in range 1-100" are unreliable:
+    /// - Many constants match (percentages, error codes, bit counts, etc.)
+    /// - Module naming conventions vary across protocols
+    /// - Non-deterministic results when multiple constants exist
     ///
-    /// Looks for patterns like:
-    /// - LdConst followed by Eq/Neq (equality comparison with constant)
-    /// - Constants in the range 1-100 that are used in comparisons
-    fn scan_module_for_versions(&mut self, module: &CompiledModule) {
-        use move_binary_format::file_format::Bytecode;
-
-        let package_addr = module.self_id().address().to_hex_literal();
-
-        // First, identify which constant indices are used in comparison operations
-        let mut comparison_constants: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
-
-        for func_def in &module.function_defs {
-            if let Some(code) = &func_def.code {
-                let instructions = &code.code;
-                for (i, instr) in instructions.iter().enumerate() {
-                    // Look for LdConst followed by comparison (Eq, Neq, Lt, Le, Gt, Ge)
-                    if let Bytecode::LdConst(const_idx) = instr {
-                        // Check if next few instructions include a comparison
-                        let next_instrs: Vec<_> = instructions.iter().skip(i + 1).take(3).collect();
-                        let has_comparison = next_instrs.iter().any(|instr| {
-                            matches!(
-                                instr,
-                                Bytecode::Eq
-                                    | Bytecode::Neq
-                                    | Bytecode::Lt
-                                    | Bytecode::Le
-                                    | Bytecode::Gt
-                                    | Bytecode::Ge
-                            )
-                        });
-                        if has_comparison {
-                            comparison_constants.insert(const_idx.0 as usize);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Now check which of these constants are likely version numbers
-        for const_idx in comparison_constants {
-            if const_idx >= module.constant_pool().len() {
-                continue;
-            }
-
-            let constant = &module.constant_pool()[const_idx];
-
-            // Only look at U64 constants
-            if constant.type_ != SignatureToken::U64 {
-                continue;
-            }
-
-            // Deserialize the U64 value
-            if constant.data.len() == 8 {
-                let value = u64::from_le_bytes(constant.data[..8].try_into().unwrap());
-
-                // Version numbers are typically small positive integers
-                // Using 1-100 range is still reasonable but now we KNOW these are used in comparisons
-                if (1..=100).contains(&value) {
-                    let key = package_addr.clone();
-                    let existing = self.version_registry.get(&key).copied().unwrap_or(0);
-                    // Keep the highest version found (most likely the current version)
-                    if value > existing {
-                        self.version_registry.insert(key, value);
-                    }
-                }
-            }
-        }
+    /// Instead, users should explicitly register versions via `register_version()`
+    /// before patching. This is more robust and predictable.
+    fn scan_module_for_versions(&mut self, _module: &CompiledModule) {
+        // No-op: automatic version detection disabled.
+        // Use register_version() to explicitly set expected versions.
     }
 
     /// Add modules for struct layout extraction only (no version scanning).
@@ -1054,13 +1175,14 @@ impl GenericObjectPatcher {
             action: PatchAction::SetFromRegistry,
         });
 
-        // Scallop-style version field (stored in a Version struct with a `value` field)
+        // Version struct field (common pattern: Version struct with a `value` field)
         // ONLY matches types containing "Version" to avoid false positives
+        // Uses registry if available (for exact version matching), otherwise high value
         self.rules.push(FieldPatchRule {
             field_name: "value".to_string(),
             type_pattern: Some("Version".to_string()), // Only match Version-like types
             condition: PatchCondition::U64InRange { min: 1, max: 100 },
-            action: PatchAction::SetU64(u64::MAX - 1),
+            action: PatchAction::SetFromRegistry,
         });
 
         // Timestamp fields (e.g., last_updated_time in RewarderManager)
@@ -1116,15 +1238,16 @@ impl GenericObjectPatcher {
                 if rule.condition.matches(field_value) {
                     let new_value =
                         self.compute_patch_value(&rule.action, type_str, field_value)?;
-                    if value.set_field(&rule.field_name, new_value) {
+                    if value.set_field(&rule.field_name, new_value.clone()) {
                         any_patched = true;
                         *self
                             .patches_applied
                             .entry(rule.field_name.clone())
                             .or_insert(0) += 1;
                         eprintln!(
-                            "[GenericPatcher] Patched field '{}' in {}",
+                            "[GenericPatcher] Patched field '{}' to {:?} in {}",
                             rule.field_name,
+                            new_value,
                             type_str.chars().take(60).collect::<String>()
                         );
                     }
