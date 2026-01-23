@@ -41,10 +41,13 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
+pub mod error_context;
 pub mod natives;
 pub mod object_runtime;
+pub mod ptb;
 pub mod resolver;
 pub mod sui_object_runtime;
+pub mod types;
 pub mod vm;
 pub mod well_known;
 

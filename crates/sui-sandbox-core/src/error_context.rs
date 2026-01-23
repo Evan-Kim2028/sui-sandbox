@@ -13,8 +13,8 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use crate::benchmark::error_context::{ExecutionContext, ObjectContext};
+//! ```
+//! use sui_move_interface_extractor::benchmark::error_context::{ExecutionContext, ObjectContext};
 //!
 //! let ctx = ExecutionContext::new()
 //!     .at_command(3, "MoveCall 0x2::coin::split")
@@ -25,6 +25,9 @@
 //!         owner: Some("0xabc...".into()),
 //!         data_size: Some(40),
 //!     });
+//!
+//! assert_eq!(ctx.command_index, Some(3));
+//! assert_eq!(ctx.input_objects.len(), 1);
 //! ```
 
 use std::fmt;
@@ -392,7 +395,7 @@ impl AbortInfo {
     ///
     /// This extracts the constant_name from CleverError if available,
     /// and falls back to heuristic abort code meanings.
-    pub fn from_grpc_move_abort(abort: &crate::grpc::GrpcMoveAbort) -> Self {
+    pub fn from_grpc_move_abort(abort: &sui_data_fetcher::grpc::GrpcMoveAbort) -> Self {
         let module = abort.module.clone().unwrap_or_else(|| "unknown".into());
         let function = abort
             .function_name

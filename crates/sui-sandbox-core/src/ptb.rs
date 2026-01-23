@@ -17,18 +17,18 @@
 //!
 //! ## Example
 //!
-//! ```ignore
-//! let mut executor = PTBExecutor::new(&mut vm_harness);
+//! ```
+//! use sui_move_interface_extractor::benchmark::ptb::{Command, Argument};
+//! use move_core_types::account_address::AccountAddress;
+//! use move_core_types::identifier::Identifier;
 //!
-//! // Add pure value inputs
-//! executor.add_pure_input(bcs::to_bytes(&100u64)?)?;
-//!
-//! // Execute commands
-//! let effects = executor.execute(vec![
+//! // Define commands for a PTB
+//! let package_addr = AccountAddress::from_hex_literal("0x2").unwrap();
+//! let commands = vec![
 //!     Command::MoveCall {
 //!         package: package_addr,
-//!         module: "my_module".into(),
-//!         function: "create_thing".into(),
+//!         module: Identifier::new("my_module").unwrap(),
+//!         function: Identifier::new("create_thing").unwrap(),
 //!         type_args: vec![],
 //!         args: vec![Argument::Input(0)],
 //!     },
@@ -36,7 +36,8 @@
 //!         objects: vec![Argument::Result(0)],
 //!         address: Argument::Input(1),
 //!     },
-//! ])?;
+//! ];
+//! assert_eq!(commands.len(), 2);
 //! ```
 
 use anyhow::{anyhow, Result};
@@ -45,12 +46,12 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use std::collections::{HashMap, HashSet};
 
-use crate::benchmark::natives::EmittedEvent;
-use crate::benchmark::vm::{gas_costs, VMHarness};
-use crate::benchmark::well_known;
+use crate::natives::EmittedEvent;
+use crate::vm::{gas_costs, VMHarness};
+use crate::well_known;
 
 // Re-export format_type_tag from types module for backward compatibility
-pub use crate::benchmark::types::format_type_tag;
+pub use crate::types::format_type_tag;
 
 // =============================================================================
 // PTB Causality Validation
@@ -1373,11 +1374,11 @@ pub struct TransactionEffects {
 
     /// Detailed error context for debugging failures.
     /// Populated when a command fails with information about the failure.
-    pub error_context: Option<crate::benchmark::error_context::CommandErrorContext>,
+    pub error_context: Option<crate::error_context::CommandErrorContext>,
 
     /// Snapshot of execution state at the time of failure.
     /// Includes all objects loaded, commands that succeeded, etc.
-    pub state_at_failure: Option<crate::benchmark::error_context::ExecutionSnapshot>,
+    pub state_at_failure: Option<crate::error_context::ExecutionSnapshot>,
 }
 
 impl TransactionEffects {
@@ -1419,8 +1420,8 @@ impl TransactionEffects {
         command_index: usize,
         command_description: String,
         commands_succeeded: usize,
-        error_context: crate::benchmark::error_context::CommandErrorContext,
-        state_at_failure: crate::benchmark::error_context::ExecutionSnapshot,
+        error_context: crate::error_context::CommandErrorContext,
+        state_at_failure: crate::error_context::ExecutionSnapshot,
     ) -> Self {
         Self {
             success: false,
@@ -2739,8 +2740,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         cmd: &Command,
         cmd_index: usize,
         error_msg: &str,
-    ) -> crate::benchmark::error_context::CommandErrorContext {
-        use crate::benchmark::error_context::{CoinOperationContext, CommandErrorContext};
+    ) -> crate::error_context::CommandErrorContext {
+        use crate::error_context::{CoinOperationContext, CommandErrorContext};
 
         let cmd_type = Self::command_type_name(cmd);
         let mut ctx = CommandErrorContext::new(cmd_index, &cmd_type);
@@ -2863,8 +2864,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     fn build_object_snapshot_from_arg(
         &self,
         arg: &Argument,
-    ) -> Option<crate::benchmark::error_context::ObjectSnapshot> {
-        use crate::benchmark::error_context::ObjectSnapshot;
+    ) -> Option<crate::error_context::ObjectSnapshot> {
+        use crate::error_context::ObjectSnapshot;
 
         let (id, type_tag) = self.get_object_id_and_type_from_arg(arg)?;
         let bytes = self.resolve_arg(arg).ok()?;
@@ -2927,8 +2928,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         error_msg: &str,
         module: &str,
         function: &str,
-    ) -> Option<crate::benchmark::error_context::AbortInfo> {
-        use crate::benchmark::error_context::AbortInfo;
+    ) -> Option<crate::error_context::AbortInfo> {
+        use crate::error_context::AbortInfo;
 
         // Parse abort code from various VM error formats:
         // - VMError { major_status: ABORTED, sub_status: Some(202), ... }
@@ -2979,8 +2980,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         };
 
         abort_code.map(|code| {
-            let abort_meaning =
-                crate::benchmark::error_context::get_abort_code_context(code, module);
+            let abort_meaning = crate::error_context::get_abort_code_context(code, module);
             AbortInfo {
                 module: module.to_string(),
                 function: function.to_string(),
@@ -2996,8 +2996,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     fn build_execution_snapshot(
         &self,
         successful_cmd_count: usize,
-    ) -> crate::benchmark::error_context::ExecutionSnapshot {
-        use crate::benchmark::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
+    ) -> crate::error_context::ExecutionSnapshot {
+        use crate::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
 
         let mut snapshot = ExecutionSnapshot {
             total_gas_consumed: self.gas_used,
@@ -4157,7 +4157,7 @@ mod tests {
     #[test]
     fn test_parse_abort_info_with_abort_code() {
         // Test parsing abort info from various error message formats
-        use crate::benchmark::ptb::PTBExecutor;
+        use crate::ptb::PTBExecutor;
 
         // Format: "abort code: X"
         let info = PTBExecutor::parse_abort_info(
@@ -4208,7 +4208,7 @@ mod tests {
 
     #[test]
     fn test_transaction_effects_failure_with_context() {
-        use crate::benchmark::error_context::{CommandErrorContext, ExecutionSnapshot};
+        use crate::error_context::{CommandErrorContext, ExecutionSnapshot};
 
         // Test that failure_at_with_context properly stores the context
         let ctx = CommandErrorContext::new(2, "SplitCoins")
@@ -4269,7 +4269,7 @@ mod tests {
 
     #[test]
     fn test_command_error_context_coin_operation() {
-        use crate::benchmark::error_context::{CoinOperationContext, CommandErrorContext};
+        use crate::error_context::{CoinOperationContext, CommandErrorContext};
 
         // Test that coin operation context is properly constructed
         let coin_ctx = CoinOperationContext {
@@ -4291,7 +4291,7 @@ mod tests {
 
     #[test]
     fn test_execution_snapshot_structure() {
-        use crate::benchmark::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
+        use crate::error_context::{CommandSummary, ExecutionSnapshot, ObjectSnapshot};
 
         let mut snapshot = ExecutionSnapshot::default();
 

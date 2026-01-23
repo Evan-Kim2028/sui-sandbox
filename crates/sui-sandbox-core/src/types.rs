@@ -146,12 +146,15 @@ pub fn type_cache_stats() -> TypeCacheStats {
 /// - Structs: `0xADDR::module::Name` or `0xADDR::module::Name<T1, T2>`
 ///
 /// # Examples
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{format_type_tag, coin_sui_type};
+/// use move_core_types::language_storage::TypeTag;
+///
 /// let tag = TypeTag::U64;
 /// assert_eq!(format_type_tag(&tag), "u64");
 ///
 /// // Struct with type parameters
-/// let coin_tag = /* Coin<SUI> */;
+/// let coin_tag = coin_sui_type();
 /// assert_eq!(format_type_tag(&coin_tag), "0x2::coin::Coin<0x2::sui::SUI>");
 /// ```
 pub fn format_type_tag(type_tag: &TypeTag) -> String {
@@ -196,7 +199,9 @@ pub const COIN_SUI_TYPE_STR: &str = "0x2::coin::Coin<0x2::sui::SUI>";
 /// ensures consistency and avoids duplicate StructTag construction.
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{sui_type, format_type_tag};
+///
 /// let sui = sui_type();
 /// assert_eq!(format_type_tag(&sui), "0x2::sui::SUI");
 /// ```
@@ -215,7 +220,9 @@ pub fn sui_type() -> TypeTag {
 /// * `inner` - The inner type for the Coin (e.g., SUI type for Coin<SUI>)
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{coin_type, sui_type, format_type_tag};
+///
 /// let coin_sui = coin_type(sui_type());
 /// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
 /// ```
@@ -234,7 +241,9 @@ pub fn coin_type(inner: TypeTag) -> TypeTag {
 /// It's the most common coin type used throughout the codebase.
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{coin_sui_type, format_type_tag};
+///
 /// let coin_sui = coin_sui_type();
 /// assert_eq!(format_type_tag(&coin_sui), "0x2::coin::Coin<0x2::sui::SUI>");
 /// ```
@@ -279,12 +288,15 @@ pub fn coin_struct_tag(inner: TypeTag) -> StructTag {
 /// - Structs: `0xADDR::module::Name` or `0xADDR::module::Name<T1, T2>`
 ///
 /// # Examples
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{parse_type_string, coin_sui_type};
+/// use move_core_types::language_storage::TypeTag;
+///
 /// let tag = parse_type_string("u64").unwrap();
 /// assert_eq!(tag, TypeTag::U64);
 ///
 /// let coin = parse_type_string("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
-/// // Returns Coin<SUI> TypeTag
+/// assert_eq!(coin, coin_sui_type());
 /// ```
 ///
 /// # Returns
@@ -420,15 +432,17 @@ pub fn parse_type_args(args_str: &str) -> Vec<TypeTag> {
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use crate::benchmark::types::parse_type_tag;
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::{parse_type_tag, coin_sui_type};
+/// use move_core_types::language_storage::TypeTag;
 ///
-/// let tag = parse_type_tag("u64")?;
+/// let tag = parse_type_tag("u64").unwrap();
 /// assert_eq!(tag, TypeTag::U64);
 ///
-/// let coin = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>")?;
+/// let coin = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
 /// // Second call hits cache:
-/// let coin2 = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>")?;
+/// let coin2 = parse_type_tag("0x2::coin::Coin<0x2::sui::SUI>").unwrap();
+/// assert_eq!(coin, coin2);
 /// ```
 ///
 /// # Errors
@@ -567,12 +581,17 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// Canonical form is:
 /// - Lowercase hex
 /// - 0x-prefixed
-/// - Full 64-character (32-byte) representation
+/// - Format depends on `move-core-types` implementation (may be short or long form)
 ///
 /// # Examples
-/// ```ignore
-/// assert_eq!(normalize_address("0x2"), Some("0x0000000000000000000000000000000000000000000000000000000000000002".to_string()));
-/// assert_eq!(normalize_address("0X02"), Some("0x0000000000000000000000000000000000000000000000000000000000000002".to_string()));
+/// ```
+/// use sui_move_interface_extractor::benchmark::types::normalize_address;
+///
+/// let normalized = normalize_address("0x2").unwrap();
+/// assert!(normalized.starts_with("0x"));
+///
+/// // Invalid addresses return None
+/// assert!(normalize_address("not_an_address").is_none());
 /// ```
 pub fn normalize_address(addr: &str) -> Option<String> {
     let trimmed = addr.trim();
