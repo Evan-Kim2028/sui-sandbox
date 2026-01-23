@@ -41,7 +41,6 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
-pub mod bytecode_analyzer;
 pub mod constructor_map;
 pub mod error_context;
 pub mod errors;
@@ -50,16 +49,12 @@ pub mod mm2;
 pub mod natives;
 pub mod object_patcher;
 pub mod object_runtime;
-pub mod output;
-pub mod package_builder;
 pub mod phases;
 pub mod ptb;
 pub mod resolver;
 pub mod sandbox_types;
 pub mod simulation;
-pub mod state_layer;
 pub mod state_source;
-pub mod storage_log;
 pub mod sui_object_runtime;
 pub mod tx_replay;
 pub mod types;

@@ -1,20 +1,18 @@
 //! Sui Move Interface Extractor
 //!
-//! Tools for analyzing, testing, and simulating Sui Move packages:
+//! Tools for analyzing Sui Move packages:
 //!
 //! - **Interface extraction**: Extract module interfaces from bytecode or RPC
 //! - **Bytecode analysis**: Parse and analyze compiled Move bytecode
-//! - **Transaction simulation**: Execute PTBs in a local sandbox environment
 //! - **Data fetching**: Unified API for gRPC streaming, GraphQL queries, and JSON-RPC
 //!
-//! See [`data_fetcher`] for fetching on-chain data and [`benchmark`] for simulation.
+//! For transaction simulation, see the `sui-sandbox-core` crate.
 
 #![allow(clippy::result_large_err)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
 pub mod args;
-pub mod benchmark;
 pub mod cache;
 pub mod comparator;
 pub mod corpus;

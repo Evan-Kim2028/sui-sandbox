@@ -1435,7 +1435,7 @@ impl SynthesisDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::resolver::LocalModuleResolver;
+    use crate::resolver::LocalModuleResolver;
 
     #[test]
     fn test_primitive_types_recognized() {

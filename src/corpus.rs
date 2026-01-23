@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use sui_sdk::types::base_types::ObjectID;
 
-use crate::args::{Args, MvrNetwork, RetryConfig};
+use crate::args::{Args, MvrNetwork, RetryConfig, RetryConfigExt};
 use crate::bytecode::{
     analyze_local_bytecode_package, build_bytecode_interface_value_from_compiled_modules,
     collect_corpus_package_dirs, extract_sanity_counts, list_local_module_names_only,

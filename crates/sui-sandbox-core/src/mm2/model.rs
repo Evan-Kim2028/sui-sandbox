@@ -477,7 +477,7 @@ fn parse_type_arg(ty: &summary::Type) -> ReturnTypeArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::errors::Phase;
+    use crate::errors::Phase;
 
     #[test]
     fn test_empty_modules_error() {

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use sui_sdk::types::base_types::ObjectID;
 
-use crate::args::{Args, InputKind, RetryConfig};
+use crate::args::{Args, InputKind, RetryConfig, RetryConfigExt};
 use crate::bytecode::{
     build_bytecode_interface_value_from_compiled_modules, compiled_module_name,
     extract_sanity_counts, read_local_compiled_modules, read_package_id_from_metadata,
