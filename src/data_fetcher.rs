@@ -144,7 +144,8 @@ pub struct DataFetcher {
     /// Optional gRPC client for streaming (requires provider endpoint)
     grpc: Option<GrpcClient>,
     /// Unified cache manager (replaces legacy tx_cache)
-    cache: Option<std::sync::Arc<std::sync::RwLock<crate::cache::CacheManager>>>,
+    /// Uses parking_lot::RwLock for better performance and simpler API (no poisoning)
+    cache: Option<std::sync::Arc<parking_lot::RwLock<crate::cache::CacheManager>>>,
     /// Whether to write network fetches back to cache (default: true)
     write_through: bool,
 }
@@ -194,6 +195,7 @@ impl DataFetcher {
     /// Create a fetcher for mainnet with default settings.
     /// gRPC is not enabled by default (requires provider endpoint).
     /// Cache is not enabled by default - use `with_cache` to add it.
+    #[must_use]
     pub fn mainnet() -> Self {
         Self {
             graphql: GraphQLClient::mainnet(),
@@ -206,6 +208,7 @@ impl DataFetcher {
     /// Create a fetcher for testnet.
     /// gRPC is not enabled by default (requires provider endpoint).
     /// Cache is not enabled by default - use `with_cache` to add it.
+    #[must_use]
     pub fn testnet() -> Self {
         Self {
             graphql: GraphQLClient::testnet(),
@@ -217,6 +220,7 @@ impl DataFetcher {
 
     /// Create with a custom GraphQL endpoint.
     /// gRPC and cache are not enabled by default.
+    #[must_use]
     pub fn new(graphql_endpoint: &str) -> Self {
         Self {
             graphql: GraphQLClient::new(graphql_endpoint),
@@ -247,9 +251,9 @@ impl DataFetcher {
     /// let pkg = fetcher.fetch_package("0x123");  // Source: Cache
     /// ```
     pub fn with_cache<P: AsRef<std::path::Path>>(mut self, cache_dir: P) -> Result<Self> {
-        use std::sync::{Arc, RwLock};
+        use std::sync::Arc;
         let manager = crate::cache::CacheManager::new(cache_dir)?;
-        self.cache = Some(Arc::new(RwLock::new(manager)));
+        self.cache = Some(Arc::new(parking_lot::RwLock::new(manager)));
         Ok(self)
     }
 
@@ -257,11 +261,12 @@ impl DataFetcher {
     ///
     /// This is useful for optional caching where you want to use it if available
     /// but don't want to fail if the cache directory doesn't exist.
+    #[must_use]
     pub fn with_cache_optional<P: AsRef<std::path::Path>>(mut self, cache_dir: P) -> Self {
-        use std::sync::{Arc, RwLock};
+        use std::sync::Arc;
         if let Ok(manager) = crate::cache::CacheManager::new(cache_dir) {
             if !manager.is_empty() {
-                self.cache = Some(Arc::new(RwLock::new(manager)));
+                self.cache = Some(Arc::new(parking_lot::RwLock::new(manager)));
             }
         }
         self
@@ -271,6 +276,7 @@ impl DataFetcher {
     ///
     /// When enabled (default), network fetches are automatically written to cache.
     /// Disable for read-only cache access.
+    #[must_use]
     pub fn with_write_through(mut self, enabled: bool) -> Self {
         self.write_through = enabled;
         self
@@ -280,26 +286,22 @@ impl DataFetcher {
     pub fn has_cache(&self) -> bool {
         self.cache
             .as_ref()
-            .and_then(|c| c.read().ok())
-            .map(|c| !c.is_empty())
+            .map(|c| !c.read().is_empty())
             .unwrap_or(false)
     }
 
     /// Get cache statistics (packages, objects, transactions, disk size).
     pub fn cache_stats(&self) -> Option<crate::cache::CacheStats> {
-        self.cache
-            .as_ref()
-            .and_then(|c| c.read().ok())
-            .map(|c| c.stats())
+        self.cache.as_ref().map(|c| c.read().stats())
     }
 
     /// Get basic cache counts (packages and objects indexed).
     /// For full stats, use `cache_stats()`.
     pub fn cache_counts(&self) -> Option<(usize, usize)> {
-        self.cache
-            .as_ref()
-            .and_then(|c| c.read().ok())
-            .map(|c| (c.package_count(), c.object_count()))
+        self.cache.as_ref().map(|c| {
+            let cache = c.read();
+            (cache.package_count(), cache.object_count())
+        })
     }
 
     /// Add gRPC client for real-time streaming capabilities.
@@ -315,6 +317,7 @@ impl DataFetcher {
     }
 
     /// Add a pre-configured gRPC client.
+    #[must_use]
     pub fn with_grpc_client(mut self, client: GrpcClient) -> Self {
         self.grpc = Some(client);
         self
@@ -408,18 +411,17 @@ impl DataFetcher {
     pub fn fetch_object(&self, address: &str) -> Result<FetchedObjectData> {
         // Try cache first if enabled
         if let Some(ref cache_lock) = self.cache {
-            if let Ok(cache) = cache_lock.read() {
-                if let Ok(Some(obj)) = cache.get_object(address) {
-                    return Ok(FetchedObjectData {
-                        address: obj.address,
-                        version: obj.version,
-                        type_string: obj.type_tag,
-                        bcs_bytes: Some(obj.bcs_bytes),
-                        is_shared: obj.is_shared,
-                        is_immutable: obj.is_immutable,
-                        source: DataSource::Cache,
-                    });
-                }
+            let cache = cache_lock.read();
+            if let Ok(Some(obj)) = cache.get_object(address) {
+                return Ok(FetchedObjectData {
+                    address: obj.address,
+                    version: obj.version,
+                    type_string: obj.type_tag,
+                    bcs_bytes: Some(obj.bcs_bytes),
+                    is_shared: obj.is_shared,
+                    is_immutable: obj.is_immutable,
+                    source: DataSource::Cache,
+                });
             }
         }
 
@@ -430,14 +432,15 @@ impl DataFetcher {
         // Write-through: cache the network result
         if self.write_through {
             if let Some(ref cache_lock) = self.cache {
-                if let Ok(mut cache) = cache_lock.write() {
-                    if let Some(ref bytes) = result.bcs_bytes {
-                        let _ = cache.put_object(
-                            &result.address,
-                            result.version,
-                            result.type_string.clone(),
-                            bytes.clone(),
-                        );
+                let mut cache = cache_lock.write();
+                if let Some(ref bytes) = result.bcs_bytes {
+                    if let Err(e) = cache.put_object(
+                        &result.address,
+                        result.version,
+                        result.type_string.clone(),
+                        bytes.clone(),
+                    ) {
+                        eprintln!("warning: failed to cache object {}: {}", result.address, e);
                     }
                 }
             }
@@ -467,19 +470,18 @@ impl DataFetcher {
     pub fn fetch_package(&self, address: &str) -> Result<FetchedPackageData> {
         // Try cache first if enabled
         if let Some(ref cache_lock) = self.cache {
-            if let Ok(cache) = cache_lock.read() {
-                if let Ok(Some(pkg)) = cache.get_package(address) {
-                    return Ok(FetchedPackageData {
-                        address: pkg.address,
-                        version: pkg.version,
-                        modules: pkg
-                            .modules
-                            .into_iter()
-                            .map(|(name, bytecode)| FetchedModuleData { name, bytecode })
-                            .collect(),
-                        source: DataSource::Cache,
-                    });
-                }
+            let cache = cache_lock.read();
+            if let Ok(Some(pkg)) = cache.get_package(address) {
+                return Ok(FetchedPackageData {
+                    address: pkg.address,
+                    version: pkg.version,
+                    modules: pkg
+                        .modules
+                        .into_iter()
+                        .map(|(name, bytecode)| FetchedModuleData { name, bytecode })
+                        .collect(),
+                    source: DataSource::Cache,
+                });
             }
         }
 
@@ -487,19 +489,30 @@ impl DataFetcher {
         let pkg = self.graphql.fetch_package(address)?;
 
         use base64::Engine;
-        let modules = pkg
-            .modules
-            .into_iter()
-            .filter_map(|m| {
-                let bytecode = m
-                    .bytecode_base64
-                    .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(&b64).ok())?;
-                Some(FetchedModuleData {
-                    name: m.name,
-                    bytecode,
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut modules = Vec::new();
+        let mut decode_errors = Vec::new();
+
+        for m in pkg.modules {
+            match m.bytecode_base64 {
+                Some(b64) => match base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    Ok(bytecode) => modules.push(FetchedModuleData {
+                        name: m.name,
+                        bytecode,
+                    }),
+                    Err(e) => decode_errors.push(format!("{}: {}", m.name, e)),
+                },
+                None => decode_errors.push(format!("{}: missing bytecode_base64", m.name)),
+            }
+        }
+
+        if !decode_errors.is_empty() {
+            eprintln!(
+                "warning: {} module(s) failed to decode in package {}: {}",
+                decode_errors.len(),
+                address,
+                decode_errors.join(", ")
+            );
+        }
 
         if modules.is_empty() {
             return Err(anyhow!(
@@ -518,13 +531,14 @@ impl DataFetcher {
         // Write-through: cache the network result
         if self.write_through {
             if let Some(ref cache_lock) = self.cache {
-                if let Ok(mut cache) = cache_lock.write() {
-                    let modules: Vec<(String, Vec<u8>)> = result
-                        .modules
-                        .iter()
-                        .map(|m| (m.name.clone(), m.bytecode.clone()))
-                        .collect();
-                    let _ = cache.put_package(&result.address, result.version, modules);
+                let mut cache = cache_lock.write();
+                let modules: Vec<(String, Vec<u8>)> = result
+                    .modules
+                    .iter()
+                    .map(|m| (m.name.clone(), m.bytecode.clone()))
+                    .collect();
+                if let Err(e) = cache.put_package(&result.address, result.version, modules) {
+                    eprintln!("warning: failed to cache package {}: {}", result.address, e);
                 }
             }
         }

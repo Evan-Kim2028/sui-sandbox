@@ -406,7 +406,7 @@ mod vm_harness_creation_tests {
         let result = VMHarness::with_config(&resolver, true, config);
         assert!(result.is_ok());
 
-        let harness = result.unwrap();
+        let harness = result.expect("harness creation already verified as ok");
         assert_eq!(harness.config().epoch, 500);
         assert_eq!(harness.config().gas_budget, Some(100_000));
     }
@@ -480,11 +480,16 @@ mod vm_harness_execution_tests {
         );
 
         assert!(result.is_ok());
-        let return_values = result.unwrap();
+        let return_values = result.expect("execution already verified as ok");
         assert!(!return_values.is_empty(), "should have return value");
 
         // The return value should be the same as input (identity function)
-        let returned_u64 = u64::from_le_bytes(return_values[0].clone().try_into().unwrap());
+        let returned_u64 = u64::from_le_bytes(
+            return_values[0]
+                .clone()
+                .try_into()
+                .expect("return value should be 8 bytes for u64"),
+        );
         assert_eq!(returned_u64, 42);
     }
 
@@ -510,7 +515,7 @@ mod vm_harness_execution_tests {
         );
 
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let output = result.expect("execution already verified as ok");
         assert!(!output.return_values.is_empty());
         assert!(output.gas_used > 0, "should report gas used");
     }

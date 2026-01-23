@@ -127,7 +127,9 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
                 package_dir: package_dir.display().to_string(),
             };
             serde_json::to_writer(&mut writer, &row).context("write index JSONL")?;
-            writer.write_all(b"\n").ok();
+            writer
+                .write_all(b"\n")
+                .context("write index JSONL newline")?;
         }
     }
 
@@ -474,7 +476,9 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
         }
 
         serde_json::to_writer(&mut writer, row).context("write corpus JSONL")?;
-        writer.write_all(b"\n").ok();
+        writer
+            .write_all(b"\n")
+            .context("write corpus JSONL newline")?;
     }
 
     {
@@ -541,7 +545,9 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
             if is_problem {
                 problems += 1;
                 serde_json::to_writer(&mut writer, row).context("write problems JSONL")?;
-                writer.write_all(b"\n").ok();
+                writer
+                    .write_all(b"\n")
+                    .context("write problems JSONL newline")?;
             }
         }
     }
@@ -581,7 +587,9 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
             .with_context(|| format!("create {}", summary_path.display()))?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, &summary).context("write corpus summary")?;
-        writer.write_all(b"\n").ok();
+        writer
+            .write_all(b"\n")
+            .context("write corpus summary newline")?;
     }
 
     {
@@ -600,7 +608,9 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
             .with_context(|| format!("create {}", run_metadata_path.display()))?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, &meta).context("write run metadata")?;
-        writer.write_all(b"\n").ok();
+        writer
+            .write_all(b"\n")
+            .context("write run metadata newline")?;
     }
 
     if let Some(path) = submission_summary_path.as_ref() {

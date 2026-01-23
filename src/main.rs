@@ -44,7 +44,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let package_id = package_ids.first().expect("non-empty ids");
+    let package_id = package_ids
+        .first()
+        .ok_or_else(|| anyhow!("internal error: package_ids unexpectedly empty"))?;
     run_single(&args, client, package_id).await
 }
 

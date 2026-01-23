@@ -203,8 +203,7 @@ fn test_write_through_caching() {
 
             // If we got from network, it should now be cached
             if pkg.source != DataSource::Cache {
-                // Give write-through a moment to complete
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                // Write-through is synchronous, no sleep needed
 
                 // Check cache was populated
                 let stats_after = fetcher.cache_stats().unwrap();

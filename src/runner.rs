@@ -310,7 +310,9 @@ pub async fn run_batch(
 
     let concurrency = args.concurrency.max(1);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let mut join_set: tokio::task::JoinSet<Result<BatchSummaryRow>> = tokio::task::JoinSet::new();
+    // Include input_id in return type so we can identify which task panicked
+    let mut join_set: tokio::task::JoinSet<(String, Result<BatchSummaryRow>)> =
+        tokio::task::JoinSet::new();
     let retry = RetryConfig::from_args(args);
 
     for input_id_str in input_ids {
@@ -324,13 +326,16 @@ pub async fn run_batch(
         let retry_cfg = retry;
         let bytecode_check_enabled = args.bytecode_check;
 
+        // Capture input_id for panic context before moving into async block
+        let input_id_for_panic = input_id_str.clone();
         join_set.spawn(async move {
-            let _permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|e| anyhow!("semaphore closed: {}", e))?;
+            let result: Result<BatchSummaryRow> = async {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| anyhow!("semaphore closed: {}", e))?;
 
-            let input_id_for_row = input_id_str.clone();
+                let input_id_for_row = input_id_str.clone();
 
             let input_oid = match ObjectID::from_str(&input_id_str) {
                 Ok(id) => id,
@@ -530,15 +535,18 @@ pub async fn run_batch(
                 bytecode,
                 error: None,
             })
+            }
+            .await;
+            (input_id_for_panic, result)
         });
     }
 
     let mut rows: Vec<BatchSummaryRow> = Vec::new();
     while let Some(res) = join_set.join_next().await {
         match res {
-            Ok(Ok(row)) => rows.push(row),
-            Ok(Err(e)) => rows.push(BatchSummaryRow {
-                input_id: "<join_error>".to_string(),
+            Ok((_, Ok(row))) => rows.push(row),
+            Ok((input_id, Err(e))) => rows.push(BatchSummaryRow {
+                input_id,
                 package_id: None,
                 resolved_from_package_info: false,
                 ok: false,
@@ -548,17 +556,20 @@ pub async fn run_batch(
                 bytecode: None,
                 error: Some(format!("{:#}", e)),
             }),
-            Err(e) => rows.push(BatchSummaryRow {
-                input_id: "<panic>".to_string(),
-                package_id: None,
-                resolved_from_package_info: false,
-                ok: false,
-                skipped: false,
-                output_path: None,
-                sanity: None,
-                bytecode: None,
-                error: Some(format!("join error: {}", e)),
-            }),
+            Err(e) => {
+                // Task panicked or was cancelled - we lose the input_id context
+                rows.push(BatchSummaryRow {
+                    input_id: "<task_failed>".to_string(),
+                    package_id: None,
+                    resolved_from_package_info: false,
+                    ok: false,
+                    skipped: false,
+                    output_path: None,
+                    sanity: None,
+                    bytecode: None,
+                    error: Some(format!("task failed: {}", e)),
+                });
+            }
         }
     }
 
@@ -583,7 +594,9 @@ pub async fn run_batch(
         }
 
         serde_json::to_writer(&mut writer, row).context("write summary JSONL")?;
-        writer.write_all(b"\n").ok();
+        writer
+            .write_all(b"\n")
+            .context("write summary JSONL newline")?;
     }
 
     eprintln!(

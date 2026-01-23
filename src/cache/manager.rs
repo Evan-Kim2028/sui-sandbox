@@ -119,6 +119,7 @@ impl CacheManager {
     }
 
     /// Create an empty cache (for testing or when no cache directory exists).
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             cache_dir: PathBuf::new(),

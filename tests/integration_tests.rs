@@ -76,9 +76,14 @@ mod pipeline_tests {
         assert!(result.is_ok(), "execution should succeed");
 
         // Step 4: Verify return value
-        let returns = result.unwrap();
+        let returns = result.expect("execution already verified as ok");
         assert_eq!(returns.len(), 1);
-        let value = u64::from_le_bytes(returns[0].clone().try_into().unwrap());
+        let value = u64::from_le_bytes(
+            returns[0]
+                .clone()
+                .try_into()
+                .expect("return value should be 8 bytes for u64"),
+        );
         assert_eq!(value, 42);
     }
 
@@ -258,7 +263,12 @@ mod resolver_introspection_tests {
 
         let functions = resolver.list_functions(&module_path);
         assert!(functions.is_some(), "should list functions");
-        assert!(!functions.unwrap().is_empty(), "should have functions");
+        assert!(
+            !functions
+                .expect("functions already verified as some")
+                .is_empty(),
+            "should have functions"
+        );
     }
 
     #[test]
@@ -281,7 +291,7 @@ mod resolver_introspection_tests {
         let structs = resolver.list_structs(&module_path);
         assert!(structs.is_some(), "should list structs");
         // test_module has SimpleStruct
-        let structs = structs.unwrap();
+        let structs = structs.expect("structs already verified as some");
         assert!(!structs.is_empty(), "should have structs");
         assert!(structs.contains(&"SimpleStruct".to_string()));
     }
@@ -306,7 +316,7 @@ mod resolver_introspection_tests {
         let info = resolver.get_function_info(&module_path, "simple_func");
         assert!(info.is_some(), "should get function info");
 
-        let info = info.unwrap();
+        let info = info.expect("info already verified as some");
         assert!(info.get("visibility").is_some());
         assert!(info.get("params").is_some());
         assert!(info.get("returns").is_some());
@@ -332,7 +342,7 @@ mod resolver_introspection_tests {
         let info = resolver.get_struct_info(&type_path);
         assert!(info.is_some(), "should get struct info");
 
-        let info = info.unwrap();
+        let info = info.expect("info already verified as some");
         assert!(info.get("name").is_some());
         assert!(info.get("abilities").is_some());
         assert!(info.get("fields").is_some());
@@ -384,7 +394,7 @@ mod resolver_introspection_tests {
         let disasm = resolver.disassemble_function(&module_path, "simple_func");
         assert!(disasm.is_some(), "should disassemble function");
 
-        let disasm = disasm.unwrap();
+        let disasm = disasm.expect("disasm already verified as some");
         assert!(disasm.contains("fun"), "should contain function keyword");
     }
 }
@@ -563,8 +573,13 @@ mod execution_state_tests {
             );
 
             assert!(result.is_ok(), "execution {i} should succeed");
-            let returns = result.unwrap();
-            let value = u64::from_le_bytes(returns[0].clone().try_into().unwrap());
+            let returns = result.expect("execution already verified as ok");
+            let value = u64::from_le_bytes(
+                returns[0]
+                    .clone()
+                    .try_into()
+                    .expect("return value should be 8 bytes for u64"),
+            );
             assert_eq!(value, i, "should return input value");
         }
     }
