@@ -91,9 +91,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
-    normalize_address, parse_type_tag_simple,
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
 };
+use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;

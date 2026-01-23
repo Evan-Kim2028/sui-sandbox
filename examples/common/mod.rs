@@ -1,220 +1,288 @@
 //! Common utilities for PTB replay examples.
 //!
-//! This module provides shared helper functions used across all replay examples:
-//! - Type parsing (Sui type strings to Move TypeTags)
-//! - Address normalization (consistent 66-char format)
-//! - Bytecode dependency extraction
-//! - Package ID extraction from type strings
+//! This module provides glue code for examples that bridges `sui-data-fetcher`
+//! and `sui-sandbox-core`. It re-exports utilities from both crates and provides
+//! example-specific helper functions.
+//!
+//! ## Data Helpers (from `sui_data_fetcher::utilities`)
+//!
+//! - [`collect_historical_versions`]: Aggregate object versions from gRPC response
+//! - [`create_grpc_client`]: Initialize Surflux gRPC client
+//!
+//! ## Infrastructure Workarounds (from `sui_sandbox_core::utilities`)
+//!
+//! - `GenericObjectPatcher`: Patch objects for version-lock workarounds
+//! - `normalize_address`: Normalize address format (0x2 -> 0x000...002)
+//! - `is_framework_package`: Check if package is framework (0x1/0x2/0x3)
+//! - `parse_type_tag`: Parse Sui type strings to Move TypeTags
+//! - `extract_package_ids_from_type`: Extract package addresses from type strings
+//! - `extract_dependencies_from_bytecode`: Find package dependencies in bytecode
+//!
+//! ## Example-Specific Helpers (this module)
+//!
+//! Functions that bridge both crates for replay examples:
+//! - [`create_child_fetcher`]: Build on-demand child object loader
+//! - [`build_resolver_from_packages`]: Build resolver from cached packages
+//! - [`build_generic_patcher`]: Configure patcher with resolver modules
+//! - [`create_vm_harness`]: Create VM harness from transaction data
+//! - [`register_input_objects`]: Register objects in VM harness
 
-use move_binary_format::CompiledModule;
+// Allow unused since these are public re-exports for examples to use
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
-use std::collections::{BTreeSet, HashSet};
+use sui_sandbox_core::utilities::normalize_address;
 
-/// Parse a Sui type string into a Move TypeTag.
+// Re-export from sui-data-fetcher::utilities
+pub use sui_data_fetcher::utilities::{collect_historical_versions, create_grpc_client};
+
+// Re-export from sui-sandbox-core::utilities (type/bytecode utilities)
+pub use sui_sandbox_core::utilities::{
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag,
+};
+
+// Backwards compatibility alias
+pub use parse_type_tag as parse_type_tag_simple;
+
+// =============================================================================
+// Example-Specific Helpers
+// =============================================================================
+//
+// These functions bridge sui-data-fetcher and sui-sandbox-core for replay examples.
+// They depend on types from both crates and are specific to the example use case.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use anyhow::Result;
+use base64::Engine;
+use sui_data_fetcher::grpc::{GrpcClient, GrpcTransaction};
+use sui_sandbox_core::object_runtime::ChildFetcherFn;
+use sui_sandbox_core::utilities::GenericObjectPatcher;
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::tx_replay::CachedTransaction;
+use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+
+/// Build a GenericObjectPatcher with modules from the resolver.
 ///
-/// Handles primitive types (u8, u64, etc.), vectors, and struct types with
-/// nested type parameters. This is needed for the child object fetcher to
-/// correctly deserialize objects by type.
+/// Sets up the patcher with:
+/// - Modules loaded into the layout registry
+/// - Default patching rules for timestamp and version fields
+/// - Transaction timestamp for time-based patches
 ///
-/// # Examples
-///
-/// ```ignore
-/// parse_type_tag_simple("u64")  // -> Some(TypeTag::U64)
-/// parse_type_tag_simple("0x2::coin::Coin<0x2::sui::SUI>")  // -> Some(TypeTag::Struct(...))
-/// ```
-pub fn parse_type_tag_simple(type_str: &str) -> Option<TypeTag> {
-    match type_str {
-        "u8" => return Some(TypeTag::U8),
-        "u64" => return Some(TypeTag::U64),
-        "u128" => return Some(TypeTag::U128),
-        "u256" => return Some(TypeTag::U256),
-        "bool" => return Some(TypeTag::Bool),
-        "address" => return Some(TypeTag::Address),
-        _ => {}
-    }
+/// If verbose is true, prints configuration details.
+pub fn build_generic_patcher(
+    resolver: &LocalModuleResolver,
+    tx_timestamp_ms: u64,
+    verbose: bool,
+) -> GenericObjectPatcher {
+    let mut patcher = GenericObjectPatcher::new();
 
-    if type_str.starts_with("vector<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        return parse_type_tag_simple(inner).map(|t| TypeTag::Vector(Box::new(t)));
-    }
+    // Add modules for struct layout extraction
+    patcher.add_modules(resolver.compiled_modules());
 
-    let (base_type, type_params_str) = if let Some(idx) = type_str.find('<') {
-        (
-            &type_str[..idx],
-            Some(&type_str[idx + 1..type_str.len() - 1]),
-        )
-    } else {
-        (type_str, None)
-    };
+    // Set timestamp for time-based patches
+    patcher.set_timestamp(tx_timestamp_ms);
 
-    let parts: Vec<&str> = base_type.split("::").collect();
-    if parts.len() != 3 {
-        return None;
-    }
+    // Add default rules (timestamp fields, version fields)
+    patcher.add_default_rules();
 
-    let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-    let module = Identifier::new(parts[1]).ok()?;
-    let name = Identifier::new(parts[2]).ok()?;
+    if verbose {
+        println!("   ✓ Generic patcher configured with {} modules", resolver.module_count());
 
-    let type_params = type_params_str
-        .map(|s| {
-            split_type_params(s)
-                .iter()
-                .filter_map(|t| parse_type_tag_simple(t.trim()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
-}
-
-/// Split type parameters respecting nested angle brackets.
-///
-/// Given "A, B<C, D>, E", returns ["A", " B<C, D>", " E"] by tracking bracket depth.
-/// Used by `parse_type_tag_simple` to correctly handle generic types.
-pub fn split_type_params(s: &str) -> Vec<&str> {
-    let mut result = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                result.push(&s[start..i]);
-                start = i + 1;
+        // Report detected versions from bytecode constant pools
+        if patcher.has_detected_versions() {
+            println!("   Version constants detected from bytecode:");
+            for (pkg_addr, version) in patcher.detected_versions() {
+                println!("      {} -> v{}", &pkg_addr[..20.min(pkg_addr.len())], version);
             }
-            _ => {}
         }
     }
 
-    if start < s.len() {
-        result.push(&s[start..]);
-    }
-
-    result
+    patcher
 }
 
-/// Extract package IDs from a type string.
+/// Build a LocalModuleResolver from cached packages with linkage support.
 ///
-/// Scans a type string like "0xabc::module::Struct<0xdef::m::T, 0xghi::n::U>"
-/// and returns all package addresses found (["0xabc", "0xdef", "0xghi"]).
-/// Framework packages (0x1, 0x2, 0x3) are automatically excluded.
+/// Handles:
+/// - Skipping packages superseded by upgraded versions (via linkage)
+/// - Address aliasing for upgraded packages
+/// - Loading the Sui framework
 ///
-/// This is used to discover additional packages that need to be fetched based
-/// on the types of objects involved in the transaction.
-pub fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    let mut package_ids = HashSet::new();
+/// Returns (resolver, module_count, alias_count, skipped_count).
+pub fn build_resolver_from_packages(
+    cached: &CachedTransaction,
+    linkage_upgrades: &HashMap<String, String>,
+    verbose: bool,
+) -> Result<(LocalModuleResolver, usize, usize, usize)> {
+    let mut resolver = LocalModuleResolver::new();
+    let mut module_load_count = 0;
+    let mut alias_count = 0;
+    let mut skipped_count = 0;
 
-    // Framework packages to skip
-    let framework_prefixes = [
-        "0x1::",
-        "0x2::",
-        "0x3::",
-        "0x0000000000000000000000000000000000000000000000000000000000000001::",
-        "0x0000000000000000000000000000000000000000000000000000000000000002::",
-        "0x0000000000000000000000000000000000000000000000000000000000000003::",
-    ];
+    for (pkg_id, modules) in &cached.packages {
+        let pkg_id_normalized = normalize_address(pkg_id);
 
-    // Find all package addresses in the type string
-    // Pattern: 0x followed by hex chars, then ::
-    let mut i = 0;
-    let chars: Vec<char> = type_str.chars().collect();
-
-    while i < chars.len() {
-        if i + 2 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
-            let start = i;
-            i += 2;
-            // Consume hex chars
-            while i < chars.len() && (chars[i].is_ascii_hexdigit()) {
-                i += 1;
+        // Skip packages superseded by upgraded versions
+        if let Some(upgraded_id) = linkage_upgrades.get(&pkg_id_normalized) {
+            if cached.packages.contains_key(upgraded_id) {
+                skipped_count += 1;
+                if verbose {
+                    println!(
+                        "      Skipping {} (superseded by {})",
+                        &pkg_id[..16.min(pkg_id.len())],
+                        &upgraded_id[..16.min(upgraded_id.len())]
+                    );
+                }
+                continue;
             }
-            // Check if followed by ::
-            if i + 1 < chars.len() && chars[i] == ':' && chars[i + 1] == ':' {
-                let pkg_id: String = chars[start..i].iter().collect();
-                // Skip framework packages
-                let full_prefix = format!("{}::", pkg_id);
-                if !framework_prefixes.iter().any(|p| full_prefix == *p) {
-                    package_ids.insert(pkg_id);
+        }
+
+        let target_addr = AccountAddress::from_hex_literal(pkg_id).ok();
+
+        // Decode modules from base64
+        let decoded_modules: Vec<(String, Vec<u8>)> = modules
+            .iter()
+            .filter_map(|(name, b64)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .ok()
+                    .map(|bytes| (name.clone(), bytes))
+            })
+            .collect();
+
+        match resolver.add_package_modules_at(decoded_modules, target_addr) {
+            Ok((count, source_addr)) => {
+                module_load_count += count;
+                if let (Some(target), Some(source)) = (target_addr, source_addr) {
+                    if target != source {
+                        alias_count += 1;
+                    }
                 }
             }
-        } else {
-            i += 1;
-        }
-    }
-
-    package_ids.into_iter().collect()
-}
-
-/// Normalize a Sui address to a consistent 66-character format (0x + 64 hex chars).
-///
-/// Sui addresses can appear in shortened form (0x2) or full form
-/// (0x0000...0002). This function ensures consistent formatting for
-/// HashMap key lookups and address comparisons.
-///
-/// # Examples
-///
-/// ```ignore
-/// normalize_address("0x2")      // -> "0x0000...0002" (64 hex chars)
-/// normalize_address("0x3637")   // -> "0x0000...3637" (64 hex chars)
-/// ```
-pub fn normalize_address(addr: &str) -> String {
-    let addr = addr.strip_prefix("0x").unwrap_or(addr);
-    // Pad to 64 hex characters
-    format!("0x{:0>64}", addr)
-}
-
-/// Extract package addresses that a module depends on from its bytecode.
-///
-/// Parses the compiled Move bytecode to find all module handles (references to
-/// other modules), and returns the package addresses of non-framework dependencies.
-/// This enables transitive dependency resolution - fetching all packages needed
-/// to execute a transaction.
-///
-/// Framework packages (0x1, 0x2, 0x3) are excluded since they are bundled
-/// with the VM and don't need to be fetched.
-pub fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<String> {
-    // Framework addresses to skip
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    let mut deps = Vec::new();
-
-    if let Ok(module) = CompiledModule::deserialize_with_defaults(bytecode) {
-        for handle in &module.module_handles {
-            let addr = *module.address_identifier_at(handle.address);
-            // Skip framework modules and self
-            if !framework_addrs.contains(&addr) {
-                deps.push(addr.to_hex_literal());
+            Err(e) => {
+                if verbose {
+                    println!(
+                        "   ! Failed to load package {}: {}",
+                        &pkg_id[..16.min(pkg_id.len())],
+                        e
+                    );
+                }
             }
         }
     }
 
-    deps
+    // Load Sui framework
+    match resolver.load_sui_framework() {
+        Ok(n) => {
+            if verbose {
+                println!("   ✓ Loaded {} framework modules", n);
+            }
+        }
+        Err(e) => {
+            if verbose {
+                println!("   ! Framework load failed: {}", e);
+            }
+        }
+    }
+
+    Ok((resolver, module_load_count, alias_count, skipped_count))
 }
 
-/// Check if a package ID is a framework package (0x1, 0x2, 0x3).
-pub fn is_framework_package(pkg_id: &str) -> bool {
-    matches!(
-        pkg_id,
-        "0x0000000000000000000000000000000000000000000000000000000000000001"
-            | "0x0000000000000000000000000000000000000000000000000000000000000002"
-            | "0x0000000000000000000000000000000000000000000000000000000000000003"
-            | "0x1"
-            | "0x2"
-            | "0x3"
-    )
+/// Create a child fetcher function for on-demand object loading.
+///
+/// The child fetcher is called by the VM when it needs to access a child object
+/// that wasn't pre-loaded. It fetches the object via gRPC at the historical version.
+pub fn create_child_fetcher(
+    grpc: GrpcClient,
+    historical_versions: HashMap<String, u64>,
+    patcher: Option<GenericObjectPatcher>,
+) -> ChildFetcherFn {
+    let grpc_arc = Arc::new(grpc);
+    let historical_arc = Arc::new(historical_versions);
+    let patcher_arc = Arc::new(std::sync::Mutex::new(patcher));
+
+    Box::new(move |child_id: AccountAddress| {
+        let child_id_str = child_id.to_hex_literal();
+        let version = historical_arc.get(&child_id_str).copied();
+
+        let rt = tokio::runtime::Runtime::new().ok()?;
+        let result = rt.block_on(async {
+            grpc_arc
+                .get_object_at_version(&child_id_str, version)
+                .await
+        });
+
+        if let Ok(Some(obj)) = result {
+            if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+                // Apply patching if patcher is available
+                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                    if let Some(ref mut p) = *guard {
+                        p.patch_object(type_str, bcs)
+                    } else {
+                        bcs.clone()
+                    }
+                } else {
+                    bcs.clone()
+                };
+
+                if let Some(type_tag) = parse_type_tag(type_str) {
+                    return Some((type_tag, final_bcs));
+                }
+            }
+        }
+
+        None
+    })
+}
+
+/// Create a VM harness configured for transaction replay.
+///
+/// Sets up the harness with:
+/// - Clock timestamp from transaction
+/// - Sender address from transaction
+///
+/// Returns (harness, sender_address).
+pub fn create_vm_harness<'a>(
+    grpc_tx: &GrpcTransaction,
+    resolver: &'a LocalModuleResolver,
+    tx_timestamp_ms: u64,
+) -> Result<(VMHarness<'a>, AccountAddress)> {
+    let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
+    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
+
+    let config = SimulationConfig::default()
+        .with_clock_base(tx_timestamp_ms)
+        .with_sender_address(sender_address);
+
+    let harness = VMHarness::with_config(resolver, false, config)?;
+
+    Ok((harness, sender_address))
+}
+
+/// Register input objects in the VM harness.
+///
+/// Marks all historical objects as available inputs for the transaction.
+/// Returns the count of registered objects.
+pub fn register_input_objects(
+    harness: &mut VMHarness,
+    historical_versions: &HashMap<String, u64>,
+) -> usize {
+    let mut count = 0;
+    for (obj_id, version) in historical_versions {
+        if let Ok(addr) = AccountAddress::from_hex_literal(obj_id) {
+            harness.add_sui_input_object(
+                addr,
+                *version,
+                sui_types::object::Owner::Shared {
+                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
+                        *version,
+                    ),
+                },
+            );
+            count += 1;
+        }
+    }
+    count
 }

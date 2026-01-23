@@ -6,6 +6,7 @@
 //! - [`graphql`]: GraphQL client for querying packages, objects, and transactions
 //! - [`grpc`]: gRPC client for real-time streaming and batch fetching
 //! - [`conversion`]: Conversion utilities between gRPC and internal types
+//! - [`utilities`]: Data helpers for aggregating gRPC responses
 //!
 //! # Example
 //!
@@ -24,8 +25,10 @@
 pub mod conversion;
 pub mod graphql;
 pub mod grpc;
+pub mod utilities;
 
 // Re-export main types
 pub use conversion::grpc_to_fetched_transaction;
 pub use graphql::GraphQLClient;
 pub use grpc::GrpcClient;
+pub use utilities::{collect_historical_versions, create_grpc_client};

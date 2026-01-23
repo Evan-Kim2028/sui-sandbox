@@ -1,6 +1,6 @@
 # Architecture
 
-This document is the single source of truth for understanding the sui-move-interface-extractor system.
+This document is the single source of truth for understanding the sui-sandbox system.
 
 ## What This Is
 
@@ -9,6 +9,47 @@ A **Move VM sandbox** that allows:
 1. Executing Move code locally without a blockchain
 2. Evaluating LLM-generated transactions in a controlled environment
 3. Replaying mainnet transactions for regression testing
+
+## Workspace Structure
+
+The project is organized as a Cargo workspace:
+
+```text
+sui-sandbox/
+├── Cargo.toml              # Workspace root + main crate
+├── src/                    # Main library (sui_move_interface_extractor)
+│   ├── benchmark/          # Core simulation engine
+│   │   ├── simulation.rs   # SimulationEnvironment
+│   │   ├── ptb.rs          # PTBExecutor
+│   │   ├── vm.rs           # VMHarness
+│   │   └── tx_replay.rs    # Transaction replay
+│   ├── data_fetcher.rs     # Unified fetching API
+│   └── ...
+├── examples/               # Self-contained replay examples
+├── crates/
+│   ├── sui-sandbox-core/   # Re-exports benchmark/cache/data_fetcher
+│   ├── sui-data-fetcher/   # GraphQL + gRPC clients
+│   │   ├── graphql.rs      # GraphQL client (94KB)
+│   │   └── grpc/           # gRPC streaming client
+│   ├── sui-package-extractor/  # Bytecode analysis
+│   │   ├── bytecode.rs     # Interface extraction
+│   │   └── types.rs        # JSON schema types
+│   └── sui-types/          # Shared types (RetryConfig)
+└── tests/                  # Integration tests
+```
+
+### Crate Dependencies
+
+```text
+sui-sandbox (root)
+    ├── sui-data-fetcher     (GraphQL/gRPC)
+    │   └── sui-sandbox-types
+    ├── sui-sandbox-types    (shared types)
+    └── [benchmark module uses both internally]
+
+sui-sandbox-core (facade)
+    └── sui-sandbox (re-exports benchmark, cache, data_fetcher)
+```
 
 ## System Overview
 

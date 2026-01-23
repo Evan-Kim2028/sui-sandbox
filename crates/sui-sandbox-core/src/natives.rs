@@ -1420,6 +1420,9 @@ fn remove_child_from_shared_state(
 }
 
 /// Check if a child exists in shared state (if using SharedObjectRuntime).
+/// Note: This does NOT trigger on-demand fetching. Use check_shared_state_for_child_with_fetch
+/// if you need to fetch children that aren't already cached.
+#[allow(dead_code)]
 fn check_shared_state_for_child(
     ctx: &NativeContext,
     parent: AccountAddress,
@@ -1430,6 +1433,117 @@ fn check_shared_state_for_child(
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         if let Ok(state) = shared.shared_state().lock() {
             return state.has_child(parent, child_id);
+        }
+    }
+    false
+}
+
+/// Check if a child exists in shared state, triggering on-demand fetch if needed.
+/// This is the unified resolution path that ensures all child object checks
+/// (existence, type, borrow) go through the same fetching logic.
+fn check_shared_state_for_child_with_fetch(
+    ctx: &mut NativeContext,
+    parent: AccountAddress,
+    child_id: AccountAddress,
+) -> bool {
+    use crate::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+        // First check if already cached in shared state
+        let already_cached = {
+            if let Ok(state) = shared.shared_state().lock() {
+                state.has_child(parent, child_id)
+            } else {
+                false
+            }
+        };
+
+        if already_cached {
+            return true;
+        }
+
+        // Not in cache - try on-demand fetching
+        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+            eprintln!(
+                "[check_shared_state_for_child_with_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
+                child_id.to_hex_literal(),
+                fetched_bytes.len(),
+                fetched_tag
+            );
+            // Add to shared state for future lookups
+            if let Ok(mut state) = shared.shared_state().lock() {
+                state.add_child(parent, child_id, fetched_tag, fetched_bytes);
+            }
+            return true;
+        } else {
+            eprintln!(
+                "[check_shared_state_for_child_with_fetch] child={} not found (no fetcher or fetch failed)",
+                child_id.to_hex_literal()
+            );
+        }
+    }
+    false
+}
+
+/// Check if a child exists with a specific type in shared state, triggering on-demand fetch if needed.
+/// Returns true only if the child exists AND has the expected type.
+fn check_shared_state_for_child_with_type_and_fetch(
+    ctx: &mut NativeContext,
+    parent: AccountAddress,
+    child_id: AccountAddress,
+    expected_type: &TypeTag,
+) -> bool {
+    use crate::object_runtime::SharedObjectRuntime;
+
+    if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+        // First check if already cached in shared state
+        let cached_type = {
+            if let Ok(state) = shared.shared_state().lock() {
+                state.get_child(parent, child_id).map(|(tag, _)| tag.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(actual_type) = cached_type {
+            // Already cached - check if type matches
+            let type_matches = &actual_type == expected_type;
+            eprintln!(
+                "[check_shared_state_for_child_with_type_and_fetch] cached child={}, expected={:?}, actual={:?}, matches={}",
+                child_id.to_hex_literal(),
+                expected_type,
+                actual_type,
+                type_matches
+            );
+            return type_matches;
+        }
+
+        // Not in cache - try on-demand fetching
+        if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
+            eprintln!(
+                "[check_shared_state_for_child_with_type_and_fetch] on-demand fetch succeeded for child={}, {} bytes, type={:?}",
+                child_id.to_hex_literal(),
+                fetched_bytes.len(),
+                fetched_tag
+            );
+            // Add to shared state for future lookups
+            if let Ok(mut state) = shared.shared_state().lock() {
+                state.add_child(parent, child_id, fetched_tag.clone(), fetched_bytes);
+            }
+            // Check if fetched type matches expected
+            let type_matches = &fetched_tag == expected_type;
+            eprintln!(
+                "[check_shared_state_for_child_with_type_and_fetch] expected={:?}, fetched={:?}, matches={}",
+                expected_type,
+                fetched_tag,
+                type_matches
+            );
+            return type_matches;
+        } else {
+            eprintln!(
+                "[check_shared_state_for_child_with_type_and_fetch] child={} not found (no fetcher or fetch failed)",
+                child_id.to_hex_literal()
+            );
         }
     }
     false
@@ -2017,10 +2131,19 @@ fn add_dynamic_field_natives(
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
 
-            let runtime = get_object_runtime_ref(ctx)?;
-            // Check local runtime first, then shared state
-            let in_local = runtime.child_object_exists(parent, child_id);
-            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+            // Check local runtime first (this borrow ends before we check shared state)
+            let in_local = {
+                let runtime = get_object_runtime_ref(ctx)?;
+                runtime.child_object_exists(parent, child_id)
+            };
+
+            // If not in local, check shared state with on-demand fetch
+            let in_shared = if !in_local {
+                check_shared_state_for_child_with_fetch(ctx, parent, child_id)
+            } else {
+                false
+            };
+
             let exists = in_local || in_shared;
             eprintln!(
                 "[has_child_object] parent={}, child={}, in_local={}, in_shared={}, exists={}",
@@ -2051,10 +2174,20 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            let runtime = get_object_runtime_ref(ctx)?;
-            // Check local runtime first, then shared state (type checking happens only in local)
-            let in_local = runtime.child_object_exists_with_type(parent, child_id, &child_tag);
-            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+
+            // Check local runtime first (this borrow ends before we check shared state)
+            let in_local = {
+                let runtime = get_object_runtime_ref(ctx)?;
+                runtime.child_object_exists_with_type(parent, child_id, &child_tag)
+            };
+
+            // If not in local, check shared state with on-demand fetch AND type verification
+            let in_shared = if !in_local {
+                check_shared_state_for_child_with_type_and_fetch(ctx, parent, child_id, &child_tag)
+            } else {
+                false
+            };
+
             let exists = in_local || in_shared;
             eprintln!(
                 "[has_child_object_with_ty] parent={}, child={}, type={:?}, in_local={}, in_shared={}, exists={}",

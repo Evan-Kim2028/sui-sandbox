@@ -6,6 +6,7 @@ Get the local Move execution environment running in minutes.
 
 - Rust toolchain (1.75+)
 - ~2GB disk space for dependencies
+- Surflux API key (for historical transaction replay) - get one at https://surflux.dev
 
 ## Installation
 
@@ -15,15 +16,32 @@ git clone https://github.com/anthropics/sui-move-interface-extractor.git
 cd sui-move-interface-extractor
 cargo build --release
 
+# Set up API key for examples (optional but recommended)
+echo "SURFLUX_API_KEY=your-api-key" > .env
+
 # Add to PATH (optional)
 export PATH="$PATH:$(pwd)/target/release"
 ```
 
 ## Your First Commands
 
-### 1. Replay a Mainnet Transaction
+### 1. Run a Self-Contained Example (Recommended)
 
-The fastest way to see the tool in action:
+The fastest way to see the tool in action - **no cache needed**:
+
+```bash
+# DeepBook flash loan replay (demonstrates success + failure cases)
+cargo run --example deepbook_replay
+
+# Cetus AMM swap with dynamic field fetching
+cargo run --example cetus_swap
+```
+
+These examples fetch all data fresh via gRPC and demonstrate the complete replay workflow.
+
+### 2. Replay a Mainnet Transaction
+
+For ad-hoc transaction replay:
 
 ```bash
 # Pick any transaction from https://suiscan.xyz and replay it locally
@@ -108,6 +126,8 @@ brew install protobuf
 
 ## Next Steps
 
+- **[Examples README](../../examples/README.md)** - Start here! Self-contained replay examples
 - [Transaction Replay Guide](../guides/TRANSACTION_REPLAY.md) - Deep dive into replaying mainnet transactions
 - [Sandbox API Reference](../reference/SANDBOX_API.md) - All available actions
 - [CLI Reference](../reference/CLI_REFERENCE.md) - Command-line options
+- [Architecture](../ARCHITECTURE.md) - Workspace structure and module organization

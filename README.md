@@ -1,4 +1,4 @@
-# sui-move-interface-extractor
+# sui-sandbox
 
 A **high-fidelity local Move execution environment** for Sui. Test transactions, replay mainnet activity, and validate contract logic - all offline, with real cryptography.
 
@@ -14,11 +14,43 @@ This tool runs the **real Sui Move VM** locally, letting you:
 
 Think of it as a local Move execution sandbox with mainnet-grade fidelity.
 
+## Workspace Structure
+
+The project is organized as a Cargo workspace with specialized crates:
+
+| Crate | Purpose |
+|-------|---------|
+| **sui-sandbox** (root) | Main library with CLI, examples, and integration tests |
+| **sui-sandbox-core** | Move VM simulation engine (PTB execution, transaction replay) |
+| **sui-data-fetcher** | GraphQL and gRPC clients for Sui network data |
+| **sui-package-extractor** | Bytecode parsing and interface extraction |
+| **sui-sandbox-types** | Shared types (RetryConfig, etc.) |
+
+```text
+sui-sandbox/
+├── src/                    # Main library
+│   ├── benchmark/          # Core simulation engine (VMHarness, PTBExecutor)
+│   ├── data_fetcher.rs     # Unified data fetching API
+│   └── ...
+├── examples/               # Self-contained replay examples (START HERE!)
+├── crates/
+│   ├── sui-sandbox-core/   # Re-exports simulation modules
+│   ├── sui-data-fetcher/   # GraphQL + gRPC clients
+│   ├── sui-package-extractor/  # Bytecode analysis
+│   └── sui-types/          # Shared types
+└── tests/                  # Integration tests
+```
+
 ## Quick Start
 
 ```bash
 # Build
 cargo build --release
+
+# Developer CLI - publish, run, inspect Move packages
+./target/release/sui-sandbox publish ./my_package --bytecode-only
+./target/release/sui-sandbox run 0x2::coin::value --arg 0x123
+./target/release/sui-sandbox view module 0x2::coin
 
 # Run a self-contained example (no cache needed!)
 cargo run --example deepbook_replay
@@ -302,23 +334,62 @@ cargo run --bin poll_transactions -- --duration 600 --interval 1500 --output txs
 
 See [Data Fetching Guide](docs/guides/DATA_FETCHING.md) for details.
 
-## Python Integration
+## Key Entry Points
 
-Native Python bindings via PyO3:
+### For New Users: Start with Examples
 
-```python
-from sui_sandbox import SandboxEnvironment
+The `examples/` directory contains **self-contained, cache-free** examples - the best way to understand the system:
 
-env = SandboxEnvironment()
-result = env.execute({"action": "list_modules"})
+```bash
+cargo run --example deepbook_replay   # DeepBook flash loan replay
+cargo run --example cetus_swap        # Cetus AMM swap replay
+cargo run --example multi_swap_flash_loan  # Flash loan arbitrage
 ```
 
-Build with `maturin build --release` from the `crates/pyo3-bindings` directory.
+Each example demonstrates the complete workflow from data fetching to local execution.
+
+### Core Capabilities
+
+| Capability | Module | Description |
+|------------|--------|-------------|
+| **Transaction Replay** | `benchmark::tx_replay` | Replay historical mainnet transactions locally |
+| **PTB Execution** | `benchmark::ptb` | Execute Programmable Transaction Blocks |
+| **Move VM Harness** | `benchmark::vm` | Full Move VM with Sui native functions |
+| **Simulation Environment** | `benchmark::simulation` | Stateful sandbox with object tracking |
+| **Data Fetching** | `data_fetcher` | Unified GraphQL + gRPC API |
+| **gRPC Streaming** | `grpc` | Real-time checkpoint streaming (via Surflux) |
+| **GraphQL Queries** | `graphql` | Object/package/transaction queries |
+
+### API Quick Reference
+
+```rust
+use sui_move_interface_extractor::{
+    // Core simulation
+    benchmark::{SimulationEnvironment, VMHarness, PTBExecutor},
+
+    // Data fetching
+    data_fetcher::DataFetcher,
+    graphql::GraphQLClient,
+    grpc::GrpcClient,
+};
+
+// Fetch data from mainnet
+let fetcher = DataFetcher::mainnet();
+let package = fetcher.fetch_package("0x2")?;
+
+// Create simulation environment
+let mut env = SimulationEnvironment::new()?;
+env.load_package(package)?;
+
+// Execute PTB
+let result = env.execute_ptb(&commands, &inputs)?;
+```
 
 ## CLI Commands
 
 | Command | Purpose |
 |---------|---------|
+| `sui-sandbox` | **Developer CLI** for local Move development (publish, run, PTB, fetch, replay) |
 | `sandbox-exec` | Interactive JSON API for transaction execution |
 | `tx-replay` | Replay mainnet transactions locally |
 | `ptb-eval` | Evaluate PTB with automatic dependency fetching |

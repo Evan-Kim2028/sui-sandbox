@@ -24,14 +24,12 @@
 //! Note: These tests use `panic!()` for failures because they're explicitly
 //! testing network connectivity when the environment is properly configured.
 
+mod test_utils;
+
 use std::time::Duration;
 use sui_move_interface_extractor::data_fetcher::DataFetcher;
 use sui_move_interface_extractor::grpc::{GrpcClient, GrpcCommand};
-
-/// Helper to get gRPC endpoint from env, or skip test
-fn get_grpc_endpoint() -> Option<String> {
-    std::env::var("SUI_GRPC_ENDPOINT").ok()
-}
+use test_utils::get_grpc_endpoint;
 
 /// Helper macro to skip test if no endpoint configured
 macro_rules! require_grpc_endpoint {

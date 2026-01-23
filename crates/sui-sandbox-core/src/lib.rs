@@ -48,7 +48,6 @@ pub mod errors;
 pub mod fetcher;
 pub mod mm2;
 pub mod natives;
-pub mod object_patcher;
 pub mod object_runtime;
 pub mod phases;
 pub mod ptb;
@@ -69,6 +68,9 @@ pub mod output;
 pub mod package_builder;
 pub mod state_layer;
 pub mod storage_log;
+
+// Utilities for working around infrastructure limitations
+pub mod utilities;
 
 // Re-export main types at crate root for convenience
 pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};

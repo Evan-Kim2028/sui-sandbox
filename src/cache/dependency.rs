@@ -603,10 +603,12 @@ impl std::fmt::Display for AggregateStats {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```
+/// use sui_move_interface_extractor::cache::dependency::{DependencyRecorder, DependencyDiscovery, FetchMethod};
+///
 /// let mut recorder = DependencyRecorder::new("tx_digest_123");
 /// recorder.set_checkpoint(234219761);
-/// recorder.set_sender("0x...");
+/// recorder.set_sender("0x1234");
 ///
 /// // During package loading
 /// recorder.record_package("0x2", DependencyDiscovery::TransactionReference);
@@ -614,17 +616,12 @@ impl std::fmt::Display for AggregateStats {
 /// // During object fetching
 /// recorder.record_object("0x6", 100, Some("Clock"), FetchMethod::Direct, true);
 ///
-/// // During execution (dynamic fields)
-/// recorder.record_dynamic_field("0xparent", "0xchild", "u64", Some("123"), None, 50, FetchMethod::HistoricalArchive);
-///
 /// // After execution
-/// if success {
-///     recorder.mark_successful();
-/// }
+/// recorder.mark_successful();
 ///
-/// // Save to cache
+/// // Get the recorded dependencies
 /// let deps = recorder.finish();
-/// cache.save(&deps)?;
+/// assert_eq!(deps.digest, "tx_digest_123");
 /// ```
 pub struct DependencyRecorder {
     inner: TransactionDependency,

@@ -11,7 +11,7 @@ The **Local Bytecode Sandbox** is a deterministic, offline Move VM environment t
 5. **Type inhabitation** can be verified through actual VM execution
 6. **No gas, tokens, or network access** is required
 
-This is the core infrastructure that powers the `benchmark-local`, `tx-replay`, `ptb-eval`, and `sandbox-exec` commands.
+This is the core infrastructure that powers the `sui-sandbox`, `benchmark-local`, `tx-replay`, `ptb-eval`, and `sandbox-exec` commands.
 
 > **Architecture Reference**: For the full system architecture including all CLI commands and data flows, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -251,14 +251,33 @@ enum ConstructorChainEntry {
 
 ### CLI Commands
 
-The sandbox powers four CLI commands:
+The sandbox powers five CLI commands:
 
 | Command | Description |
 |---------|-------------|
+| **`sui-sandbox`** | Developer CLI for local Move development |
 | `benchmark-local` | Tier A/B type inhabitation testing |
 | `tx-replay` | Fetch and replay mainnet transactions |
 | `ptb-eval` | Evaluate PTBs with self-healing |
 | `sandbox-exec` | Interactive sandbox for LLM agents |
+
+### `sui-sandbox` - Developer CLI
+
+The most user-friendly way to interact with the sandbox. Provides publish, run, PTB execution, mainnet fetching, and transaction replay with persistent session state:
+
+```bash
+# Publish and test locally
+sui-sandbox publish ./my_package --bytecode-only
+sui-sandbox run 0x100::my_module::my_func --arg 42
+
+# Fetch mainnet packages and replay transactions
+sui-sandbox fetch package 0x1eabed72...
+sui-sandbox replay 9V3xKMnFpXyz... --compare
+
+# Inspect loaded state
+sui-sandbox view module 0x2::coin
+sui-sandbox status
+```text
 
 ### `benchmark-local` - Type Inhabitation Testing
 

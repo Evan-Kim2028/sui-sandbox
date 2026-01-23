@@ -1233,38 +1233,8 @@ pub use sui_data_fetcher::grpc_to_fetched_transaction;
 // Auto-Fetch and Cache Functionality
 // ============================================================================
 
-/// Extract package addresses that a module depends on from its bytecode.
-///
-/// This parses the CompiledModule to find all module_handles, which reference
-/// other modules that this module depends on.
-#[allow(dead_code)]
-fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<AccountAddress> {
-    use move_binary_format::CompiledModule;
-    use std::collections::BTreeSet;
-
-    // Framework addresses to skip
-    let framework_addrs: BTreeSet<AccountAddress> = [
-        AccountAddress::from_hex_literal("0x1").unwrap(),
-        AccountAddress::from_hex_literal("0x2").unwrap(),
-        AccountAddress::from_hex_literal("0x3").unwrap(),
-    ]
-    .into_iter()
-    .collect();
-
-    let mut deps = Vec::new();
-
-    if let Ok(module) = CompiledModule::deserialize_with_defaults(bytecode) {
-        for handle in &module.module_handles {
-            let addr = *module.address_identifier_at(handle.address);
-            // Skip framework modules
-            if !framework_addrs.contains(&addr) {
-                deps.push(addr);
-            }
-        }
-    }
-
-    deps
-}
+// Note: extract_dependencies_from_bytecode has been moved to utilities::type_utils
+// Use crate::utilities::extract_dependencies_from_bytecode instead
 
 /// Extract all unique dependency addresses from a set of packages.
 /// packages is HashMap<String, Vec<(module_name, bytecode_base64)>>
@@ -1272,6 +1242,7 @@ fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<AccountAddress> {
 fn extract_all_dependencies(
     packages: &std::collections::HashMap<String, Vec<(String, String)>>,
 ) -> std::collections::BTreeSet<String> {
+    use crate::utilities::extract_dependencies_from_bytecode;
     use std::collections::BTreeSet;
 
     let mut all_deps: BTreeSet<String> = BTreeSet::new();
@@ -1281,8 +1252,7 @@ fn extract_all_dependencies(
             if let Ok(bytecode) = base64::engine::general_purpose::STANDARD.decode(bytecode_base64)
             {
                 for dep_addr in extract_dependencies_from_bytecode(&bytecode) {
-                    let addr_str = format!("0x{}", hex::encode(dep_addr.as_ref()));
-                    all_deps.insert(addr_str);
+                    all_deps.insert(dep_addr);
                 }
             }
         }

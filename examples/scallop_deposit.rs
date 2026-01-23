@@ -35,12 +35,11 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
-    normalize_address, parse_type_tag_simple,
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
 };
+use sui_sandbox_core::utilities::{is_framework_package, normalize_address, GenericObjectPatcher};
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
-use sui_sandbox_core::object_patcher::ObjectPatcher;
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
@@ -76,7 +75,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         println!("║ ✗ TRANSACTION DID NOT MATCH EXPECTED OUTCOME                        ║");
         println!("║                                                                      ║");
-        println!("║ Note: ObjectPatcher fixed version-lock issues, but this transaction ║");
+        println!("║ Note: GenericObjectPatcher fixed version-lock issues, but this tx   ║");
         println!("║ has additional compatibility issues (argument deserialization).     ║");
     }
     println!("╚══════════════════════════════════════════════════════════════════════╝");
@@ -182,14 +181,12 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 4: Fetching objects at historical versions via gRPC...");
 
-    let mut objects: HashMap<String, String> = HashMap::new();
+    // Store RAW objects first - we'll patch them after loading modules
+    let mut raw_objects: HashMap<String, Vec<u8>> = HashMap::new();
     let mut object_types: HashMap<String, String> = HashMap::new();
     let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut package_ids_to_fetch: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-
-    // Create object patcher for version-locked protocols (Scallop, Cetus, etc.)
-    let mut object_patcher = ObjectPatcher::with_timestamp(tx_timestamp_ms);
 
     for cmd in &grpc_tx.commands {
         if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
@@ -211,11 +208,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         match result {
             Ok(Some(obj)) => {
                 if let Some(bcs) = &obj.bcs {
-                    // Apply object patching for version-locked protocols
-                    let type_str = obj.type_string.as_deref().unwrap_or("");
-                    let patched_bcs = object_patcher.patch_object(type_str, bcs);
-                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&patched_bcs);
-                    objects.insert(obj_id.clone(), bcs_b64);
+                    // Store RAW bytes - we'll patch after loading modules
+                    raw_objects.insert(obj_id.clone(), bcs.clone());
                     if let Some(type_str) = &obj.type_string {
                         object_types.insert(obj_id.clone(), type_str.clone());
                         for pkg_id in extract_package_ids_from_type(type_str) {
@@ -249,18 +243,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     println!(
-        "   ✓ Fetched {} objects ({} failed)",
+        "   ✓ Fetched {} raw objects ({} failed)",
         fetched_count, failed_count
     );
-
-    // Report patches applied
-    let patch_stats = object_patcher.stats();
-    if !patch_stats.is_empty() {
-        println!("   Object patches applied:");
-        for (pattern, count) in patch_stats {
-            println!("      {} -> {} patches", pattern, count);
-        }
-    }
 
     // =========================================================================
     // Step 5: Fetch packages with transitive dependencies
@@ -387,17 +372,18 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let fetched_tx = grpc_to_fetched_transaction(&grpc_tx)?;
     let mut cached = CachedTransaction::new(fetched_tx);
 
+    // Add packages (objects will be added after patching in Step 7b)
     for (pkg_id, modules) in packages {
         cached.packages.insert(pkg_id, modules);
     }
 
-    cached.objects = objects;
-    cached.object_types = object_types;
+    // Store object types and versions, objects will be added after patching
+    cached.object_types = object_types.clone();
     cached.object_versions = historical_versions.clone();
 
-    println!("   ✓ Built CachedTransaction");
+    println!("   ✓ Built CachedTransaction (packages only)");
     println!("      Packages: {}", cached.packages.len());
-    println!("      Objects: {}", cached.objects.len());
+    println!("      Raw objects to patch: {}", raw_objects.len());
 
     // =========================================================================
     // Step 7: Build module resolver
@@ -460,6 +446,52 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     println!("   ✓ Resolver ready");
+
+    // =========================================================================
+    // Step 7b: Create GenericObjectPatcher and patch objects
+    // =========================================================================
+    println!("\nStep 7b: Patching objects with GenericObjectPatcher...");
+
+    let mut generic_patcher = GenericObjectPatcher::new();
+
+    // Add modules for struct layout extraction (enables field-name-based patching)
+    generic_patcher.add_modules(resolver.compiled_modules());
+
+    // Set timestamp for time-based patches
+    generic_patcher.set_timestamp(tx_timestamp_ms);
+
+    // Add default patching rules (timestamp fields, version fields)
+    generic_patcher.add_default_rules();
+
+    // Patch objects and convert to base64 for cached storage
+    let mut objects: HashMap<String, String> = HashMap::new();
+    for (obj_id, raw_bcs) in &raw_objects {
+        let type_str = object_types.get(obj_id).map(|s| s.as_str()).unwrap_or("");
+        let patched_bcs = generic_patcher.patch_object(type_str, &raw_bcs);
+        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&patched_bcs);
+        objects.insert(obj_id.clone(), bcs_b64);
+    }
+
+    // Add patched objects to cached transaction
+    cached.objects = objects;
+
+    // Report detected versions from bytecode constant pools
+    if generic_patcher.has_detected_versions() {
+        println!("   Version constants detected from bytecode:");
+        for (pkg_addr, version) in generic_patcher.detected_versions() {
+            println!("      {} -> v{}", &pkg_addr[..20.min(pkg_addr.len())], version);
+        }
+    }
+
+    // Report patches applied
+    let patch_stats = generic_patcher.stats();
+    if !patch_stats.is_empty() {
+        println!("   Object patches applied (by field name):");
+        for (field_name, count) in patch_stats {
+            println!("      field '{}' -> {} patches", field_name, count);
+        }
+    }
+    println!("   ✓ Patched {} objects", cached.objects.len());
 
     // =========================================================================
     // Step 8: Create VM harness

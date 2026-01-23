@@ -394,8 +394,6 @@ impl LocalModuleResolver {
             match self.add_module_bytes(bytes) {
                 Ok(id) => {
                     count += 1;
-                    eprintln!("  Loaded module: {} ({})", name, id);
-
                     // Track the source address from bytecode
                     if source_addr.is_none() {
                         source_addr = Some(*id.address());
@@ -410,11 +408,7 @@ impl LocalModuleResolver {
         // Set up address alias if target differs from source
         if let (Some(target), Some(source)) = (target_addr, source_addr) {
             if target != source {
-                eprintln!(
-                    "  Address alias: {} -> {}",
-                    target.to_hex_literal(),
-                    source.to_hex_literal()
-                );
+                // Address alias created (useful for debugging but too verbose for normal use)
                 self.address_aliases.insert(target, source);
             }
         }
@@ -451,6 +445,12 @@ impl LocalModuleResolver {
     /// Get the number of loaded modules.
     pub fn module_count(&self) -> usize {
         self.modules.len()
+    }
+
+    /// Get an iterator over all compiled modules.
+    /// Useful for scanning modules for constants (e.g., version numbers).
+    pub fn compiled_modules(&self) -> impl Iterator<Item = &CompiledModule> {
+        self.modules.values()
     }
 
     /// Get all unique package addresses that are referenced by loaded modules

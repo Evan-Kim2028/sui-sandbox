@@ -74,6 +74,7 @@ fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0
 # IMPORTANT: Must match the version used by move-vm-runtime (0.1)
 better_any = "0.1"
 hex = "0.4.3"
+bincode = "1.3"
 prometheus = "0.13"
 dirs = "5.0"
 uuid = { version = "1.0", features = ["v4"] }
@@ -119,9 +120,14 @@ name = "deepbook_replay"
 path = "examples/deepbook_replay.rs"
 
 [[example]]
-name = "kriya_swap"
-path = "examples/kriya_swap.rs"
+name = "multi_swap_flash_loan"
+path = "examples/multi_swap_flash_loan.rs"
 
 [[example]]
-name = "inspect_df"
-path = "examples/inspect_df.rs"
+name = "fork_state"
+path = "examples/fork_state.rs"
+
+# sui-sandbox CLI binary
+[[bin]]
+name = "sui-sandbox"
+path = "src/bin/sui_sandbox.rs"

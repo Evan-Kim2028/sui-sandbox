@@ -1,177 +1,223 @@
-# PTB Replay Examples
+# Sui Sandbox Examples
 
-These examples demonstrate local replay of real Sui DeFi transactions using the Move VM sandbox.
-Each example has **1:1 parity with corresponding tests** in `tests/`.
+These examples demonstrate how to use the local Move VM sandbox for testing and simulating Sui transactions.
 
 ## Quick Start
 
+**Start here if you're new!** The examples are ordered from simplest to most advanced.
+
+### 0. CLI Workflow (No API Key, No Compilation)
+
 ```bash
-# Run a single example
+# Interactive CLI walkthrough - best for quick exploration
+./examples/cli_workflow.sh
+
+# Or use the CLI directly:
+sui-sandbox view module 0x2::coin
+sui-sandbox run 0x2::coin::zero --type-arg 0x2::sui::SUI
+```
+
+### 1. Simple (No API Key Required)
+
+```bash
+# Coin transfer - basic PTB operations
+cargo run --example coin_transfer
+```
+
+### 2. Intermediate (Requires API Key)
+
+```bash
+# Fork mainnet state into local sandbox
+cargo run --example fork_state
+```
+
+### 3. Advanced (Transaction Replay)
+
+```bash
+# Replay real DeFi transactions
 cargo run --example cetus_swap
-
-# Run with release optimizations (faster)
-cargo run --release --example cetus_swap
-
-# List all available examples
-cargo run --example
+cargo run --example deepbook_replay
+cargo run --example multi_swap_flash_loan
+cargo run --example scallop_deposit
 ```
 
 ## Available Examples
 
-| Example | Protocol | Description |
-|---------|----------|-------------|
-| `cetus_swap` | Cetus AMM | Historical swap with dynamic field child fetching |
-| `scallop_deposit` | Scallop Lending | Lending deposit with gRPC historical data |
-| `deepbook_replay` | DeepBook CLOB | Flash loans - success and failure cases |
-| `kriya_swap` | Kriya DEX | Multi-hop swap with automatic version-lock patching |
-| `inspect_df` | Sui Framework | Dynamic field inspector (no API key needed) |
+| Example | Difficulty | API Key | Description |
+|---------|------------|---------|-------------|
+| `cli_workflow.sh` | Beginner | No | Shell script demonstrating CLI usage |
+| `coin_transfer` | Beginner | No | Split and transfer SUI coins locally |
+| `fork_state` | Intermediate | Yes | Fork mainnet state and execute PTBs |
+| `cetus_swap` | Advanced | Yes | Replay Cetus AMM swap transaction |
+| `deepbook_replay` | Advanced | Yes | Replay DeepBook flash loan transactions |
+| `multi_swap_flash_loan` | Advanced | Yes | Flash loan arbitrage across multiple DEXes |
+| `scallop_deposit` | Advanced | Yes | Replay Scallop lending deposit |
+
+## Setup
+
+### For Basic Examples (No API Key)
+
+Just run the example:
+
+```bash
+cargo run --example coin_transfer
+```
+
+### For Advanced Examples (Requires API Key)
+
+1. Get an API key from [Surflux](https://surflux.dev)
+2. Create a `.env` file in the project root:
+
+```bash
+SURFLUX_API_KEY=your_api_key_here
+```
+
+3. Run the example:
+
+```bash
+cargo run --example fork_state
+```
+
+## Example Descriptions
+
+### cli_workflow.sh (Beginner)
+
+A shell script that walks through the `sui-sandbox` CLI:
+- Exploring framework modules (`view modules`, `view module`)
+- Checking session status
+- Publishing a test package
+- Executing functions
+- Using JSON output for scripting
+- Cleaning up session state
+
+This is the fastest way to explore the sandbox without writing any code. Run it with:
+
+```bash
+./examples/cli_workflow.sh
+```
+
+Or use the CLI interactively:
+
+```bash
+# Build the CLI
+cargo build --release --bin sui-sandbox
+
+# Explore modules
+./target/release/sui-sandbox view module 0x2::coin
+
+# Execute a function
+./target/release/sui-sandbox run 0x2::coin::zero --type-arg 0x2::sui::SUI
+
+# When ready to deploy, generate sui client commands
+./target/release/sui-sandbox bridge publish ./my_package
+
+# See all commands
+./target/release/sui-sandbox --help
+```
+
+### coin_transfer (Beginner)
+
+Demonstrates basic PTB (Programmable Transaction Block) operations:
+- Creating a simulation environment
+- Creating test SUI coins
+- Splitting coins using `SplitCoins` command
+- Transferring coins using `TransferObjects` command
+
+No network access required - runs entirely locally.
+
+### fork_state (Intermediate)
+
+Demonstrates "forking" real mainnet state:
+- Connect to Surflux gRPC to fetch mainnet data
+- Fetch packages (Move Stdlib, Sui Framework, DeepBook V3)
+- Fetch objects (DeepBook registry and pools)
+- Load state into local sandbox
+- Deploy a custom Move contract
+- Execute PTBs against the forked state
+
+This is useful for:
+- Testing transactions before submitting on-chain
+- Debugging failed transactions
+- Exploring "what-if" scenarios
+- Developing against real protocol state
+
+### Transaction Replay Examples (Advanced)
+
+These examples demonstrate replaying real historical transactions:
+- Fetch transaction data from mainnet
+- Reconstruct exact historical state
+- Execute locally and compare results
+
+See each example's source code for detailed documentation.
+
+## File Structure
+
+```
+examples/
+├── README.md                   # This file
+├── cli_workflow.sh            # CLI workflow demonstration (shell script)
+├── coin_transfer.rs           # Simple coin operations (no API key)
+├── fork_state.rs              # Fork mainnet state (requires API key)
+├── fork_state_helper/         # Custom Move contract for fork_state
+│   ├── Move.toml
+│   └── sources/manager.move
+├── cetus_swap.rs              # Cetus AMM replay
+├── deepbook_replay.rs         # DeepBook replay
+├── multi_swap_flash_loan.rs   # Multi-DEX flash loan
+├── scallop_deposit.rs         # Scallop lending replay
+└── common/
+    └── mod.rs                 # Shared utilities
+```
 
 ## Example Status
 
-### Cetus Swap ✓ Full Success
+| Example | Status | Notes |
+|---------|--------|-------|
+| `cli_workflow.sh` | ✅ Works | Shell script, no dependencies |
+| `coin_transfer` | ✅ Works | No dependencies |
+| `fork_state` | ✅ Works | Requires API key |
+| `cetus_swap` | ✅ Works | Matches on-chain |
+| `deepbook_replay` | ✅ Works | Both success and failure cases |
+| `multi_swap_flash_loan` | ✅ Works | Uses GenericObjectPatcher for version-lock |
+| `scallop_deposit` | ⚠️ Partial | Version-lock bypassed, BCS issue remains |
 
-- Replays historical Cetus CLMM swap transaction
-- Fetches pool state at exact transaction version
-- Uses on-demand skip_list node fetching
-- **Result: Matches on-chain success**
+## Key Concepts
 
-### Scallop Deposit ~ Partial Success (with Object Patching)
+### PTB (Programmable Transaction Block)
 
-- Demonstrates full sandbox infrastructure working:
-  - gRPC connection to Surflux for `unchanged_loaded_runtime_objects`
-  - Historical dynamic field preloading at exact versions
-  - Address aliasing for upgraded packages
-  - **Object patching** fixes version-lock checks
-- ObjectPatcher successfully patches `::version::Version` object
-- Remaining issue: argument deserialization (struct layout changes)
-- **Result: Version-lock bypassed, blocked by BCS compatibility**
+Sui transactions are expressed as PTBs containing:
+- **Inputs**: Objects and pure values
+- **Commands**: Operations like `MoveCall`, `SplitCoins`, `TransferObjects`
+- **Arguments**: References to inputs or previous command results
 
-### DeepBook Replay ✓ Validation Pass
+### SimulationEnvironment
 
-- Replays 2 DeepBook flash loan transactions:
-  - Flash Loan Swap - succeeds locally (matches on-chain)
-  - Flash Loan Arb - correctly reproduces on-chain failure
-- Uses automated gRPC historical state reconstruction
-- **Result: All transactions match expected outcomes**
+The local Move VM that executes PTBs:
+- Pre-loaded with Sui Framework and Move Stdlib
+- Can load additional packages from mainnet
+- Tracks gas usage and object mutations
 
-### Kriya Swap ✓ Full Success (with Object Patching)
+### State Forking
 
-- Replays a complex multi-hop swap routing through Kriya, Bluefin, and Cetus pools
-- **Automatic version-lock fix**: `ObjectPatcher` patches Cetus GlobalConfig to match bytecode
-- Uses flash loans, multi-protocol routing, and CLMM pools
-- **Result: Matches on-chain success**
+"Forking" means taking a snapshot of on-chain state at a specific point in time and loading it locally. This allows testing against real protocol state without affecting the chain.
 
-## What These Examples Demonstrate
+## Troubleshooting
 
-### 1. Transaction Data Loading
+### "SURFLUX_API_KEY not set"
 
-- Auto-fetch from mainnet GraphQL with local caching
-- Transaction commands, packages, and input objects
+Create a `.env` file with your API key (see Setup section above).
 
-### 2. Package Resolution
+### "sui CLI not found" (fork_state)
 
-- Loading upgraded packages at original addresses
-- Handling package linkage tables for version checks
+The custom contract deployment requires the `sui` CLI. Install it from https://docs.sui.io/guides/developer/getting-started/sui-install
 
-### 3. Historical State
+The example will still work, just without the custom contract.
 
-- Fetching objects at their transaction-time versions
-- Constructing Clock object with correct timestamp
-- Using gRPC for `unchanged_loaded_runtime_objects`
+### Compilation errors
 
-### 4. Dynamic Fields
-
-- On-demand fetching of child objects (skip_list nodes, balance managers)
-- Pre-loading known dynamic field children
-
-### 5. PTB Execution
-
-- Full Move VM execution with real cryptography
-- Comparing local results with on-chain effects
-
-## Example Output
-
-### Cetus Swap
-
-```text
-=== REPLAY RESULT ===
-Local success: true
-
-✓ HISTORICAL TRANSACTION REPLAYED SUCCESSFULLY!
-
-On-chain status: Success
-Status match: true
-```
-
-### Scallop Deposit
-
-```text
-Step 4: Fetching objects at historical versions via gRPC...
-   ✓ Fetched 14 objects (0 failed)
-   Object patches applied:
-      ::version::Version -> 1 patches
-
-  Local execution: FAILURE
-  Error: FAILED_TO_DESERIALIZE_ARGUMENT
-
-[PARTIAL SUCCESS]
-ObjectPatcher successfully bypassed version-lock checks by patching
-the Version object. The remaining error is due to BCS format changes
-in the protocol's struct layouts between versions.
-```
-
-### DeepBook Replay
-
-```text
-╔══════════════════════════════════════════════════════════════════════╗
-║                         VALIDATION SUMMARY                           ║
-╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ Flash Loan Swap             | local: SUCCESS | expected: SUCCESS ║
-║ ✓ Flash Loan Arb              | local: FAILURE | expected: FAILURE ║
-╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ ALL TRANSACTIONS MATCH EXPECTED OUTCOMES                          ║
-╚══════════════════════════════════════════════════════════════════════╝
-```
-
-### Kriya Swap
-
-```text
-╔══════════════════════════════════════════════════════════════════════╗
-║                         VALIDATION SUMMARY                           ║
-╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ Kriya Multi-Hop Swap      | local: SUCCESS | expected: SUCCESS ║
-╠══════════════════════════════════════════════════════════════════════╣
-║ ✓ TRANSACTION REPLAYED SUCCESSFULLY                                 ║
-║                                                                      ║
-║ ObjectPatcher automatically fixed version-locked GlobalConfig        ║
-║ by patching package_version to match bytecode's CURRENT_VERSION.    ║
-╚══════════════════════════════════════════════════════════════════════╝
-```
-
-Note: The `ObjectPatcher` automatically detects and patches Cetus GlobalConfig's
-`package_version` field to match the bytecode's `CURRENT_VERSION` constant,
-enabling successful historical replay of transactions through version-locked protocols.
-
-## Requirements
-
-- Data is automatically fetched from Sui mainnet GraphQL
-- No API keys required for basic usage
-- **For Scallop/DeepBook**: Set `SURFLUX_API_KEY` in `.env` for historical object versions
-
-## Caching
-
-Transaction data is cached in `.tx-cache/` for faster subsequent runs:
+Make sure you're on a recent Rust version:
 
 ```bash
-# Clear cache to force fresh fetch
-rm -rf .tx-cache
-
-# Run example (will fetch everything fresh)
-cargo run --example cetus_swap
+rustup update
+cargo build --examples
 ```
-
-## Related Documentation
-
-- [DeFi Case Studies](../docs/defi-case-study/README.md) - Detailed technical documentation
-- [Data Fetching Guide](../docs/guides/DATA_FETCHING.md) - GraphQL and gRPC usage
-- [Local Sandbox Guide](../docs/guides/LOCAL_BYTECODE_SANDBOX.md) - VM configuration

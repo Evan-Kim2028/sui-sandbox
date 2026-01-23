@@ -19,16 +19,18 @@
 //! When a cache is configured, all package and object fetches check the cache first.
 //! Network fetches are automatically written back to cache (write-through caching).
 //!
-//! ```ignore
+//! ```no_run
+//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//!
 //! // Enable cache with write-through
 //! let fetcher = DataFetcher::mainnet()
-//!     .with_cache(".tx-cache")?;
+//!     .with_cache(".tx-cache").unwrap();
 //!
 //! // First fetch: cache miss → network → cache write
-//! let pkg = fetcher.fetch_package("0x123")?;  // Source: GraphQL
+//! let pkg = fetcher.fetch_package("0x123");  // Source: GraphQL
 //!
 //! // Second fetch: cache hit
-//! let pkg = fetcher.fetch_package("0x123")?;  // Source: Cache
+//! let pkg = fetcher.fetch_package("0x123");  // Source: Cache
 //! ```
 //!
 //! # Data Completeness
@@ -52,28 +54,17 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```no_run
+//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//!
 //! // Basic queries with cache
 //! let fetcher = DataFetcher::mainnet()
-//!     .with_cache(".tx-cache")?;
-//! let obj = fetcher.fetch_object("0x...")?;
-//! let pkg = fetcher.fetch_package("0x2")?;
-//! let tx = fetcher.fetch_transaction("digest...")?;
+//!     .with_cache(".tx-cache").unwrap();
+//! let obj = fetcher.fetch_object("0x...");
+//! let pkg = fetcher.fetch_package("0x2");
+//! let tx = fetcher.fetch_transaction("digest...");
 //!
-//! // Real-time streaming (gRPC)
-//! let fetcher = DataFetcher::mainnet()
-//!     .with_grpc_endpoint("https://fullnode.mainnet.sui.io:443")
-//!     .await?;
-//!
-//! let mut stream = fetcher.subscribe_checkpoints().await?;
-//! while let Some(result) = stream.next().await {
-//!     let checkpoint = result?;
-//!     for tx in checkpoint.transactions {
-//!         if tx.is_ptb() {
-//!             println!("{}: {} commands", tx.digest, tx.commands.len());
-//!         }
-//!     }
-//! }
+//! // Real-time streaming requires async runtime - see examples/
 //! ```
 //!
 //! See [`DATA_FETCHING.md`](../../docs/guides/DATA_FETCHING.md) for detailed tradeoffs.
@@ -243,15 +234,17 @@ impl DataFetcher {
     /// - Cache stores version and type metadata for accurate results
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// use sui_move_interface_extractor::data_fetcher::DataFetcher;
+    ///
     /// let fetcher = DataFetcher::mainnet()
-    ///     .with_cache(".tx-cache")?;
+    ///     .with_cache(".tx-cache").unwrap();
     ///
     /// // First fetch: cache miss → network → cache write
-    /// let pkg = fetcher.fetch_package("0x123")?;  // Source: GraphQL
+    /// let pkg = fetcher.fetch_package("0x123");  // Source: GraphQL
     ///
     /// // Second fetch: cache hit
-    /// let pkg = fetcher.fetch_package("0x123")?;  // Source: Cache
+    /// let pkg = fetcher.fetch_package("0x123");  // Source: Cache
     /// ```
     pub fn with_cache<P: AsRef<std::path::Path>>(mut self, cache_dir: P) -> Result<Self> {
         use std::sync::{Arc, RwLock};
@@ -351,21 +344,9 @@ impl DataFetcher {
     /// Returns error if gRPC is not configured.
     ///
     /// ## Example
-    /// ```ignore
-    /// let fetcher = DataFetcher::mainnet()
-    ///     .with_grpc_endpoint("https://fullnode.mainnet.sui.io:443")
-    ///     .await?;
     ///
-    /// let mut stream = fetcher.subscribe_checkpoints().await?;
-    /// while let Some(result) = stream.next().await {
-    ///     let checkpoint = result?;
-    ///     for tx in &checkpoint.transactions {
-    ///         if tx.is_ptb() {
-    ///             println!("{}: {} commands", tx.digest, tx.commands.len());
-    ///         }
-    ///     }
-    /// }
-    /// ```
+    /// See `examples/` directory for async streaming examples.
+    /// Requires a tokio runtime and gRPC endpoint configured via `with_grpc_endpoint()`.
     pub async fn subscribe_checkpoints(&self) -> Result<CheckpointStream> {
         let grpc = self.grpc.as_ref().ok_or_else(|| {
             anyhow!("gRPC not configured. Use with_grpc_endpoint() to enable streaming.")

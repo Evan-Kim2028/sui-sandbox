@@ -17,6 +17,8 @@
 //! Run with:
 //!   cargo test --test grpc_sandbox_integration_tests -- --ignored --nocapture
 
+mod test_utils;
+
 use std::time::Duration;
 
 use sui_move_interface_extractor::data_fetcher::DataFetcher;
@@ -24,11 +26,7 @@ use sui_move_interface_extractor::graphql::GraphQLClient;
 use sui_move_interface_extractor::grpc::{
     GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction,
 };
-
-/// Helper to get gRPC endpoint from env
-fn get_grpc_endpoint() -> Option<String> {
-    std::env::var("SUI_GRPC_ENDPOINT").ok()
-}
+use test_utils::get_grpc_endpoint;
 
 /// Skip test if no gRPC endpoint configured
 macro_rules! require_grpc_endpoint {
