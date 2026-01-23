@@ -3,9 +3,9 @@
 //! These tests verify that the MM2-based static type checking works correctly
 //! with real Move bytecode.
 
-use sui_move_interface_extractor::benchmark::mm2::{ConstructorGraph, TypeModel, TypeValidator};
-use sui_move_interface_extractor::benchmark::phases::{resolution, typecheck};
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
+use sui_sandbox_core::mm2::{ConstructorGraph, TypeModel, TypeValidator};
+use sui_sandbox_core::phases::{resolution, typecheck};
+use sui_sandbox_core::resolver::LocalModuleResolver;
 
 /// Test that MM2 can build a model from framework modules.
 #[test]
@@ -239,7 +239,7 @@ fn test_producer_chain_discovery() {
 /// Test type synthesizer for SuiSystemState.
 #[test]
 fn test_type_synthesizer_sui_system_state() {
-    use sui_move_interface_extractor::benchmark::mm2::TypeSynthesizer;
+    use sui_sandbox_core::mm2::TypeSynthesizer;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
@@ -283,7 +283,7 @@ fn test_type_synthesizer_sui_system_state() {
 /// Test type synthesizer for ValidatorSet with 10 validators.
 #[test]
 fn test_type_synthesizer_validator_set() {
-    use sui_move_interface_extractor::benchmark::mm2::TypeSynthesizer;
+    use sui_sandbox_core::mm2::TypeSynthesizer;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
@@ -319,7 +319,7 @@ fn test_type_synthesizer_validator_set() {
 /// Test that Coin synthesis uses non-zero balance (1 SUI).
 #[test]
 fn test_coin_synthesis_has_balance() {
-    use sui_move_interface_extractor::benchmark::mm2::TypeSynthesizer;
+    use sui_sandbox_core::mm2::TypeSynthesizer;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
@@ -361,8 +361,8 @@ fn test_coin_synthesis_has_balance() {
 /// Test that PTBBuilder can construct and execute a simple MoveCall.
 #[test]
 fn test_ptb_simple_move_call() {
-    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::PTBBuilder;
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
 
@@ -399,8 +399,8 @@ fn test_ptb_simple_move_call() {
 /// Test PTB with chained results - call a function and use its result.
 #[test]
 fn test_ptb_chained_results() {
-    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::PTBBuilder;
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
@@ -439,8 +439,8 @@ fn test_ptb_chained_results() {
 /// Test PTB SplitCoins command.
 #[test]
 fn test_ptb_split_coins() {
-    use sui_move_interface_extractor::benchmark::ptb::{Argument, PTBBuilder};
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::{Argument, PTBBuilder};
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
@@ -479,8 +479,8 @@ fn test_ptb_split_coins() {
 /// Test PTB MergeCoins command.
 #[test]
 fn test_ptb_merge_coins() {
-    use sui_move_interface_extractor::benchmark::ptb::{Argument, PTBBuilder};
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::{Argument, PTBBuilder};
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
@@ -518,8 +518,8 @@ fn test_ptb_merge_coins() {
 #[test]
 fn test_ptb_make_move_vec() {
     use move_core_types::language_storage::TypeTag;
-    use sui_move_interface_extractor::benchmark::ptb::{Argument, PTBBuilder};
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::{Argument, PTBBuilder};
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
@@ -551,8 +551,8 @@ fn test_ptb_make_move_vec() {
 /// Test PTB TransferObjects command.
 #[test]
 fn test_ptb_transfer_objects() {
-    use sui_move_interface_extractor::benchmark::ptb::PTBBuilder;
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::ptb::PTBBuilder;
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
@@ -588,10 +588,8 @@ fn test_ptb_transfer_objects() {
 #[test]
 fn test_cross_ptb_transfer_receive() {
     use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::benchmark::ptb::{
-        Argument, Command, InputValue, ObjectChange, ObjectInput,
-    };
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectChange, ObjectInput};
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     // Create a simulation environment
     let mut env = SimulationEnvironment::new().expect("create env");
@@ -704,8 +702,8 @@ fn test_cross_ptb_transfer_receive() {
 #[test]
 fn test_receive_without_transfer_fails() {
     use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::benchmark::ptb::Command;
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::ptb::Command;
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("create env");
 
@@ -741,10 +739,8 @@ fn test_receive_without_transfer_fails() {
 #[test]
 fn test_multi_transfer_receive() {
     use move_core_types::account_address::AccountAddress;
-    use sui_move_interface_extractor::benchmark::ptb::{
-        Argument, Command, InputValue, ObjectInput,
-    };
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput};
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("create env");
 
@@ -863,7 +859,7 @@ fn test_validate_ptb() {
     use sui_move_interface_extractor::benchmark::sandbox_exec::{
         execute_request, PtbArg, PtbCommand, PtbInput, SandboxRequest,
     };
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 
@@ -985,7 +981,7 @@ fn test_validate_ptb_enhanced() {
     use sui_move_interface_extractor::benchmark::sandbox_exec::{
         execute_request, PtbArg, PtbCommand, PtbInput, SandboxRequest,
     };
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 
@@ -1208,7 +1204,7 @@ fn test_validate_ptb_enhanced() {
 #[test]
 fn test_event_query_apis() {
     use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest};
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 
@@ -1270,7 +1266,7 @@ fn test_event_query_apis() {
 #[test]
 fn test_shared_object_versioning_apis() {
     use sui_move_interface_extractor::benchmark::sandbox_exec::{execute_request, SandboxRequest};
-    use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+    use sui_sandbox_core::simulation::SimulationEnvironment;
 
     let mut env = SimulationEnvironment::new().expect("Failed to create environment");
 

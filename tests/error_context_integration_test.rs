@@ -8,8 +8,8 @@
 //! cargo test --test error_context_integration_test
 //! ```
 
-use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue, ObjectInput};
-use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput};
+use sui_sandbox_core::simulation::SimulationEnvironment;
 
 /// Test that error_context is populated when SplitCoins fails due to insufficient balance.
 #[test]

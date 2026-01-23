@@ -10,9 +10,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use sui_move_interface_extractor::benchmark::natives::{
-    EventStore, MockClock, MockNativeState, MockRandom,
-};
+use sui_sandbox_core::natives::{EventStore, MockClock, MockNativeState, MockRandom};
 
 // =============================================================================
 // MockClock Tests

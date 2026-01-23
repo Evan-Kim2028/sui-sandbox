@@ -14,8 +14,8 @@ use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::u256::U256;
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::validator::Validator;
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::validator::Validator;
 
 // =============================================================================
 // Test Fixtures and Helpers

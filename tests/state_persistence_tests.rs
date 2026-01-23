@@ -17,7 +17,7 @@ use move_core_types::account_address::AccountAddress;
 use std::path::PathBuf;
 use sui_move_interface_extractor::benchmark::fetcher::SimulationEnvironmentExt;
 use sui_move_interface_extractor::benchmark::sandbox::{execute_request, SandboxRequest};
-use sui_move_interface_extractor::benchmark::simulation::{PersistentState, SimulationEnvironment};
+use sui_sandbox_core::simulation::{PersistentState, SimulationEnvironment};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -335,7 +335,7 @@ fn test_fetcher_config_round_trip_mainnet() {
 
 #[test]
 fn test_fetcher_config_round_trip_with_custom_config() {
-    use sui_move_interface_extractor::benchmark::simulation::FetcherConfig;
+    use sui_sandbox_core::simulation::FetcherConfig;
 
     let (_dir, path) = create_temp_state_file();
 

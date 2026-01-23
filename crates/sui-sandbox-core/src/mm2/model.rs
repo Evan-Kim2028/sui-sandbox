@@ -3,7 +3,7 @@
 //! This module provides a simplified interface to `move-model-2` for the
 //! specific needs of the type inhabitation pipeline.
 
-use crate::benchmark::errors::{ErrorCode, Failure};
+use crate::errors::{ErrorCode, Failure};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_model_2::{compiled_model, summary};

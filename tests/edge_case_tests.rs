@@ -16,10 +16,10 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::u256::U256;
 
-use sui_move_interface_extractor::benchmark::natives::{MockClock, MockNativeState, MockRandom};
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::validator::Validator;
-use sui_move_interface_extractor::benchmark::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::natives::{MockClock, MockNativeState, MockRandom};
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::validator::Validator;
+use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 // =============================================================================
 // Empty/Null Input Tests

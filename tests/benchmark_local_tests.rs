@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::validator::Validator;
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::validator::Validator;
 
 #[test]
 fn benchmark_local_can_load_fixture_modules() {
@@ -41,7 +41,7 @@ fn benchmark_local_bcs_roundtrip_primitives() {
 
 #[test]
 fn benchmark_local_vm_can_execute_entry_zero_args_fixture() {
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::vm::VMHarness;
 
     let fixture_dir = Path::new("tests/fixture/build/fixture");
     let mut resolver = LocalModuleResolver::new();
@@ -139,7 +139,7 @@ fn benchmark_local_failure_stage_a1_module_not_found() {
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try to validate a non-existent module
     let result = validator.validate_target(
@@ -162,7 +162,7 @@ fn benchmark_local_failure_stage_a1_function_not_found() {
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try to validate a non-existent function in existing module
     let module = resolver
@@ -184,7 +184,7 @@ fn benchmark_local_failure_stage_a3_bcs_roundtrip_fail() {
     use move_core_types::annotated_value::MoveTypeLayout;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try BCS roundtrip with malformed bytes (wrong length for u64)
     let layout = MoveTypeLayout::U64;
@@ -279,7 +279,7 @@ fn benchmark_local_failure_stage_a2_unresolvable_type() {
     use move_core_types::language_storage::TypeTag;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try to resolve type from non-existent module
     let nonexistent_tag = StructTag {
@@ -312,7 +312,7 @@ fn benchmark_local_failure_stage_a2_unresolvable_type() {
 
 #[test]
 fn benchmark_local_failure_stage_b1_vm_harness_creation_fail() {
-    use sui_move_interface_extractor::benchmark::vm::VMHarness;
+    use sui_sandbox_core::vm::VMHarness;
 
     let resolver = LocalModuleResolver::new();
 
@@ -344,7 +344,7 @@ fn benchmark_local_failure_stage_validation() {
     use move_core_types::annotated_value::MoveTypeLayout;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test A3: BCS roundtrip failure with wrong layout
     let layout = MoveTypeLayout::Bool;
@@ -374,7 +374,7 @@ fn benchmark_local_error_context_module_not_found() {
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try to validate non-existent module
     let result = validator.validate_target(
@@ -404,7 +404,7 @@ fn benchmark_local_error_context_function_not_found() {
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try to validate non-existent function
     let module = resolver
@@ -433,7 +433,7 @@ fn benchmark_local_error_context_bcs_roundtrip() {
     use move_core_types::annotated_value::MoveTypeLayout;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Try BCS roundtrip with malformed bytes
     let layout = MoveTypeLayout::U64;
@@ -463,7 +463,7 @@ fn benchmark_local_performance_validation_speed() {
         .load_from_dir(fixture_dir)
         .expect("load_from_dir should succeed");
 
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Validate all functions in all modules
     let mut validation_count = 0;
@@ -508,7 +508,7 @@ fn benchmark_local_performance_bcs_roundtrip_speed() {
     let start = std::time::Instant::now();
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test BCS roundtrip for various types
     let cases = vec![
@@ -563,7 +563,7 @@ fn benchmark_local_layout_resolution_nested_vectors() {
     use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test vector of u64s
     let layout = MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U64));
@@ -584,7 +584,7 @@ fn benchmark_local_layout_resolution_structs() {
     use move_core_types::language_storage::StructTag;
 
     let resolver = LocalModuleResolver::new();
-    let _validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let _validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test struct layout with multiple fields
     let tag = StructTag {
@@ -612,7 +612,7 @@ fn benchmark_local_layout_resolution_address() {
     use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test address layout
     let layout = MoveTypeLayout::Address;
@@ -629,7 +629,7 @@ fn benchmark_local_layout_resolution_u256() {
     use move_core_types::u256::U256;
 
     let resolver = LocalModuleResolver::new();
-    let validator = sui_move_interface_extractor::benchmark::validator::Validator::new(&resolver);
+    let validator = sui_sandbox_core::validator::Validator::new(&resolver);
 
     // Test U256 layout
     let layout = MoveTypeLayout::U256;

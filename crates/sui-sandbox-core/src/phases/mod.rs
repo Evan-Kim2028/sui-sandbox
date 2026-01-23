@@ -41,19 +41,8 @@
 //!
 //! ## Usage
 //!
-//! The phases can be run incrementally:
-//!
-//! ```ignore
-//! use benchmark::phases::{resolution, typecheck};
-//!
-//! // Phase 1: Resolution
-//! let context = resolution::resolve(&config)?;
-//!
-//! // Phase 2: Type checking (static, can stop here with --static-only)
-//! typecheck::validate(&context)?;
-//!
-//! // Continue with synthesis and execution if needed...
-//! ```
+//! The phases can be run incrementally via the CLI or programmatically.
+//! See `examples/` for complete usage patterns.
 
 pub mod resolution;
 pub mod typecheck;

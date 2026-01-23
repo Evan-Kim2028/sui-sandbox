@@ -19,7 +19,7 @@
 //! - Complex invariants cannot be maintained
 //! - Some operations on synthesized objects will abort
 
-use crate::benchmark::mm2::model::TypeModel;
+use crate::mm2::model::TypeModel;
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
@@ -139,7 +139,7 @@ impl TypeContext {
     /// Convert a TypeTag to its canonical string representation.
     /// Delegates to the canonical implementation in types module.
     pub fn type_tag_to_string(tag: &TypeTag) -> String {
-        crate::benchmark::types::format_type_tag(tag)
+        crate::types::format_type_tag(tag)
     }
 }
 

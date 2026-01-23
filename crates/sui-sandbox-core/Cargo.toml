@@ -23,6 +23,9 @@ move-vm-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.6
 move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-trace-format" }
 move-symbol-pool = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-symbol-pool" }
 
+# Move Model 2 for type analysis
+move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-model-2" }
+
 # Bytecode disassembly for debugging
 move-disassembler = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-disassembler" }
 move-bytecode-source-map = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-bytecode-source-map" }

@@ -44,8 +44,6 @@
 
 // Local modules that remain in main crate (depend on DataFetcher or other main-crate types)
 pub mod fetcher;
-pub mod mm2;
-pub mod phases;
 pub mod ptb_eval;
 pub mod runner;
 pub mod sandbox;
@@ -58,11 +56,13 @@ pub use sui_sandbox_core::bytecode_analyzer;
 pub use sui_sandbox_core::constructor_map;
 pub use sui_sandbox_core::error_context;
 pub use sui_sandbox_core::errors;
+pub use sui_sandbox_core::mm2;
 pub use sui_sandbox_core::natives;
 pub use sui_sandbox_core::object_patcher;
 pub use sui_sandbox_core::object_runtime;
 pub use sui_sandbox_core::output;
 pub use sui_sandbox_core::package_builder;
+pub use sui_sandbox_core::phases;
 pub use sui_sandbox_core::ptb;
 pub use sui_sandbox_core::resolver;
 pub use sui_sandbox_core::sandbox_types;

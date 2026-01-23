@@ -2,9 +2,9 @@
 //!
 //! This phase performs static type validation using MM2.
 
-use crate::benchmark::errors::{ErrorCode, Failure};
-use crate::benchmark::mm2::type_validator::{is_potential_object_type, is_type_synthesizable};
-use crate::benchmark::phases::ResolutionContext;
+use crate::errors::{ErrorCode, Failure};
+use crate::mm2::type_validator::{is_potential_object_type, is_type_synthesizable};
+use crate::phases::ResolutionContext;
 use move_model_2::summary;
 
 /// Result of type checking a function.
@@ -136,7 +136,7 @@ pub fn analyze_param_type(ty: &summary::Type) -> ParamAnalysis {
         is_object: is_potential_object_type(ty),
         is_reference: matches!(ty, summary::Type::Reference(_, _)),
         is_mutable_ref: matches!(ty, summary::Type::Reference(true, _)),
-        type_desc: crate::benchmark::mm2::model::format_type(ty),
+        type_desc: crate::mm2::model::format_type(ty),
     }
 }
 

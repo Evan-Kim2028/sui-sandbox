@@ -2,9 +2,9 @@
 //!
 //! This phase handles loading bytecode and verifying that target functions exist.
 
-use crate::benchmark::errors::{ErrorCode, Failure, FailureContext};
-use crate::benchmark::mm2::{TypeModel, TypeValidator};
-use crate::benchmark::resolver::LocalModuleResolver;
+use crate::errors::{ErrorCode, Failure, FailureContext};
+use crate::mm2::{TypeModel, TypeValidator};
+use crate::resolver::LocalModuleResolver;
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;

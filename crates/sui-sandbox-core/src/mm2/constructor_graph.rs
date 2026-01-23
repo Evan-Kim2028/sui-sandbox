@@ -15,8 +15,8 @@
 //! The `find_execution_chain()` method returns constructors in topological order
 //! (A, B, C) so they can be executed sequentially with proper dependencies.
 
-use crate::benchmark::constructor_map::{ConstructorInfo, ParamKind};
-use crate::benchmark::mm2::model::{FunctionSignature, ReturnTypeArg, TypeModel};
+use crate::constructor_map::{ConstructorInfo, ParamKind};
+use crate::mm2::model::{FunctionSignature, ReturnTypeArg, TypeModel};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};

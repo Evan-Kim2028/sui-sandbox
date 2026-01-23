@@ -7919,6 +7919,7 @@ dependencies = [
  "move-core-types",
  "move-disassembler",
  "move-ir-types",
+ "move-model-2",
  "move-stdlib-natives",
  "move-symbol-pool",
  "move-trace-format",

@@ -3,8 +3,8 @@
 //! This module implements Phase 2 (TypeCheck) of the v0.4.0 pipeline,
 //! validating types statically before VM execution.
 
-use crate::benchmark::errors::{ErrorCode, Failure, FailureContext};
-use crate::benchmark::mm2::model::{FunctionSignature, TypeModel};
+use crate::errors::{ErrorCode, Failure, FailureContext};
+use crate::mm2::model::{FunctionSignature, TypeModel};
 use move_core_types::account_address::AccountAddress;
 use move_model_2::summary::{self, Ability};
 

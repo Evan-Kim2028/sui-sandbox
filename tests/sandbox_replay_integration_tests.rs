@@ -14,8 +14,8 @@
 //!   cargo test --test sandbox_replay_integration_tests -- --nocapture
 
 use move_core_types::account_address::AccountAddress;
-use sui_move_interface_extractor::benchmark::ptb::{Argument, Command, InputValue, ObjectInput};
-use sui_move_interface_extractor::benchmark::simulation::SimulationEnvironment;
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput};
+use sui_sandbox_core::simulation::SimulationEnvironment;
 
 // =============================================================================
 // SimulationEnvironment Basic Tests

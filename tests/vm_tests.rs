@@ -15,8 +15,8 @@ use std::path::Path;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 
-use sui_move_interface_extractor::benchmark::resolver::LocalModuleResolver;
-use sui_move_interface_extractor::benchmark::vm::{
+use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::vm::{
     gas_costs, ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig,
     VMHarness,
 };
