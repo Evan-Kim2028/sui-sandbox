@@ -31,14 +31,35 @@ use move_vm_runtime::move_vm::MoveVM;
 use move_vm_runtime::native_extensions::NativeContextExtensions;
 use move_vm_types::gas::{GasMeter, SimpleInstruction, UnmeteredGasMeter};
 use move_vm_types::views::{TypeView, ValueView};
+use parking_lot::Mutex;
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
 use crate::object_runtime::{ChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime};
 use crate::resolver::LocalModuleResolver;
 use crate::sui_object_runtime;
 use sui_protocol_config::ProtocolConfig;
+
+// =============================================================================
+// Default Configuration Constants
+// =============================================================================
+
+/// Default clock base timestamp: 2024-01-01 00:00:00 UTC
+/// Used as the starting point for mock clock in simulations.
+const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
+
+/// Default epoch for simulations.
+/// This is an arbitrary value that provides a reasonable starting epoch.
+const DEFAULT_EPOCH: u64 = 100;
+
+/// Default gas budget when unlimited gas is requested (50 SUI).
+/// Used by strict() configuration and as a reference value.
+const DEFAULT_GAS_BUDGET: u64 = 50_000_000_000;
+
+// =============================================================================
+// SimulationConfig
+// =============================================================================
 
 /// Configuration for the simulation sandbox.
 ///
@@ -101,11 +122,11 @@ impl Default for SimulationConfig {
             advancing_clock: true,
             deterministic_random: true,
             permissive_ownership: true,
-            clock_base_ms: 1704067200000, // 2024-01-01 00:00:00 UTC
+            clock_base_ms: DEFAULT_CLOCK_BASE_MS,
             random_seed: [0u8; 32],
             sender_address: [0u8; 32],
             tx_timestamp_ms: None,
-            epoch: 100,                  // Default epoch
+            epoch: DEFAULT_EPOCH,
             gas_budget: None,            // Unlimited by default
             enforce_immutability: false, // Backwards compatible default
             use_sui_natives: false,      // Use custom natives by default
@@ -135,14 +156,14 @@ impl SimulationConfig {
             advancing_clock: true,
             deterministic_random: true,
             permissive_ownership: false,
-            clock_base_ms: 1704067200000,
+            clock_base_ms: DEFAULT_CLOCK_BASE_MS,
             random_seed: [0u8; 32],
             sender_address: [0u8; 32],
             tx_timestamp_ms: None,
-            epoch: 100,
-            gas_budget: Some(50_000_000_000), // 50 SUI default budget
-            enforce_immutability: true,       // Strict mode enforces immutability
-            use_sui_natives: false,           // Backwards compatible
+            epoch: DEFAULT_EPOCH,
+            gas_budget: Some(DEFAULT_GAS_BUDGET),
+            enforce_immutability: true, // Strict mode enforces immutability
+            use_sui_natives: false,     // Backwards compatible
         }
     }
 
@@ -359,8 +380,8 @@ pub mod gas_costs {
                 obj_access_cost_verify_per_byte: 200,
                 obj_data_cost_refundable: 100,
                 obj_metadata_cost_non_refundable: 50,
-                storage_rebate_rate: 9900,  // 99%
-                max_tx_gas: 50_000_000_000, // 50 SUI
+                storage_rebate_rate: 9900, // 99%
+                max_tx_gas: super::DEFAULT_GAS_BUDGET,
                 max_gas_price: 100_000,
                 max_gas_computation_bucket: 5_000_000,
                 gas_model_version: 1,
@@ -1225,10 +1246,8 @@ impl<'a> ModuleResolver for InMemoryStorage<'a> {
     type Error = anyhow::Error;
 
     fn get_module(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
-        // Track module access
-        if let Ok(mut trace) = self.trace.lock() {
-            trace.modules_accessed.insert(id.clone());
-        }
+        // Track module access (parking_lot::Mutex doesn't poison, so lock() is infallible)
+        self.trace.lock().modules_accessed.insert(id.clone());
         self.module_resolver.get_module(id)
     }
 }
@@ -1334,13 +1353,15 @@ impl<'a> VMHarness<'a> {
     /// in the preloaded set. It receives the child object ID and should return
     /// the object's type and BCS bytes if available.
     pub fn set_child_fetcher(&mut self, fetcher: ChildFetcherFn) {
-        self.child_fetcher = Some(Arc::new(fetcher));
+        // Wrap the fetcher in an Arc upfront so we can share it
+        let fetcher_arc = Arc::new(fetcher);
+        self.child_fetcher = Some(Arc::clone(&fetcher_arc));
 
         // If using Sui natives mode, also set up Sui extensions
         if self.config.use_sui_natives {
             // Convert the ChildFetcherFn to a ChildFetchFn for Sui runtime
             // The Sui version needs (type_tag, bytes, version, parent_id)
-            let fetcher_arc = self.child_fetcher.clone().unwrap();
+            // Use the fetcher_arc we created above directly (no unwrap needed)
             let sui_fetcher: sui_object_runtime::ChildFetchFn =
                 std::sync::Arc::new(move |child_id: sui_types::base_types::ObjectID| {
                     let addr = AccountAddress::new(child_id.into_bytes());
@@ -1359,7 +1380,7 @@ impl<'a> VMHarness<'a> {
                     .tx_timestamp_ms
                     .unwrap_or(self.config.clock_base_ms),
                 gas_price: 1000,
-                gas_budget: self.config.gas_budget.unwrap_or(50_000_000_000),
+                gas_budget: self.config.gas_budget.unwrap_or(DEFAULT_GAS_BUDGET),
                 sponsor: None,
             };
 
@@ -1412,18 +1433,12 @@ impl<'a> VMHarness<'a> {
     /// Get all child object IDs that were accessed during execution.
     /// This is useful for tracing which children need to be fetched for replay.
     pub fn get_accessed_children(&self) -> Vec<AccountAddress> {
-        if let Ok(accessed) = self.accessed_children.lock() {
-            accessed.iter().cloned().collect()
-        } else {
-            Vec::new()
-        }
+        self.accessed_children.lock().iter().cloned().collect()
     }
 
     /// Clear the accessed children tracking (call before a new trace run).
     pub fn clear_accessed_children(&mut self) {
-        if let Ok(mut accessed) = self.accessed_children.lock() {
-            accessed.clear();
-        }
+        self.accessed_children.lock().clear();
     }
 
     /// Get the current simulation configuration.
@@ -1433,14 +1448,12 @@ impl<'a> VMHarness<'a> {
 
     /// Get the execution trace showing which modules were accessed
     pub fn get_trace(&self) -> ExecutionTrace {
-        self.trace.lock().map(|t| t.clone()).unwrap_or_default()
+        self.trace.lock().clone()
     }
 
     /// Clear the execution trace (call before each new execution)
     pub fn clear_trace(&self) {
-        if let Ok(mut trace) = self.trace.lock() {
-            trace.modules_accessed.clear();
-        }
+        self.trace.lock().modules_accessed.clear();
     }
 
     /// Get all events emitted during execution.
@@ -1464,11 +1477,10 @@ impl<'a> VMHarness<'a> {
         &self,
         fields: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
     ) {
-        if let Ok(mut state) = self.shared_df_state.lock() {
-            for ((parent, child), type_tag, bytes) in fields {
-                state.add_child(parent, child, type_tag, bytes);
-                state.preloaded_children.insert((parent, child));
-            }
+        let mut state = self.shared_df_state.lock();
+        for ((parent, child), type_tag, bytes) in fields {
+            state.add_child(parent, child, type_tag, bytes);
+            state.preloaded_children.insert((parent, child));
         }
     }
 
@@ -1477,29 +1489,19 @@ impl<'a> VMHarness<'a> {
     pub fn extract_dynamic_fields(
         &self,
     ) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
-        if let Ok(state) = self.shared_df_state.lock() {
-            state.all_children()
-        } else {
-            Vec::new()
-        }
+        self.shared_df_state.lock().all_children()
     }
 
     /// Extract only new dynamic fields (created during this PTB, not preloaded).
     pub fn extract_new_dynamic_fields(
         &self,
     ) -> Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)> {
-        if let Ok(state) = self.shared_df_state.lock() {
-            state.new_children()
-        } else {
-            Vec::new()
-        }
+        self.shared_df_state.lock().new_children()
     }
 
     /// Clear dynamic field state (call between transactions if needed).
     pub fn clear_dynamic_fields(&self) {
-        if let Ok(mut state) = self.shared_df_state.lock() {
-            state.clear();
-        }
+        self.shared_df_state.lock().clear();
     }
 
     /// Preload pending receives from SimulationEnvironment.
@@ -1508,10 +1510,9 @@ impl<'a> VMHarness<'a> {
         &self,
         receives: Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
     ) {
-        if let Ok(mut state) = self.shared_df_state.lock() {
-            for ((recipient, sent), type_tag, bytes) in receives {
-                state.add_pending_receive(recipient, sent, type_tag, bytes);
-            }
+        let mut state = self.shared_df_state.lock();
+        for ((recipient, sent), type_tag, bytes) in receives {
+            state.add_pending_receive(recipient, sent, type_tag, bytes);
         }
     }
 
@@ -1906,16 +1907,12 @@ impl<'a, 'b> PTBSession<'a, 'b> {
     /// Finish the PTB session and extract the dynamic field state.
     /// Returns all child objects that were created during this session.
     pub fn finish(self) -> DynamicFieldSnapshot {
-        let state = self.shared_state.lock().ok();
-
+        let state = self.shared_state.lock();
         let children = state
-            .map(|s| {
-                s.children
-                    .iter()
-                    .map(|(k, (t, _))| (*k, t.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .children
+            .iter()
+            .map(|(k, (t, _))| (*k, t.clone()))
+            .collect();
 
         DynamicFieldSnapshot { children }
     }
@@ -1928,23 +1925,17 @@ impl<'a, 'b> PTBSession<'a, 'b> {
         DynamicFieldSnapshot,
         Vec<((AccountAddress, AccountAddress), TypeTag, Vec<u8>)>,
     ) {
-        let state = self.shared_state.lock().ok();
-
-        let (children, all_bytes) = state
-            .map(|s| {
-                let children: Vec<_> = s
-                    .children
-                    .iter()
-                    .map(|(k, (t, _))| (*k, t.clone()))
-                    .collect();
-                let all: Vec<_> = s
-                    .children
-                    .iter()
-                    .map(|(k, (t, b))| (*k, t.clone(), b.clone()))
-                    .collect();
-                (children, all)
-            })
-            .unwrap_or_default();
+        let state = self.shared_state.lock();
+        let children: Vec<_> = state
+            .children
+            .iter()
+            .map(|(k, (t, _))| (*k, t.clone()))
+            .collect();
+        let all_bytes: Vec<_> = state
+            .children
+            .iter()
+            .map(|(k, (t, b))| (*k, t.clone(), b.clone()))
+            .collect();
 
         (DynamicFieldSnapshot { children }, all_bytes)
     }

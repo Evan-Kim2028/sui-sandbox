@@ -47,10 +47,11 @@ use move_vm_runtime::native_functions::{
 use move_vm_types::{
     loaded_data::runtime_types::Type, natives::function::NativeResult, pop_arg, values::Value,
 };
+use parking_lot::Mutex;
 use smallvec::smallvec;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // Cryptographic primitives from fastcrypto (Mysten Labs' crypto library)
 use fastcrypto::bls12381::{min_pk, min_sig};
@@ -268,14 +269,12 @@ impl EventStore {
             data,
             sequence,
         };
-        if let Ok(mut events) = self.events.lock() {
-            events.push(event);
-        }
+        self.events.lock().push(event);
     }
 
     /// Get all emitted events.
     pub fn get_events(&self) -> Vec<EmittedEvent> {
-        self.events.lock().map(|e| e.clone()).unwrap_or_default()
+        self.events.lock().clone()
     }
 
     /// Get events of a specific type.
@@ -293,9 +292,7 @@ impl EventStore {
 
     /// Clear all events (for reuse between transactions).
     pub fn clear(&self) {
-        if let Ok(mut events) = self.events.lock() {
-            events.clear();
-        }
+        self.events.lock().clear();
         self.counter.store(0, Ordering::SeqCst);
     }
 }
@@ -782,17 +779,14 @@ fn build_sui_natives(
                     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
                         // Get the pending receives and try to receive one
                         let result = {
-                            if let Ok(mut state) = shared.shared_state().lock() {
-                                let pending: Vec<AccountAddress> = state
-                                    .get_pending_receives_for(parent)
-                                    .iter()
-                                    .map(|(id, _, _)| *id)
-                                    .collect();
-                                if let Some(first_id) = pending.first() {
-                                    state.receive_pending(parent, *first_id)
-                                } else {
-                                    None
-                                }
+                            let mut state = shared.shared_state().lock();
+                            let pending: Vec<AccountAddress> = state
+                                .get_pending_receives_for(parent)
+                                .iter()
+                                .map(|(id, _, _)| *id)
+                                .collect();
+                            if let Some(first_id) = pending.first() {
+                                state.receive_pending(parent, *first_id)
                             } else {
                                 None
                             }
@@ -830,15 +824,12 @@ fn build_sui_natives(
             if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
                 // Try shared state first
                 let recv_bytes_opt = {
-                    if let Ok(mut state) = shared.shared_state().lock() {
-                        state.receive_pending(parent, object_id)
-                    } else {
-                        None
-                    }
+                    let mut state = shared.shared_state().lock();
+                    state.receive_pending(parent, object_id)
                 };
 
-                if let Some((_type_tag, recv_bytes)) = recv_bytes_opt {
-                    match Value::simple_deserialize(&recv_bytes, &type_layout) {
+                if let Some((_type_tag, ref recv_bytes)) = recv_bytes_opt {
+                    match Value::simple_deserialize(recv_bytes, &type_layout) {
                         Some(value) => {
                             return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
                         }
@@ -1398,9 +1389,12 @@ fn sync_child_to_shared_state(
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-        if let Ok(mut state) = shared.shared_state().lock() {
-            state.add_child(parent, child_id, child_tag.clone(), child_bytes.to_vec());
-        }
+        shared.shared_state().lock().add_child(
+            parent,
+            child_id,
+            child_tag.clone(),
+            child_bytes.to_vec(),
+        );
     }
 }
 
@@ -1413,9 +1407,7 @@ fn remove_child_from_shared_state(
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-        if let Ok(mut state) = shared.shared_state().lock() {
-            state.remove_child(parent, child_id);
-        }
+        shared.shared_state().lock().remove_child(parent, child_id);
     }
 }
 
@@ -1431,9 +1423,7 @@ fn check_shared_state_for_child(
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
-        if let Ok(state) = shared.shared_state().lock() {
-            return state.has_child(parent, child_id);
-        }
+        return shared.shared_state().lock().has_child(parent, child_id);
     }
     false
 }
@@ -1450,13 +1440,7 @@ fn check_shared_state_for_child_with_fetch(
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         // First check if already cached in shared state
-        let already_cached = {
-            if let Ok(state) = shared.shared_state().lock() {
-                state.has_child(parent, child_id)
-            } else {
-                false
-            }
-        };
+        let already_cached = shared.shared_state().lock().has_child(parent, child_id);
 
         if already_cached {
             return true;
@@ -1471,9 +1455,10 @@ fn check_shared_state_for_child_with_fetch(
                 fetched_tag
             );
             // Add to shared state for future lookups
-            if let Ok(mut state) = shared.shared_state().lock() {
-                state.add_child(parent, child_id, fetched_tag, fetched_bytes);
-            }
+            shared
+                .shared_state()
+                .lock()
+                .add_child(parent, child_id, fetched_tag, fetched_bytes);
             return true;
         } else {
             eprintln!(
@@ -1497,15 +1482,11 @@ fn check_shared_state_for_child_with_type_and_fetch(
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         // First check if already cached in shared state
-        let cached_type = {
-            if let Ok(state) = shared.shared_state().lock() {
-                state
-                    .get_child(parent, child_id)
-                    .map(|(tag, _)| tag.clone())
-            } else {
-                None
-            }
-        };
+        let cached_type = shared
+            .shared_state()
+            .lock()
+            .get_child(parent, child_id)
+            .map(|(tag, _)| tag.clone());
 
         if let Some(actual_type) = cached_type {
             // Already cached - check if type matches
@@ -1529,9 +1510,12 @@ fn check_shared_state_for_child_with_type_and_fetch(
                 fetched_tag
             );
             // Add to shared state for future lookups
-            if let Ok(mut state) = shared.shared_state().lock() {
-                state.add_child(parent, child_id, fetched_tag.clone(), fetched_bytes);
-            }
+            shared.shared_state().lock().add_child(
+                parent,
+                child_id,
+                fetched_tag.clone(),
+                fetched_bytes,
+            );
             // Check if fetched type matches expected
             let type_matches = &fetched_tag == expected_type;
             eprintln!(
@@ -1556,9 +1540,10 @@ fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
-        if let Ok(state) = shared.shared_state().lock() {
-            return state.count_children_for_parent(parent);
-        }
+        return shared
+            .shared_state()
+            .lock()
+            .count_children_for_parent(parent);
     }
     0
 }
@@ -1795,25 +1780,22 @@ fn add_dynamic_field_natives(
             if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
                 // Get bytes from shared state
                 let child_bytes_opt = {
-                    if let Ok(state) = shared.shared_state().lock() {
+                    let state = shared.shared_state().lock();
+                    eprintln!(
+                        "[borrow_child_object] checking shared state, has {} children",
+                        state.children.len()
+                    );
+                    // Debug: print first few children keys
+                    for (k, _) in state.children.iter().take(5) {
                         eprintln!(
-                            "[borrow_child_object] checking shared state, has {} children",
-                            state.children.len()
+                            "[borrow_child_object]   - parent={}, child={}",
+                            k.0.to_hex_literal(),
+                            k.1.to_hex_literal()
                         );
-                        // Debug: print first few children keys
-                        for (k, _) in state.children.iter().take(5) {
-                            eprintln!(
-                                "[borrow_child_object]   - parent={}, child={}",
-                                k.0.to_hex_literal(),
-                                k.1.to_hex_literal()
-                            );
-                        }
-                        state
-                            .get_child(parent, child_id)
-                            .map(|(_, bytes)| bytes.clone())
-                    } else {
-                        None
                     }
+                    state
+                        .get_child(parent, child_id)
+                        .map(|(_, bytes)| bytes.clone())
                 };
 
                 eprintln!(
@@ -1830,9 +1812,10 @@ fn add_dynamic_field_natives(
                             fetched_tag
                         );
                         // Add to shared state for future lookups
-                        if let Ok(mut state) = shared.shared_state().lock() {
-                            state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
-                        }
+                        shared
+                            .shared_state()
+                            .lock()
+                            .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
                         Some(fetched_bytes)
                     } else {
                         eprintln!("[borrow_child_object] on-demand fetch failed or not configured");
@@ -1987,12 +1970,9 @@ fn add_dynamic_field_natives(
             // Try to load from shared state (same logic as borrow_child_object)
             if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
                 let child_bytes_opt = {
-                    if let Ok(state) = shared.shared_state().lock() {
-                        eprintln!("[borrow_child_object_mut] checking shared state, has {} children", state.children.len());
-                        state.get_child(parent, child_id).map(|(_, bytes)| bytes.clone())
-                    } else {
-                        None
-                    }
+                    let state = shared.shared_state().lock();
+                    eprintln!("[borrow_child_object_mut] checking shared state, has {} children", state.children.len());
+                    state.get_child(parent, child_id).map(|(_, bytes)| bytes.clone())
                 };
 
                 eprintln!("[borrow_child_object_mut] shared state lookup result: {:?}", child_bytes_opt.as_ref().map(|b| b.len()));
@@ -2001,9 +1981,10 @@ fn add_dynamic_field_natives(
                 let child_bytes_opt = if child_bytes_opt.is_none() {
                     if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(child_id) {
                         eprintln!("[borrow_child_object_mut] on-demand fetch succeeded, {} bytes, type={:?}", fetched_bytes.len(), fetched_tag);
-                        if let Ok(mut state) = shared.shared_state().lock() {
-                            state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
-                        }
+                        shared
+                            .shared_state()
+                            .lock()
+                            .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
                         Some(fetched_bytes)
                     } else {
                         eprintln!("[borrow_child_object_mut] on-demand fetch failed or not configured");

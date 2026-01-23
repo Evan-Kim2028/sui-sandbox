@@ -7925,6 +7925,7 @@ dependencies = [
  "move-trace-format",
  "move-vm-runtime",
  "move-vm-types",
+ "parking_lot 0.12.5",
  "prometheus",
  "rayon",
  "serde",

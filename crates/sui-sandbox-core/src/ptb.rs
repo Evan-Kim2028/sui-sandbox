@@ -54,6 +54,39 @@ use crate::well_known;
 pub use crate::types::format_type_tag;
 
 // =============================================================================
+// Byte Slice Helpers
+// =============================================================================
+
+/// Safely extract a u64 from a byte slice at a given offset.
+///
+/// Returns an error if there aren't enough bytes, avoiding panics from
+/// slice indexing or `try_into().expect()`.
+#[inline]
+fn bytes_to_u64_at(bytes: &[u8], offset: usize) -> Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| anyhow!("offset overflow"))?;
+    let slice = bytes.get(offset..end).ok_or_else(|| {
+        anyhow!(
+            "expected 8 bytes at offset {}, got {} total bytes",
+            offset,
+            bytes.len()
+        )
+    })?;
+    // Safe: we verified we have exactly 8 bytes via .get()
+    let arr: [u8; 8] = slice
+        .try_into()
+        .map_err(|_| anyhow!("slice conversion failed (should be unreachable)"))?;
+    Ok(u64::from_le_bytes(arr))
+}
+
+/// Safely extract a u64 from the start of a byte slice.
+#[inline]
+fn bytes_to_u64(bytes: &[u8]) -> Result<u64> {
+    bytes_to_u64_at(bytes, 0)
+}
+
+// =============================================================================
 // PTB Causality Validation
 // =============================================================================
 
@@ -2084,31 +2117,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Parse amounts (they should be u64 values)
         let amounts: Vec<u64> = amount_bytes
             .iter()
-            .map(|bytes| {
-                if bytes.len() != 8 {
-                    return Err(anyhow!("amount must be u64 (8 bytes), got {}", bytes.len()));
-                }
-                // Safe: we just verified length is exactly 8
-                let arr: [u8; 8] = bytes[..8].try_into().expect("length checked above");
-                Ok(u64::from_le_bytes(arr))
-            })
+            .map(|bytes| bytes_to_u64(bytes))
             .collect::<Result<Vec<_>>>()?;
 
         // Coin structure: { id: UID (32 bytes), balance: Balance<T> { value: u64 } }
-        // UID is 32 bytes, then value is 8 bytes
-        if coin_bytes.len() < 40 {
-            return Err(anyhow!(
+        // UID is 32 bytes, then balance value is 8 bytes at offset 32
+        let original_value = bytes_to_u64_at(&coin_bytes, 32).map_err(|_| {
+            anyhow!(
                 "coin bytes too short: expected at least 40, got {}",
                 coin_bytes.len()
-            ));
-        }
-
-        // Safe: we just verified length >= 40
-        let original_value = u64::from_le_bytes(
-            coin_bytes[32..40]
-                .try_into()
-                .expect("slice is exactly 8 bytes"),
-        );
+            )
+        })?;
 
         // Check we have enough balance
         let total_split: u64 = amounts.iter().sum();
@@ -2181,36 +2200,24 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let dest_bytes = self.resolve_arg(&destination)?;
         let source_bytes_list = self.resolve_args(&sources)?;
 
-        if dest_bytes.len() < 40 {
-            return Err(anyhow!(
+        // Extract destination balance (at offset 32 in Coin struct)
+        let dest_value = bytes_to_u64_at(&dest_bytes, 32).map_err(|_| {
+            anyhow!(
                 "destination coin bytes too short: expected at least 40, got {}",
                 dest_bytes.len()
-            ));
-        }
-
-        // Safe: we just verified length >= 40
-        let dest_value = u64::from_le_bytes(
-            dest_bytes[32..40]
-                .try_into()
-                .expect("slice is exactly 8 bytes"),
-        );
+            )
+        })?;
 
         // Sum up all source values
         let mut total_merge: u64 = 0;
         for (i, source_bytes) in source_bytes_list.iter().enumerate() {
-            if source_bytes.len() < 40 {
-                return Err(anyhow!(
+            let source_value = bytes_to_u64_at(source_bytes, 32).map_err(|_| {
+                anyhow!(
                     "source coin {} bytes too short: expected at least 40, got {}",
                     i,
                     source_bytes.len()
-                ));
-            }
-            // Safe: we just verified length >= 40
-            let source_value = u64::from_le_bytes(
-                source_bytes[32..40]
-                    .try_into()
-                    .expect("slice is exactly 8 bytes"),
-            );
+                )
+            })?;
             total_merge = total_merge
                 .checked_add(source_value)
                 .ok_or_else(|| anyhow!("merge would overflow"))?;

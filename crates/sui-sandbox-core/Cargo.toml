@@ -50,6 +50,9 @@ fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0
 # VM extension support
 better_any = "0.1"
 
+# Faster, non-poisoning mutex
+parking_lot = "0.12"
+
 # Parallel processing
 rayon = "1.10"
 

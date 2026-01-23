@@ -120,12 +120,23 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
                 let move_object_type = MoveObjectType::from(struct_tag);
 
                 // Create MoveObject from BCS bytes
-                // Note: has_public_transfer is determined by the type, but we set it to true
-                // since we're in a simulation context and don't need to enforce this
+                //
+                // SAFETY: This unsafe block is required because `new_from_execution`
+                // constructs a MoveObject from raw BCS bytes without full validation.
+                //
+                // The following invariants are upheld:
+                // 1. `bcs_bytes` originates from either:
+                //    - On-chain object state fetched via gRPC/GraphQL (trusted source)
+                //    - Our simulation environment's object store (previously validated)
+                // 2. `struct_tag` was parsed from a validated TypeTag on lines 110-119 above
+                // 3. `self.protocol_config` matches the chain version we're simulating
+                // 4. `has_public_transfer=true` is safe in simulation context - we don't
+                //    enforce transfer restrictions locally
+                // 5. `version` comes from the fetched object's SequenceNumber
                 let move_object = unsafe {
                     MoveObject::new_from_execution(
                         move_object_type,
-                        true, // has_public_transfer
+                        true, // has_public_transfer - safe for simulation
                         SequenceNumber::from_u64(version),
                         bcs_bytes,
                         &self.protocol_config,
@@ -343,7 +354,7 @@ pub struct SuiNativeExtensions {
     epoch_id: EpochId,
     /// Input objects - objects that are inputs to the transaction
     /// These must be registered before their children can be accessed
-    input_objects: std::sync::Mutex<BTreeMap<ObjectID, InputObject>>,
+    input_objects: parking_lot::Mutex<BTreeMap<ObjectID, InputObject>>,
 }
 
 impl SuiNativeExtensions {
@@ -389,7 +400,7 @@ impl SuiNativeExtensions {
             tx_context_rc,
             metrics,
             epoch_id: config.epoch,
-            input_objects: std::sync::Mutex::new(BTreeMap::new()),
+            input_objects: parking_lot::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -407,9 +418,7 @@ impl SuiNativeExtensions {
             owner,
         };
 
-        if let Ok(mut objects) = self.input_objects.lock() {
-            objects.insert(id, input_object);
-        }
+        self.input_objects.lock().insert(id, input_object);
     }
 
     /// Add multiple input objects.
@@ -429,21 +438,20 @@ impl SuiNativeExtensions {
     ) {
         // Re-create input objects from stored data (ObjectRuntime consumes them)
         // We need to build them fresh each time since ObjectRuntime takes ownership
-        let input_objects = if let Ok(objects) = self.input_objects.lock() {
-            // Clone the InputObject fields manually since InputObject doesn't implement Clone
-            let mut new_objects = BTreeMap::new();
-            for (id, obj) in objects.iter() {
+        // Clone the InputObject fields manually since InputObject doesn't implement Clone
+        let objects = self.input_objects.lock();
+        let input_objects: BTreeMap<ObjectID, InputObject> = objects
+            .iter()
+            .map(|(id, obj)| {
                 let new_input = InputObject {
                     contained_uids: obj.contained_uids.clone(),
                     version: obj.version,
                     owner: obj.owner.clone(),
                 };
-                new_objects.insert(*id, new_input);
-            }
-            new_objects
-        } else {
-            BTreeMap::new()
-        };
+                (*id, new_input)
+            })
+            .collect();
+        drop(objects); // Release lock before using input_objects
 
         eprintln!(
             "[SuiNativeExtensions] Creating ObjectRuntime with {} input objects",

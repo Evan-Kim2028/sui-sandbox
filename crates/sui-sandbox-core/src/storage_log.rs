@@ -600,11 +600,9 @@ impl StorageLogger {
     }
 }
 
-impl Default for StorageLogger {
-    fn default() -> Self {
-        Self::new().expect("Failed to create storage logger")
-    }
-}
+// NOTE: Default is intentionally NOT implemented for StorageLogger.
+// StorageLogger::new() can fail (file I/O), and Default::default() must be infallible.
+// Use StorageLogger::new() explicitly and handle the Result.
 
 /// Sanitize a string for use as a filename
 fn sanitize_filename(s: &str) -> String {

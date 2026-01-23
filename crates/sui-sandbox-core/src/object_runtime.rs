@@ -76,9 +76,10 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
 use move_vm_runtime::native_extensions::NativeExtensionMarker;
 use move_vm_types::values::{GlobalValue, Value};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Callback type for on-demand child object fetching.
 /// Takes (child_object_id) and returns Option<(type_tag, bcs_bytes)>.
@@ -1187,18 +1188,12 @@ impl SharedObjectRuntime {
     /// Get the set of child object IDs that were accessed during execution.
     /// This is useful for tracing which children need to be fetched for replay.
     pub fn get_accessed_children(&self) -> Vec<AccountAddress> {
-        if let Ok(accessed) = self.accessed_children.lock() {
-            accessed.iter().cloned().collect()
-        } else {
-            Vec::new()
-        }
+        self.accessed_children.lock().iter().cloned().collect()
     }
 
     /// Record that a child was accessed (for tracing).
     pub fn record_child_access(&self, child_id: AccountAddress) {
-        if let Ok(mut accessed) = self.accessed_children.lock() {
-            accessed.insert(child_id);
-        }
+        self.accessed_children.lock().insert(child_id);
     }
 
     /// Get the Arc for accessed children (to share with child fetcher).
@@ -1231,10 +1226,7 @@ impl SharedObjectRuntime {
         if self.local.child_object_exists(parent, child_id) {
             return true;
         }
-        if let Ok(state) = self.shared_state.lock() {
-            return state.has_child(parent, child_id);
-        }
-        false
+        self.shared_state.lock().has_child(parent, child_id)
     }
 
     /// Try to fetch a child object on-demand if a fetcher is configured.
