@@ -9,8 +9,9 @@
 //!
 //! This example replays a Cetus LEIA/SUI swap transaction using:
 //! - gRPC for transaction data and historical object versions
+//! - HistoricalPackageResolver for automatic package dependency resolution
+//! - HistoricalStateReconstructor for automatic object patching (including GlobalConfig)
 //! - On-demand child fetching for dynamic fields (skip_list nodes)
-//! - Automatic package dependency resolution via linkage tables
 //!
 //! ## Required Setup
 //!
@@ -26,11 +27,10 @@
 //!
 //! ## Key Techniques
 //!
-//! 1. **Pure gRPC Fetching**: All data fetched fresh via configurable gRPC endpoint
-//! 2. **Historical Object Versions**: Uses `unchanged_loaded_runtime_objects` for exact versions
-//! 3. **Package Linkage Tables**: Follows upgrade chains to get correct package versions
-//! 4. **Address Aliasing**: Maps storage IDs to bytecode addresses for upgraded packages
-//! 5. **Dynamic Field Children**: On-demand fetching of skip_list nodes
+//! 1. **HistoricalPackageResolver**: Automatically follows linkage tables for package upgrades
+//! 2. **HistoricalStateReconstructor**: Patches version fields using WELL_KNOWN_VERSION_CONFIGS
+//! 3. **Address Aliasing**: Maps storage IDs to bytecode addresses for upgraded packages
+//! 4. **Dynamic Field Children**: On-demand fetching of skip_list nodes
 
 mod common;
 
@@ -39,15 +39,17 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use common::{
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
-};
+use common::{extract_package_ids_from_type, parse_type_tag_simple};
+use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
-use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
+use sui_sandbox_core::utilities::{
+    grpc_object_to_package_data, CallbackPackageFetcher, HistoricalPackageResolver,
+    HistoricalStateReconstructor,
+};
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// Transaction digest for a Cetus LEIA/SUI swap - succeeded on-chain
@@ -85,9 +87,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Replay a transaction using ONLY gRPC for data fetching (no cache).
+/// Replay a transaction using composable utilities for package resolution and object patching.
 fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
-    let rt = tokio::runtime::Runtime::new()?;
+    let rt = Arc::new(tokio::runtime::Runtime::new()?);
 
     // =========================================================================
     // Step 1: Connect to gRPC endpoint
@@ -105,6 +107,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         .ok();
 
     let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+    let grpc = Arc::new(grpc);
     println!("   ✓ Connected to {}", endpoint);
 
     // =========================================================================
@@ -113,6 +116,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     println!("\nStep 2: Fetching transaction via gRPC...");
 
     let grpc_tx = rt
+        .as_ref()
         .block_on(async { grpc.get_transaction(tx_digest).await })?
         .ok_or_else(|| anyhow!("Transaction not found: {}", tx_digest))?;
 
@@ -192,16 +196,14 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 4: Fetching objects at historical versions via gRPC...");
 
-    let mut objects: HashMap<String, String> = HashMap::new();
+    let mut raw_objects: HashMap<String, Vec<u8>> = HashMap::new();
     let mut object_types: HashMap<String, String> = HashMap::new();
-    let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut package_ids_to_fetch: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut package_ids_to_fetch: Vec<String> = Vec::new();
 
     // Extract package IDs from MoveCall commands
     for cmd in &grpc_tx.commands {
         if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
-            package_ids_to_fetch.insert(package.clone());
+            package_ids_to_fetch.push(package.clone());
         }
     }
     println!(
@@ -213,36 +215,23 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut failed_count = 0;
 
     for (obj_id, version) in &historical_versions {
-        let result =
-            rt.block_on(async { grpc.get_object_at_version(obj_id, Some(*version)).await });
+        let result = rt
+            .as_ref()
+            .block_on(async { grpc.get_object_at_version(obj_id, Some(*version)).await });
 
         match result {
             Ok(Some(obj)) => {
                 if let Some(bcs) = &obj.bcs {
-                    let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(bcs);
-                    objects.insert(obj_id.clone(), bcs_b64);
+                    raw_objects.insert(obj_id.clone(), bcs.clone());
                     if let Some(type_str) = &obj.type_string {
                         object_types.insert(obj_id.clone(), type_str.clone());
                         for pkg_id in extract_package_ids_from_type(type_str) {
-                            package_ids_to_fetch.insert(pkg_id);
+                            if !package_ids_to_fetch.contains(&pkg_id) {
+                                package_ids_to_fetch.push(pkg_id);
+                            }
                         }
                     }
                     fetched_count += 1;
-
-                    // Check if this is a package
-                    if let Some(modules) = &obj.package_modules {
-                        let modules_b64: Vec<(String, String)> = modules
-                            .iter()
-                            .map(|(name, bytes)| {
-                                (
-                                    name.clone(),
-                                    base64::engine::general_purpose::STANDARD.encode(bytes),
-                                )
-                            })
-                            .collect();
-                        packages.insert(obj_id.clone(), modules_b64);
-                        package_ids_to_fetch.remove(obj_id);
-                    }
                 }
             }
             Ok(None) => {
@@ -271,157 +260,43 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     );
 
     // =========================================================================
-    // Step 5: Fetch packages with transitive dependencies (following linkage tables)
+    // Step 5: Use HistoricalPackageResolver to fetch packages with linkage
     // =========================================================================
-    println!("\nStep 5: Fetching packages with transitive dependencies...");
+    println!("\nStep 5: Resolving packages with HistoricalPackageResolver...");
 
-    let mut fetched_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut packages_to_fetch = package_ids_to_fetch.clone();
-    let max_depth = 10;
+    // Create a callback-based fetcher that uses gRPC
+    let grpc_for_fetcher = grpc.clone();
+    let rt_for_fetcher = rt.clone();
+    let historical_for_fetcher = historical_versions.clone();
 
-    let mut linkage_upgrades: HashMap<String, String> = HashMap::new();
+    let fetcher = CallbackPackageFetcher::new(move |pkg_id: &str, version: Option<u64>| {
+        let actual_version = version.or_else(|| historical_for_fetcher.get(pkg_id).copied());
+        let result = rt_for_fetcher.as_ref().block_on(async {
+            grpc_for_fetcher
+                .get_object_at_version(pkg_id, actual_version)
+                .await
+        })?;
 
-    for depth in 0..max_depth {
-        if packages_to_fetch.is_empty() {
-            break;
-        }
+        Ok(result
+            .as_ref()
+            .and_then(|obj| grpc_object_to_package_data(pkg_id, obj)))
+    });
 
-        println!(
-            "   Depth {}: fetching {} packages...",
-            depth,
-            packages_to_fetch.len()
-        );
-        let mut new_deps: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pkg_resolver = HistoricalPackageResolver::new(fetcher);
+    pkg_resolver.set_historical_versions(historical_versions.clone());
+    pkg_resolver.resolve_packages(&package_ids_to_fetch)?;
 
-        for pkg_id in packages_to_fetch.iter() {
-            let pkg_id_normalized = normalize_address(pkg_id);
-            if fetched_packages.contains(&pkg_id_normalized) {
-                continue;
-            }
-
-            let version = historical_versions.get(pkg_id).copied();
-            let result = rt.block_on(async { grpc.get_object_at_version(pkg_id, version).await });
-
-            match result {
-                Ok(Some(obj)) => {
-                    if let Some(modules) = &obj.package_modules {
-                        let modules_b64: Vec<(String, String)> = modules
-                            .iter()
-                            .map(|(name, bytes)| {
-                                (
-                                    name.clone(),
-                                    base64::engine::general_purpose::STANDARD.encode(bytes),
-                                )
-                            })
-                            .collect();
-                        println!(
-                            "      ✓ {} v{} ({} modules)",
-                            &pkg_id[..20.min(pkg_id.len())],
-                            obj.version,
-                            modules.len()
-                        );
-
-                        // Check linkage table for upgraded package versions
-                        if let Some(linkage) = &obj.package_linkage {
-                            for l in linkage {
-                                if is_framework_package(&l.original_id) {
-                                    continue;
-                                }
-
-                                let orig_normalized = normalize_address(&l.original_id);
-                                let upgraded_normalized = normalize_address(&l.upgraded_id);
-                                if orig_normalized != upgraded_normalized {
-                                    linkage_upgrades.insert(
-                                        orig_normalized.clone(),
-                                        upgraded_normalized.clone(),
-                                    );
-
-                                    if !fetched_packages.contains(&upgraded_normalized)
-                                        && !packages.contains_key(&upgraded_normalized)
-                                    {
-                                        new_deps.insert(upgraded_normalized.clone());
-                                    }
-                                }
-                            }
-                        }
-
-                        // Extract dependencies from bytecode
-                        for (_name, bytecode_b64) in &modules_b64 {
-                            if let Ok(bytecode) =
-                                base64::engine::general_purpose::STANDARD.decode(bytecode_b64)
-                            {
-                                let deps = extract_dependencies_from_bytecode(&bytecode);
-                                for dep in deps {
-                                    let dep_normalized = normalize_address(&dep);
-                                    let actual_dep = linkage_upgrades
-                                        .get(&dep_normalized)
-                                        .cloned()
-                                        .unwrap_or(dep_normalized);
-                                    if !fetched_packages.contains(&actual_dep)
-                                        && !packages.contains_key(&actual_dep)
-                                    {
-                                        new_deps.insert(actual_dep);
-                                    }
-                                }
-                            }
-                        }
-
-                        let pkg_id_normalized = normalize_address(pkg_id);
-                        packages.insert(pkg_id_normalized.clone(), modules_b64);
-                        fetched_packages.insert(pkg_id_normalized);
-                    }
-                }
-                Ok(None) => {
-                    println!(
-                        "      ! Package not found: {}",
-                        &pkg_id[..20.min(pkg_id.len())]
-                    );
-                    fetched_packages.insert(pkg_id_normalized.clone());
-                }
-                Err(e) => {
-                    println!(
-                        "      ! Failed to fetch {}: {}",
-                        &pkg_id[..20.min(pkg_id.len())],
-                        e
-                    );
-                    fetched_packages.insert(pkg_id_normalized.clone());
-                }
-            }
-        }
-
-        packages_to_fetch = new_deps;
-    }
-
+    let linkage_upgrades = pkg_resolver.linkage_upgrades();
     if !linkage_upgrades.is_empty() {
         println!("   Linkage upgrades: {} mappings", linkage_upgrades.len());
     }
 
-    println!("   Total packages: {}", packages.len());
+    println!("   ✓ Resolved {} packages", pkg_resolver.package_count());
 
     // =========================================================================
-    // Step 6: Convert gRPC transaction to FetchedTransaction and build CachedTransaction
+    // Step 6: Build module resolver
     // =========================================================================
-    println!("\nStep 6: Building transaction structure...");
-
-    let fetched_tx = grpc_to_fetched_transaction(&grpc_tx)?;
-    let mut cached = CachedTransaction::new(fetched_tx);
-
-    for (pkg_id, modules) in packages {
-        cached.packages.insert(pkg_id, modules);
-    }
-
-    cached.objects = objects;
-    cached.object_types = object_types;
-    cached.object_versions = historical_versions.clone();
-
-    println!("   ✓ Built CachedTransaction");
-    println!("      Packages: {}", cached.packages.len());
-    println!("      Objects: {}", cached.objects.len());
-
-    // =========================================================================
-    // Step 7: Build module resolver
-    // =========================================================================
-    println!("\nStep 7: Building module resolver...");
+    println!("\nStep 6: Building module resolver...");
 
     let mut resolver = LocalModuleResolver::new();
 
@@ -429,18 +304,68 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut alias_count = 0;
     let mut skipped_count = 0;
 
-    for (pkg_id, modules) in &cached.packages {
-        let pkg_id_normalized = normalize_address(pkg_id);
-        if let Some(upgraded_id) = linkage_upgrades.get(&pkg_id_normalized) {
-            if cached.packages.contains_key(upgraded_id) {
+    // Collect all packages and their source addresses for proper ordering
+    let all_packages: Vec<(String, Vec<(String, String)>)> =
+        pkg_resolver.packages_as_base64().into_iter().collect();
+    let mut packages_with_source: Vec<(String, Vec<(String, String)>, Option<String>, bool)> =
+        Vec::new();
+
+    for (pkg_id, modules_b64) in all_packages {
+        // Skip if this package is superseded by an upgraded version
+        if let Some(upgraded) = linkage_upgrades.get(&pkg_id as &str) {
+            if pkg_resolver.get_package(upgraded).is_some() {
                 skipped_count += 1;
                 continue;
             }
         }
 
-        let target_addr = AccountAddress::from_hex_literal(pkg_id).ok();
+        // Peek at the first module to get the source address
+        let source_addr_opt: Option<String> =
+            modules_b64.first().and_then(|(_, b64): &(String, String)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .ok()
+                    .and_then(|bytes| {
+                        CompiledModule::deserialize_with_defaults(&bytes)
+                            .ok()
+                            .map(|m| m.self_id().address().to_hex_literal())
+                    })
+            });
 
-        let decoded_modules: Vec<(String, Vec<u8>)> = modules
+        // Track if this is the original package
+        let is_original = source_addr_opt
+            .as_ref()
+            .map(|src: &String| {
+                pkg_id.contains(&src[..src.len().min(20)])
+                    || src.contains(&pkg_id[..pkg_id.len().min(20)])
+            })
+            .unwrap_or(false);
+
+        packages_with_source.push((pkg_id, modules_b64, source_addr_opt, is_original));
+    }
+
+    // Sort: original packages first, then by package ID for determinism
+    packages_with_source.sort_by(|a, b| {
+        if a.3 != b.3 {
+            return b.3.cmp(&a.3); // true (original) comes first
+        }
+        a.0.cmp(&b.0)
+    });
+
+    let mut loaded_source_addrs: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for (pkg_id, modules_b64, source_addr_opt, _is_original) in packages_with_source {
+        // Skip if we already loaded modules at this source address
+        if let Some(ref source_addr) = source_addr_opt {
+            if loaded_source_addrs.contains(source_addr) {
+                continue;
+            }
+        }
+
+        let target_addr = AccountAddress::from_hex_literal(&pkg_id).ok();
+
+        let decoded_modules: Vec<(String, Vec<u8>)> = modules_b64
             .iter()
             .filter_map(|(name, b64)| {
                 base64::engine::general_purpose::STANDARD
@@ -457,6 +382,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                     if target != source {
                         alias_count += 1;
                     }
+                }
+                // Track loaded source addresses to avoid duplicates
+                if let Some(src) = source_addr {
+                    loaded_source_addrs.insert(src.to_hex_literal());
                 }
             }
             Err(e) => {
@@ -481,6 +410,57 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     println!("   ✓ Resolver ready");
 
     // =========================================================================
+    // Step 7: Use HistoricalStateReconstructor to patch objects
+    // =========================================================================
+    println!("\nStep 7: Using HistoricalStateReconstructor to patch objects...");
+
+    let mut reconstructor = HistoricalStateReconstructor::new();
+    reconstructor.set_timestamp(tx_timestamp_ms);
+    reconstructor.configure_from_modules(resolver.compiled_modules());
+
+    // Print detected versions
+    let detected_versions = reconstructor.detected_versions();
+    if !detected_versions.is_empty() {
+        println!("   Detected version constants:");
+        for (addr, version) in detected_versions.iter().take(5) {
+            println!("      {} -> v{}", &addr[..addr.len().min(24)], version);
+        }
+        if detected_versions.len() > 5 {
+            println!("      ... and {} more", detected_versions.len() - 5);
+        }
+    }
+
+    // Reconstruct state - this automatically patches well-known protocol objects
+    // like Cetus GlobalConfig using WELL_KNOWN_VERSION_CONFIGS:
+    // - Field position: FromEnd(8) (package_version is the last u64 field)
+    // - Default version: 1 (Cetus v1 bytecode uses equality check: package_version == 1)
+    let reconstructed = reconstructor.reconstruct(&raw_objects, &object_types);
+
+    // Print statistics
+    let stats = &reconstructed.stats;
+    println!(
+        "   Patching Statistics: struct={}, raw={}, override={}, total={}",
+        stats.struct_patched,
+        stats.raw_patched,
+        stats.override_patched,
+        stats.total_patched()
+    );
+
+    // Convert to base64 for cached transaction
+    let patched_objects_b64: HashMap<String, String> = reconstructed
+        .objects
+        .iter()
+        .map(|(id, bcs)| {
+            (
+                id.clone(),
+                base64::engine::general_purpose::STANDARD.encode(bcs),
+            )
+        })
+        .collect();
+
+    println!("   ✓ Patched {} objects", patched_objects_b64.len());
+
+    // =========================================================================
     // Step 8: Create VM harness
     // =========================================================================
     println!("\nStep 8: Creating VM harness...");
@@ -501,23 +481,34 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 9: Setting up on-demand child fetcher...");
 
-    let grpc_arc = Arc::new(grpc);
     let historical_arc = Arc::new(historical_versions.clone());
-    let grpc_for_closure = grpc_arc.clone();
-    let historical_for_closure = historical_arc.clone();
+    let patched_arc = Arc::new(patched_objects_b64.clone());
+    let types_arc = Arc::new(object_types.clone());
 
-    let child_fetcher: ChildFetcherFn = Box::new(
+    let child_fetcher: ChildFetcherFn = Box::new({
+        let grpc = grpc.clone();
+        let historical = historical_arc.clone();
+        let patched = patched_arc.clone();
+        let types = types_arc.clone();
         move |_parent_id: AccountAddress, child_id: AccountAddress| {
             let child_id_str = child_id.to_hex_literal();
 
-            let version = historical_for_closure.get(&child_id_str).copied();
+            // Try patched objects first
+            if let Some(b64) = patched.get(&child_id_str) {
+                if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                    if let Some(type_str) = types.get(&child_id_str) {
+                        if let Some(type_tag) = parse_type_tag_simple(type_str) {
+                            return Some((type_tag, bcs));
+                        }
+                    }
+                }
+            }
 
+            // Fall back to gRPC
+            let version = historical.get(&child_id_str).copied();
             let rt = tokio::runtime::Runtime::new().ok()?;
-            let result = rt.block_on(async {
-                grpc_for_closure
-                    .get_object_at_version(&child_id_str, version)
-                    .await
-            });
+            let result =
+                rt.block_on(async { grpc.get_object_at_version(&child_id_str, version).await });
 
             if let Ok(Some(obj)) = result {
                 if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
@@ -528,8 +519,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
             }
 
             None
-        },
-    );
+        }
+    });
 
     harness.set_child_fetcher(child_fetcher);
     println!("   ✓ Child fetcher configured");
@@ -557,9 +548,18 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     println!("   ✓ Registered {} input objects", registered_count);
 
     // =========================================================================
-    // Step 11: Build address aliases and execute replay
+    // Step 11: Build transaction and execute replay
     // =========================================================================
     println!("\nStep 11: Executing transaction replay...");
+
+    let fetched_tx = grpc_to_fetched_transaction(&grpc_tx)?;
+    let mut cached = CachedTransaction::new(fetched_tx);
+
+    // Add packages from resolver
+    cached.packages = pkg_resolver.packages_as_base64();
+    cached.objects = patched_objects_b64;
+    cached.object_types = object_types;
+    cached.object_versions = historical_versions.clone();
 
     let address_aliases = sui_sandbox_core::tx_replay::build_address_aliases_for_test(&cached);
     if !address_aliases.is_empty() {
