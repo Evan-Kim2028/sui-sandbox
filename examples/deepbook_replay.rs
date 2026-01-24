@@ -91,19 +91,19 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_type_tag_simple,
+    create_enhanced_child_fetcher, create_key_based_child_fetcher,
+    extract_dependencies_from_bytecode, extract_package_ids_from_type, prefetch_dynamic_fields,
+    GraphQLClient,
 };
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
-use sui_sandbox_core::utilities::{is_framework_package, normalize_address};
+use sui_sandbox_core::utilities::{is_framework_package, normalize_address, GenericObjectPatcher};
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// DeepBook flash loan swap - successful on-chain
@@ -242,7 +242,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         .or_else(|_| std::env::var("SURFLUX_API_KEY"))
         .ok();
 
-    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key.clone()).await })?;
     println!("   ✓ Connected to {}", endpoint);
 
     // =========================================================================
@@ -328,6 +328,42 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     println!("   Total unique objects: {}", historical_versions.len());
+
+    // =========================================================================
+    // Step 3b: Prefetch dynamic fields recursively
+    // =========================================================================
+    println!("\nStep 3b: Prefetching dynamic fields recursively...");
+
+    let graphql = GraphQLClient::mainnet();
+    let prefetched = prefetch_dynamic_fields(
+        &graphql,
+        &grpc,
+        &rt,
+        &historical_versions,
+        3,   // max_depth
+        200, // max_fields_per_object
+    );
+
+    println!(
+        "   ✓ Discovered {} dynamic fields, fetched {} child objects",
+        prefetched.total_discovered, prefetched.fetched_count
+    );
+
+    if !prefetched.failed.is_empty() {
+        println!("   ! {} objects failed to fetch", prefetched.failed.len());
+    }
+
+    // Add prefetched children to historical_versions for later use
+    for (child_id, (version, _, _)) in &prefetched.children {
+        historical_versions
+            .entry(child_id.clone())
+            .or_insert(*version);
+    }
+
+    println!(
+        "   Total unique objects (after prefetch): {}",
+        historical_versions.len()
+    );
 
     // =========================================================================
     // Step 4: Fetch all objects at historical versions via gRPC
@@ -672,45 +708,44 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     println!("   ✓ VM harness created");
 
     // =========================================================================
-    // Step 9: Set up on-demand child fetcher (for any missed objects)
+    // Step 9: Set up on-demand child fetcher (with GraphQL fallback)
     // =========================================================================
-    println!("\nStep 9: Setting up on-demand child fetcher...");
+    println!("\nStep 9: Setting up enhanced child fetcher...");
 
-    let grpc_arc = Arc::new(grpc);
-    let historical_arc = Arc::new(historical_versions.clone());
-    let grpc_for_closure = grpc_arc.clone();
-    let historical_for_closure = historical_arc.clone();
+    // Create a patcher for version field fixes on fetched children
+    let mut child_patcher = GenericObjectPatcher::new();
+    child_patcher.add_modules(resolver.compiled_modules());
+    child_patcher.set_timestamp(tx_timestamp_ms);
+    child_patcher.add_default_rules();
 
-    // Simple child fetcher - just fetch via gRPC with historical version
-    // This matches the working v0.7.0 approach
-    let child_fetcher: ChildFetcherFn = Box::new(
-        move |_parent_id: AccountAddress, child_id: AccountAddress| {
-            let child_id_str = child_id.to_hex_literal();
+    // Create new clients for the child fetcher (they don't implement Clone)
+    let grpc_for_fetcher =
+        rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key.clone()).await })?;
+    let graphql_for_fetcher = GraphQLClient::mainnet();
 
-            // Try to fetch at historical version if known
-            let version = historical_for_closure.get(&child_id_str).copied();
-
-            let rt = tokio::runtime::Runtime::new().ok()?;
-            let result = rt.block_on(async {
-                grpc_for_closure
-                    .get_object_at_version(&child_id_str, version)
-                    .await
-            });
-
-            if let Ok(Some(obj)) = result {
-                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                    if let Some(type_tag) = parse_type_tag_simple(type_str) {
-                        return Some((type_tag, bcs.clone()));
-                    }
-                }
-            }
-
-            None
-        },
+    // Create enhanced child fetcher with:
+    // - Prefetched cache lookup
+    // - gRPC historical fetch
+    // - GraphQL fallback
+    // - Dynamic field enumeration
+    let child_fetcher = create_enhanced_child_fetcher(
+        grpc_for_fetcher,
+        graphql_for_fetcher,
+        historical_versions.clone(),
+        prefetched.clone(),
+        Some(child_patcher),
     );
 
     harness.set_child_fetcher(child_fetcher);
-    println!("   ✓ Child fetcher configured");
+    println!("   ✓ Enhanced child fetcher configured");
+
+    // Also set up key-based child fetcher for package upgrade handling
+    let key_fetcher = create_key_based_child_fetcher(prefetched.clone());
+    harness.set_key_based_child_fetcher(key_fetcher);
+    println!(
+        "   ✓ Key-based child fetcher configured ({} entries)",
+        prefetched.children_by_key.len()
+    );
 
     // =========================================================================
     // Step 10: Register input objects
