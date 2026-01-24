@@ -155,6 +155,7 @@ pub struct CheckpointRangeCache {
     pub dynamic_field_children: HashMap<String, (u64, String, Vec<u8>)>,
 }
 
+#[allow(dead_code)]
 impl CheckpointRangeCache {
     pub fn new(start: u64, end: u64) -> Self {
         Self {

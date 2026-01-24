@@ -30,7 +30,6 @@ mod pipeline;
 use anyhow::Result;
 use std::time::Instant;
 
-use cache::CheckpointRangeCache;
 use pipeline::{BatchPipeline, BatchStats};
 
 // =============================================================================

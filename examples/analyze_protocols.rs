@@ -88,6 +88,7 @@ fn main() -> Result<()> {
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 struct PackageAnalysis {
     name: String,
     address: String,
@@ -217,7 +218,7 @@ fn analyze_module(module: &CompiledModule, module_name: &str, analysis: &mut Pac
             };
 
             let mut offset = 0usize;
-            for (idx, field_def) in fields.iter().enumerate() {
+            for (_idx, field_def) in fields.iter().enumerate() {
                 let field_name = module.identifier_at(field_def.name).to_string();
                 let field_type = format_signature_token(&field_def.signature.0, module);
 

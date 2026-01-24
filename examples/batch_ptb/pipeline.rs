@@ -74,6 +74,7 @@ pub struct BatchPipeline;
 
 impl BatchPipeline {
     /// Run the pipeline for a specific checkpoint range.
+    #[allow(dead_code)]
     pub async fn run_checkpoints(
         start_checkpoint: u64,
         num_checkpoints: u64,
@@ -105,7 +106,7 @@ impl BatchPipeline {
     }
 }
 
-use crate::cache::{CachedCheckpoint, CachedObject, CheckpointRangeCache};
+use crate::cache::{CachedCheckpoint, CheckpointRangeCache};
 
 fn run_checkpoint_batch(
     start_checkpoint: u64,
