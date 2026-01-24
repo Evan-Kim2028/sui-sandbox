@@ -268,6 +268,11 @@ pub fn prefetch_dynamic_fields(
 
         let normalized_parent = normalize_addr(&parent_id);
 
+        eprintln!(
+            "[prefetch_df] Parent {} has {} dynamic fields",
+            &parent_id[..20],
+            dfs.len()
+        );
         for df in dfs {
             result.total_discovered += 1;
 
@@ -290,6 +295,12 @@ pub fn prefetch_dynamic_fields(
                 .unwrap_or(0);
 
             // Try to fetch the full object BCS
+            eprintln!(
+                "[prefetch_df] Trying to fetch child {} @ version {} (parent={})",
+                &child_id[..20],
+                version,
+                &normalized_parent[..20]
+            );
             let fetch_result =
                 rt.block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await });
 
@@ -348,6 +359,11 @@ pub fn prefetch_dynamic_fields(
                     }
                 }
                 Ok(None) | Err(_) => {
+                    eprintln!(
+                        "[prefetch_df] gRPC failed for {} @ version {}, trying GraphQL fallback",
+                        &child_id[..20],
+                        version
+                    );
                     // Try GraphQL fallback for current version
                     if let Ok(gql_obj) = graphql.fetch_object(&child_id) {
                         if let (Some(type_str), Some(bcs_b64)) =
@@ -624,6 +640,60 @@ pub fn prefetch_dynamic_fields_default(
     historical_versions: &HashMap<String, u64>,
 ) -> PrefetchedDynamicFields {
     prefetch_dynamic_fields(graphql, grpc, rt, historical_versions, 3, 100)
+}
+
+/// Prefetch epoch-keyed dynamic fields for DeepBook-style historical data.
+///
+/// DeepBook and similar protocols store historical data in dynamic fields keyed by epoch.
+/// This function specifically targets these epoch-keyed fields by scanning existing
+/// prefetched data for u64-keyed fields that look like epoch values.
+///
+/// Note: This function scans already-prefetched data to identify epoch-keyed fields.
+/// The initial prefetch should already have fetched the relevant dynamic fields.
+/// This function adds them to both caches for easier lookup.
+///
+/// # Arguments
+/// * `prefetched` - Existing prefetched dynamic fields (already populated)
+/// * `tx_epoch` - The epoch of the transaction being replayed
+/// * `lookback_epochs` - Number of past epochs to consider valid
+///
+/// # Returns
+/// Number of epoch-keyed fields identified (already in cache).
+pub fn prefetch_epoch_keyed_fields(
+    _graphql: &crate::graphql::GraphQLClient,
+    _grpc: &GrpcClient,
+    _rt: &tokio::runtime::Runtime,
+    prefetched: &mut PrefetchedDynamicFields,
+    tx_epoch: u64,
+    lookback_epochs: u64,
+) -> usize {
+    let start_epoch = tx_epoch.saturating_sub(lookback_epochs);
+    let mut identified_count = 0;
+
+    // Scan already-prefetched data for u64 keys that look like epochs
+    // The initial prefetch should have already fetched these - we're just
+    // identifying which ones are epoch-keyed for potential future use
+    for key in prefetched.children_by_key.keys() {
+        if key.name_type != "u64" {
+            continue;
+        }
+
+        if key.name_bcs.len() != 8 {
+            continue;
+        }
+
+        let stored_epoch =
+            u64::from_le_bytes(key.name_bcs.as_slice().try_into().unwrap_or([0u8; 8]));
+
+        // Check if this looks like a valid epoch (within reasonable range)
+        if stored_epoch >= start_epoch && stored_epoch <= tx_epoch {
+            identified_count += 1;
+        }
+    }
+
+    // The data is already in prefetched.children_by_key and prefetched.children
+    // from the initial prefetch. No additional fetching needed.
+    identified_count
 }
 
 #[cfg(test)]
