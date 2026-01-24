@@ -459,57 +459,25 @@ fn process_single_transaction(
         grpc,
         rt,
         &historical_versions,
-        4,   // max_depth (increased from 2 for DeepBook's nested structures)
-        100, // max_fields_per_object (increased from 50)
+        6,   // max_depth (increased for deeply nested structures like DeepBook history)
+        200, // max_fields_per_object (increased for larger tables)
     );
 
     // Also prefetch epoch-keyed dynamic fields for DeepBook's historical data
     // This is essential for functions like `history::historic_maker_fee`
     let tx_epoch = grpc_tx.epoch.unwrap_or(0);
 
-    // Debug: print epoch info and prefetch stats
-    eprintln!(
-        "[EPOCH DEBUG] Transaction {} epoch: {}",
-        &grpc_tx.digest[..16],
-        tx_epoch
-    );
-    eprintln!(
-        "[EPOCH DEBUG] Historical versions to prefetch: {}",
-        historical_versions.len()
-    );
-    eprintln!(
-        "[EPOCH DEBUG] Total prefetched children: {}",
-        prefetched.children.len()
-    );
-    eprintln!(
-        "[EPOCH DEBUG] Total prefetched children_by_key: {}",
-        prefetched.children_by_key.len()
-    );
-    eprintln!(
-        "[EPOCH DEBUG] Prefetch discovered: {}, fetched: {}",
-        prefetched.total_discovered, prefetched.fetched_count
-    );
-
-    // Show all key types found
-    let mut key_types: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for key in prefetched.children_by_key.keys() {
-        *key_types.entry(key.name_type.clone()).or_insert(0) += 1;
-    }
-    if !key_types.is_empty() {
-        eprintln!("[EPOCH DEBUG] Key types found:");
-        for (name_type, count) in &key_types {
-            eprintln!("[EPOCH DEBUG]   {}: {} entries", name_type, count);
-        }
-    }
-
-    // Look for DeepBook-related objects in historical_versions
-    for (obj_id, ver) in &historical_versions {
-        if obj_id.contains("2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809") {
-            eprintln!(
-                "[EPOCH DEBUG] DeepBook object: {} @ version {}",
-                obj_id, ver
-            );
-        }
+    // Debug summary (minimal)
+    if prefetched
+        .children_by_key
+        .keys()
+        .any(|k| k.name_type == "u64")
+    {
+        eprintln!(
+            "[EPOCH] Transaction {} epoch={}, found u64-keyed fields",
+            &grpc_tx.digest[..16],
+            tx_epoch
+        );
     }
 
     let epoch_fields_fetched = sui_data_fetcher::utilities::prefetch_epoch_keyed_fields(

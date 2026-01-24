@@ -268,18 +268,24 @@ pub fn prefetch_dynamic_fields(
 
         let normalized_parent = normalize_addr(&parent_id);
 
-        eprintln!(
-            "[prefetch_df] Parent {} has {} dynamic fields",
-            &parent_id[..20],
-            dfs.len()
-        );
+        // Debug: only log parents with dynamic fields
+        if !dfs.is_empty() {
+            eprintln!(
+                "[prefetch_df] Parent {} has {} dynamic fields",
+                &parent_id[..20.min(parent_id.len())],
+                dfs.len()
+            );
+        }
         for df in dfs {
             result.total_discovered += 1;
 
             // Get the child object ID (the dynamic field wrapper object)
             let child_id = match &df.object_id {
                 Some(id) => id.clone(),
-                None => continue,
+                None => {
+                    // MoveValue type - inline value, no separate object
+                    continue;
+                }
             };
 
             // Skip if already have this child by ID
@@ -295,12 +301,6 @@ pub fn prefetch_dynamic_fields(
                 .unwrap_or(0);
 
             // Try to fetch the full object BCS
-            eprintln!(
-                "[prefetch_df] Trying to fetch child {} @ version {} (parent={})",
-                &child_id[..20],
-                version,
-                &normalized_parent[..20]
-            );
             let fetch_result =
                 rt.block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await });
 
@@ -359,11 +359,6 @@ pub fn prefetch_dynamic_fields(
                     }
                 }
                 Ok(None) | Err(_) => {
-                    eprintln!(
-                        "[prefetch_df] gRPC failed for {} @ version {}, trying GraphQL fallback",
-                        &child_id[..20],
-                        version
-                    );
                     // Try GraphQL fallback for current version
                     if let Ok(gql_obj) = graphql.fetch_object(&child_id) {
                         if let (Some(type_str), Some(bcs_b64)) =
