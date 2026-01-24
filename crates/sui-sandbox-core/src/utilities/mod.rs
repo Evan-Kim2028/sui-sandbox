@@ -21,6 +21,7 @@
 //! - Format normalization (address formats, etc.)
 //! - Bytecode analysis for version detection
 //! - Type string parsing and package extraction
+//! - Historical state reconstruction
 //!
 //! ## What Does NOT Belong Here
 //!
@@ -33,10 +34,24 @@
 //! - [`generic_patcher`]: Object patching for version-lock workarounds
 //! - [`version_utils`]: Version constant detection from bytecode
 //! - [`type_utils`]: Type string parsing and package extraction from types/bytecode
+//! - [`historical_bytecode`]: Historical bytecode resolution using tx effects
+//! - [`version_field_detector`]: Version field detection in objects
+//! - [`offset_calculator`]: Byte offset calculation for BCS structs
+//! - [`enhanced_patcher`]: Enhanced patching with fallback strategies
+//! - [`historical_state`]: High-level facade for historical state reconstruction
+//! - [`historical_package`]: Package resolution following linkage tables
+//! - [`bcs_scanner`]: Extract embedded addresses from BCS object data
 
 pub mod address;
+pub mod bcs_scanner;
+pub mod enhanced_patcher;
 pub mod generic_patcher;
+pub mod historical_bytecode;
+pub mod historical_package;
+pub mod historical_state;
+pub mod offset_calculator;
 pub mod type_utils;
+pub mod version_field_detector;
 pub mod version_utils;
 
 // Re-export commonly used items
@@ -47,3 +62,26 @@ pub use type_utils::{
     parse_type_tag, rewrite_type_tag, split_type_params,
 };
 pub use version_utils::detect_version_constants;
+
+// Re-export new historical state reconstruction utilities
+pub use enhanced_patcher::{
+    EnhancedObjectPatcher, FailureStrategy, ManualPatchOverride, PatchingStats,
+};
+pub use historical_bytecode::{
+    extract_package_versions_from_effects, is_framework_id, normalize_id, LinkageEntry,
+    ResolutionConfig, ResolvedPackage,
+};
+pub use historical_package::{
+    grpc_object_to_package_data, CallbackPackageFetcher, CallbackResolver, FetchedPackage,
+    FetchedPackageData, HistoricalPackageResolver, PackageFetcher, PackageLinkage,
+    PackageResolutionConfig,
+};
+pub use historical_state::{
+    HistoricalStateReconstructor, ReconstructedState, ReconstructionConfig, ReconstructorBuilder,
+};
+pub use offset_calculator::{OffsetCalculator, OffsetResult};
+pub use version_field_detector::{
+    calculate_offset, default_patterns, find_well_known_config, find_well_known_offset,
+    DetectedVersionField, FieldPosition, FieldType, VersionFieldDetector, VersionPattern,
+    WELL_KNOWN_VERSION_CONFIGS, WELL_KNOWN_VERSION_OFFSETS,
+};
