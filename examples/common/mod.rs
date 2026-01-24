@@ -300,13 +300,27 @@ pub use sui_data_fetcher::utilities::{prefetch_dynamic_fields, PrefetchedDynamic
 use move_core_types::language_storage::TypeTag;
 use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
 
+/// Dynamic discovery cache for child objects discovered during execution.
+/// This is populated when we enumerate parent's dynamic fields and caches
+/// all children for that parent, not just the one we're looking for.
+pub type DynamicDiscoveryCache = Arc<std::sync::Mutex<HashMap<String, (String, Vec<u8>)>>>;
+
+/// Create a dynamic discovery cache for child fetching.
+pub fn create_dynamic_discovery_cache() -> DynamicDiscoveryCache {
+    Arc::new(std::sync::Mutex::new(HashMap::new()))
+}
+
 /// Create an enhanced child fetcher with GraphQL fallback and prefetch cache.
 ///
 /// This fetcher tries multiple strategies:
 /// 1. Check prefetched cache first
-/// 2. Try gRPC with historical version
-/// 3. Fall back to GraphQL for current version
-/// 4. Try dynamic field enumeration on parent
+/// 2. Check dynamic discovery cache (populated during execution)
+/// 3. Try gRPC with historical version
+/// 4. Fall back to GraphQL for current version
+/// 5. Try dynamic field enumeration on parent (and cache ALL children)
+///
+/// The discovery_cache parameter is optional. If provided, newly discovered
+/// children will be cached for future lookups.
 pub fn create_enhanced_child_fetcher(
     grpc: GrpcClient,
     graphql: GraphQLClient,
@@ -314,11 +328,35 @@ pub fn create_enhanced_child_fetcher(
     prefetched: PrefetchedDynamicFields,
     patcher: Option<GenericObjectPatcher>,
 ) -> ChildFetcherFn {
+    create_enhanced_child_fetcher_with_cache(
+        grpc,
+        graphql,
+        historical_versions,
+        prefetched,
+        patcher,
+        None,
+    )
+}
+
+/// Create an enhanced child fetcher with a dynamic discovery cache.
+///
+/// Same as `create_enhanced_child_fetcher` but with a shared cache that gets
+/// populated during execution. This is useful when the transaction accesses
+/// objects that weren't in the original transaction effects.
+pub fn create_enhanced_child_fetcher_with_cache(
+    grpc: GrpcClient,
+    graphql: GraphQLClient,
+    historical_versions: HashMap<String, u64>,
+    prefetched: PrefetchedDynamicFields,
+    patcher: Option<GenericObjectPatcher>,
+    discovery_cache: Option<DynamicDiscoveryCache>,
+) -> ChildFetcherFn {
     let grpc_arc = Arc::new(grpc);
     let graphql_arc = Arc::new(graphql);
     let historical_arc = Arc::new(historical_versions);
     let prefetched_arc = Arc::new(prefetched.children.clone());
     let patcher_arc = Arc::new(std::sync::Mutex::new(patcher));
+    let discovery_cache = discovery_cache.unwrap_or_else(create_dynamic_discovery_cache);
 
     Box::new(move |parent_id: AccountAddress, child_id: AccountAddress| {
         let child_id_str = child_id.to_hex_literal();
@@ -344,6 +382,30 @@ pub fn create_enhanced_child_fetcher(
             };
             if let Some(type_tag) = parse_type_tag(type_str) {
                 return Some((type_tag, final_bcs));
+            }
+        }
+
+        // Strategy 0.5: Check dynamic discovery cache
+        if let Ok(cache) = discovery_cache.lock() {
+            if let Some((type_str, bcs)) = cache.get(&child_id_str) {
+                eprintln!(
+                    "[child_fetcher] HIT discovery cache: {} ({} bytes)",
+                    &child_id_str[..22.min(child_id_str.len())],
+                    bcs.len()
+                );
+                // Apply patching if available
+                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                    if let Some(ref mut p) = *guard {
+                        p.patch_object(type_str, bcs)
+                    } else {
+                        bcs.clone()
+                    }
+                } else {
+                    bcs.clone()
+                };
+                if let Some(type_tag) = parse_type_tag(type_str) {
+                    return Some((type_tag, final_bcs));
+                }
             }
         }
 
@@ -412,44 +474,80 @@ pub fn create_enhanced_child_fetcher(
         }
 
         // Strategy 3: Try enumerating parent's dynamic fields to find the child
+        // AND cache all discovered children for future lookups
         eprintln!(
             "[child_fetcher] Trying dynamic field enumeration on parent {}...",
             &parent_id_str[..22.min(parent_id_str.len())]
         );
-        if let Ok(dfs) = graphql_arc.fetch_dynamic_fields(&parent_id_str, 100) {
+        if let Ok(dfs) = graphql_arc.fetch_dynamic_fields(&parent_id_str, 200) {
             let df_count = dfs.len();
+            let mut found_result: Option<(TypeTag, Vec<u8>)> = None;
+
             for df in dfs {
                 if let Some(obj_id) = &df.object_id {
-                    if normalize_address(obj_id) == normalize_address(&child_id_str) {
-                        eprintln!("[child_fetcher] Found child in parent's dynamic fields!");
-                        if let (Some(value_type), Some(value_bcs_b64)) =
-                            (&df.value_type, &df.value_bcs)
-                        {
-                            if let Ok(bcs) =
-                                base64::engine::general_purpose::STANDARD.decode(value_bcs_b64)
-                            {
-                                // Apply patching if available
-                                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
-                                    if let Some(ref mut p) = *guard {
-                                        p.patch_object(value_type, &bcs)
-                                    } else {
-                                        bcs.clone()
-                                    }
+                    // Try to fetch this child's BCS data via GraphQL or gRPC
+                    let child_obj_id = normalize_address(obj_id);
+
+                    // Try to get BCS for this child
+                    let child_data: Option<(String, Vec<u8>)> =
+                        if let (Some(vt), Some(vb)) = (&df.value_type, &df.value_bcs) {
+                            // Dynamic field info has the value directly
+                            base64::engine::general_purpose::STANDARD
+                                .decode(vb)
+                                .ok()
+                                .map(|bcs| (vt.clone(), bcs))
+                        } else {
+                            // Fetch the object directly
+                            graphql_arc.fetch_object(&child_obj_id).ok().and_then(|o| {
+                                if let (Some(ts), Some(b64)) = (o.type_string, o.bcs_base64) {
+                                    base64::engine::general_purpose::STANDARD
+                                        .decode(&b64)
+                                        .ok()
+                                        .map(|bcs| (ts, bcs))
+                                } else {
+                                    None
+                                }
+                            })
+                        };
+
+                    if let Some((type_str, bcs)) = child_data {
+                        // Cache this child for future lookups
+                        if let Ok(mut cache) = discovery_cache.lock() {
+                            cache.insert(child_obj_id.clone(), (type_str.clone(), bcs.clone()));
+                        }
+
+                        // Is this the child we're looking for?
+                        if normalize_address(obj_id) == normalize_address(&child_id_str) {
+                            eprintln!(
+                                "[child_fetcher] Found target child in parent's dynamic fields! (cached {} total)",
+                                df_count
+                            );
+                            // Apply patching if available
+                            let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                                if let Some(ref mut p) = *guard {
+                                    p.patch_object(&type_str, &bcs)
                                 } else {
                                     bcs.clone()
-                                };
-                                if let Some(type_tag) = parse_type_tag(value_type) {
-                                    eprintln!(
-                                        "[child_fetcher] SUCCESS via df enumeration: {} bytes",
-                                        final_bcs.len()
-                                    );
-                                    return Some((type_tag, final_bcs));
                                 }
+                            } else {
+                                bcs.clone()
+                            };
+                            if let Some(type_tag) = parse_type_tag(&type_str) {
+                                found_result = Some((type_tag, final_bcs));
                             }
                         }
                     }
                 }
             }
+
+            if let Some(result) = found_result {
+                eprintln!(
+                    "[child_fetcher] SUCCESS via df enumeration: {} bytes",
+                    result.1.len()
+                );
+                return Some(result);
+            }
+
             eprintln!(
                 "[child_fetcher] Child not found in parent's {} dynamic fields",
                 df_count

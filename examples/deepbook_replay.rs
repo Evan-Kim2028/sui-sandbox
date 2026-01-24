@@ -95,9 +95,9 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
-    create_enhanced_child_fetcher, create_key_based_child_fetcher,
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, prefetch_dynamic_fields,
-    GraphQLClient,
+    create_dynamic_discovery_cache, create_enhanced_child_fetcher_with_cache,
+    create_key_based_child_fetcher, extract_dependencies_from_bytecode,
+    extract_package_ids_from_type, prefetch_dynamic_fields, GraphQLClient,
 };
 use move_core_types::account_address::AccountAddress;
 use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
@@ -723,21 +723,28 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key.clone()).await })?;
     let graphql_for_fetcher = GraphQLClient::mainnet();
 
+    // Create a shared discovery cache that gets populated during execution
+    // This handles objects that aren't in the original transaction effects
+    // (e.g., BalanceManager objects discovered when accessing user balances)
+    let discovery_cache = create_dynamic_discovery_cache();
+
     // Create enhanced child fetcher with:
     // - Prefetched cache lookup
+    // - Dynamic discovery cache (populated during execution)
     // - gRPC historical fetch
     // - GraphQL fallback
-    // - Dynamic field enumeration
-    let child_fetcher = create_enhanced_child_fetcher(
+    // - Dynamic field enumeration (caches ALL children, not just the target)
+    let child_fetcher = create_enhanced_child_fetcher_with_cache(
         grpc_for_fetcher,
         graphql_for_fetcher,
         historical_versions.clone(),
         prefetched.clone(),
         Some(child_patcher),
+        Some(discovery_cache),
     );
 
     harness.set_child_fetcher(child_fetcher);
-    println!("   ✓ Enhanced child fetcher configured");
+    println!("   ✓ Enhanced child fetcher configured (with discovery cache)");
 
     // Also set up key-based child fetcher for package upgrade handling
     let key_fetcher = create_key_based_child_fetcher(prefetched.clone());
