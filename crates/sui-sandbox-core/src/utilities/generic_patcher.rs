@@ -1022,8 +1022,14 @@ pub enum PatchAction {
     SetU128(u128),
     /// Set to the transaction timestamp (provided at patch time)
     SetToTimestamp,
-    /// Set to a value looked up from a registry by type
+    /// Set to a value looked up from a registry by type.
+    /// Falls back to u64::MAX - 1 if not found (to pass >= version checks).
     SetFromRegistry,
+    /// Set to a value looked up from a registry by type.
+    /// SKIPS patching if not found in registry (returns None to signal skip).
+    /// Use this for protocols like Scallop where the historical state already
+    /// matches the historical bytecode and shouldn't be patched.
+    SetFromRegistryOrSkip,
 }
 
 /// Condition for when to apply a patch
@@ -1211,12 +1217,16 @@ impl GenericObjectPatcher {
 
         // Version struct field (common pattern: Version struct with a `value` field)
         // ONLY matches types containing "Version" to avoid false positives
-        // Uses registry if available (for exact version matching), otherwise high value
+        //
+        // NOTE: For Scallop and similar protocols where the Version.value matches
+        // the historical bytecode constant, we should NOT patch. The SetFromRegistryOrSkip
+        // action only patches if a specific version is registered for this package.
+        // This prevents incorrectly patching Scallop Version objects which don't need it.
         self.rules.push(FieldPatchRule {
             field_name: "value".to_string(),
             type_pattern: Some("Version".to_string()), // Only match Version-like types
             condition: PatchCondition::U64InRange { min: 1, max: 100 },
-            action: PatchAction::SetFromRegistry,
+            action: PatchAction::SetFromRegistryOrSkip,
         });
 
         // Timestamp fields (e.g., last_updated_time in RewarderManager)
@@ -1317,20 +1327,23 @@ impl GenericObjectPatcher {
 
             if let Some(field_value) = value.get_field(&rule.field_name) {
                 if rule.condition.matches(field_value) {
-                    let new_value =
-                        self.compute_patch_value(&rule.action, type_str, field_value)?;
-                    if value.set_field(&rule.field_name, new_value.clone()) {
-                        any_patched = true;
-                        *self
-                            .patches_applied
-                            .entry(rule.field_name.clone())
-                            .or_insert(0) += 1;
-                        eprintln!(
-                            "[GenericPatcher] Patched field '{}' to {:?} in {}",
-                            rule.field_name,
-                            new_value,
-                            type_str.chars().take(60).collect::<String>()
-                        );
+                    // compute_patch_value returns Option - None means skip this patch
+                    if let Some(new_value) =
+                        self.compute_patch_value(&rule.action, type_str, field_value)?
+                    {
+                        if value.set_field(&rule.field_name, new_value.clone()) {
+                            any_patched = true;
+                            *self
+                                .patches_applied
+                                .entry(rule.field_name.clone())
+                                .or_insert(0) += 1;
+                            eprintln!(
+                                "[GenericPatcher] Patched field '{}' to {:?} in {}",
+                                rule.field_name,
+                                new_value,
+                                type_str.chars().take(60).collect::<String>()
+                            );
+                        }
                     }
                 }
             }
@@ -1350,22 +1363,22 @@ impl GenericObjectPatcher {
         action: &PatchAction,
         type_str: &str,
         _current: &DynamicValue,
-    ) -> Result<DynamicValue> {
+    ) -> Result<Option<DynamicValue>> {
         match action {
-            PatchAction::SetU64(v) => Ok(DynamicValue::U64(*v)),
-            PatchAction::SetU128(v) => Ok(DynamicValue::U128(*v)),
+            PatchAction::SetU64(v) => Ok(Some(DynamicValue::U64(*v))),
+            PatchAction::SetU128(v) => Ok(Some(DynamicValue::U128(*v))),
             PatchAction::SetToTimestamp => {
                 let ts = self
                     .tx_timestamp_ms
                     .ok_or_else(|| anyhow!("No timestamp set for SetToTimestamp action"))?;
-                Ok(DynamicValue::U64(ts))
+                Ok(Some(DynamicValue::U64(ts)))
             }
-            PatchAction::SetFromRegistry => {
+            PatchAction::SetFromRegistry | PatchAction::SetFromRegistryOrSkip => {
                 // Extract package address from type string (e.g., "0x1eab...::module::Type")
                 if let Some(pkg_addr) = extract_package_address(type_str) {
                     // Try exact match on package address
                     if let Some(version) = self.version_registry.get(&pkg_addr) {
-                        return Ok(DynamicValue::U64(*version));
+                        return Ok(Some(DynamicValue::U64(*version)));
                     }
                 }
 
@@ -1373,12 +1386,16 @@ impl GenericObjectPatcher {
                 // (for backward compatibility with manual registrations)
                 for (pattern, version) in &self.version_registry {
                     if type_str.contains(pattern) {
-                        return Ok(DynamicValue::U64(*version));
+                        return Ok(Some(DynamicValue::U64(*version)));
                     }
                 }
 
-                // Default to high value that will pass any version check (>= comparison)
-                Ok(DynamicValue::U64(u64::MAX - 1))
+                // For SetFromRegistryOrSkip, return None to skip patching
+                // For SetFromRegistry, use fallback high value
+                match action {
+                    PatchAction::SetFromRegistryOrSkip => Ok(None),
+                    _ => Ok(Some(DynamicValue::U64(u64::MAX - 1))),
+                }
             }
         }
     }
