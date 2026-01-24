@@ -2105,19 +2105,47 @@ fn add_dynamic_field_natives(
                 runtime.child_object_exists(parent, child_id)
             };
 
-            // If not in local, check shared state WITHOUT fetching
-            // (fetching happens only on borrow, not on existence check)
-            // This matches v0.7.0 behavior and prevents spurious fetch failures
-            let in_shared = if !in_local {
-                check_shared_state_for_child(ctx, parent, child_id)
+            if in_local {
+                return Ok(NativeResult::ok(
+                    InternalGas::new(0),
+                    smallvec![Value::bool(true)],
+                ));
+            }
+
+            // Check shared state
+            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+            if in_shared {
+                return Ok(NativeResult::ok(
+                    InternalGas::new(0),
+                    smallvec![Value::bool(true)],
+                ));
+            }
+
+            // Not found locally or in shared state - try on-demand fetching
+            // This is needed for replay scenarios where dynamic fields are fetched lazily
+            use crate::object_runtime::SharedObjectRuntime;
+            let fetched = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
+            {
+                if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
+                {
+                    // Add to shared state for future lookups
+                    shared.shared_state().lock().add_child(
+                        parent,
+                        child_id,
+                        fetched_tag,
+                        fetched_bytes,
+                    );
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             };
 
-            let exists = in_local || in_shared;
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::bool(exists)],
+                smallvec![Value::bool(fetched)],
             ))
         }),
     ));
@@ -2143,20 +2171,56 @@ fn add_dynamic_field_natives(
                 runtime.child_object_exists_with_type(parent, child_id, &child_tag)
             };
 
-            // If not in local, check shared state WITHOUT fetching
-            // (fetching happens only on borrow, not on existence check)
-            // This matches v0.7.0 behavior and prevents spurious fetch failures
-            let in_shared = if !in_local {
-                check_shared_state_for_child(ctx, parent, child_id)
+            if in_local {
+                return Ok(NativeResult::ok(
+                    InternalGas::new(0),
+                    smallvec![Value::bool(true)],
+                ));
+            }
+
+            // Check shared state
+            let in_shared = check_shared_state_for_child(ctx, parent, child_id);
+            if in_shared {
+                return Ok(NativeResult::ok(
+                    InternalGas::new(0),
+                    smallvec![Value::bool(true)],
+                ));
+            }
+
+            // Not found locally or in shared state - try on-demand fetching
+            // This is needed for replay scenarios where dynamic fields are fetched lazily
+            use crate::object_runtime::SharedObjectRuntime;
+            let fetched = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
+            {
+                if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
+                {
+                    // Verify the type matches before adding
+                    // Note: We do a simple match here - could be more lenient if needed
+                    let type_matches = fetched_tag == child_tag;
+                    if type_matches {
+                        // Add to shared state for future lookups
+                        shared.shared_state().lock().add_child(
+                            parent,
+                            child_id,
+                            fetched_tag,
+                            fetched_bytes,
+                        );
+                        true
+                    } else {
+                        // Type mismatch - the field exists but with a different type
+                        // This is still "exists" in the general sense
+                        false
+                    }
+                } else {
+                    false
+                }
             } else {
                 false
             };
 
-            let exists = in_local || in_shared;
-
             Ok(NativeResult::ok(
                 InternalGas::new(0),
-                smallvec![Value::bool(exists)],
+                smallvec![Value::bool(fetched)],
             ))
         }),
     ));
