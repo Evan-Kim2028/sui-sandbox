@@ -15,6 +15,9 @@ use sui_data_fetcher::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 use sui_sandbox_core::object_runtime::VersionedChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
+use sui_sandbox_core::utilities::bcs_scanner::{
+    extract_addresses_from_bytecode_constants, extract_addresses_from_type_params,
+};
 use sui_sandbox_core::utilities::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
     normalize_address, parse_type_tag, rewrite_type_tag,
@@ -450,13 +453,71 @@ fn process_single_transaction(
     // =========================================================================
     // Prefetch dynamic fields
     // =========================================================================
-    let prefetched = sui_data_fetcher::utilities::prefetch_dynamic_fields(
+    let mut prefetched = sui_data_fetcher::utilities::prefetch_dynamic_fields(
         graphql,
         grpc,
         rt,
         &historical_versions,
-        2,  // max_depth
-        50, // max_fields_per_object
+        4,   // max_depth (increased from 2 for DeepBook's nested structures)
+        100, // max_fields_per_object (increased from 50)
+    );
+
+    // Also prefetch epoch-keyed dynamic fields for DeepBook's historical data
+    // This is essential for functions like `history::historic_maker_fee`
+    let tx_epoch = grpc_tx.epoch.unwrap_or(0);
+
+    // Debug: print epoch info and prefetch stats
+    eprintln!(
+        "[EPOCH DEBUG] Transaction {} epoch: {}",
+        &grpc_tx.digest[..16],
+        tx_epoch
+    );
+    eprintln!(
+        "[EPOCH DEBUG] Historical versions to prefetch: {}",
+        historical_versions.len()
+    );
+    eprintln!(
+        "[EPOCH DEBUG] Total prefetched children: {}",
+        prefetched.children.len()
+    );
+    eprintln!(
+        "[EPOCH DEBUG] Total prefetched children_by_key: {}",
+        prefetched.children_by_key.len()
+    );
+    eprintln!(
+        "[EPOCH DEBUG] Prefetch discovered: {}, fetched: {}",
+        prefetched.total_discovered, prefetched.fetched_count
+    );
+
+    // Show all key types found
+    let mut key_types: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for key in prefetched.children_by_key.keys() {
+        *key_types.entry(key.name_type.clone()).or_insert(0) += 1;
+    }
+    if !key_types.is_empty() {
+        eprintln!("[EPOCH DEBUG] Key types found:");
+        for (name_type, count) in &key_types {
+            eprintln!("[EPOCH DEBUG]   {}: {} entries", name_type, count);
+        }
+    }
+
+    // Look for DeepBook-related objects in historical_versions
+    for (obj_id, ver) in &historical_versions {
+        if obj_id.contains("2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809") {
+            eprintln!(
+                "[EPOCH DEBUG] DeepBook object: {} @ version {}",
+                obj_id, ver
+            );
+        }
+    }
+
+    let epoch_fields_fetched = sui_data_fetcher::utilities::prefetch_epoch_keyed_fields(
+        graphql,
+        grpc,
+        rt,
+        &mut prefetched,
+        tx_epoch,
+        10, // lookback 10 epochs to cover historical fee lookups
     );
 
     for (child_id, (version, _, _)) in &prefetched.children {
@@ -465,7 +526,7 @@ fn process_single_transaction(
             .or_insert(*version);
     }
 
-    let dynamic_fields_prefetched = prefetched.fetched_count;
+    let dynamic_fields_prefetched = prefetched.fetched_count + epoch_fields_fetched;
 
     // =========================================================================
     // Fetch objects and packages
@@ -477,11 +538,41 @@ fn process_single_transaction(
     let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut package_ids_to_fetch: HashSet<String> = HashSet::new();
 
-    // Extract package IDs from commands
+    // Extract package IDs from commands (including type arguments)
     for cmd in &grpc_tx.commands {
-        if let sui_data_fetcher::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
+        if let sui_data_fetcher::grpc::GrpcCommand::MoveCall {
+            package,
+            type_arguments,
+            ..
+        } = cmd
+        {
             package_ids_to_fetch.insert(package.clone());
+            // Also extract packages from type arguments (e.g., 0xabc::coin::COIN)
+            for type_arg in type_arguments {
+                for pkg_id in extract_package_ids_from_type(type_arg) {
+                    package_ids_to_fetch.insert(pkg_id);
+                }
+            }
         }
+        // Also handle MakeMoveVec element_type
+        if let sui_data_fetcher::grpc::GrpcCommand::MakeMoveVec {
+            element_type: Some(elem_type),
+            ..
+        } = cmd
+        {
+            for pkg_id in extract_package_ids_from_type(elem_type) {
+                package_ids_to_fetch.insert(pkg_id);
+            }
+        }
+    }
+
+    // Also extract packages from unchanged_loaded_runtime_objects - these include
+    // packages that were dynamically accessed during transaction execution
+    for (obj_id, _version) in &grpc_tx.unchanged_loaded_runtime_objects {
+        // If the object ID looks like a package (64-char hex), add it
+        let normalized = normalize_address(obj_id);
+        // Try to fetch as a potential package
+        package_ids_to_fetch.insert(normalized);
     }
 
     // Fetch objects
@@ -517,6 +608,23 @@ fn process_single_transaction(
             }
         }
     }
+
+    // =========================================================================
+    // Extract additional package addresses from type strings
+    // =========================================================================
+    // Type strings reliably contain package addresses (e.g., Pool<0xabc::coin::COIN>)
+    // This is more precise than scanning raw BCS bytes for 32-byte sequences.
+    for (_obj_id, type_str) in &object_types {
+        let type_addrs = extract_addresses_from_type_params(type_str);
+        for addr in type_addrs {
+            package_ids_to_fetch.insert(addr);
+        }
+    }
+
+    // Note: We intentionally don't scan raw BCS bytes here because:
+    // 1. It generates many false positives (random 32-byte sequences)
+    // 2. Type strings and linkage tables already capture most package references
+    // 3. The BcsAddressScanner is available for targeted use cases where needed
 
     // =========================================================================
     // Fetch packages with transitive dependencies
@@ -589,6 +697,7 @@ fn process_single_transaction(
                         if let Ok(bytecode) =
                             base64::engine::general_purpose::STANDARD.decode(bytecode_b64)
                         {
+                            // Extract dependencies from module handles
                             let deps = extract_dependencies_from_bytecode(&bytecode);
                             for dep in deps {
                                 let dep_normalized = normalize_address(&dep);
@@ -600,6 +709,17 @@ fn process_single_transaction(
                                     && !packages.contains_key(&actual_dep)
                                 {
                                     new_deps.insert(actual_dep);
+                                }
+                            }
+
+                            // Also extract addresses from bytecode constants
+                            // This catches dynamically-referenced packages stored as constants
+                            let const_addrs = extract_addresses_from_bytecode_constants(&bytecode);
+                            for addr in const_addrs {
+                                if !fetched_packages.contains(&addr)
+                                    && !packages.contains_key(&addr)
+                                {
+                                    new_deps.insert(addr);
                                 }
                             }
                         }

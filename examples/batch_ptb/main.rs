@@ -191,8 +191,9 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
         sorted_reasons.sort_by(|a, b| b.1.cmp(a.1));
 
         for (reason, count) in sorted_reasons.iter().take(10) {
-            let truncated = if reason.len() > 60 {
-                format!("{}...", &reason[..57])
+            // Show first 200 chars for better debugging
+            let truncated = if reason.len() > 200 {
+                format!("{}...", &reason[..197])
             } else {
                 reason.to_string()
             };
@@ -213,8 +214,9 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
                 onchain_str
             );
             if let Some(err) = error {
-                let truncated = if err.len() > 50 { &err[..47] } else { err };
-                println!("    Error: {}...", truncated);
+                // Show first 500 chars for better debugging
+                let truncated = if err.len() > 500 { &err[..497] } else { err };
+                println!("    Error: {}", truncated);
             }
         }
     }
