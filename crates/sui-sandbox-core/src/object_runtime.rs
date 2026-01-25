@@ -80,6 +80,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tracing::trace;
 
 /// Callback type for on-demand child object fetching by computed ID.
 /// Takes (parent_id, child_id) and returns Option<(type_tag, bcs_bytes)>.
@@ -213,9 +214,40 @@ pub struct StoredObject {
 
 impl StoredObject {
     /// Create a new stored object with default values for new fields.
+    ///
+    /// For shared objects, `initial_shared_version` is set to the object's version (1),
+    /// matching Sui's behavior where shared objects track the version at which they
+    /// became shared.
     pub fn new(bytes: Vec<u8>, type_tag: TypeTag, owner: Owner) -> Self {
+        Self::new_at_version(bytes, type_tag, owner, 1)
+    }
+
+    /// Create a new stored object at a specific version.
+    ///
+    /// For shared objects, `initial_shared_version` is set to the provided version,
+    /// which should be the version at which the object was shared. This is critical
+    /// for shared object consensus validation.
+    pub fn new_at_version(bytes: Vec<u8>, type_tag: TypeTag, owner: Owner, version: u64) -> Self {
+        Self::new_with_storage_rebate(bytes, type_tag, owner, version, 0)
+    }
+
+    /// Create a new stored object with a specific storage rebate.
+    ///
+    /// Storage rebate is the amount of MIST refunded when this object is deleted.
+    /// In Sui, this is calculated as: `object_size_bytes * storage_price_per_byte * 0.99`
+    /// (99% is refundable, 1% is permanently burned).
+    ///
+    /// For convenience, use `calculate_storage_rebate()` to compute the rebate from
+    /// object size and storage price.
+    pub fn new_with_storage_rebate(
+        bytes: Vec<u8>,
+        type_tag: TypeTag,
+        owner: Owner,
+        version: u64,
+        storage_rebate: u64,
+    ) -> Self {
         let initial_shared_version = if matches!(owner, Owner::Shared) {
-            Some(1) // First version when created as shared
+            Some(version) // Version at which object became shared
         } else {
             None
         };
@@ -224,14 +256,38 @@ impl StoredObject {
             bytes,
             type_tag,
             owner,
-            version: 1,
+            version,
             deleted: false,
             digest: None, // Computed lazily
             previous_transaction: None,
             initial_shared_version,
-            storage_rebate: 0,         // No rebate tracking in sandbox by default
+            storage_rebate,
             has_public_transfer: true, // Assume transferable by default
         }
+    }
+
+    /// Calculate the storage rebate for an object of the given size.
+    ///
+    /// In Sui, storage costs are:
+    /// - Storage units = object_size_bytes * 100 (each byte = 100 storage units)
+    /// - Storage fee = storage_units * storage_price_per_unit
+    /// - Storage rebate = storage_fee * 0.99 (99% refundable)
+    ///
+    /// The default storage price is 76 MIST per storage unit (as of mainnet epoch ~500+).
+    /// This means: rebate ≈ object_size * 100 * 76 * 0.99 = object_size * 7524
+    pub fn calculate_storage_rebate(object_size_bytes: usize, storage_price_per_unit: u64) -> u64 {
+        let storage_units = (object_size_bytes as u64) * 100;
+        let storage_fee = storage_units * storage_price_per_unit;
+        // 99% is refundable
+        storage_fee * 99 / 100
+    }
+
+    /// Calculate and set the storage rebate based on object size.
+    ///
+    /// Uses the default storage price of 76 MIST per storage unit.
+    pub fn with_calculated_rebate(mut self, storage_price_per_unit: u64) -> Self {
+        self.storage_rebate = Self::calculate_storage_rebate(self.bytes.len(), storage_price_per_unit);
+        self
     }
 
     /// Create a stored object with full mainnet-compatible metadata.
@@ -380,7 +436,16 @@ impl StoredObject {
         // BCS serialize and append
         // Note: This is a simplified serialization. For full compatibility,
         // we'd need to match Sui's exact ObjectInner BCS layout.
-        let bcs_bytes = bcs::to_bytes(&digest_data).unwrap_or_default();
+        let bcs_bytes = match bcs::to_bytes(&digest_data) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "BCS serialization failed during digest computation, using empty bytes"
+                );
+                Vec::new()
+            }
+        };
         hasher.update(&bcs_bytes);
 
         let hash = hasher.finalize();
@@ -967,6 +1032,9 @@ pub struct ObjectRuntimeState {
     /// Pending receives: (recipient_object_id, sent_object_id) -> (type_tag, bytes)
     /// Used for transfer::receive pattern where an object was sent to another object.
     pub pending_receives: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
+    /// Set of children that have been removed during this PTB execution.
+    /// This prevents on-demand fetching from re-creating them.
+    pub removed_children: HashSet<(AccountAddress, AccountAddress)>,
 }
 
 impl ObjectRuntimeState {
@@ -1000,12 +1068,23 @@ impl ObjectRuntimeState {
     }
 
     /// Remove a child and return its data.
+    /// Also tracks the removal to prevent on-demand re-fetching.
     pub fn remove_child(
         &mut self,
         parent: AccountAddress,
         child_id: AccountAddress,
     ) -> Option<(TypeTag, Vec<u8>)> {
-        self.children.remove(&(parent, child_id))
+        let result = self.children.remove(&(parent, child_id));
+        if result.is_some() {
+            // Track this child as removed to prevent re-fetching
+            self.removed_children.insert((parent, child_id));
+        }
+        result
+    }
+
+    /// Check if a child has been removed during this PTB execution.
+    pub fn is_child_removed(&self, parent: AccountAddress, child_id: AccountAddress) -> bool {
+        self.removed_children.contains(&(parent, child_id))
     }
 
     /// Get all newly created children (not in preloaded set).
@@ -1030,6 +1109,7 @@ impl ObjectRuntimeState {
         self.children.clear();
         self.preloaded_children.clear();
         self.pending_receives.clear();
+        self.removed_children.clear();
     }
 
     // ========== Pending Receives ==========
@@ -1128,8 +1208,13 @@ pub struct SharedObjectRuntime {
     /// Track all child object IDs that were accessed during execution (for tracing).
     /// This is used to discover which children need to be fetched for historical replay.
     accessed_children: Arc<Mutex<HashSet<AccountAddress>>>,
-    /// Address aliases for package upgrades (bytecode address -> runtime/storage address).
+    /// Address aliases for package upgrades (storage_id -> original_id).
+    /// Used for module resolution: when looking for modules at storage address, find at original.
     address_aliases: HashMap<AccountAddress, AccountAddress>,
+    /// Reverse address aliases (original_id -> storage_id).
+    /// Used for dynamic field hash computation: when bytecode uses original_id,
+    /// but children were created with storage_id after an upgrade.
+    reverse_address_aliases: HashMap<AccountAddress, AccountAddress>,
     /// Mapping from computed child_id -> (parent, key_type, key_bytes).
     /// Populated during hash_type_and_key calls, used for key-based fallback lookup.
     computed_child_keys: Mutex<HashMap<AccountAddress, ComputedChildInfo>>,
@@ -1153,6 +1238,7 @@ impl SharedObjectRuntime {
             key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            reverse_address_aliases: HashMap::new(),
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1170,6 +1256,7 @@ impl SharedObjectRuntime {
             key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            reverse_address_aliases: HashMap::new(),
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1187,6 +1274,7 @@ impl SharedObjectRuntime {
             key_based_child_fetcher: None,
             accessed_children,
             address_aliases: HashMap::new(),
+            reverse_address_aliases: HashMap::new(),
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1203,27 +1291,122 @@ impl SharedObjectRuntime {
     }
 
     /// Set address aliases for package upgrades.
+    /// The input is storage_id -> original_id (for module resolution).
+    /// We also build the reverse mapping original_id -> storage_id (for dynamic field hashing).
+    ///
+    /// Note: When multiple storage_ids map to the same original_id (package upgrades),
+    /// we keep only the lexicographically largest storage_id (which tends to be the latest).
+    /// For better accuracy, use `set_address_aliases_with_versions` with version hints.
     pub fn set_address_aliases(&mut self, aliases: HashMap<AccountAddress, AccountAddress>) {
+        // Call the version-aware method without version hints (will use address comparison)
+        self.set_address_aliases_with_versions(aliases, HashMap::new());
+    }
+
+    /// Set address aliases with version hints for accurate reverse mapping.
+    ///
+    /// The `aliases` map is storage_id -> original_id (for module resolution).
+    /// The `versions` map is storage_id (hex string) -> version number.
+    ///
+    /// When multiple storage addresses map to the same original, we use version hints
+    /// to pick the highest-versioned storage address. This is essential for upgraded
+    /// packages where dynamic field children were created with the latest storage address.
+    pub fn set_address_aliases_with_versions(
+        &mut self,
+        aliases: HashMap<AccountAddress, AccountAddress>,
+        versions: HashMap<String, u64>,
+    ) {
+        // Build reverse mapping: original_id -> (storage_id, version)
+        // This is needed for dynamic field hash computation when children were created
+        // after a package upgrade (using storage_id in their types).
+        let mut reverse_with_version: HashMap<AccountAddress, (AccountAddress, u64)> = HashMap::new();
+
+        for (&storage, &original) in &aliases {
+            // Look up version for this storage address
+            let storage_hex = storage.to_hex_literal();
+            let storage_normalized = crate::utilities::normalize_address(&storage_hex);
+
+            // Try both normalized and original forms
+            let version = versions.get(&storage_normalized)
+                .or_else(|| versions.get(&storage_hex))
+                .or_else(|| versions.get(&format!("0x{}", storage_normalized)))
+                .copied()
+                .unwrap_or(0);
+
+            reverse_with_version.entry(original)
+                .and_modify(|(existing_storage, existing_version)| {
+                    // Prefer higher version; fall back to address comparison if versions equal
+                    if version > *existing_version
+                        || (version == *existing_version && storage > *existing_storage)
+                    {
+                        *existing_storage = storage;
+                        *existing_version = version;
+                    }
+                })
+                .or_insert((storage, version));
+        }
+
+        // Convert to simple reverse map (dropping version info)
+        let reverse: HashMap<AccountAddress, AccountAddress> = reverse_with_version
+            .into_iter()
+            .map(|(original, (storage, _))| (original, storage))
+            .collect();
+
+        // Debug output for reverse aliases
+        if !reverse.is_empty() {
+            trace!(
+                count = reverse.len(),
+                "set_address_aliases_with_versions: built reverse aliases (original -> storage)"
+            );
+            for (original, storage) in &reverse {
+                trace!(
+                    original = %original.to_hex_literal(),
+                    storage = %storage.to_hex_literal(),
+                    "reverse alias"
+                );
+            }
+        }
+
+        self.reverse_address_aliases = reverse;
         self.address_aliases = aliases;
     }
 
-    /// Rewrite a TypeTag to use runtime addresses instead of bytecode addresses.
-    /// This is essential for dynamic field hash computation in upgraded packages.
+    /// Rewrite a TypeTag to use storage addresses for dynamic field hash computation.
     ///
-    /// Note: The address_aliases map is stored as runtime -> bytecode (for module resolution).
-    /// This function inverts the lookup: given a bytecode address, find the runtime address.
+    /// For upgraded packages, dynamic field children may have been created with either:
+    /// 1. **Original address** (pre-upgrade): bytecode address matches, no rewrite needed
+    /// 2. **Storage address** (post-upgrade): need to rewrite original -> storage
+    ///
+    /// We try the REVERSE lookup (original -> storage) because:
+    /// - Bytecode uses original_id (0xefe8b36d...)
+    /// - Post-upgrade children were created with storage_id (0xd384ded6...)
+    /// - Hash must use storage_id to match stored children
+    ///
+    /// Note: This may cause lookup failures for pre-upgrade children. The fallback
+    /// mechanism (key-based lookup) should handle mismatches by trying all variants.
     pub fn rewrite_type_tag(&self, tag: TypeTag) -> TypeTag {
         match tag {
             TypeTag::Struct(s) => {
                 let mut s = *s;
-                // address_aliases is runtime -> bytecode, so we need to find which runtime
-                // maps to this bytecode address (inverted lookup)
-                for (runtime_addr, bytecode_addr) in &self.address_aliases {
-                    if *bytecode_addr == s.address {
-                        s.address = *runtime_addr;
-                        break;
-                    }
+                let original_addr = s.address;
+
+                // Try REVERSE lookup: original -> storage
+                // This handles post-upgrade dynamic fields where children were created
+                // with the current storage address, not the original bytecode address.
+                if let Some(&storage_addr) = self.reverse_address_aliases.get(&s.address) {
+                    s.address = storage_addr;
                 }
+
+                // Log if we rewrote the address (for debugging)
+                if s.address != original_addr {
+                    trace!(
+                        original = %original_addr.to_hex_literal(),
+                        rewritten = %s.address.to_hex_literal(),
+                        module = %s.module,
+                        name = %s.name,
+                        "rewrite_type_tag"
+                    );
+                }
+
                 s.type_params = s
                     .type_params
                     .into_iter()
@@ -1322,10 +1505,6 @@ impl SharedObjectRuntime {
 
         // First try ID-based fetcher
         if let Some(fetcher) = &self.child_fetcher {
-            eprintln!(
-                "[SharedObjectRuntime] on-demand fetching child {}",
-                child_id.to_hex_literal()
-            );
             if let Some(result) = fetcher(parent_id, child_id) {
                 return Some(result);
             }
@@ -1334,19 +1513,9 @@ impl SharedObjectRuntime {
         // If ID-based lookup failed, try key-based lookup
         if let Some(key_fetcher) = &self.key_based_child_fetcher {
             if let Some(info) = self.get_computed_child_info(&child_id) {
-                eprintln!(
-                    "[SharedObjectRuntime] trying key-based fallback for child {} (key_type={:?}, key_len={})",
-                    child_id.to_hex_literal(),
-                    info.key_type,
-                    info.key_bytes.len()
-                );
                 if let Some(result) =
                     key_fetcher(info.parent_id, child_id, &info.key_type, &info.key_bytes)
                 {
-                    eprintln!(
-                        "[SharedObjectRuntime] key-based fetch succeeded for child {}",
-                        child_id.to_hex_literal()
-                    );
                     return Some(result);
                 }
             }
@@ -1365,6 +1534,7 @@ impl Default for SharedObjectRuntime {
             key_based_child_fetcher: None,
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
+            reverse_address_aliases: HashMap::new(),
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }

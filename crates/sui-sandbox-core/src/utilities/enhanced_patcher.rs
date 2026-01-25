@@ -25,6 +25,7 @@
 //! ```
 
 use std::collections::HashMap;
+use tracing::debug;
 
 use super::generic_patcher::GenericObjectPatcher;
 use super::version_field_detector::{
@@ -303,10 +304,10 @@ impl EnhancedObjectPatcher {
             FailureStrategy::WarnAndSkip => {
                 // Only warn if this type looks like it might need patching
                 if self.type_might_need_patching(type_str) {
-                    eprintln!(
-                        "[EnhancedPatcher] No patches applied to {} ({}...)",
-                        &type_str[..type_str.len().min(50)],
-                        &normalized_id[..normalized_id.len().min(20)]
+                    debug!(
+                        type_str = %&type_str[..type_str.len().min(50)],
+                        object_id = %&normalized_id[..normalized_id.len().min(20)],
+                        "no patches applied"
                     );
                 }
                 self.stats.record_skip();

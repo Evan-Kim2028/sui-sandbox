@@ -28,6 +28,7 @@ use std::fmt;
 /// Phase of the type inhabitation pipeline.
 ///
 /// The pipeline processes in order: Build -> Resolution -> TypeCheck -> Synthesis -> Execution -> Validation
+/// PTB execution has its own phase for transaction-level errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -43,6 +44,8 @@ pub enum Phase {
     Execution,
     /// Phase 5: Result validation
     Validation,
+    /// Phase 6: PTB (Programmable Transaction Block) execution
+    PtbExecution,
 }
 
 impl Phase {
@@ -55,6 +58,7 @@ impl Phase {
             Phase::Synthesis => 300,
             Phase::Execution => 400,
             Phase::Validation => 500,
+            Phase::PtbExecution => 600,
         }
     }
 
@@ -67,6 +71,7 @@ impl Phase {
             Phase::Synthesis => "synthesis",
             Phase::Execution => "execution",
             Phase::Validation => "validation",
+            Phase::PtbExecution => "ptb",
         }
     }
 }
@@ -201,6 +206,41 @@ pub enum ErrorCode {
     /// E502: Return type does not match expected type
     #[serde(rename = "E502")]
     ReturnTypeMismatch,
+
+    // =========================================================================
+    // PTB Errors (6xx) - Programmable Transaction Block execution errors
+    // =========================================================================
+    /// E601: Object was already consumed (double-use)
+    #[serde(rename = "E601")]
+    ObjectConsumed,
+
+    /// E602: Object is immutable and cannot be mutated
+    #[serde(rename = "E602")]
+    ImmutableMutation,
+
+    /// E603: Shared object validation failed (must be re-shared or deleted)
+    #[serde(rename = "E603")]
+    SharedObjectViolation,
+
+    /// E604: Gas budget exceeded
+    #[serde(rename = "E604")]
+    GasBudgetExceeded,
+
+    /// E605: Invalid argument reference (forward ref, out of bounds)
+    #[serde(rename = "E605")]
+    InvalidArgumentRef,
+
+    /// E606: Object cannot be transferred (not owned by sender)
+    #[serde(rename = "E606")]
+    TransferNotAllowed,
+
+    /// E607: Type mismatch in coin operations (merge/split)
+    #[serde(rename = "E607")]
+    CoinTypeMismatch,
+
+    /// E608: Insufficient coin balance
+    #[serde(rename = "E608")]
+    InsufficientBalance,
 }
 
 impl ErrorCode {
@@ -237,6 +277,15 @@ impl ErrorCode {
             // Validation (5xx)
             ErrorCode::NoTargetModulesAccessed => 501,
             ErrorCode::ReturnTypeMismatch => 502,
+            // PTB (6xx)
+            ErrorCode::ObjectConsumed => 601,
+            ErrorCode::ImmutableMutation => 602,
+            ErrorCode::SharedObjectViolation => 603,
+            ErrorCode::GasBudgetExceeded => 604,
+            ErrorCode::InvalidArgumentRef => 605,
+            ErrorCode::TransferNotAllowed => 606,
+            ErrorCode::CoinTypeMismatch => 607,
+            ErrorCode::InsufficientBalance => 608,
         }
     }
 
@@ -248,7 +297,9 @@ impl ErrorCode {
             2 => Phase::TypeCheck,
             3 => Phase::Synthesis,
             4 => Phase::Execution,
-            // 5xx and any future codes default to Validation phase
+            5 => Phase::Validation,
+            6 => Phase::PtbExecution,
+            // Any future codes default to Validation phase
             _ => Phase::Validation,
         }
     }
@@ -286,6 +337,15 @@ impl ErrorCode {
             // Validation
             ErrorCode::NoTargetModulesAccessed => "no target modules accessed",
             ErrorCode::ReturnTypeMismatch => "return type mismatch",
+            // PTB
+            ErrorCode::ObjectConsumed => "object already consumed (cannot use twice)",
+            ErrorCode::ImmutableMutation => "cannot mutate immutable object",
+            ErrorCode::SharedObjectViolation => "shared object must be re-shared or deleted",
+            ErrorCode::GasBudgetExceeded => "gas budget exceeded",
+            ErrorCode::InvalidArgumentRef => "invalid argument reference",
+            ErrorCode::TransferNotAllowed => "object cannot be transferred (not owned)",
+            ErrorCode::CoinTypeMismatch => "coin type mismatch in merge/split",
+            ErrorCode::InsufficientBalance => "insufficient coin balance",
         }
     }
 
@@ -665,6 +725,12 @@ impl ScoringCriteria {
                 ..Default::default()
             },
             Phase::Validation => Self {
+                compiles: true,
+                imports_target: true,
+                creates_target_type: true,
+                executes_cleanly: true,
+            },
+            Phase::PtbExecution => Self {
                 compiles: true,
                 imports_target: true,
                 creates_target_type: true,
@@ -1178,6 +1244,15 @@ impl From<ErrorCode> for FailureStage {
             ErrorCode::TargetAborted | ErrorCode::UnsupportedNative => FailureStage::B2,
             // Validation -> B2 (closest match)
             ErrorCode::NoTargetModulesAccessed | ErrorCode::ReturnTypeMismatch => FailureStage::B2,
+            // PTB errors -> B2 (closest match: runtime failures)
+            ErrorCode::ObjectConsumed
+            | ErrorCode::ImmutableMutation
+            | ErrorCode::SharedObjectViolation
+            | ErrorCode::GasBudgetExceeded
+            | ErrorCode::InvalidArgumentRef
+            | ErrorCode::TransferNotAllowed
+            | ErrorCode::CoinTypeMismatch
+            | ErrorCode::InsufficientBalance => FailureStage::B2,
         }
     }
 }

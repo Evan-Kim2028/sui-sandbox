@@ -239,6 +239,7 @@ impl SimulationEnvironment {
             id: random_id,
             bytes: random_obj.bcs_bytes.clone(),
             type_tag: Some(random_obj.type_tag.clone()),
+            version: Some(random_obj.version),
         })
     }
 
@@ -296,6 +297,7 @@ impl SimulationEnvironment {
             id: clock_id,
             bytes: clock_obj.bcs_bytes.clone(),
             type_tag: Some(clock_obj.type_tag.clone()),
+            version: Some(clock_obj.version),
         })
     }
 
@@ -600,6 +602,52 @@ impl SimulationEnvironment {
             synthesized.bcs_bytes.clone(),
             synthesized.is_shared,
         )
+    }
+
+    /// Inject an object with a specific ID, type, bytes, and version.
+    ///
+    /// This is useful for replaying historical transactions where we need
+    /// to set objects to their exact historical versions.
+    pub fn add_object_with_version(
+        &mut self,
+        id: AccountAddress,
+        bcs_bytes: Vec<u8>,
+        type_tag: TypeTag,
+        version: u64,
+    ) {
+        let obj = SimulatedObject {
+            id,
+            type_tag,
+            bcs_bytes,
+            is_shared: false,
+            is_immutable: false,
+            version,
+        };
+        self.objects.insert(id, obj);
+    }
+
+    /// Inject an object with a specific ID, type, bytes, version, and sharing status.
+    ///
+    /// Extended version of `add_object_with_version` that also allows setting
+    /// whether the object is shared or immutable.
+    pub fn add_object_with_version_and_status(
+        &mut self,
+        id: AccountAddress,
+        bcs_bytes: Vec<u8>,
+        type_tag: TypeTag,
+        version: u64,
+        is_shared: bool,
+        is_immutable: bool,
+    ) {
+        let obj = SimulatedObject {
+            id,
+            type_tag,
+            bcs_bytes,
+            is_shared,
+            is_immutable,
+            version,
+        };
+        self.objects.insert(id, obj);
     }
 
     /// Register a new coin type with its metadata.
@@ -1232,6 +1280,13 @@ impl SimulationEnvironment {
         // Set gas budget if specified
         executor.set_gas_budget(gas_budget);
 
+        // Enable version tracking if configured
+        if self.config.track_versions {
+            executor.set_track_versions(true);
+            // Set lamport timestamp from environment's lamport clock
+            executor.set_lamport_timestamp(self.lamport_clock + 1);
+        }
+
         // Add pending receives for the PTB Receive command with type info
         // (this is separate from Move-level transfer::receive)
         for ((_recipient_id, sent_id), (bytes, type_tag)) in &self.pending_receives {
@@ -1773,6 +1828,30 @@ impl SimulationEnvironment {
     /// When enabled, mutations to immutable objects will fail.
     pub fn set_enforce_immutability(&mut self, enforce: bool) {
         self.config.enforce_immutability = enforce;
+    }
+
+    /// Enable or disable version tracking for objects.
+    ///
+    /// When enabled, the executor will:
+    /// - Track input object versions from `ObjectInput` variants
+    /// - Compute output versions using lamport timestamps
+    /// - Populate `TransactionEffects.object_versions` with version change info
+    ///
+    /// For proper version tracking, ensure object inputs include version information
+    /// (e.g., use `get_object_for_ptb_with_mode` which includes `version: Some(obj.version)`).
+    pub fn set_track_versions(&mut self, track: bool) {
+        self.config.track_versions = track;
+    }
+
+    /// Builder-style version tracking configuration.
+    pub fn with_version_tracking(mut self, track: bool) -> Self {
+        self.config.track_versions = track;
+        self
+    }
+
+    /// Check if version tracking is enabled.
+    pub fn tracks_versions(&self) -> bool {
+        self.config.track_versions
     }
 
     // ============================================================================
@@ -2491,21 +2570,25 @@ impl SimulationEnvironment {
                 id: addr,
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
+                version: Some(obj.version),
             }),
             Some("immutable") | Some("imm") => Ok(ObjectInput::ImmRef {
                 id: addr,
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
+                version: Some(obj.version),
             }),
             Some("owned") | Some("value") => Ok(ObjectInput::Owned {
                 id: addr,
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
+                version: Some(obj.version),
             }),
             Some("shared") => Ok(ObjectInput::Shared {
                 id: addr,
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
+                version: Some(obj.version),
             }),
             // Default: infer from object properties
             None | Some(_) => {
@@ -2514,12 +2597,14 @@ impl SimulationEnvironment {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
                         type_tag,
+                        version: Some(obj.version),
                     })
                 } else if obj.is_immutable {
                     Ok(ObjectInput::ImmRef {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
                         type_tag,
+                        version: Some(obj.version),
                     })
                 } else {
                     // Default to mutable reference for non-shared, non-immutable objects
@@ -2527,6 +2612,7 @@ impl SimulationEnvironment {
                         id: addr,
                         bytes: obj.bcs_bytes.clone(),
                         type_tag,
+                        version: Some(obj.version),
                     })
                 }
             }
@@ -2598,6 +2684,7 @@ impl SimulationEnvironment {
             id: coin_id,
             bytes: obj.bcs_bytes.clone(),
             type_tag: Some(obj.type_tag.clone()),
+            version: Some(obj.version),
         })
     }
 

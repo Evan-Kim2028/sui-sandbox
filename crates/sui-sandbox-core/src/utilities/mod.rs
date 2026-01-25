@@ -2,7 +2,7 @@
 //!
 //! This module contains utilities for working around **infrastructure limitations**
 //! when replaying historical transactions. These are distinct from data helpers
-//! (which live in `sui_data_fetcher::utilities`).
+//! (which live in `sui_prefetch`).
 //!
 //! ## Scope: Infrastructure Workarounds
 //!
@@ -25,8 +25,8 @@
 //!
 //! ## What Does NOT Belong Here
 //!
-//! - Data aggregation from gRPC responses (use `sui_data_fetcher::utilities`)
-//! - gRPC client setup and fetching (use `sui_data_fetcher::utilities`)
+//! - Data aggregation from gRPC responses (use `sui_prefetch`)
+//! - gRPC client setup and fetching (use `sui_prefetch`)
 //!
 //! ## Modules
 //!
@@ -49,6 +49,7 @@ pub mod generic_patcher;
 pub mod historical_bytecode;
 pub mod historical_package;
 pub mod historical_state;
+pub mod historical_version_finder;
 pub mod offset_calculator;
 pub mod type_utils;
 pub mod version_field_detector;
@@ -84,4 +85,10 @@ pub use version_field_detector::{
     calculate_offset, default_patterns, find_well_known_config, find_well_known_offset,
     DetectedVersionField, FieldPosition, FieldType, VersionFieldDetector, VersionPattern,
     WELL_KNOWN_VERSION_CONFIGS, WELL_KNOWN_VERSION_OFFSETS,
+};
+pub use historical_version_finder::{
+    extract_version_constant_from_bytecode, extract_version_constant_from_modules,
+    GrpcLikeClient, GrpcObjectResult, GrpcPackageFetcher, HistoricalVersionFinder,
+    PackageModuleFetcher, SearchStrategy, VersionConstantCache, VersionFindResult,
+    VersionFinderConfig,
 };

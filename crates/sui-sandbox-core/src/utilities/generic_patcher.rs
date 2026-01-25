@@ -42,6 +42,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use std::collections::HashMap;
+use tracing::{debug, trace, warn};
 
 // =============================================================================
 // Move Type Representation
@@ -1251,10 +1252,10 @@ impl GenericObjectPatcher {
                 if let Some(patched) = self.try_raw_patches(type_str, bcs_bytes) {
                     return patched;
                 }
-                eprintln!(
-                    "[GenericPatcher] Failed to patch {}: {}",
-                    type_str.chars().take(60).collect::<String>(),
-                    e
+                debug!(
+                    type_str = %type_str.chars().take(60).collect::<String>(),
+                    error = %e,
+                    "failed to patch object"
                 );
                 bcs_bytes.to_vec()
             }
@@ -1280,23 +1281,23 @@ impl GenericObjectPatcher {
         for (offset, value) in patches_to_apply {
             if offset + value.len() <= result.len() {
                 result[offset..offset + value.len()].copy_from_slice(&value);
-                eprintln!(
-                    "[GenericPatcher] Applied raw patch at offset {} ({} bytes) for {}",
-                    offset,
-                    value.len(),
-                    type_str.chars().take(60).collect::<String>()
+                trace!(
+                    offset = offset,
+                    len = value.len(),
+                    type_str = %type_str.chars().take(60).collect::<String>(),
+                    "applied raw patch"
                 );
                 *self
                     .patches_applied
                     .entry("raw_patch".to_string())
                     .or_insert(0) += 1;
             } else {
-                eprintln!(
-                    "[GenericPatcher] Raw patch offset {} + len {} exceeds object size {} for {}",
-                    offset,
-                    value.len(),
-                    result.len(),
-                    type_str.chars().take(40).collect::<String>()
+                warn!(
+                    offset = offset,
+                    len = value.len(),
+                    object_size = result.len(),
+                    type_str = %type_str.chars().take(40).collect::<String>(),
+                    "raw patch offset exceeds object size"
                 );
             }
         }
@@ -1337,11 +1338,11 @@ impl GenericObjectPatcher {
                                 .patches_applied
                                 .entry(rule.field_name.clone())
                                 .or_insert(0) += 1;
-                            eprintln!(
-                                "[GenericPatcher] Patched field '{}' to {:?} in {}",
-                                rule.field_name,
-                                new_value,
-                                type_str.chars().take(60).collect::<String>()
+                            trace!(
+                                field = %rule.field_name,
+                                new_value = ?new_value,
+                                type_str = %type_str.chars().take(60).collect::<String>(),
+                                "patched field"
                             );
                         }
                     }

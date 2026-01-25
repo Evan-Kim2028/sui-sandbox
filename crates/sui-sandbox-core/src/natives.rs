@@ -34,6 +34,15 @@
 //! All cryptographic operations use fastcrypto (Mysten Labs' crypto library),
 //! providing 1:1 compatibility with Sui mainnet behavior.
 
+/// Debug macro that only prints when the `debug-natives` feature is enabled.
+/// Use this for verbose tracing output that aids debugging but clutters normal use.
+macro_rules! debug_native {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "debug-natives")]
+        eprintln!($($arg)*);
+    };
+}
+
 use move_binary_format::errors::PartialVMResult;
 use move_core_types::{
     account_address::AccountAddress,
@@ -118,14 +127,14 @@ fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
 /// ## Usage for Transaction Replay
 ///
 /// When replaying transactions, use frozen mode to match on-chain behavior:
-/// ```rust
+/// ```rust,ignore
 /// let clock = MockClock::frozen(tx_timestamp_ms);
 /// ```
 ///
 /// ## Usage for Testing
 ///
 /// For testing time-dependent logic with advancing time:
-/// ```rust
+/// ```rust,ignore
 /// let clock = MockClock::advancing(base_ms, tick_ms);
 /// ```
 pub struct MockClock {
@@ -385,27 +394,90 @@ impl EventStore {
     }
 }
 
-/// Mock state for native function execution.
+/// Runtime state for native function execution in the Move VM sandbox.
 ///
-/// This struct holds all mock state needed for the Local Move VM Sandbox:
-/// - Transaction context (sender, epoch, IDs)
-/// - Clock (advancing timestamps)
-/// - Random (deterministic randomness)
-/// - Events (captured event emissions)
+/// `MockNativeState` provides the execution context that native functions need
+/// to interact with the simulated Sui environment. It tracks:
 ///
-/// Note: Dynamic field storage is handled by ObjectRuntime (a VM extension).
+/// # Transaction Context
+/// - **Sender**: The address executing the transaction (`tx_context::sender()`)
+/// - **Epoch**: Current epoch number (`tx_context::epoch()`)
+/// - **Timestamp**: Epoch timestamp in milliseconds (`tx_context::epoch_timestamp_ms()`)
+/// - **Transaction Hash**: Unique identifier for object ID derivation
+///
+/// # Object ID Generation
+/// Object IDs are derived using `hash(tx_hash || ids_created)`, ensuring globally
+/// unique addresses. Each `MockNativeState` instance has a unique `tx_hash` by default,
+/// so objects created in different execution contexts have different IDs.
+///
+/// # Gas Model
+/// - **Reference Gas Price**: Epoch-wide base price (750 MIST default)
+/// - **Gas Price**: Transaction-specific price (reference + tip)
+/// - **Gas Budget**: Maximum gas units for the transaction (50 SUI default)
+///
+/// # Protocol Version
+/// Controls feature flags via `protocol_config::protocol_version()`.
+/// Features are enabled when `protocol_version >= 60` (default: 73).
+///
+/// # Subsystems
+/// - **Clock**: Mock time provider (advancing or frozen)
+/// - **Random**: Deterministic randomness for reproducible testing
+/// - **Events**: Captured event emissions for inspection
+/// - **Native Costs**: Optional gas costs for native functions (for accurate gas metering)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use sui_sandbox_core::natives::MockNativeState;
+///
+/// // For testing with defaults
+/// let state = MockNativeState::new();
+///
+/// // For transaction replay with specific context
+/// let replay_state = MockNativeState::for_replay_with_tx_hash(
+///     sender_address,
+///     epoch,
+///     timestamp_ms,
+///     transaction_digest,
+/// );
+/// ```
+///
+/// Note: Dynamic field storage is handled separately by `ObjectRuntime` (a VM extension).
 pub struct MockNativeState {
     pub sender: AccountAddress,
     pub epoch: u64,
     pub epoch_timestamp_ms: u64,
     ids_created: AtomicU64,
+    /// Transaction hash/digest for deriving object IDs
+    pub tx_hash: [u8; 32],
     /// Mock clock for time-dependent code
     pub clock: MockClock,
     /// Mock random for randomness-dependent code
     pub random: MockRandom,
     /// Event store for capturing emitted events
     pub events: EventStore,
+    /// Reference gas price for this epoch (in MIST)
+    pub reference_gas_price: u64,
+    /// Gas price for this transaction (reference + tip)
+    pub gas_price: u64,
+    /// Gas budget for this transaction
+    pub gas_budget: u64,
+    /// Protocol version for feature gating
+    pub protocol_version: u64,
+    /// Native function costs for accurate gas metering (optional)
+    /// When None, native functions report zero cost (backwards compatible)
+    /// When Some, costs match protocol config values
+    pub native_costs: Option<crate::gas::NativeFunctionCosts>,
 }
+
+/// Default protocol version (mainnet v73 as of late 2025)
+pub const DEFAULT_PROTOCOL_VERSION: u64 = 73;
+
+/// Default reference gas price in MIST
+pub const DEFAULT_REFERENCE_GAS_PRICE: u64 = 750;
+
+/// Default gas budget (50 SUI)
+pub const DEFAULT_GAS_BUDGET: u64 = 50_000_000_000;
 
 impl Default for MockNativeState {
     fn default() -> Self {
@@ -414,15 +486,34 @@ impl Default for MockNativeState {
 }
 
 impl MockNativeState {
+    /// Generate a random tx_hash for uniqueness
+    fn generate_tx_hash() -> [u8; 32] {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut tx_hash = [0u8; 32];
+        tx_hash[0..16].copy_from_slice(&nanos.to_le_bytes());
+        tx_hash[16..32].copy_from_slice(&(nanos.wrapping_mul(31337)).to_le_bytes());
+        tx_hash
+    }
+
     pub fn new() -> Self {
         Self {
             sender: AccountAddress::ZERO,
             epoch: 0,
             epoch_timestamp_ms: MockClock::DEFAULT_BASE_MS,
             ids_created: AtomicU64::new(0),
+            tx_hash: Self::generate_tx_hash(),
             clock: MockClock::new(),
             random: MockRandom::new(),
             events: EventStore::new(),
+            reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_budget: DEFAULT_GAS_BUDGET,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            native_costs: None,
         }
     }
 
@@ -433,9 +524,15 @@ impl MockNativeState {
             epoch: 0,
             epoch_timestamp_ms: MockClock::DEFAULT_BASE_MS,
             ids_created: AtomicU64::new(0),
+            tx_hash: Self::generate_tx_hash(),
             clock: MockClock::new(),
             random: MockRandom::with_seed(seed),
             events: EventStore::new(),
+            reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_budget: DEFAULT_GAS_BUDGET,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            native_costs: None,
         }
     }
 
@@ -445,6 +542,7 @@ impl MockNativeState {
     /// - Frozen clock at the exact transaction timestamp (won't advance during execution)
     /// - Correct epoch from the transaction
     /// - Sender address from the transaction
+    /// - Unique tx_hash for this transaction
     ///
     /// Use this for accurate replay of on-chain transactions.
     pub fn for_replay(sender: AccountAddress, epoch: u64, timestamp_ms: u64) -> Self {
@@ -453,9 +551,41 @@ impl MockNativeState {
             epoch,
             epoch_timestamp_ms: timestamp_ms,
             ids_created: AtomicU64::new(0),
+            tx_hash: Self::generate_tx_hash(),
             clock: MockClock::frozen(timestamp_ms),
             random: MockRandom::new(),
             events: EventStore::new(),
+            reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_budget: DEFAULT_GAS_BUDGET,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            native_costs: None,
+        }
+    }
+
+    /// Create state for replay with a specific tx_hash.
+    ///
+    /// Use this when you need to exactly match on-chain object IDs.
+    pub fn for_replay_with_tx_hash(
+        sender: AccountAddress,
+        epoch: u64,
+        timestamp_ms: u64,
+        tx_hash: [u8; 32],
+    ) -> Self {
+        Self {
+            sender,
+            epoch,
+            epoch_timestamp_ms: timestamp_ms,
+            ids_created: AtomicU64::new(0),
+            tx_hash,
+            clock: MockClock::frozen(timestamp_ms),
+            random: MockRandom::new(),
+            events: EventStore::new(),
+            reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_budget: DEFAULT_GAS_BUDGET,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            native_costs: None,
         }
     }
 
@@ -473,18 +603,45 @@ impl MockNativeState {
             epoch,
             epoch_timestamp_ms: timestamp_ms,
             ids_created: AtomicU64::new(0),
+            tx_hash: Self::generate_tx_hash(),
             clock: MockClock::frozen(timestamp_ms),
             random: MockRandom::with_seed(random_seed),
             events: EventStore::new(),
+            reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE,
+            gas_budget: DEFAULT_GAS_BUDGET,
+            protocol_version: DEFAULT_PROTOCOL_VERSION,
+            native_costs: None,
         }
     }
 
-    /// Generate a fresh unique ID (sequential, not hash-derived)
+    /// Enable accurate native function costs from protocol config.
+    ///
+    /// When enabled, native functions will report their actual gas costs
+    /// instead of zero cost. This is needed for accurate gas metering.
+    pub fn with_native_costs(mut self, costs: crate::gas::NativeFunctionCosts) -> Self {
+        self.native_costs = Some(costs);
+        self
+    }
+
+    /// Get the gas cost for a native function, or 0 if costs not enabled.
+    pub fn get_native_cost(&self, cost_fn: impl FnOnce(&crate::gas::NativeFunctionCosts) -> u64) -> u64 {
+        self.native_costs.as_ref().map(cost_fn).unwrap_or(0)
+    }
+
+    /// Generate a fresh unique ID using the same algorithm as derive_id.
+    /// This ensures globally unique object IDs: hash(tx_hash || ids_created)
     pub fn fresh_id(&self) -> AccountAddress {
         let count = self.ids_created.fetch_add(1, Ordering::SeqCst);
-        let mut bytes = [0u8; 32];
-        bytes[24..32].copy_from_slice(&count.to_le_bytes());
-        AccountAddress::new(bytes)
+
+        // Use SHA3-256(tx_hash || ids_created) to derive globally unique ID
+        // Note: Using Keccak256 from fastcrypto which is already a dependency
+        let mut data = Vec::with_capacity(40);
+        data.extend_from_slice(&self.tx_hash);
+        data.extend_from_slice(&count.to_le_bytes());
+        let hash_result = fastcrypto::hash::Keccak256::digest(&data);
+
+        AccountAddress::new(hash_result.into())
     }
 
     pub fn ids_created(&self) -> u64 {
@@ -552,8 +709,9 @@ fn build_sui_natives(
         "tx_context",
         "native_sender",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_sender_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(state_clone.sender)],
             ))
         }),
@@ -564,8 +722,9 @@ fn build_sui_natives(
         "tx_context",
         "native_epoch",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_epoch_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u64(state_clone.epoch)],
             ))
         }),
@@ -576,8 +735,9 @@ fn build_sui_natives(
         "tx_context",
         "native_epoch_timestamp_ms",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_epoch_timestamp_ms_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u64(state_clone.epoch_timestamp_ms)],
             ))
         }),
@@ -590,43 +750,53 @@ fn build_sui_natives(
         "tx_context",
         "fresh_id",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_fresh_id_base);
             let id = state_clone.fresh_id();
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(id)],
             ))
         }),
     ));
 
+    // Reference gas price - use configured value from MockNativeState
+    let state_clone = state.clone();
     natives.push((
         "tx_context",
         "native_rgp",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_rgp_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::u64(1000)],
+                InternalGas::new(cost),
+                smallvec![Value::u64(state_clone.reference_gas_price)],
             ))
         }),
     ));
 
+    // Gas price (reference + tip) - use configured value
+    let state_clone = state.clone();
     natives.push((
         "tx_context",
         "native_gas_price",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_gas_price_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::u64(1000)],
+                InternalGas::new(cost),
+                smallvec![Value::u64(state_clone.gas_price)],
             ))
         }),
     ));
 
+    // Gas budget - use configured value
+    let state_clone = state.clone();
     natives.push((
         "tx_context",
         "native_gas_budget",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_gas_budget_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::u64(u64::MAX)],
+                InternalGas::new(cost),
+                smallvec![Value::u64(state_clone.gas_budget)],
             ))
         }),
     ));
@@ -636,47 +806,65 @@ fn build_sui_natives(
         "tx_context",
         "native_ids_created",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_ids_created_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u64(state_clone.ids_created())],
             ))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "tx_context",
         "native_sponsor",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_sponsor_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::vector_address(vec![])],
             ))
         }),
     ));
 
-    // derive_id: Same as fresh_id - we just need valid unique addresses
+    // derive_id: Derive object ID from tx_hash and ids_created counter
+    // This matches the real Sui implementation: hash(tx_hash || ids_created)
+    // ensuring globally unique object IDs across all transactions
+    let state_clone = state.clone();
     natives.push((
         "tx_context",
         "derive_id",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.tx_context_derive_id_base);
             let ids_created = pop_arg!(args, u64);
-            let _tx_hash = pop_arg!(args, Vec<u8>);
-            // Use ids_created to generate deterministic unique address
-            let mut bytes = [0u8; 32];
-            bytes[24..32].copy_from_slice(&ids_created.to_le_bytes());
+            let tx_hash = pop_arg!(args, Vec<u8>);
+
+            // Derive object ID using SHA3-256(tx_hash || ids_created)
+            // This matches Sui's native derive_id implementation
+            // Note: Using Keccak256 from fastcrypto which is already a dependency
+            let mut data = Vec::with_capacity(40);
+            data.extend_from_slice(&tx_hash);
+            data.extend_from_slice(&ids_created.to_le_bytes());
+            let hash_result = fastcrypto::hash::Keccak256::digest(&data);
+
+            let bytes: [u8; 32] = hash_result.into();
+
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(AccountAddress::new(bytes))],
             ))
         }),
     ));
 
     // object natives
+    let state_clone = state.clone();
     natives.push((
         "object",
         "borrow_uid",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
             use move_vm_types::values::VMValueCast;
+
+            let cost = state_clone.get_native_cost(|c| c.object_borrow_uid_base);
 
             // borrow_uid<T: key>(obj: &T): &UID
             // All Sui objects with the `key` ability have `id: UID` as their first field.
@@ -685,7 +873,7 @@ fn build_sui_natives(
             let obj_ref = match args.pop_back() {
                 Some(v) => v,
                 None => {
-                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED));
                 }
             };
 
@@ -693,7 +881,7 @@ fn build_sui_natives(
             let struct_ref: move_vm_types::values::StructRef = match obj_ref.cast() {
                 Ok(sr) => sr,
                 Err(_) => {
-                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED));
                 }
             };
 
@@ -701,31 +889,35 @@ fn build_sui_natives(
             // In Move VM, we can use borrow_field to get a reference to a field by index.
             // The UID is always the first field (index 0) of any Sui object.
             match struct_ref.borrow_field(0) {
-                Ok(uid_ref) => Ok(NativeResult::ok(InternalGas::new(0), smallvec![uid_ref])),
+                Ok(uid_ref) => Ok(NativeResult::ok(InternalGas::new(cost), smallvec![uid_ref])),
                 Err(_) => {
                     // If borrow_field fails, the object might not have a proper UID field
                     // This shouldn't happen for valid Sui objects, but handle gracefully
-                    Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED))
+                    Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED))
                 }
             }
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "object",
         "delete_impl",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.object_delete_impl_base);
             // No-op: we don't track object lifecycle
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "object",
         "record_new_uid",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.object_record_new_id_base);
             // No-op: we don't track UIDs
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
@@ -734,11 +926,14 @@ fn build_sui_natives(
 
     // transfer_impl<T>(obj: T, recipient: address)
     // Transfers ownership of an object to a recipient address
+    let state_clone = state.clone();
     natives.push((
         "transfer",
         "transfer_impl",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
             use crate::object_runtime::{ObjectRuntime, Owner};
+
+            let cost = state_clone.get_native_cost(|c| c.transfer_internal_base);
 
             // Pop arguments: recipient (address), obj (T)
             // Note: args are in reverse order on the stack
@@ -777,17 +972,20 @@ fn build_sui_natives(
                 }
             }
 
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
     // freeze_object_impl<T>(obj: T)
     // Makes an object immutable (frozen)
+    let state_clone = state.clone();
     natives.push((
         "transfer",
         "freeze_object_impl",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
             use crate::object_runtime::ObjectRuntime;
+
+            let cost = state_clone.get_native_cost(|c| c.transfer_freeze_object_base);
 
             // Pop the object value
             let obj_value = args.pop_back().ok_or_else(|| {
@@ -817,17 +1015,20 @@ fn build_sui_natives(
                 }
             }
 
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
     // share_object_impl<T>(obj: T)
     // Makes an object shared (accessible by anyone)
+    let state_clone = state.clone();
     natives.push((
         "transfer",
         "share_object_impl",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
             use crate::object_runtime::ObjectRuntime;
+
+            let cost = state_clone.get_native_cost(|c| c.transfer_share_object_base);
 
             // Pop the object value
             let obj_value = args.pop_back().ok_or_else(|| {
@@ -857,18 +1058,20 @@ fn build_sui_natives(
                 }
             }
 
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
     // receive_impl<T>(parent: address, to_receive: Receiving<T>) -> T
     // Receiving<T> is a struct with: { id: ID, version: u64 }
     // ID is a struct with: { bytes: address }
+    let state_clone = state.clone();
     natives.push((
         "transfer",
         "receive_impl",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
             use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+            let cost = state_clone.get_native_cost(|c| c.transfer_receive_base);
 
             // Get the type we're receiving (this is T, not Receiving<T>)
             let receive_ty = ty_args.pop().ok_or_else(|| {
@@ -925,27 +1128,27 @@ fn build_sui_natives(
                                 match Value::simple_deserialize(&obj_bytes, type_layout) {
                                     Some(value) => {
                                         return Ok(NativeResult::ok(
-                                            InternalGas::new(0),
+                                            InternalGas::new(cost),
                                             smallvec![value],
                                         ));
                                     }
                                     None => {
-                                        return Ok(NativeResult::err(InternalGas::new(0), 3));
+                                        return Ok(NativeResult::err(InternalGas::new(cost), 3));
                                     }
                                 }
                             } else {
-                                return Ok(NativeResult::err(InternalGas::new(0), 2));
+                                return Ok(NativeResult::err(InternalGas::new(cost), 2));
                             }
                         }
                     }
-                    return Ok(NativeResult::err(InternalGas::new(0), 1));
+                    return Ok(NativeResult::err(InternalGas::new(cost), 1));
                 }
             };
 
             // Get the type layout first (before we borrow extensions)
             let type_layout = match ctx.type_to_type_layout(&receive_ty) {
                 Ok(Some(layout)) => layout,
-                _ => return Ok(NativeResult::err(InternalGas::new(0), 2)),
+                _ => return Ok(NativeResult::err(InternalGas::new(cost), 2)),
             };
 
             // First try SharedObjectRuntime's shared state (from SimulationEnvironment)
@@ -959,10 +1162,10 @@ fn build_sui_natives(
                 if let Some((_type_tag, ref recv_bytes)) = recv_bytes_opt {
                     match Value::simple_deserialize(recv_bytes, &type_layout) {
                         Some(value) => {
-                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
                         }
                         None => {
-                            return Ok(NativeResult::err(InternalGas::new(0), 3));
+                            return Ok(NativeResult::err(InternalGas::new(cost), 3));
                         }
                     }
                 }
@@ -973,10 +1176,10 @@ fn build_sui_natives(
                 {
                     match Value::simple_deserialize(&recv_bytes, &type_layout) {
                         Some(value) => {
-                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
                         }
                         None => {
-                            return Ok(NativeResult::err(InternalGas::new(0), 3));
+                            return Ok(NativeResult::err(InternalGas::new(cost), 3));
                         }
                     }
                 }
@@ -987,25 +1190,29 @@ fn build_sui_natives(
                 match runtime.object_store_mut().receive_object(parent, object_id) {
                     Ok(recv_bytes) => match Value::simple_deserialize(&recv_bytes, &type_layout) {
                         Some(value) => {
-                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
                         }
                         None => {
-                            return Ok(NativeResult::err(InternalGas::new(0), 3));
+                            return Ok(NativeResult::err(InternalGas::new(cost), 3));
                         }
                     },
-                    Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                    Err(code) => return Ok(NativeResult::err(InternalGas::new(cost), code)),
                 }
             }
 
             // Object not found in any pending receives
-            Ok(NativeResult::err(InternalGas::new(0), 4))
+            Ok(NativeResult::err(InternalGas::new(cost), 4))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "transfer",
         "party_transfer_impl",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.transfer_internal_base);
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
+        }),
     ));
 
     // event natives - now with recording!
@@ -1017,6 +1224,10 @@ fn build_sui_natives(
             // event::emit<T>(event: T)
             // ty_args[0] is the event type T
             // args[0] is the event value
+            let base_cost = state_clone.get_native_cost(|c| c.event_emit_base);
+            let per_byte_cost = state_clone.get_native_cost(|c| c.event_emit_per_byte);
+
+            let mut event_size = 0usize;
             if let Some(event_ty) = ty_args.first() {
                 // Get the event value and serialize it
                 if let Some(event_value) = args.pop_front() {
@@ -1037,11 +1248,14 @@ fn build_sui_natives(
                         )
                         .unwrap_or_default();
 
+                    event_size = event_bytes.len();
+
                     // Record the event
                     state_clone.events.emit(type_tag_str, event_bytes);
                 }
             }
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            let total_cost = base_cost + (per_byte_cost * event_size as u64);
+            Ok(NativeResult::ok(InternalGas::new(total_cost), smallvec![]))
         }),
     ));
 
@@ -1051,6 +1265,10 @@ fn build_sui_natives(
         "emit_authenticated_impl",
         make_native(move |ctx, ty_args, mut args| {
             // Similar to emit but for authenticated events
+            let base_cost = state_clone.get_native_cost(|c| c.event_emit_base);
+            let per_byte_cost = state_clone.get_native_cost(|c| c.event_emit_per_byte);
+
+            let mut event_size = 0usize;
             if let Some(event_ty) = ty_args.first() {
                 if let Some(event_value) = args.pop_front() {
                     let type_tag_str = match ctx.type_to_type_tag(event_ty) {
@@ -1065,10 +1283,12 @@ fn build_sui_natives(
                                 .unwrap_or(MoveTypeLayout::Bool),
                         )
                         .unwrap_or_default();
+                    event_size = event_bytes.len();
                     state_clone.events.emit(type_tag_str, event_bytes);
                 }
             }
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            let total_cost = base_cost + (per_byte_cost * event_size as u64);
+            Ok(NativeResult::ok(InternalGas::new(total_cost), smallvec![]))
         }),
     ));
 
@@ -1077,6 +1297,7 @@ fn build_sui_natives(
         "event",
         "events_by_type",
         make_native(move |ctx, ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.event_emit_base);
             // Return events matching the requested type
             let type_prefix = if let Some(ty) = ty_args.first() {
                 match ctx.type_to_type_tag(ty) {
@@ -1095,7 +1316,7 @@ fn build_sui_natives(
                 result_bytes.extend_from_slice(&event.data);
             }
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::vector_u8(result_bytes)],
             ))
         }),
@@ -1106,47 +1327,52 @@ fn build_sui_natives(
         "event",
         "num_events",
         make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.event_emit_base);
             let count = state_clone.events.count();
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u64(count)],
             ))
         }),
     ));
 
     // address natives
+    let state_clone = state.clone();
     natives.push((
         "address",
         "from_bytes",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.address_from_bytes_base);
             let bytes = pop_arg!(args, Vec<u8>);
             if bytes.len() != 32 {
-                return Ok(NativeResult::err(InternalGas::new(0), 1));
+                return Ok(NativeResult::err(InternalGas::new(cost), 1));
             }
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&bytes);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(AccountAddress::new(arr))],
             ))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "address",
         "to_u256",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.address_to_u256_base);
             let addr = pop_arg!(args, AccountAddress);
             let bytes = addr.to_vec();
             // AccountAddress is always 32 bytes, so this conversion is safe
             let arr: [u8; 32] = match bytes.try_into() {
                 Ok(a) => a,
                 Err(_) => {
-                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED));
                 }
             };
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u256(move_core_types::u256::U256::from_le_bytes(
                     &arr
                 ))],
@@ -1154,14 +1380,16 @@ fn build_sui_natives(
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "address",
         "from_u256",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.address_from_u256_base);
             let u = pop_arg!(args, move_core_types::u256::U256);
             let bytes = u.to_le_bytes();
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(AccountAddress::new(bytes))],
             ))
         }),
@@ -1170,14 +1398,16 @@ fn build_sui_natives(
     // types::is_one_time_witness - real implementation
     // Checks: (1) struct has exactly one bool field, (2) name == UPPERCASE(module_name)
     // This matches the actual Sui runtime check, allowing LLMs to use the OTW pattern correctly.
+    let state_clone = state.clone();
     natives.push((
         "types",
         "is_one_time_witness",
-        make_native(|ctx, ty_args, _args| {
+        make_native(move |ctx, ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.types_is_one_time_witness_base);
             // The type parameter T is what we need to check
             if ty_args.is_empty() {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(false)],
                 ));
             }
@@ -1189,7 +1419,7 @@ fn build_sui_natives(
                 Ok(tag) => tag,
                 Err(_) => {
                     return Ok(NativeResult::ok(
-                        InternalGas::new(0),
+                        InternalGas::new(cost),
                         smallvec![Value::bool(false)],
                     ));
                 }
@@ -1200,7 +1430,7 @@ fn build_sui_natives(
                 Ok(Some(layout)) => layout,
                 _ => {
                     return Ok(NativeResult::ok(
-                        InternalGas::new(0),
+                        InternalGas::new(cost),
                         smallvec![Value::bool(false)],
                     ));
                 }
@@ -1209,7 +1439,7 @@ fn build_sui_natives(
             // Must be a struct type
             let MoveTypeLayout::Struct(struct_layout) = type_layout else {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(false)],
                 ));
             };
@@ -1217,81 +1447,114 @@ fn build_sui_natives(
             let is_otw = is_otw_struct(&struct_layout, &type_tag);
 
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::bool(is_otw)],
             ))
         }),
     ));
 
     // hash natives - REAL implementations using fastcrypto
+    let state_clone = state.clone();
     natives.push((
         "hash",
         "blake2b256",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
             let data = pop_arg!(args, Vec<u8>);
+            let base_cost = state_clone.get_native_cost(|c| c.hash_blake2b256_base);
+            let per_byte_cost = state_clone.get_native_cost(|c| c.hash_blake2b256_per_byte);
+            let total_cost = base_cost + (per_byte_cost * data.len() as u64);
             let hash = Blake2b256::digest(&data);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(total_cost),
                 smallvec![Value::vector_u8(hash.digest.to_vec())],
             ))
         }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "hash",
         "keccak256",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
             let data = pop_arg!(args, Vec<u8>);
+            let base_cost = state_clone.get_native_cost(|c| c.hash_keccak256_base);
+            let per_byte_cost = state_clone.get_native_cost(|c| c.hash_keccak256_per_byte);
+            let total_cost = base_cost + (per_byte_cost * data.len() as u64);
             let hash = Keccak256::digest(&data);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(total_cost),
                 smallvec![Value::vector_u8(hash.digest.to_vec())],
             ))
         }),
     ));
 
-    // protocol_config
+    // protocol_config - use configured protocol version
+    let state_clone = state.clone();
     natives.push((
         "protocol_config",
         "protocol_version_impl",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.protocol_version_base);
             Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::u64(62)],
+                InternalGas::new(cost),
+                smallvec![Value::u64(state_clone.protocol_version)],
             ))
         }),
     ));
 
-    // protocol_config::is_feature_enabled - returns true for all features in simulation
+    // protocol_config::is_feature_enabled
+    // In a real implementation, this would check against a feature flag table.
+    // For simulation, we default to true but can be configured per-feature if needed.
+    // Feature gates are checked against protocol version thresholds.
+    let state_clone = state.clone();
     natives.push((
         "protocol_config",
         "is_feature_enabled",
-        make_native(|_ctx, _ty_args, _args| {
-            // Return true for any feature check in simulation mode
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.is_feature_enabled_base);
+            // The feature is passed as a u64 feature ID
+            let _feature_id = pop_arg!(args, u64);
+
+            // Most features are enabled at or after protocol version 60+
+            // For simulation, we enable features if protocol_version >= 60
+            // This provides reasonable behavior while allowing version-gating
+            let enabled = state_clone.protocol_version >= 60;
             Ok(NativeResult::ok(
-                InternalGas::new(0),
-                smallvec![Value::bool(true)],
+                InternalGas::new(cost),
+                smallvec![Value::bool(enabled)],
             ))
         }),
     ));
 
-    // accumulator natives - no-op
+    // accumulator natives - no-op (use minimal cost since they don't do real work)
+    let state_clone = state.clone();
     natives.push((
         "accumulator",
         "emit_deposit_event",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.event_emit_base);
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
+        }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "accumulator",
         "emit_withdraw_event",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.event_emit_base);
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
+        }),
     ));
 
+    let state_clone = state.clone();
     natives.push((
         "accumulator_settlement",
         "record_settlement_sui_conservation",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.event_emit_base);
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
+        }),
     ));
 
     // ============================================================
@@ -1345,27 +1608,31 @@ fn add_test_utility_natives(
 ) {
     // balance::create_for_testing<T>(value: u64) -> Balance<T>
     // Balance<T> is a struct with a single u64 field: { value: u64 }
+    let state_clone = state.clone();
     natives.push((
         "balance",
         "create_for_testing",
-        make_native(|_ctx, _ty_args, mut args| {
+        make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.balance_create_base);
             let value = pop_arg!(args, u64);
             // Balance<T> = struct { value: u64 }
             // We construct it as a struct with one field
             let balance =
                 Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(value)]));
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![balance]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![balance]))
         }),
     ));
 
     // balance::destroy_for_testing<T>(balance: Balance<T>)
     // Just consumes the balance, no-op
+    let state_clone = state.clone();
     natives.push((
         "balance",
         "destroy_for_testing",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.balance_destroy_base);
             // Balance is consumed, nothing to return
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
@@ -1378,6 +1645,7 @@ fn add_test_utility_natives(
         "coin",
         "mint_for_testing",
         make_native(move |_ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.coin_mint_base);
             // Pop TxContext reference (we ignore it but need to consume it)
             let _ctx_ref = args.pop_back();
             let value = pop_arg!(args, u64);
@@ -1400,18 +1668,20 @@ fn add_test_utility_natives(
             // Construct Coin<T> { id: UID, balance: Balance<T> }
             let coin = Value::struct_(move_vm_types::values::Struct::pack(vec![uid, balance]));
 
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![coin]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![coin]))
         }),
     ));
 
     // coin::burn_for_testing<T>(coin: Coin<T>)
     // Just consumes the coin, no-op
+    let state_clone = state.clone();
     natives.push((
         "coin",
         "burn_for_testing",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.coin_burn_base);
             // Coin is consumed, nothing to return
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
@@ -1419,21 +1689,27 @@ fn add_test_utility_natives(
 
     // balance::create_supply_for_testing<T>() -> Supply<T>
     // Supply<T> = { value: u64 } (tracks total supply)
+    let state_clone = state.clone();
     natives.push((
         "balance",
         "create_supply_for_testing",
-        make_native(|_ctx, _ty_args, _args| {
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.supply_create_base);
             // Supply<T> = struct { value: u64 } starting at 0
             let supply = Value::struct_(move_vm_types::values::Struct::pack(vec![Value::u64(0)]));
-            Ok(NativeResult::ok(InternalGas::new(0), smallvec![supply]))
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![supply]))
         }),
     ));
 
     // balance::destroy_supply_for_testing<T>(supply: Supply<T>)
+    let state_clone = state.clone();
     natives.push((
         "balance",
         "destroy_supply_for_testing",
-        make_native(|_ctx, _ty_args, _args| Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))),
+        make_native(move |_ctx, _ty_args, _args| {
+            let cost = state_clone.get_native_cost(|c| c.balance_destroy_base);
+            Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
+        }),
     ));
 }
 
@@ -1465,7 +1741,7 @@ fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Optio
     // Step 6: Cast the dereferenced value to AccountAddress
     let addr: AccountAddress = actual_value.value_as().ok()?;
 
-    eprintln!(
+    debug_native!(
         "[extract_address_from_uid] SUCCESS: addr={}",
         addr.to_hex_literal()
     );
@@ -1535,7 +1811,16 @@ fn remove_child_from_shared_state(
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-        shared.shared_state().lock().remove_child(parent, child_id);
+        let mut state = shared.shared_state().lock();
+        let before = state.children.len();
+        state.remove_child(parent, child_id);
+        let after = state.children.len();
+        debug_native!("[remove_child_from_shared_state] parent={}, child={}, removed={} (children {} -> {})",
+            &parent.to_hex_literal()[..20],
+            &child_id.to_hex_literal()[..20],
+            before > after,
+            before,
+            after);
     }
 }
 
@@ -1551,7 +1836,21 @@ fn check_shared_state_for_child(
     use crate::object_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
-        return shared.shared_state().lock().has_child(parent, child_id);
+        let arc = shared.shared_state();
+        let arc_ptr = std::sync::Arc::as_ptr(arc);
+        let state = arc.lock();
+        let result = state.has_child(parent, child_id);
+        let child_id_short = &child_id.to_hex_literal()[..22.min(child_id.to_hex_literal().len())];
+        if child_id.to_hex_literal().starts_with("0x716ce7f7") || child_id.to_hex_literal().starts_with("0x49fc691a") {
+            debug_native!("[check_shared_state_for_child] arc={:p}, parent={}, child={}, found={}, total_children={}",
+                arc_ptr,
+                &parent.to_hex_literal()[..22.min(parent.to_hex_literal().len())],
+                child_id_short,
+                result,
+                state.children.len()
+            );
+        }
+        return result;
     }
     false
 }
@@ -1579,7 +1878,7 @@ fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u
 /// local runtime when available.
 fn add_dynamic_field_natives(
     natives: &mut Vec<(&'static str, &'static str, NativeFunction)>,
-    _state: Arc<MockNativeState>, // Keep signature for compatibility, but we use extensions now
+    state: Arc<MockNativeState>,
 ) {
     use fastcrypto::hash::{Blake2b256, HashFunction};
 
@@ -1590,10 +1889,11 @@ fn add_dynamic_field_natives(
     // hash(scope || parent || len(key) || key || key_type_tag)
     // where scope = 0xf0 (HashingIntentScope::ChildObjectId)
     // and len(key) is encoded as 8-byte little-endian
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "hash_type_and_key",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
             use crate::object_runtime::SharedObjectRuntime;
 
             let key_ty = ty_args.pop().ok_or_else(|| {
@@ -1622,14 +1922,16 @@ fn add_dynamic_field_natives(
                 key_tag
             };
 
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_hash_base);
+
             let key_layout = match ctx.type_to_type_layout(&key_ty) {
                 Ok(Some(layout)) => layout,
-                _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
+                _ => return Ok(NativeResult::err(InternalGas::new(cost), 3)),
             };
 
             let key_bytes = match key_value.typed_serialize(&key_layout) {
                 Some(bytes) => bytes,
-                None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
+                None => return Ok(NativeResult::err(InternalGas::new(cost), 3)),
             };
 
             let type_tag_bytes = bcs::to_bytes(&key_tag).unwrap_or_default();
@@ -1655,20 +1957,27 @@ fn add_dynamic_field_natives(
             let is_suspicious = zero_count > 24; // More than 24 zero bytes out of 32 is suspicious
 
             if is_suspicious {
-                eprintln!(
+                debug_native!(
                     "[hash_type_and_key] SUSPICIOUS parent={} ({} zero bytes), raw bytes: {:02x?}",
                     parent.to_hex_literal(),
                     zero_count,
                     parent_bytes
                 );
             } else {
-                eprintln!(
+                debug_native!(
                     "[hash_type_and_key] parent={}, key_type={:?}, key_len={}, result={}",
                     parent.to_hex_literal(),
                     key_tag,
                     key_bytes.len(),
                     child_id.to_hex_literal()
                 );
+                // Check if this child is already in shared state
+                if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
+                    let state = shared.shared_state().lock();
+                    let found = state.has_child(parent, child_id);
+                    debug_native!("[hash_type_and_key] Child {} in shared_state? {} (total children={})",
+                        child_id.to_hex_literal(), found, state.children.len());
+                }
             }
 
             // Record the computed child info for key-based fallback lookup.
@@ -1679,17 +1988,19 @@ fn add_dynamic_field_natives(
             }
 
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::address(child_id)],
             ))
         }),
     ));
 
     // add_child_object<Child: key>(parent: address, child: Child)
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "add_child_object",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_add_child_base);
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
@@ -1707,13 +2018,13 @@ fn add_dynamic_field_natives(
             // Get layout to extract child ID
             let child_layout = match ctx.type_to_type_layout(&child_ty) {
                 Ok(Some(layout)) => layout,
-                _ => return Ok(NativeResult::err(InternalGas::new(0), 3)),
+                _ => return Ok(NativeResult::err(InternalGas::new(cost), 3)),
             };
 
             // Serialize to get the child ID (first 32 bytes = UID.id.bytes)
             let child_bytes = match child_value.copy_value()?.typed_serialize(&child_layout) {
                 Some(bytes) => bytes,
-                None => return Ok(NativeResult::err(InternalGas::new(0), 3)),
+                None => return Ok(NativeResult::err(InternalGas::new(cost), 3)),
             };
 
             let child_id = if child_bytes.len() >= 32 {
@@ -1721,7 +2032,7 @@ fn add_dynamic_field_natives(
                 addr_bytes.copy_from_slice(&child_bytes[..32]);
                 AccountAddress::new(addr_bytes)
             } else {
-                return Ok(NativeResult::err(InternalGas::new(0), 3));
+                return Ok(NativeResult::err(InternalGas::new(cost), 3));
             };
 
             // Store in ObjectRuntime extension (supports both ObjectRuntime and SharedObjectRuntime)
@@ -1730,27 +2041,29 @@ fn add_dynamic_field_natives(
                 Ok(()) => {
                     // Sync to shared state for persistence across VM sessions
                     sync_child_to_shared_state(ctx, parent, child_id, &child_tag, &child_bytes);
-                    Ok(NativeResult::ok(InternalGas::new(0), smallvec![]))
+                    Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
                 }
-                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
+                Err(code) => Ok(NativeResult::err(InternalGas::new(cost), code)),
             }
         }),
     ));
 
     // borrow_child_object<Child: key>(object: &UID, id: address) -> &Child
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "borrow_child_object",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_borrow_child_base);
             use crate::object_runtime::SharedObjectRuntime;
             use move_vm_types::values::StructRef;
 
-            eprintln!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
+            debug_native!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
             use std::io::Write;
             std::io::stderr().flush().ok();
 
             let child_ty = ty_args.pop().ok_or_else(|| {
-                eprintln!("[borrow_child_object] ERROR: no type arg");
+            debug_native!("[borrow_child_object] ERROR: no type arg");
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
                 )
@@ -1760,7 +2073,7 @@ fn add_dynamic_field_natives(
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
 
-            eprintln!("[borrow_child_object] NATIVE CALLED, child_tag={:?}", child_tag);
+            debug_native!("[borrow_child_object] NATIVE CALLED, child_tag={:?}", child_tag);
 
             // Extract parent address from UID { id: ID { bytes: address } }
             // Navigate: UID.id (field 0) -> ID.bytes (field 0) -> address
@@ -1768,13 +2081,13 @@ fn add_dynamic_field_natives(
                 Some(addr) => addr,
                 None => {
                     // Failed to extract UID - return error instead of silently using 0x0
-                    eprintln!("[borrow_child_object] FAILED to extract parent UID!");
-                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+            debug_native!("[borrow_child_object] FAILED to extract parent UID!");
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED));
                 }
             };
 
             // Debug: print parent and child addresses
-            eprintln!(
+            debug_native!(
                 "[borrow_child_object] parent={}, child_id={}",
                 parent.to_hex_literal(),
                 child_id.to_hex_literal()
@@ -1784,12 +2097,12 @@ fn add_dynamic_field_natives(
             {
                 let runtime = get_object_runtime_ref(ctx)?;
                 if runtime.child_object_exists(parent, child_id) {
-                    eprintln!("[borrow_child_object] found in local runtime");
+            debug_native!("[borrow_child_object] found in local runtime");
                     match runtime.borrow_child_object(parent, child_id, &child_tag) {
                         Ok(value) => {
-                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]))
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]))
                         }
-                        Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                        Err(code) => return Ok(NativeResult::err(InternalGas::new(cost), code)),
                     }
                 }
             }
@@ -1800,7 +2113,7 @@ fn add_dynamic_field_natives(
                 Ok(Some(layout)) => layout,
                 _ => {
                     return Ok(NativeResult::err(
-                        InternalGas::new(0),
+                        InternalGas::new(cost),
                         E_FIELD_TYPE_MISMATCH,
                     ))
                 }
@@ -1811,13 +2124,13 @@ fn add_dynamic_field_natives(
                 // Get bytes from shared state
                 let child_bytes_opt = {
                     let state = shared.shared_state().lock();
-                    eprintln!(
+                    debug_native!(
                         "[borrow_child_object] checking shared state, has {} children",
                         state.children.len()
                     );
                     // Debug: print first few children keys
                     for (k, _) in state.children.iter().take(5) {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object]   - parent={}, child={}",
                             k.0.to_hex_literal(),
                             k.1.to_hex_literal()
@@ -1828,15 +2141,18 @@ fn add_dynamic_field_natives(
                         .map(|(_, bytes)| bytes.clone())
                 };
 
-                eprintln!(
+                debug_native!(
                     "[borrow_child_object] shared state lookup result: {:?}",
                     child_bytes_opt.as_ref().map(|b| b.len())
                 );
 
                 // If not in shared state, try on-demand fetching
+            debug_native!("[borrow_child_object] child_bytes_opt.is_none() = {}", child_bytes_opt.is_none());
                 let child_bytes_opt = if child_bytes_opt.is_none() {
+            debug_native!("[borrow_child_object] calling try_fetch_child for parent={}, child={}",
+                        parent.to_hex_literal(), child_id.to_hex_literal());
                     if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object] on-demand fetch succeeded, {} bytes, type={:?}",
                             fetched_bytes.len(),
                             fetched_tag
@@ -1848,10 +2164,11 @@ fn add_dynamic_field_natives(
                             .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
                         Some(fetched_bytes)
                     } else {
-                        eprintln!("[borrow_child_object] on-demand fetch failed or not configured");
+            debug_native!("[borrow_child_object] on-demand fetch failed or not configured");
                         None
                     }
                 } else {
+            debug_native!("[borrow_child_object] already have child_bytes from shared state");
                     child_bytes_opt
                 };
 
@@ -1865,7 +2182,7 @@ fn add_dynamic_field_natives(
                     // Validate Field struct layout (silent unless incorrect)
                     let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
                     if is_field_type && layout_field_count != 3 {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object] WARNING: Field layout has {} fields, expected 3!",
                             layout_field_count
                         );
@@ -1874,7 +2191,7 @@ fn add_dynamic_field_natives(
                     // Deserialize the bytes into a Move Value
                     if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
                         if is_field_type {
-                            eprintln!("[borrow_child_object] Deserialization SUCCESS");
+            debug_native!("[borrow_child_object] Deserialization SUCCESS");
                         }
                         // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
@@ -1884,25 +2201,25 @@ fn add_dynamic_field_natives(
                                 match runtime.borrow_child_object(parent, child_id, &child_tag) {
                                     Ok(ref_value) => {
                                         return Ok(NativeResult::ok(
-                                            InternalGas::new(0),
+                                            InternalGas::new(cost),
                                             smallvec![ref_value],
                                         ))
                                     }
                                     Err(code) => {
-                                        return Ok(NativeResult::err(InternalGas::new(0), code))
+                                        return Ok(NativeResult::err(InternalGas::new(cost), code))
                                     }
                                 }
                             }
-                            Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                            Err(code) => return Ok(NativeResult::err(InternalGas::new(cost), code)),
                         }
                     } else {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object] Deserialization FAILED for type {:?}",
                             child_tag
                         );
-                        eprintln!("[borrow_child_object] Layout: {:?}", type_layout);
+            debug_native!("[borrow_child_object] Layout: {:?}", type_layout);
                         return Ok(NativeResult::err(
-                            InternalGas::new(0),
+                            InternalGas::new(cost),
                             E_FIELD_TYPE_MISMATCH,
                         ));
                     }
@@ -1910,23 +2227,25 @@ fn add_dynamic_field_natives(
             }
 
             // Child doesn't exist in either local or shared state
-            eprintln!(
+            debug_native!(
                 "[borrow_child_object] FINAL: child not found, returning E_FIELD_DOES_NOT_EXIST, parent={}, child_id={}",
                 parent.to_hex_literal(),
                 child_id.to_hex_literal()
             );
             Ok(NativeResult::err(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 E_FIELD_DOES_NOT_EXIST,
             ))
         }),
     ));
 
     // borrow_child_object_mut<Child: key>(object: &mut UID, id: address) -> &mut Child
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "borrow_child_object_mut",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_borrow_child_base);
             use move_vm_types::values::StructRef;
             use crate::object_runtime::SharedObjectRuntime;
 
@@ -1940,36 +2259,36 @@ fn add_dynamic_field_natives(
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
 
-            eprintln!("[borrow_child_object_mut] NATIVE CALLED");
+            debug_native!("[borrow_child_object_mut] NATIVE CALLED");
 
             // Extract parent address (same as borrow_child_object)
             let parent = match extract_address_from_uid(&parent_uid) {
                 Some(addr) => addr,
                 None => {
-                    eprintln!("[borrow_child_object_mut] FAILED to extract parent UID!");
-                    return Ok(NativeResult::err(InternalGas::new(0), E_NOT_SUPPORTED));
+            debug_native!("[borrow_child_object_mut] FAILED to extract parent UID!");
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_NOT_SUPPORTED));
                 }
             };
 
-            eprintln!("[borrow_child_object_mut] parent={}, child_id={}", parent.to_hex_literal(), child_id.to_hex_literal());
+            debug_native!("[borrow_child_object_mut] parent={}, child_id={}", parent.to_hex_literal(), child_id.to_hex_literal());
 
             // First check if it's already in the local runtime
             {
                 let runtime = get_object_runtime_ref(ctx)?;
                 if runtime.child_object_exists(parent, child_id) {
                     let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
-                    eprintln!("[borrow_child_object_mut] found in local runtime, parent={}, child={}, type={:?}",
+            debug_native!("[borrow_child_object_mut] found in local runtime, parent={}, child={}, type={:?}",
                         parent.to_hex_literal(), child_id.to_hex_literal(), child_tag);
                     let runtime = get_object_runtime_mut(ctx)?;
                     match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                         Ok(value) => {
                             if is_field_type {
-                                eprintln!("[borrow_child_object_mut] LOCAL returning value for parent={}: {:?}",
+            debug_native!("[borrow_child_object_mut] LOCAL returning value for parent={}: {:?}",
                                     parent.to_hex_literal(), value);
                             }
-                            return Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]));
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
                         }
-                        Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                        Err(code) => return Ok(NativeResult::err(InternalGas::new(cost), code)),
                     }
                 }
             }
@@ -1977,30 +2296,30 @@ fn add_dynamic_field_natives(
             // Not in local runtime - check shared state and lazy-load if available
             let type_layout = match ctx.type_to_type_layout(&child_ty) {
                 Ok(Some(layout)) => layout,
-                _ => return Ok(NativeResult::err(InternalGas::new(0), E_FIELD_TYPE_MISMATCH)),
+                _ => return Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_TYPE_MISMATCH)),
             };
 
             // Try to load from shared state (same logic as borrow_child_object)
             if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
                 let child_bytes_opt = {
                     let state = shared.shared_state().lock();
-                    eprintln!("[borrow_child_object_mut] checking shared state, has {} children", state.children.len());
+            debug_native!("[borrow_child_object_mut] checking shared state, has {} children", state.children.len());
                     state.get_child(parent, child_id).map(|(_, bytes)| bytes.clone())
                 };
 
-                eprintln!("[borrow_child_object_mut] shared state lookup result: {:?}", child_bytes_opt.as_ref().map(|b| b.len()));
+            debug_native!("[borrow_child_object_mut] shared state lookup result: {:?}", child_bytes_opt.as_ref().map(|b| b.len()));
 
                 // If not in shared state, try on-demand fetching
                 let child_bytes_opt = if child_bytes_opt.is_none() {
                     if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
-                        eprintln!("[borrow_child_object_mut] on-demand fetch succeeded, {} bytes, type={:?}", fetched_bytes.len(), fetched_tag);
+            debug_native!("[borrow_child_object_mut] on-demand fetch succeeded, {} bytes, type={:?}", fetched_bytes.len(), fetched_tag);
                         shared
                             .shared_state()
                             .lock()
                             .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
                         Some(fetched_bytes)
                     } else {
-                        eprintln!("[borrow_child_object_mut] on-demand fetch failed or not configured");
+            debug_native!("[borrow_child_object_mut] on-demand fetch failed or not configured");
                         None
                     }
                 } else {
@@ -2017,7 +2336,7 @@ fn add_dynamic_field_natives(
                     // Validate Field struct layout (silent unless incorrect)
                     let is_field_type = format!("{:?}", child_tag).contains("\"Field\"");
                     if is_field_type && layout_field_count != 3 {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object_mut] WARNING: Field layout has {} fields, expected 3!",
                             layout_field_count
                         );
@@ -2026,7 +2345,7 @@ fn add_dynamic_field_natives(
                     // Deserialize the bytes into a Move Value
                     if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
                         if is_field_type {
-                            eprintln!("[borrow_child_object_mut] Deserialization SUCCESS");
+            debug_native!("[borrow_child_object_mut] Deserialization SUCCESS");
                         }
                         // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
@@ -2036,39 +2355,44 @@ fn add_dynamic_field_natives(
                                 match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                                     Ok(ref_value) => {
                                         if is_field_type {
-                                            eprintln!("[borrow_child_object_mut] Returning ref_value: {:?}", ref_value);
+            debug_native!("[borrow_child_object_mut] Returning ref_value: {:?}", ref_value);
                                         }
-                                        return Ok(NativeResult::ok(InternalGas::new(0), smallvec![ref_value]));
+                                        return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![ref_value]));
                                     }
                                     Err(code) => {
-                                        eprintln!("[borrow_child_object_mut] borrow failed with code {}", code);
-                                        return Ok(NativeResult::err(InternalGas::new(0), code));
+            debug_native!("[borrow_child_object_mut] borrow failed with code {}", code);
+                                        return Ok(NativeResult::err(InternalGas::new(cost), code));
                                     }
                                 }
                             }
-                            Err(code) => return Ok(NativeResult::err(InternalGas::new(0), code)),
+                            Err(code) => return Ok(NativeResult::err(InternalGas::new(cost), code)),
                         }
                     } else {
-                        eprintln!(
+                        debug_native!(
                             "[borrow_child_object_mut] Deserialization FAILED for type {:?}",
                             child_tag
                         );
-                        eprintln!("[borrow_child_object_mut] Layout: {:?}", type_layout);
-                        return Ok(NativeResult::err(InternalGas::new(0), E_FIELD_TYPE_MISMATCH));
+            debug_native!("[borrow_child_object_mut] Layout: {:?}", type_layout);
+                        return Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_TYPE_MISMATCH));
                     }
                 }
             }
 
             // Child doesn't exist
-            Ok(NativeResult::err(InternalGas::new(0), E_FIELD_DOES_NOT_EXIST))
+            Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_DOES_NOT_EXIST))
         }),
     ));
 
     // remove_child_object<Child: key>(parent: address, id: address) -> Child
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "remove_child_object",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_remove_child_base);
+            use crate::object_runtime::SharedObjectRuntime;
+
+            debug_native!("[remove_child_object] ENTERING NATIVE");
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
@@ -2078,26 +2402,105 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
+            debug_native!("[remove_child_object] parent={}, child_id={}, type={:?}",
+                parent.to_hex_literal(), child_id.to_hex_literal(), child_tag);
 
-            let runtime = get_object_runtime_mut(ctx)?;
-            match runtime.remove_child_object(parent, child_id, &child_tag) {
-                Ok(value) => {
-                    // Sync removal to shared state
-                    remove_child_from_shared_state(ctx, parent, child_id);
-                    Ok(NativeResult::ok(InternalGas::new(0), smallvec![value]))
+            // First check if the child is in local runtime
+            {
+                let runtime = get_object_runtime_ref(ctx)?;
+                if runtime.child_object_exists(parent, child_id) {
+            debug_native!("[remove_child_object] found in local runtime");
+                    let runtime = get_object_runtime_mut(ctx)?;
+                    match runtime.remove_child_object(parent, child_id, &child_tag) {
+                        Ok(value) => {
+            debug_native!("[remove_child_object] SUCCESS from local runtime");
+                            remove_child_from_shared_state(ctx, parent, child_id);
+                            return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
+                        }
+                        Err(code) => {
+            debug_native!("[remove_child_object] FAILED from local runtime with code {}", code);
+                            return Ok(NativeResult::err(InternalGas::new(cost), code));
+                        }
+                    }
                 }
-                Err(code) => Ok(NativeResult::err(InternalGas::new(0), code)),
             }
+
+            // Not in local runtime - try to load from shared state
+            let type_layout = match ctx.type_to_type_layout(&child_ty) {
+                Ok(Some(layout)) => layout,
+                _ => {
+            debug_native!("[remove_child_object] Failed to get type layout");
+                    return Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_TYPE_MISMATCH));
+                }
+            };
+
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                // Try to get from shared state
+                let child_bytes_opt = {
+                    let state = shared.shared_state().lock();
+            debug_native!("[remove_child_object] checking shared state, has {} children", state.children.len());
+                    state.get_child(parent, child_id).map(|(_, bytes)| bytes.clone())
+                };
+
+                // If not in shared state, try on-demand fetching
+                let child_bytes_opt = if child_bytes_opt.is_none() {
+            debug_native!("[remove_child_object] not in shared state, trying on-demand fetch");
+                    if let Some((_fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
+            debug_native!("[remove_child_object] on-demand fetch succeeded, {} bytes", fetched_bytes.len());
+                        Some(fetched_bytes)
+                    } else {
+            debug_native!("[remove_child_object] on-demand fetch failed");
+                        None
+                    }
+                } else {
+            debug_native!("[remove_child_object] found in shared state");
+                    child_bytes_opt
+                };
+
+                if let Some(child_bytes) = child_bytes_opt {
+                    // Deserialize and add to local runtime, then remove
+                    if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
+            debug_native!("[remove_child_object] Deserialization SUCCESS");
+                        // Add to local runtime first so we can remove it
+                        let runtime = shared.local_mut();
+                        if let Err(e) = runtime.add_child_object(parent, child_id, value.copy_value().unwrap(), child_tag.clone()) {
+            debug_native!("[remove_child_object] Failed to add to local runtime: {}", e);
+                            return Ok(NativeResult::err(InternalGas::new(cost), e));
+                        }
+                        // Now remove it
+                        match runtime.remove_child_object(parent, child_id, &child_tag) {
+                            Ok(value) => {
+            debug_native!("[remove_child_object] SUCCESS after loading from shared state");
+                                remove_child_from_shared_state(ctx, parent, child_id);
+                                return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
+                            }
+                            Err(code) => {
+            debug_native!("[remove_child_object] FAILED after loading, code {}", code);
+                                return Ok(NativeResult::err(InternalGas::new(cost), code));
+                            }
+                        }
+                    } else {
+            debug_native!("[remove_child_object] Deserialization FAILED for type {:?}", child_tag);
+                    }
+                }
+            }
+
+            debug_native!("[remove_child_object] FAILED - child not found anywhere");
+            Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_DOES_NOT_EXIST))
         }),
     ));
 
     // has_child_object(parent: address, id: address) -> bool
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "has_child_object",
-        make_native(|ctx, _ty_args, mut args| {
+        make_native(move |ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_has_child_base);
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
+
+            debug_native!("[has_child_object] parent={}, child_id={}", parent.to_hex_literal(), child_id.to_hex_literal());
 
             // Check local runtime first (this borrow ends before we check shared state)
             let in_local = {
@@ -2107,23 +2510,34 @@ fn add_dynamic_field_natives(
 
             if in_local {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(true)],
                 ));
+            }
+
+            // Check if this child was removed during this PTB - if so, don't re-fetch
+            use crate::object_runtime::SharedObjectRuntime;
+            if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
+                if shared.shared_state().lock().is_child_removed(parent, child_id) {
+            debug_native!("[has_child_object] child was removed, returning false");
+                    return Ok(NativeResult::ok(
+                        InternalGas::new(cost),
+                        smallvec![Value::bool(false)],
+                    ));
+                }
             }
 
             // Check shared state
             let in_shared = check_shared_state_for_child(ctx, parent, child_id);
             if in_shared {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(true)],
                 ));
             }
 
             // Not found locally or in shared state - try on-demand fetching
             // This is needed for replay scenarios where dynamic fields are fetched lazily
-            use crate::object_runtime::SharedObjectRuntime;
             let fetched = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
             {
                 if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
@@ -2144,17 +2558,19 @@ fn add_dynamic_field_natives(
             };
 
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::bool(fetched)],
             ))
         }),
     ));
 
     // has_child_object_with_ty<Child: key>(parent: address, id: address) -> bool
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "has_child_object_with_ty",
-        make_native(|ctx, mut ty_args, mut args| {
+        make_native(move |ctx, mut ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_has_child_base);
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
                     move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
@@ -2173,7 +2589,7 @@ fn add_dynamic_field_natives(
 
             if in_local {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(true)],
                 ));
             }
@@ -2182,7 +2598,7 @@ fn add_dynamic_field_natives(
             let in_shared = check_shared_state_for_child(ctx, parent, child_id);
             if in_shared {
                 return Ok(NativeResult::ok(
-                    InternalGas::new(0),
+                    InternalGas::new(cost),
                     smallvec![Value::bool(true)],
                 ));
             }
@@ -2197,21 +2613,35 @@ fn add_dynamic_field_natives(
                     // Verify the type matches before adding
                     // Note: We do a simple match here - could be more lenient if needed
                     let type_matches = fetched_tag == child_tag;
+            debug_native!("[has_child_object_with_ty] fetched_tag={:?}", fetched_tag);
+            debug_native!("[has_child_object_with_ty] child_tag={:?}", child_tag);
+            debug_native!("[has_child_object_with_ty] type_matches={}", type_matches);
                     if type_matches {
                         // Add to shared state for future lookups
-                        shared.shared_state().lock().add_child(
-                            parent,
-                            child_id,
-                            fetched_tag,
-                            fetched_bytes,
-                        );
+                        {
+                            let arc = shared.shared_state();
+                            let arc_ptr = std::sync::Arc::as_ptr(arc);
+                            let mut state = arc.lock();
+                            let before_count = state.children.len();
+                            state.add_child(
+                                parent,
+                                child_id,
+                                fetched_tag,
+                                fetched_bytes,
+                            );
+                            let after_count = state.children.len();
+            debug_native!("[has_child_object_with_ty] arc={:p}, Added child to shared state. Count: {} -> {}. Parent={}, Child={}",
+                                arc_ptr, before_count, after_count, parent.to_hex_literal(), child_id.to_hex_literal());
+                        }
                         true
                     } else {
                         // Type mismatch - the field exists but with a different type
                         // This is still "exists" in the general sense
+            debug_native!("[has_child_object_with_ty] TYPE MISMATCH - returning false even though child exists!");
                         false
                     }
                 } else {
+            debug_native!("[has_child_object_with_ty] try_fetch_child returned None");
                     false
                 }
             } else {
@@ -2219,7 +2649,7 @@ fn add_dynamic_field_natives(
             };
 
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::bool(fetched)],
             ))
         }),
@@ -2228,10 +2658,12 @@ fn add_dynamic_field_natives(
     // field_info_count(parent: address) -> u64
     // Returns the number of dynamic fields for a given parent object.
     // This is a sandbox-specific extension to help with Table/Bag iteration.
+    let state_clone = state.clone();
     natives.push((
         "dynamic_field",
         "field_info_count",
-        make_native(|ctx, _ty_args, mut args| {
+        make_native(move |ctx, _ty_args, mut args| {
+            let cost = state_clone.get_native_cost(|c| c.dynamic_field_has_child_base);
             let parent = pop_arg!(args, AccountAddress);
 
             let runtime = get_object_runtime_ref(ctx)?;
@@ -2241,7 +2673,7 @@ fn add_dynamic_field_natives(
             let shared_count = count_shared_state_children(ctx, parent);
 
             Ok(NativeResult::ok(
-                InternalGas::new(0),
+                InternalGas::new(cost),
                 smallvec![Value::u64(count + shared_count)],
             ))
         }),

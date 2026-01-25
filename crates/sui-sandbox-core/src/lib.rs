@@ -46,10 +46,12 @@ pub mod constructor_map;
 pub mod error_context;
 pub mod errors;
 pub mod fetcher;
+pub mod gas;
 pub mod mm2;
 pub mod natives;
 pub mod object_runtime;
 pub mod phases;
+pub mod predictive_prefetch;
 pub mod ptb;
 pub mod resolver;
 pub mod sandbox_types;
@@ -77,6 +79,10 @@ pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};
 pub use object_runtime::{
     ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
     VersionedChildFetcherFn,
+};
+pub use predictive_prefetch::{
+    PredictedAccessInfo, PredictionStats, PredictivePrefetchConfig, PredictivePrefetchResult,
+    PredictivePrefetcher,
 };
 pub use resolver::LocalModuleResolver;
 pub use vm::{SimulationConfig, VMHarness};

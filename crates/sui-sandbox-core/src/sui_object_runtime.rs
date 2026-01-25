@@ -30,6 +30,7 @@ use std::sync::Arc;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
 use move_vm_runtime::native_functions::NativeFunctionTable;
+use tracing::{debug, trace, warn};
 
 use sui_move_natives::object_runtime::{InputObject, ObjectRuntime};
 use sui_move_natives::transaction_context::TransactionContext;
@@ -83,11 +84,11 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
         child: &ObjectID,
         child_version_upper_bound: SequenceNumber,
     ) -> SuiResult<Option<Object>> {
-        eprintln!(
-            "[ChildObjectResolver] read_child_object parent={} child={} version_bound={}",
-            parent.to_hex_literal(),
-            child.to_hex_literal(),
-            child_version_upper_bound.value()
+        trace!(
+            parent = %parent.to_hex_literal(),
+            child = %child.to_hex_literal(),
+            version_bound = child_version_upper_bound.value(),
+            "read_child_object"
         );
 
         // Call our fetcher to get the child object data
@@ -97,10 +98,10 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
             Some((type_tag, bcs_bytes, version, fetched_parent)) => {
                 // Verify the parent matches
                 if fetched_parent != *parent {
-                    eprintln!(
-                        "[ChildObjectResolver] WARNING: parent mismatch! expected={} got={}",
-                        parent.to_hex_literal(),
-                        fetched_parent.to_hex_literal()
+                    warn!(
+                        expected = %parent.to_hex_literal(),
+                        actual = %fetched_parent.to_hex_literal(),
+                        "parent mismatch in child object fetch"
                     );
                     // Still allow it - the parent in the fetcher might be stale
                 }
@@ -157,18 +158,18 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
                     storage_rebate: 0,
                 };
 
-                eprintln!(
-                    "[ChildObjectResolver] SUCCESS: loaded child {} version={}",
-                    child.to_hex_literal(),
-                    version
+                debug!(
+                    child = %child.to_hex_literal(),
+                    version = version,
+                    "loaded child object"
                 );
 
                 Ok(Some(object.into()))
             }
             None => {
-                eprintln!(
-                    "[ChildObjectResolver] child {} not found",
-                    child.to_hex_literal()
+                trace!(
+                    child = %child.to_hex_literal(),
+                    "child object not found"
                 );
                 Ok(None)
             }
@@ -186,11 +187,11 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
         receive_object_at_version: SequenceNumber,
         _epoch_id: EpochId,
     ) -> SuiResult<Option<Object>> {
-        eprintln!(
-            "[ChildObjectResolver] get_object_received_at_version owner={} obj={} version={}",
-            owner.to_hex_literal(),
-            receiving_object_id.to_hex_literal(),
-            receive_object_at_version.value()
+        trace!(
+            owner = %owner.to_hex_literal(),
+            object = %receiving_object_id.to_hex_literal(),
+            version = receive_object_at_version.value(),
+            "get_object_received_at_version"
         );
 
         // For now, delegate to regular child fetching
@@ -339,6 +340,10 @@ pub struct SuiRuntimeConfig {
     pub gas_price: u64,
     pub gas_budget: u64,
     pub sponsor: Option<AccountAddress>,
+    /// Whether to enable gas metering for native functions.
+    /// When true, native function costs are charged from Sui's NativesCostTable.
+    /// Default: false for backwards compatibility.
+    pub is_metered: bool,
 }
 
 impl Default for SuiRuntimeConfig {
@@ -350,6 +355,7 @@ impl Default for SuiRuntimeConfig {
             gas_price: 1000,
             gas_budget: 50_000_000_000,
             sponsor: None,
+            is_metered: false,
         }
     }
 }
@@ -373,6 +379,8 @@ pub struct SuiNativeExtensions {
     /// Input objects - objects that are inputs to the transaction
     /// These must be registered before their children can be accessed
     input_objects: parking_lot::Mutex<BTreeMap<ObjectID, InputObject>>,
+    /// Whether gas metering is enabled for native functions
+    is_metered: bool,
 }
 
 impl SuiNativeExtensions {
@@ -419,6 +427,7 @@ impl SuiNativeExtensions {
             metrics,
             epoch_id: config.epoch,
             input_objects: parking_lot::Mutex::new(BTreeMap::new()),
+            is_metered: config.is_metered,
         }
     }
 
@@ -471,16 +480,17 @@ impl SuiNativeExtensions {
             .collect();
         drop(objects); // Release lock before using input_objects
 
-        eprintln!(
-            "[SuiNativeExtensions] Creating ObjectRuntime with {} input objects",
-            input_objects.len()
+        debug!(
+            input_objects_count = input_objects.len(),
+            "creating ObjectRuntime"
         );
 
         // Create ObjectRuntime with leaked references
+        // is_metered controls whether native functions charge gas from NativesCostTable
         let object_runtime = ObjectRuntime::new(
             self.resolver,
             input_objects,
-            false, // is_metered
+            self.is_metered,
             self.protocol_config,
             self.metrics.clone(),
             self.epoch_id,
