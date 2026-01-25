@@ -367,6 +367,26 @@ The following edge cases were identified through comprehensive analysis of the S
 
 ## Gas Model
 
+### Accurate Gas Metering (v0.9.0+)
+
+**Status:** Gas metering is now Sui-compatible and enabled by default.
+
+**Details:**
+- `AccurateGasMeter` with per-instruction costs matching Sui's cost tables
+- Storage tracking for read/write/delete charges
+- Native function gas costs from `native_costs.rs`
+- Protocol-version-aware cost tables
+- Computation bucketing matching Sui's gas model
+
+**Configuration:**
+```rust
+// Gas metering is enabled by default
+let config = SimulationConfig::default();
+
+// To disable gas metering for unlimited execution
+let config = SimulationConfig::default().without_gas_metering();
+```
+
 ### Storage Rebate Approximation
 
 **Limitation:** Storage rebates are approximated rather than precisely calculated.
@@ -374,20 +394,9 @@ The following edge cases were identified through comprehensive analysis of the S
 **Details:**
 - On-chain storage rebates depend on the exact object size and historical storage price when the object was created
 - The sandbox uses a formula: `object_size_bytes * 100 * storage_price * 0.99` (99% refundable)
-- For precise rebate tracking, use `SimulationConfig::with_storage_price()` to set the storage price and `ObjectRuntimeState::with_calculated_rebate()` to compute rebates
+- For precise rebate tracking, use `SimulationConfig::with_storage_price()` to set the storage price
 
 **Impact:** Gas cost comparisons may show small differences in storage rebate values.
-
-### Gas Metering Differences
-
-**Limitation:** Gas metering is simplified compared to on-chain execution.
-
-**Details:**
-- The sandbox uses cost estimates for operations rather than exact metering
-- Complex operations like BCS serialization, vector operations, and native calls use approximations
-- Gas budget enforcement is optional (disabled by default)
-
-**Impact:** Local execution may succeed where on-chain would fail due to gas limits, or vice versa.
 
 ---
 

@@ -1,6 +1,6 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.8.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.9.0-green.svg)](Cargo.toml)
 [![Sui](https://img.shields.io/badge/sui-mainnet--v1.63.4-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.
@@ -96,7 +96,7 @@ See **[examples/README.md](examples/README.md)** for detailed documentation on e
 | Object storage | Simulated (in-memory) |
 | Clock/timestamps | Configurable |
 | Randomness | Deterministic |
-| Gas metering | Permissive |
+| Gas metering | **Accurate** (Sui-compatible) |
 
 **Rule of thumb**: If a transaction succeeds here, it will succeed on mainnet (assuming state hasn't changed).
 
@@ -145,12 +145,13 @@ sui-sandbox/
 │   ├── ptb_basics.rs       # Basic PTB
 │   ├── fork_state.rs       # Mainnet forking
 │   └── cetus_swap.rs       # Canonical replay example
-├── src/benchmark/          # Core simulation engine
+├── src/                    # Main library and CLI
 ├── crates/
-│   ├── sui-sandbox-core/   # Core VM and simulation
+│   ├── sui-sandbox-core/   # Core VM, PTB execution, gas metering
 │   ├── sui-transport/      # Network layer (gRPC + GraphQL)
-│   ├── sui-prefetch/       # Strategic data loading
-│   └── sui-resolver/       # Resolution & normalization
+│   ├── sui-prefetch/       # Strategic data loading, MM2 analysis
+│   ├── sui-resolver/       # Address resolution & normalization
+│   └── sui-state-fetcher/  # State provider abstraction
 └── docs/                   # Guides and reference
 ```
 
@@ -158,7 +159,6 @@ sui-sandbox/
 
 The simulation layer differs from mainnet in these ways:
 
-- **Gas is approximate** - Use `sui_dryRunTransactionBlock` for exact costs
 - **Randomness is deterministic** - Reproducible locally, different from mainnet VRF
 - **Function visibility not enforced** - Private functions callable in simulation
 - **Some validations relaxed** - Type constraints and ability checks are partial

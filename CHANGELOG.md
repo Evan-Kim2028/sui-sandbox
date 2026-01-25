@@ -2,6 +2,95 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.9.0] - 2026-01-25
+
+### Breaking Changes
+
+#### Crate Architecture Refactor
+
+- **`sui-data-fetcher` crate removed**: Split into specialized crates:
+  - `sui-transport`: GraphQL/gRPC transport layer
+  - `sui-resolver`: Address normalization, package linkage, upgrade resolution
+  - `sui-prefetch`: Ground-truth prefetching and MM2 predictive prefetch
+  - `sui-state-fetcher`: State provider abstraction with VM integration
+
+#### PTB API Changes
+
+- **`ObjectInput` enum now requires `version` field**: All variants (`ImmRef`, `MutRef`, `Owned`, `Shared`, `Receiving`) now have a `version: Option<u64>` field for version tracking
+- **`TypedReturnValue` replaces `Vec<u8>`**: `ExecutionOutput.return_values` is now `Vec<TypedReturnValue>` with type information
+- **`mutable_ref_outputs` tuple extended**: Now `Vec<(u8, Vec<u8>, Option<TypeTag>)>` (was 2-tuple)
+- **`ReplayResult` has new fields**: `objects_tracked`, `lamport_timestamp`, `version_summary`
+
+### Added
+
+#### Accurate Gas Metering System
+
+New gas metering module with Sui-compatible implementation:
+- `AccurateGasMeter` with per-instruction costs
+- Storage tracking for read/write/delete charges
+- Native function gas costs
+- Protocol-version-aware cost tables
+- Computation bucketing matching Sui's gas model
+- `GasSummary` builder for detailed cost breakdown
+- Gas metering enabled by default (use `without_gas_metering()` to disable)
+
+#### PTB Execution Improvements
+
+All 9 edge cases from FEASIBILITY_PLAN.md have been fixed:
+- **SplitCoins/MergeCoins Result argument handling**: Balance mutations now properly propagate to Result/NestedResult arguments
+- **Version tracking system**: `TrackedObject` with version, `is_modified`, owner, digest fields
+- **Structured abort info**: `StructuredAbortInfo` captures abort codes directly from VMError
+- **Receiving objects support**: New `ObjectInput::Receiving` variant with `parent_id` tracking
+- **DryRunResult**: Per-command validation and estimated gas
+- **PTBTraceSummary**: Timing statistics (total/avg/max duration)
+
+#### MM2 Bytecode Analysis (Predictive Prefetch)
+
+Predictive prefetch system for dynamic field access:
+- `bytecode_analyzer.rs` - Walks bytecode to find dynamic_field calls
+- `field_access_predictor.rs` - Predicts dynamic field accesses with type resolution
+- `call_graph.rs` - Build call graphs for inter-module analysis
+- `key_synthesizer.rs` - Generate synthetic keys for prefetch
+- `predictive_prefetch.rs` - Integration layer for prefetch predictions
+- `eager_prefetch.rs` - Enhanced prefetching with MM2 analysis
+
+#### CLI Bridge Enhancements
+
+- **`bridge info` subcommand**: Comprehensive transition workflow guide
+  - Shows deployment steps, environment checks, network options
+  - `--verbose` flag adds protocol version and error handling tips
+  - JSON output support for tooling integration
+
+#### Test Infrastructure
+
+- New `tests/common/` module with shared test infrastructure
+- `ptb_tests.rs`: PTB-specific tests
+- `bug_fix_verification_tests.rs`: Regression tests
+
+#### Examples
+
+- New `PrefetchStrategy` enum: GroundTruth, MM2Predictive, LegacyGraphQL
+- New `deepbook_orders.rs`, `ptb_basics.rs`, `version_tracking_test.rs`
+- Simplified `examples/common/mod.rs` to re-export from workspace crates
+
+### Changed
+
+- Examples now use workspace crate APIs directly rather than duplicating utility code
+- Documentation consolidated and simplified (~4,300 lines removed, ~500 lines of focused docs added)
+- Outdated documentation archived to `docs/archive/`
+
+### Fixed
+
+- Fixed `Identifier::new()` type conversion in tx_replay.rs
+- Fixed clippy warnings (unused variables, field assignment patterns)
+- Fixed test compilation errors for new API types
+
+### Removed
+
+- `coin_transfer.rs` example (superseded by `ptb_basics.rs`)
+- Outdated documentation: LLM integration guide, local bytecode sandbox guide, migration guides
+- DeFi case studies moved to `docs/archive/`
+
 ## [0.8.0] - 2026-01-23
 
 ### Breaking Changes
@@ -23,9 +112,9 @@ All notable changes to the Sui Move Interface Extractor project will be document
 - `type_utils.rs`: `parse_type_tag()`, `extract_package_ids_from_type()`, `extract_dependencies_from_bytecode()` for type/bytecode analysis
 - `version_utils.rs`: `detect_version_constants()` for bytecode version detection
 
-**`sui_data_fetcher::utilities`** - gRPC data helper utilities:
+**`sui_prefetch::utilities`** - gRPC data helper utilities:
 
-- `create_grpc_client()`: Initialize Surflux gRPC client with API key
+- `create_grpc_client()`: Initialize gRPC client with API key
 - `collect_historical_versions()`: Aggregate object versions from gRPC transaction response
 
 #### CLI Tooling
@@ -48,11 +137,11 @@ All notable changes to the Sui Move Interface Extractor project will be document
 ### Changed
 
 - **`examples/common/mod.rs`** now contains only application glue code between crates
-  - Re-exports utilities from `sui_sandbox_core::utilities` and `sui_data_fetcher::utilities`
+  - Re-exports utilities from `sui_sandbox_core::utilities` and `sui_prefetch::utilities`
   - Provides bridge functions: `build_generic_patcher()`, `build_resolver_from_packages()`, `create_child_fetcher()`, `create_vm_harness()`, `register_input_objects()`
 - **Clear architectural separation**:
   - `sui_sandbox_core::utilities` - Infrastructure workarounds (patching, normalization, bytecode analysis)
-  - `sui_data_fetcher::utilities` - Data helpers (gRPC client setup, version aggregation)
+  - `sui_prefetch::utilities` - Data helpers (gRPC client setup, version aggregation)
 
 ### Migration Guide
 
