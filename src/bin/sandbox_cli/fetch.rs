@@ -110,8 +110,8 @@ fn fetch_package(
         eprintln!("Fetching package {}...", package_id);
     }
 
-    // Use sui-data-fetcher GraphQL client (synchronous)
-    let client = sui_data_fetcher::graphql::GraphQLClient::new(&state.rpc_url);
+    // Use sui-transport GraphQL client (synchronous)
+    let client = sui_transport::graphql::GraphQLClient::new(&state.rpc_url);
 
     let package_data = client
         .fetch_package(package_id)
@@ -180,8 +180,8 @@ fn fetch_object(
         }
     }
 
-    // Use sui-data-fetcher GraphQL client (synchronous)
-    let client = sui_data_fetcher::graphql::GraphQLClient::new(&state.rpc_url);
+    // Use sui-transport GraphQL client (synchronous)
+    let client = sui_transport::graphql::GraphQLClient::new(&state.rpc_url);
 
     let object_data = if let Some(v) = version {
         client

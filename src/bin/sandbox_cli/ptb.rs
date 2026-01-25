@@ -261,6 +261,7 @@ fn convert_input_spec(spec: &InputSpec) -> Result<InputValue> {
                     id: addr,
                     bytes: vec![],
                     type_tag: None,
+                    version: None,
                 }))
             } else if let Some(shared) = &obj.shared {
                 let addr = AccountAddress::from_hex_literal(&shared.id)
@@ -269,6 +270,7 @@ fn convert_input_spec(spec: &InputSpec) -> Result<InputValue> {
                     id: addr,
                     bytes: vec![],
                     type_tag: None,
+                    version: None,
                 }))
             } else {
                 Err(anyhow!(

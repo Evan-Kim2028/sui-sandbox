@@ -229,7 +229,7 @@ mod tests {
         let dir = tempdir().unwrap();
 
         // Create a mock .mv file
-        std::fs::write(dir.path().join("test_module.mv"), &[0x01, 0x02, 0x03]).unwrap();
+        std::fs::write(dir.path().join("test_module.mv"), [0x01, 0x02, 0x03]).unwrap();
 
         let modules = load_bytecode_modules(&dir.path().to_path_buf()).unwrap();
         assert_eq!(modules.len(), 1);

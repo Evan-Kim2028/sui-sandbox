@@ -32,6 +32,9 @@ pub enum BridgeSubcommand {
 
     /// Generate sui client ptb command
     Ptb(BridgePtbCmd),
+
+    /// Show transition info and deployment workflow
+    Info(BridgeInfoCmd),
 }
 
 #[derive(Parser, Debug)]
@@ -86,12 +89,21 @@ pub struct BridgePtbCmd {
     pub quiet: bool,
 }
 
+/// Bridge info command to show transition workflow
+#[derive(Parser, Debug)]
+pub struct BridgeInfoCmd {
+    /// Show verbose info including all steps
+    #[arg(long, short)]
+    pub verbose: bool,
+}
+
 impl BridgeCmd {
     pub fn execute(&self, json_output: bool) -> Result<()> {
         match &self.command {
             BridgeSubcommand::Publish(cmd) => cmd.execute(json_output),
             BridgeSubcommand::Call(cmd) => cmd.execute(json_output),
             BridgeSubcommand::Ptb(cmd) => cmd.execute(json_output),
+            BridgeSubcommand::Info(cmd) => cmd.execute(json_output),
         }
     }
 }
@@ -270,9 +282,222 @@ impl BridgePtbCmd {
     }
 }
 
+impl BridgeInfoCmd {
+    pub fn execute(&self, json_output: bool) -> Result<()> {
+        let info = TransitionInfo::new(self.verbose);
+
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&info)?);
+        } else {
+            info.print_human();
+        }
+
+        Ok(())
+    }
+}
+
 // =============================================================================
 // Output Types
 // =============================================================================
+
+#[derive(serde::Serialize)]
+struct TransitionInfo {
+    workflow: Vec<WorkflowStep>,
+    environment_check: EnvironmentCheck,
+    tips: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    advanced: Option<AdvancedInfo>,
+}
+
+#[derive(serde::Serialize)]
+struct WorkflowStep {
+    step: usize,
+    title: String,
+    command: Option<String>,
+    description: String,
+}
+
+#[derive(serde::Serialize)]
+struct EnvironmentCheck {
+    required_tools: Vec<ToolRequirement>,
+    network_options: Vec<NetworkOption>,
+}
+
+#[derive(serde::Serialize)]
+struct ToolRequirement {
+    name: String,
+    check_command: String,
+    install_hint: String,
+}
+
+#[derive(serde::Serialize)]
+struct NetworkOption {
+    name: String,
+    env_name: String,
+    faucet: bool,
+    notes: String,
+}
+
+#[derive(serde::Serialize)]
+struct AdvancedInfo {
+    protocol_version: u64,
+    version_tracking_hint: String,
+    error_handling_tips: Vec<String>,
+}
+
+impl TransitionInfo {
+    fn new(verbose: bool) -> Self {
+        let workflow = vec![
+            WorkflowStep {
+                step: 1,
+                title: "Verify Local Testing".to_string(),
+                command: Some("sui-sandbox run <your-function>".to_string()),
+                description: "Ensure your Move code works correctly in the sandbox".to_string(),
+            },
+            WorkflowStep {
+                step: 2,
+                title: "Set Network".to_string(),
+                command: Some("sui client switch --env testnet".to_string()),
+                description: "Switch to testnet for initial deployment".to_string(),
+            },
+            WorkflowStep {
+                step: 3,
+                title: "Get Test Tokens".to_string(),
+                command: Some("sui client faucet".to_string()),
+                description: "Request testnet SUI tokens for gas".to_string(),
+            },
+            WorkflowStep {
+                step: 4,
+                title: "Publish Package".to_string(),
+                command: Some("sui client publish --gas-budget 100000000".to_string()),
+                description: "Deploy your Move package to the network".to_string(),
+            },
+            WorkflowStep {
+                step: 5,
+                title: "Note Package ID".to_string(),
+                command: None,
+                description: "Save the published package ID from the transaction output".to_string(),
+            },
+            WorkflowStep {
+                step: 6,
+                title: "Test Deployment".to_string(),
+                command: Some("sui client call --package <PKG_ID> --module <mod> --function <fn>".to_string()),
+                description: "Call functions to verify deployment works".to_string(),
+            },
+        ];
+
+        let environment_check = EnvironmentCheck {
+            required_tools: vec![
+                ToolRequirement {
+                    name: "Sui CLI".to_string(),
+                    check_command: "sui --version".to_string(),
+                    install_hint: "cargo install --git https://github.com/MystenLabs/sui.git sui".to_string(),
+                },
+                ToolRequirement {
+                    name: "Active Address".to_string(),
+                    check_command: "sui client active-address".to_string(),
+                    install_hint: "sui client new-address ed25519".to_string(),
+                },
+            ],
+            network_options: vec![
+                NetworkOption {
+                    name: "Testnet".to_string(),
+                    env_name: "testnet".to_string(),
+                    faucet: true,
+                    notes: "Recommended for initial testing".to_string(),
+                },
+                NetworkOption {
+                    name: "Devnet".to_string(),
+                    env_name: "devnet".to_string(),
+                    faucet: true,
+                    notes: "Resets frequently, use for experiments".to_string(),
+                },
+                NetworkOption {
+                    name: "Mainnet".to_string(),
+                    env_name: "mainnet".to_string(),
+                    faucet: false,
+                    notes: "Production - requires real SUI for gas".to_string(),
+                },
+            ],
+        };
+
+        let tips = vec![
+            "Use 'sui-sandbox bridge publish' to generate the exact publish command".to_string(),
+            "Use 'sui-sandbox bridge call' to translate sandbox function calls".to_string(),
+            "Replace sandbox addresses (0x100, 0xcafe, etc.) with real package IDs".to_string(),
+            "Use --preview with 'sui client ptb' to test transactions without executing".to_string(),
+        ];
+
+        let advanced = if verbose {
+            Some(AdvancedInfo {
+                protocol_version: 73, // Default protocol version
+                version_tracking_hint: "Use 'sui-sandbox run --track-versions' to see expected object version changes".to_string(),
+                error_handling_tips: vec![
+                    "Abort codes in sandbox map directly to on-chain abort codes".to_string(),
+                    "Common abort 1: Invalid arguments or type mismatch".to_string(),
+                    "Common abort 2: Insufficient balance for coin operations".to_string(),
+                    "Use 'sui client call --dry-run' to preview without executing".to_string(),
+                ],
+            })
+        } else {
+            None
+        };
+
+        Self {
+            workflow,
+            environment_check,
+            tips,
+            advanced,
+        }
+    }
+
+    fn print_human(&self) {
+        println!("\x1b[1m🌉 Sandbox to Sui Network Transition Guide\x1b[0m\n");
+
+        println!("\x1b[36m━━━ Environment Check ━━━\x1b[0m\n");
+        println!("\x1b[33mRequired Tools:\x1b[0m");
+        for tool in &self.environment_check.required_tools {
+            println!("  • {} - check: \x1b[90m{}\x1b[0m", tool.name, tool.check_command);
+        }
+        println!();
+
+        println!("\x1b[33mNetwork Options:\x1b[0m");
+        for network in &self.environment_check.network_options {
+            let faucet = if network.faucet { "✓ faucet" } else { "✗ no faucet" };
+            println!(
+                "  • \x1b[32m{}\x1b[0m ({}) - {} - {}",
+                network.name, network.env_name, faucet, network.notes
+            );
+        }
+        println!();
+
+        println!("\x1b[36m━━━ Deployment Workflow ━━━\x1b[0m\n");
+        for step in &self.workflow {
+            println!("\x1b[1m{}. {}\x1b[0m", step.step, step.title);
+            if let Some(ref cmd) = step.command {
+                println!("   \x1b[32m$ {}\x1b[0m", cmd);
+            }
+            println!("   \x1b[90m{}\x1b[0m\n", step.description);
+        }
+
+        println!("\x1b[36m━━━ Quick Tips ━━━\x1b[0m\n");
+        for tip in &self.tips {
+            println!("  💡 {}", tip);
+        }
+        println!();
+
+        if let Some(ref adv) = self.advanced {
+            println!("\x1b[36m━━━ Advanced Info ━━━\x1b[0m\n");
+            println!("  Protocol Version: {}", adv.protocol_version);
+            println!("  Version Tracking: {}", adv.version_tracking_hint);
+            println!();
+            println!("\x1b[33mError Handling Tips:\x1b[0m");
+            for tip in &adv.error_handling_tips {
+                println!("    • {}", tip);
+            }
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 struct PublishOutput {

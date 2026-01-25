@@ -80,7 +80,7 @@ impl ReplayCmd {
         }
 
         // Fetch transaction using GraphQL (synchronous)
-        let client = sui_data_fetcher::graphql::GraphQLClient::new(&state.rpc_url);
+        let client = sui_transport::graphql::GraphQLClient::new(&state.rpc_url);
 
         let tx_data = client
             .fetch_transaction(&self.digest)
