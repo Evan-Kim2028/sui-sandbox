@@ -15,6 +15,7 @@ cd tests/fixture && sui move build && cd ../..
 ```
 
 This shell script walks you through the `sui-sandbox` CLI without any compilation. You'll learn:
+
 - Exploring framework modules (`view modules`, `view module`)
 - Executing simple functions
 - Using JSON output for scripting
@@ -30,6 +31,7 @@ cargo run --example ptb_basics
 ```
 
 Your first Rust example. Creates a local simulation environment and executes basic PTB commands:
+
 - Creating a `SimulationEnvironment`
 - Splitting coins with `SplitCoins`
 - Transferring objects with `TransferObjects`
@@ -45,6 +47,7 @@ cargo run --example fork_state
 ```
 
 Fork real mainnet state and deploy your own contracts against it:
+
 - Fetch real packages (DeepBook V3) and objects from mainnet
 - Load them into a local SimulationEnvironment
 - **Deploy your own Move contracts** into the sandbox
@@ -64,6 +67,7 @@ cargo run --example cetus_swap
 ```
 
 The core use case - replay a real mainnet transaction locally:
+
 - Fetch historical transaction from gRPC
 - Reconstruct exact input state (including dynamic fields)
 - Execute locally and verify 1:1 mainnet parity
@@ -80,6 +84,7 @@ cargo run --example deepbook_orders
 ```
 
 Replay DeepBook order transactions that use BigVector internally:
+
 - **cancel_order** and **place_limit_order** transaction replay
 - Dynamic field prefetching with `prefetch_dynamic_fields`
 - Enhanced child fetcher with gRPC + GraphQL fallback
@@ -100,6 +105,7 @@ cargo run --example multi_swap_flash_loan
 ```
 
 Advanced replay with complex state:
+
 - Multi-DEX flash loan arbitrage
 - Dynamic field prefetching
 - Version-lock handling with `GenericObjectPatcher`
@@ -142,6 +148,7 @@ cp .env.example .env
 ```
 
 Example `.env`:
+
 ```
 SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
 SUI_GRPC_API_KEY=your-api-key-here  # Optional, depending on provider
@@ -249,7 +256,7 @@ cargo clean && cargo build --examples
 
 ### "sui CLI not found" (fork_state only)
 
-The custom contract deployment in `fork_state` requires the Sui CLI. Install from https://docs.sui.io/guides/developer/getting-started/sui-install
+The custom contract deployment in `fork_state` requires the Sui CLI. Install from <https://docs.sui.io/guides/developer/getting-started/sui-install>
 
 The example still runs without it - just skips the custom contract part.
 

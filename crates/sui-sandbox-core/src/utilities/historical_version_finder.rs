@@ -62,12 +62,17 @@ impl VersionConstantCache {
 
     /// Get cached constant for a package version.
     pub fn get(&self, package_id: &str, version: u64) -> Option<Option<u64>> {
-        self.cache.read().get(&(package_id.to_string(), version)).copied()
+        self.cache
+            .read()
+            .get(&(package_id.to_string(), version))
+            .copied()
     }
 
     /// Store constant for a package version.
     pub fn insert(&self, package_id: &str, version: u64, constant: Option<u64>) {
-        self.cache.write().insert((package_id.to_string(), version), constant);
+        self.cache
+            .write()
+            .insert((package_id.to_string(), version), constant);
     }
 
     /// Get all cached entries for a package.
@@ -102,20 +107,15 @@ pub fn extract_version_constant_from_bytecode(module_bytes: &[(String, Vec<u8>)]
 }
 
 /// Strategy for searching package versions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchStrategy {
     /// Search from version 1 upward (default, finds earliest matching version)
+    #[default]
     Ascending,
     /// Search from latest version downward (faster for recent transactions)
     Descending,
     /// Binary search (fastest for large version ranges)
     Binary,
-}
-
-impl Default for SearchStrategy {
-    fn default() -> Self {
-        Self::Ascending
-    }
 }
 
 /// Configuration for version finding.
@@ -219,15 +219,9 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
         }
 
         match self.config.strategy {
-            SearchStrategy::Ascending => {
-                self.search_ascending(package_id, target_constant).await
-            }
-            SearchStrategy::Descending => {
-                self.search_descending(package_id, target_constant).await
-            }
-            SearchStrategy::Binary => {
-                self.search_binary(package_id, target_constant).await
-            }
+            SearchStrategy::Ascending => self.search_ascending(package_id, target_constant).await,
+            SearchStrategy::Descending => self.search_descending(package_id, target_constant).await,
+            SearchStrategy::Binary => self.search_binary(package_id, target_constant).await,
         }
     }
 
@@ -238,7 +232,10 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
         target_constant: u64,
     ) -> anyhow::Result<Option<VersionFindResult>> {
         for version in 1..=self.config.max_versions_to_search as u64 {
-            if let Some(result) = self.check_version(package_id, version, target_constant, version as usize).await? {
+            if let Some(result) = self
+                .check_version(package_id, version, target_constant, version as usize)
+                .await?
+            {
                 return Ok(Some(result));
             }
         }
@@ -257,12 +254,17 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
         };
 
         let start = latest_version;
-        let end = start.saturating_sub(self.config.max_versions_to_search as u64).max(1);
+        let end = start
+            .saturating_sub(self.config.max_versions_to_search as u64)
+            .max(1);
 
         let mut searched = 0;
         for version in (end..=start).rev() {
             searched += 1;
-            if let Some(result) = self.check_version(package_id, version, target_constant, searched).await? {
+            if let Some(result) = self
+                .check_version(package_id, version, target_constant, searched)
+                .await?
+            {
                 return Ok(Some(result));
             }
         }
@@ -291,8 +293,13 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
             let mid = low + (high - low) / 2;
             searched += 1;
 
-            let modules = self.fetcher.fetch_modules_at_version(package_id, mid).await?;
-            let constant = modules.as_ref().and_then(|m| extract_version_constant_from_bytecode(m));
+            let modules = self
+                .fetcher
+                .fetch_modules_at_version(package_id, mid)
+                .await?;
+            let constant = modules
+                .as_ref()
+                .and_then(|m| extract_version_constant_from_bytecode(m));
 
             // Cache the result
             if self.config.use_cache {
@@ -333,7 +340,10 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
             if searched >= self.config.max_versions_to_search {
                 break;
             }
-            if let Some(result) = self.check_version(package_id, version, target_constant, searched).await? {
+            if let Some(result) = self
+                .check_version(package_id, version, target_constant, searched)
+                .await?
+            {
                 return Ok(Some(result));
             }
             searched += 1;
@@ -366,8 +376,13 @@ impl<F: PackageModuleFetcher> HistoricalVersionFinder<F> {
         }
 
         // Fetch and check
-        let modules = self.fetcher.fetch_modules_at_version(package_id, version).await?;
-        let constant = modules.as_ref().and_then(|m| extract_version_constant_from_bytecode(m));
+        let modules = self
+            .fetcher
+            .fetch_modules_at_version(package_id, version)
+            .await?;
+        let constant = modules
+            .as_ref()
+            .and_then(|m| extract_version_constant_from_bytecode(m));
 
         // Cache the result
         if self.config.use_cache {
@@ -433,7 +448,10 @@ impl<C: GrpcLikeClient> PackageModuleFetcher for GrpcPackageFetcher<C> {
         package_id: &str,
         version: u64,
     ) -> anyhow::Result<Option<Vec<(String, Vec<u8>)>>> {
-        let result = self.client.get_object_at_version(package_id, Some(version)).await?;
+        let result = self
+            .client
+            .get_object_at_version(package_id, Some(version))
+            .await?;
         Ok(result.and_then(|r| r.package_modules))
     }
 

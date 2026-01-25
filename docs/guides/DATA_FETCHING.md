@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The `HistoricalStateProvider`:
+
 - Uses a **versioned cache** keyed by `(object_id, version)` - essential for historical replay
 - Automatically fetches objects at their **input versions** from `unchanged_loaded_runtime_objects`
 - Resolves package **linkage tables** for upgraded packages

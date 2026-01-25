@@ -286,7 +286,8 @@ impl StoredObject {
     ///
     /// Uses the default storage price of 76 MIST per storage unit.
     pub fn with_calculated_rebate(mut self, storage_price_per_unit: u64) -> Self {
-        self.storage_rebate = Self::calculate_storage_rebate(self.bytes.len(), storage_price_per_unit);
+        self.storage_rebate =
+            Self::calculate_storage_rebate(self.bytes.len(), storage_price_per_unit);
         self
     }
 
@@ -1318,7 +1319,8 @@ impl SharedObjectRuntime {
         // Build reverse mapping: original_id -> (storage_id, version)
         // This is needed for dynamic field hash computation when children were created
         // after a package upgrade (using storage_id in their types).
-        let mut reverse_with_version: HashMap<AccountAddress, (AccountAddress, u64)> = HashMap::new();
+        let mut reverse_with_version: HashMap<AccountAddress, (AccountAddress, u64)> =
+            HashMap::new();
 
         for (&storage, &original) in &aliases {
             // Look up version for this storage address
@@ -1326,13 +1328,15 @@ impl SharedObjectRuntime {
             let storage_normalized = crate::utilities::normalize_address(&storage_hex);
 
             // Try both normalized and original forms
-            let version = versions.get(&storage_normalized)
+            let version = versions
+                .get(&storage_normalized)
                 .or_else(|| versions.get(&storage_hex))
                 .or_else(|| versions.get(&format!("0x{}", storage_normalized)))
                 .copied()
                 .unwrap_or(0);
 
-            reverse_with_version.entry(original)
+            reverse_with_version
+                .entry(original)
                 .and_modify(|(existing_storage, existing_version)| {
                     // Prefer higher version; fall back to address comparison if versions equal
                     if version > *existing_version

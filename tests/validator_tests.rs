@@ -51,7 +51,9 @@ mod validate_target_tests {
             "any_function",
         );
 
-        let err = result.expect_err("should fail for nonexistent module").to_string();
+        let err = result
+            .expect_err("should fail for nonexistent module")
+            .to_string();
         assert!(
             err.contains("module not found") || err.contains("nonexistent"),
             "error should mention module not found: {err}"
@@ -72,7 +74,9 @@ mod validate_target_tests {
             "nonexistent_function_xyz",
         );
 
-        let err = result.expect_err("should fail for nonexistent function").to_string();
+        let err = result
+            .expect_err("should fail for nonexistent function")
+            .to_string();
         assert!(
             err.contains("function not found") || err.contains("nonexistent_function_xyz"),
             "error should mention function not found: {err}"

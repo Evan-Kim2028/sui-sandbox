@@ -235,7 +235,8 @@ impl GasMeter for AccurateGasMeter {
             SimpleInstruction::Abort => (0, 1, 0, CONST_SIZE),
         };
 
-        self.gas_status.charge(1, pushes, pops, incr_size, decr_size)
+        self.gas_status
+            .charge(1, pushes, pops, incr_size, decr_size)
     }
 
     fn charge_pop(&mut self, _popped_val: impl ValueView) -> PartialVMResult<()> {
@@ -330,8 +331,7 @@ impl GasMeter for AccurateGasMeter {
 
     fn charge_read_ref(&mut self, _val: impl ValueView) -> PartialVMResult<()> {
         // Read ref: pop ref, push value
-        self.gas_status
-            .charge(1, 1, 1, CONST_SIZE, REFERENCE_SIZE)
+        self.gas_status.charge(1, 1, 1, CONST_SIZE, REFERENCE_SIZE)
     }
 
     fn charge_write_ref(
@@ -346,14 +346,12 @@ impl GasMeter for AccurateGasMeter {
 
     fn charge_eq(&mut self, _lhs: impl ValueView, _rhs: impl ValueView) -> PartialVMResult<()> {
         // Eq: pop 2, push bool
-        self.gas_status
-            .charge(1, 1, 2, CONST_SIZE, CONST_SIZE * 2)
+        self.gas_status.charge(1, 1, 2, CONST_SIZE, CONST_SIZE * 2)
     }
 
     fn charge_neq(&mut self, _lhs: impl ValueView, _rhs: impl ValueView) -> PartialVMResult<()> {
         // Neq: same as eq
-        self.gas_status
-            .charge(1, 1, 2, CONST_SIZE, CONST_SIZE * 2)
+        self.gas_status.charge(1, 1, 2, CONST_SIZE, CONST_SIZE * 2)
     }
 
     fn charge_vec_pack<'a>(
@@ -399,8 +397,7 @@ impl GasMeter for AccurateGasMeter {
         _val: Option<impl ValueView>,
     ) -> PartialVMResult<()> {
         // Vec pop: pop vec ref, push value
-        self.gas_status
-            .charge(1, 1, 1, CONST_SIZE, REFERENCE_SIZE)
+        self.gas_status.charge(1, 1, 1, CONST_SIZE, REFERENCE_SIZE)
     }
 
     fn charge_vec_unpack(
@@ -498,7 +495,11 @@ mod tests {
         }
 
         // Should have consumed some gas (2000 instructions at 1 internal gas each = 2000 internal = 2 gas units)
-        assert!(meter.gas_consumed() > 0, "gas_consumed should be > 0, was {}", meter.gas_consumed());
+        assert!(
+            meter.gas_consumed() > 0,
+            "gas_consumed should be > 0, was {}",
+            meter.gas_consumed()
+        );
 
         // Also verify stats track instructions
         let stats = meter.stats();
@@ -538,6 +539,10 @@ mod tests {
         let stats = meter.stats();
         // Gas consumed is in gas units (internal / 1000), so may be small
         // But instructions_executed should always be accurate
-        assert!(stats.instructions_executed >= 2000, "instructions should be >= 2000, was {}", stats.instructions_executed);
+        assert!(
+            stats.instructions_executed >= 2000,
+            "instructions should be >= 2000, was {}",
+            stats.instructions_executed
+        );
     }
 }

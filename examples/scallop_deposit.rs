@@ -41,8 +41,6 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::str::FromStr;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
@@ -50,8 +48,8 @@ use common::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, prefetch_dynamic_fields,
 };
 use move_core_types::account_address::AccountAddress;
-use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{GrpcClient, GrpcInput};
+use std::collections::HashMap;
+use std::str::FromStr;
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
@@ -61,6 +59,8 @@ use sui_sandbox_core::utilities::{
     SearchStrategy, VersionFinderConfig,
 };
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_transport::graphql::GraphQLClient;
+use sui_transport::grpc::{GrpcClient, GrpcInput};
 
 /// Scallop lending deposit transaction
 /// NOTE: This should be a RECENT transaction to work with pruned historical data.
@@ -90,7 +90,10 @@ impl<'a> PackageModuleFetcher for GrpcFetcherAdapter<'a> {
         package_id: &str,
         version: u64,
     ) -> anyhow::Result<Option<Vec<(String, Vec<u8>)>>> {
-        let result = self.grpc.get_object_at_version(package_id, Some(version)).await?;
+        let result = self
+            .grpc
+            .get_object_at_version(package_id, Some(version))
+            .await?;
         Ok(result.and_then(|obj| obj.package_modules))
     }
 
@@ -184,13 +187,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut prefetcher = PredictivePrefetcher::new();
     let mm2_config = PredictivePrefetchConfig::default();
 
-    let mm2_result = prefetcher.prefetch_for_transaction(
-        &grpc,
-        Some(&graphql),
-        &rt,
-        &grpc_tx,
-        &mm2_config,
-    );
+    let mm2_result =
+        prefetcher.prefetch_for_transaction(&grpc, Some(&graphql), &rt, &grpc_tx, &mm2_config);
 
     let pred_stats = &mm2_result.prediction_stats;
     println!("   MM2 Analysis Results:");
@@ -276,7 +274,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                     object_id.clone(),
                     sui_types::object::Owner::AddressOwner(
                         sui_types::base_types::SuiAddress::from_str(&grpc_tx.sender)
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
                     ),
                 );
             }
@@ -292,7 +290,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                 input_ownership.insert(
                     object_id.clone(),
                     sui_types::object::Owner::Shared {
-                        initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(*initial_version),
+                        initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
+                            *initial_version,
+                        ),
                     },
                 );
             }
@@ -307,7 +307,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                     object_id.clone(),
                     sui_types::object::Owner::AddressOwner(
                         sui_types::base_types::SuiAddress::from_str(&grpc_tx.sender)
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
                     ),
                 );
             }
@@ -316,8 +316,20 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     println!("   Total unique objects: {}", historical_versions.len());
-    println!("   Owned inputs: {}", input_ownership.iter().filter(|(_, o)| matches!(o, sui_types::object::Owner::AddressOwner(_))).count());
-    println!("   Shared inputs: {}", input_ownership.iter().filter(|(_, o)| matches!(o, sui_types::object::Owner::Shared { .. })).count());
+    println!(
+        "   Owned inputs: {}",
+        input_ownership
+            .iter()
+            .filter(|(_, o)| matches!(o, sui_types::object::Owner::AddressOwner(_)))
+            .count()
+    );
+    println!(
+        "   Shared inputs: {}",
+        input_ownership
+            .iter()
+            .filter(|(_, o)| matches!(o, sui_types::object::Owner::Shared { .. }))
+            .count()
+    );
 
     // =========================================================================
     // Step 3b: Prefetch dynamic fields recursively
@@ -454,7 +466,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                     let pkg_normalized = normalize_address(pkg_id);
                     println!("   Found Version object:");
                     println!("      Object ID: {}", &obj_id[..20.min(obj_id.len())]);
-                    println!("      Package: {}", &pkg_normalized[..20.min(pkg_normalized.len())]);
+                    println!(
+                        "      Package: {}",
+                        &pkg_normalized[..20.min(pkg_normalized.len())]
+                    );
                     println!("      Historical value: {}", version_value);
 
                     target_version_constant = Some(version_value);
@@ -470,20 +485,35 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let mut historical_package_versions: std::collections::BTreeMap<String, u64> =
         std::collections::BTreeMap::new();
 
-    if let (Some(target_constant), Some(pkg_id)) = (target_version_constant, version_package_id.as_ref()) {
-        println!("\n   Searching for package with CURRENT_VERSION = {}...", target_constant);
+    if let (Some(target_constant), Some(pkg_id)) =
+        (target_version_constant, version_package_id.as_ref())
+    {
+        println!(
+            "\n   Searching for package with CURRENT_VERSION = {}...",
+            target_constant
+        );
         println!("   This requires finding the correct upgrade/storage address.");
 
         // First, get the latest version to find upgrade chain via linkage
         let latest_result = rt.block_on(async { grpc.get_object(pkg_id).await });
 
         if let Ok(Some(latest_obj)) = latest_result {
-            println!("   Latest package version: {} at {}", latest_obj.version, &pkg_id[..20.min(pkg_id.len())]);
+            println!(
+                "   Latest package version: {} at {}",
+                latest_obj.version,
+                &pkg_id[..20.min(pkg_id.len())]
+            );
 
             // Check if this package has the correct CURRENT_VERSION
             if let Some(modules) = &latest_obj.package_modules {
-                let modules_vec: Vec<_> = modules.iter().map(|(n, b)| (n.clone(), b.clone())).collect();
-                println!("   Checking {} modules for CURRENT_VERSION...", modules_vec.len());
+                let modules_vec: Vec<_> = modules
+                    .iter()
+                    .map(|(n, b)| (n.clone(), b.clone()))
+                    .collect();
+                println!(
+                    "   Checking {} modules for CURRENT_VERSION...",
+                    modules_vec.len()
+                );
 
                 let detected = extract_version_constant_from_bytecode(&modules_vec);
                 println!("   Detected CURRENT_VERSION from bytecode: {:?}", detected);
@@ -492,11 +522,17 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                     println!("   Latest CURRENT_VERSION: {}", detected);
 
                     if detected == target_constant {
-                        println!("   ✓ Latest version matches! Using version {}", latest_obj.version);
+                        println!(
+                            "   ✓ Latest version matches! Using version {}",
+                            latest_obj.version
+                        );
                         historical_package_versions.insert(pkg_id.clone(), latest_obj.version);
                     } else {
                         // Need to search for historical version
-                        println!("   Latest has CURRENT_VERSION={}, but we need {}", detected, target_constant);
+                        println!(
+                            "   Latest has CURRENT_VERSION={}, but we need {}",
+                            detected, target_constant
+                        );
                         println!("   Searching for historical package version...");
 
                         let fetcher = GrpcFetcherAdapter::new(&grpc, &rt);
@@ -509,23 +545,36 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
                         // Search for the package version
                         let find_result = rt.block_on(async {
-                            finder.find_package_version_for_constant(pkg_id, target_constant).await
+                            finder
+                                .find_package_version_for_constant(pkg_id, target_constant)
+                                .await
                         });
 
                         match find_result {
                             Ok(Some(result)) => {
                                 println!("   ✓ Found matching package version!");
-                                println!("      Package version: {} (searched {} versions)",
-                                    result.package_version, result.versions_searched);
-                                println!("      Bytecode CURRENT_VERSION: {}", result.detected_constant);
+                                println!(
+                                    "      Package version: {} (searched {} versions)",
+                                    result.package_version, result.versions_searched
+                                );
+                                println!(
+                                    "      Bytecode CURRENT_VERSION: {}",
+                                    result.detected_constant
+                                );
 
                                 // Store this for later use when fetching packages
-                                historical_package_versions.insert(pkg_id.clone(), result.package_version);
+                                historical_package_versions
+                                    .insert(pkg_id.clone(), result.package_version);
                             }
                             Ok(None) => {
-                                println!("   ! Could not find package version with CURRENT_VERSION = {}", target_constant);
+                                println!(
+                                    "   ! Could not find package version with CURRENT_VERSION = {}",
+                                    target_constant
+                                );
                                 println!("     This may happen if the package is upgraded at different addresses.");
-                                println!("     Will search upgrade addresses during package fetching.");
+                                println!(
+                                    "     Will search upgrade addresses during package fetching."
+                                );
                             }
                             Err(e) => {
                                 println!("   ! Error searching for package version: {}", e);
@@ -544,26 +593,41 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                             let orig_norm = normalize_address(&link.original_id);
                             let upgrade_norm = normalize_address(&link.upgraded_id);
                             if orig_norm == *pkg_id && orig_norm != upgrade_norm {
-                                println!("     Checking upgrade address: {} (v{})",
-                                    &upgrade_norm[..20.min(upgrade_norm.len())], link.upgraded_version);
+                                println!(
+                                    "     Checking upgrade address: {} (v{})",
+                                    &upgrade_norm[..20.min(upgrade_norm.len())],
+                                    link.upgraded_version
+                                );
 
                                 // Fetch this upgrade and check its CURRENT_VERSION
-                                let upgrade_result = rt.block_on(async {
-                                    grpc.get_object(&upgrade_norm).await
-                                });
+                                let upgrade_result =
+                                    rt.block_on(async { grpc.get_object(&upgrade_norm).await });
 
                                 if let Ok(Some(upgrade_obj)) = upgrade_result {
                                     if let Some(upgrade_modules) = &upgrade_obj.package_modules {
-                                        let upgrade_modules_vec: Vec<_> = upgrade_modules.iter()
-                                            .map(|(n, b)| (n.clone(), b.clone())).collect();
-                                        if let Some(upgrade_detected) = extract_version_constant_from_bytecode(&upgrade_modules_vec) {
-                                            println!("       CURRENT_VERSION = {}", upgrade_detected);
+                                        let upgrade_modules_vec: Vec<_> = upgrade_modules
+                                            .iter()
+                                            .map(|(n, b)| (n.clone(), b.clone()))
+                                            .collect();
+                                        if let Some(upgrade_detected) =
+                                            extract_version_constant_from_bytecode(
+                                                &upgrade_modules_vec,
+                                            )
+                                        {
+                                            println!(
+                                                "       CURRENT_VERSION = {}",
+                                                upgrade_detected
+                                            );
                                             if upgrade_detected == target_constant {
                                                 println!("     ✓ Found matching upgrade: {} with CURRENT_VERSION = {}",
                                                     &upgrade_norm[..20.min(upgrade_norm.len())], upgrade_detected);
                                                 // Use this version for all Scallop packages
-                                                historical_package_versions.insert(pkg_id.clone(), upgrade_obj.version);
-                                                historical_package_versions.insert(upgrade_norm.clone(), upgrade_obj.version);
+                                                historical_package_versions
+                                                    .insert(pkg_id.clone(), upgrade_obj.version);
+                                                historical_package_versions.insert(
+                                                    upgrade_norm.clone(),
+                                                    upgrade_obj.version,
+                                                );
                                                 found_match = true;
                                                 break;
                                             }
@@ -574,7 +638,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                         }
 
                         if !found_match {
-                            println!("     ! Could not find upgrade with CURRENT_VERSION = {}", target_constant);
+                            println!(
+                                "     ! Could not find upgrade with CURRENT_VERSION = {}",
+                                target_constant
+                            );
                             println!("       Will use latest bytecode (version check may fail)");
                         }
                     }
@@ -594,7 +661,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     // Step 5: Fetch packages with transitive dependencies
     // =========================================================================
-    println!("\nStep 5: Fetching packages with transitive dependencies (using historical versions)...");
+    println!(
+        "\nStep 5: Fetching packages with transitive dependencies (using historical versions)..."
+    );
 
     let mut fetched_packages: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
@@ -649,8 +718,11 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                 .or_else(|| historical_versions.get(&fetch_id).copied());
 
             if historical_package_versions.contains_key(&fetch_id_normalized) {
-                println!("      Using historical version {} for {}",
-                    version.unwrap_or(0), &fetch_id_normalized[..20.min(fetch_id_normalized.len())]);
+                println!(
+                    "      Using historical version {} for {}",
+                    version.unwrap_or(0),
+                    &fetch_id_normalized[..20.min(fetch_id_normalized.len())]
+                );
             }
 
             let result =
@@ -927,7 +999,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         let normalized = normalize_address(addr);
         if packages.contains_key(&normalized) {
             let version = package_versions.get(&normalized).copied().unwrap_or(0);
-            let is_better = best_scallop_upgrade.as_ref().map(|(_, v)| version > *v).unwrap_or(true);
+            let is_better = best_scallop_upgrade
+                .as_ref()
+                .map(|(_, v)| version > *v)
+                .unwrap_or(true);
             if is_better {
                 best_scallop_upgrade = Some((normalized, version));
             }
@@ -1012,7 +1087,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         }
     }
     if replaced_count > 0 {
-        println!("   Replaced {} packages with upgraded bytecode", replaced_count);
+        println!(
+            "   Replaced {} packages with upgraded bytecode",
+            replaced_count
+        );
     }
 
     // =========================================================================
@@ -1021,7 +1099,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // If we detected a Version object with a specific value (e.g., 8), we need to find
     // a package version that has matching CURRENT_VERSION constant.
     if let Some(target_const) = target_version_constant {
-        println!("\nStep 5b: Finding historical bytecode with CURRENT_VERSION = {}...", target_const);
+        println!(
+            "\nStep 5b: Finding historical bytecode with CURRENT_VERSION = {}...",
+            target_const
+        );
 
         // Find all Scallop-related packages by checking which packages have many modules
         // (Scallop upgrades have 30+ modules each)
@@ -1056,7 +1137,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
             }
         }
 
-        println!("   Found {} Scallop upgrade addresses to search", scallop_upgrades.len());
+        println!(
+            "   Found {} Scallop upgrade addresses to search",
+            scallop_upgrades.len()
+        );
 
         // For each upgrade, search for a version with matching CURRENT_VERSION
         let fetcher = GrpcFetcherAdapter::new(&grpc, &rt);
@@ -1069,23 +1153,31 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
         let mut found_historical = false;
         for upgrade_addr in &scallop_upgrades {
-            println!("   Searching {} for CURRENT_VERSION = {}...",
-                &upgrade_addr[..20.min(upgrade_addr.len())], target_const);
+            println!(
+                "   Searching {} for CURRENT_VERSION = {}...",
+                &upgrade_addr[..20.min(upgrade_addr.len())],
+                target_const
+            );
 
             let find_result = rt.block_on(async {
-                finder.find_package_version_for_constant(upgrade_addr, target_const).await
+                finder
+                    .find_package_version_for_constant(upgrade_addr, target_const)
+                    .await
             });
 
             match find_result {
                 Ok(Some(result)) => {
-                    println!("   ✓ Found at {} version {} (CURRENT_VERSION = {})",
+                    println!(
+                        "   ✓ Found at {} version {} (CURRENT_VERSION = {})",
                         &upgrade_addr[..20.min(upgrade_addr.len())],
                         result.package_version,
-                        result.detected_constant);
+                        result.detected_constant
+                    );
 
                     // Re-fetch this package at the found version
                     let historical_pkg = rt.block_on(async {
-                        grpc.get_object_at_version(upgrade_addr, Some(result.package_version)).await
+                        grpc.get_object_at_version(upgrade_addr, Some(result.package_version))
+                            .await
                     });
 
                     if let Ok(Some(obj)) = historical_pkg {
@@ -1093,15 +1185,22 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                             let modules_b64: Vec<(String, String)> = modules
                                 .iter()
                                 .map(|(name, bytes)| {
-                                    (name.clone(), base64::engine::general_purpose::STANDARD.encode(bytes))
+                                    (
+                                        name.clone(),
+                                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    )
                                 })
                                 .collect();
 
-                            println!("   ✓ Loaded historical bytecode: {} modules", modules_b64.len());
+                            println!(
+                                "   ✓ Loaded historical bytecode: {} modules",
+                                modules_b64.len()
+                            );
 
                             // Replace the bytecode for all Scallop addresses
                             packages.insert(scallop_original_norm.clone(), modules_b64.clone());
-                            package_versions.insert(scallop_original_norm.clone(), result.package_version);
+                            package_versions
+                                .insert(scallop_original_norm.clone(), result.package_version);
 
                             // Also update upgrade addresses
                             for up_addr in &scallop_upgrades {
@@ -1110,7 +1209,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
                             }
 
                             // Mark that we're using historical bytecode
-                            historical_package_versions.insert(scallop_original_norm.clone(), result.package_version);
+                            historical_package_versions
+                                .insert(scallop_original_norm.clone(), result.package_version);
                             found_historical = true;
                             break;
                         }
@@ -1126,7 +1226,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         }
 
         if !found_historical {
-            println!("   ! Could not find historical bytecode with CURRENT_VERSION = {}", target_const);
+            println!(
+                "   ! Could not find historical bytecode with CURRENT_VERSION = {}",
+                target_const
+            );
             println!("     Transaction will likely fail version check");
         }
     }
@@ -1174,16 +1277,17 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     //   - 0xd384ded6b9... v17 (CURRENT_VERSION = 17)
     // Both have the same bytecode address 0xefe8b36d..., so we need v17 loaded last.
     let mut sorted_packages: Vec<_> = cached.packages.iter().collect();
-    sorted_packages.sort_by_key(|(pkg_id, _)| {
-        package_versions.get(*pkg_id).copied().unwrap_or(0)
-    });
+    sorted_packages.sort_by_key(|(pkg_id, _)| package_versions.get(*pkg_id).copied().unwrap_or(0));
 
     for (pkg_id, modules) in sorted_packages {
         let pkg_id_normalized = normalize_address(pkg_id);
         // Skip if this package has a DIFFERENT upgraded address that we should load from instead
         // BUT don't skip if we've already replaced this package's bytecode with the upgrade
         if let Some(upgraded_id) = linkage_upgrades.get(&pkg_id_normalized) {
-            let pkg_version = package_versions.get(&pkg_id_normalized).copied().unwrap_or(1);
+            let pkg_version = package_versions
+                .get(&pkg_id_normalized)
+                .copied()
+                .unwrap_or(1);
             let upgrade_version = package_versions.get(upgraded_id).copied().unwrap_or(1);
 
             // Only skip if:
@@ -1264,24 +1368,30 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
     // Get the ACTUAL CURRENT_VERSION from the Scallop current_version module
     let scallop_addr = AccountAddress::from_hex_literal(
-        "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf"
-    ).unwrap();
+        "0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf",
+    )
+    .unwrap();
     let scallop_cv_module_id = move_core_types::language_storage::ModuleId::new(
         scallop_addr,
         move_core_types::identifier::Identifier::new("current_version").unwrap(),
     );
-    let actual_scallop_version = resolver.get_module_struct(&scallop_cv_module_id)
-        .and_then(|module| {
-            module.constant_pool().iter().find_map(|c| {
-                if c.type_ == move_binary_format::file_format::SignatureToken::U64 {
-                    bcs::from_bytes::<u64>(&c.data).ok()
-                } else {
-                    None
-                }
-            })
-        });
+    let actual_scallop_version =
+        resolver
+            .get_module_struct(&scallop_cv_module_id)
+            .and_then(|module| {
+                module.constant_pool().iter().find_map(|c| {
+                    if c.type_ == move_binary_format::file_format::SignatureToken::U64 {
+                        bcs::from_bytes::<u64>(&c.data).ok()
+                    } else {
+                        None
+                    }
+                })
+            });
 
-    println!("   Actual Scallop CURRENT_VERSION from bytecode: {:?}", actual_scallop_version);
+    println!(
+        "   Actual Scallop CURRENT_VERSION from bytecode: {:?}",
+        actual_scallop_version
+    );
 
     // Check if the Version object value matches the actual bytecode constant
     // If they match, NO patching is needed!
@@ -1304,8 +1414,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
         if version_values_match {
             println!("   ✓ Version object matches bytecode - version patching DISABLED");
-            println!("     (Historical Version.value = {:?}, bytecode CURRENT_VERSION = {:?})",
-                target_version_constant, actual_scallop_version);
+            println!(
+                "     (Historical Version.value = {:?}, bytecode CURRENT_VERSION = {:?})",
+                target_version_constant, actual_scallop_version
+            );
         }
     }
 
@@ -1357,8 +1469,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
     // Create the enhanced child fetcher with gRPC + GraphQL fallback
     // Note: We pass None for patcher since the child fetcher handles fetching fresh state
-    let historical_hashmap: std::collections::HashMap<String, u64> =
-        historical_versions.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let historical_hashmap: std::collections::HashMap<String, u64> = historical_versions
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     let child_fetcher = create_enhanced_child_fetcher_with_cache(
         grpc,
         graphql,
@@ -1385,7 +1499,9 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
             let ownership = input_ownership.get(obj_id).cloned().unwrap_or_else(|| {
                 // Default to shared for objects not in the input list (e.g., dynamic field children)
                 sui_types::object::Owner::Shared {
-                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(*version),
+                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
+                        *version,
+                    ),
                 }
             });
 
@@ -1399,8 +1515,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
             registered_count += 1;
         }
     }
-    println!("   ✓ Registered {} input objects ({} owned, {} shared)",
-        registered_count, owned_count, shared_count);
+    println!(
+        "   ✓ Registered {} input objects ({} owned, {} shared)",
+        registered_count, owned_count, shared_count
+    );
 
     // =========================================================================
     // Step 11: Execute transaction replay
@@ -1410,8 +1528,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // Build comprehensive address aliases including linkage upgrades
     // This is essential for upgraded packages where types use different addresses
     // Convert BTreeMap to HashMap for the function signature
-    let linkage_upgrades_hashmap: std::collections::HashMap<String, String> =
-        linkage_upgrades.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let linkage_upgrades_hashmap: std::collections::HashMap<String, String> = linkage_upgrades
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let address_aliases = sui_sandbox_core::tx_replay::build_comprehensive_address_aliases(
         &cached,
         &linkage_upgrades_hashmap,
@@ -1428,8 +1548,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     }
 
     // Convert package_versions to HashMap for the version-aware alias method
-    let package_versions_hashmap: std::collections::HashMap<String, u64> =
-        package_versions.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let package_versions_hashmap: std::collections::HashMap<String, u64> = package_versions
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     harness.set_address_aliases_with_versions(address_aliases.clone(), package_versions_hashmap);
 
     let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(

@@ -29,17 +29,19 @@ use move_core_types::language_storage::TypeTag;
 
 use crate::types::{PackageData, ReplayState, VersionedObject};
 
+/// Package data ready for loading into a resolver.
+/// (address, modules as (name, bytecode) pairs, optional alias target)
+pub type PackageResolverData = (
+    AccountAddress,
+    Vec<(String, Vec<u8>)>,
+    Option<AccountAddress>,
+);
+
 /// Load packages from ReplayState into a LocalModuleResolver.
 ///
 /// This handles package upgrade linkage by setting up address aliases
 /// when a package has been upgraded (original_id differs from address).
-pub fn prepare_packages_for_resolver(
-    state: &ReplayState,
-) -> Vec<(
-    AccountAddress,
-    Vec<(String, Vec<u8>)>,
-    Option<AccountAddress>,
-)> {
+pub fn prepare_packages_for_resolver(state: &ReplayState) -> Vec<PackageResolverData> {
     let mut result = Vec::new();
 
     for (addr, pkg) in &state.packages {

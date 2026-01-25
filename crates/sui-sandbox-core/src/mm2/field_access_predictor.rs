@@ -26,8 +26,8 @@
 //! ```
 
 use super::bytecode_analyzer::{
-    resolve_type_pattern, BytecodeAnalyzer, DynamicFieldAccessKind, FunctionAccessAnalysis,
-    has_unresolved_params,
+    has_unresolved_params, resolve_type_pattern, BytecodeAnalyzer, DynamicFieldAccessKind,
+    FunctionAccessAnalysis,
 };
 use super::call_graph::CallGraph;
 use move_binary_format::file_format::FunctionDefinitionIndex;
@@ -229,7 +229,12 @@ impl FieldAccessPredictor {
         // If call graph is enabled, use it for enhanced transitive analysis
         if self.call_graph.is_some() {
             self.ensure_propagated();
-            return self.predict_with_call_graph(package_addr, module_name, function_name, type_args);
+            return self.predict_with_call_graph(
+                package_addr,
+                module_name,
+                function_name,
+                type_args,
+            );
         }
 
         // Fall back to original recursive analysis
@@ -278,7 +283,10 @@ impl FieldAccessPredictor {
                     value_type: access.value_type,
                     kind: convert_access_kind(access.access_kind),
                     confidence,
-                    source_function: format!("{}::{}::{}", package_addr, module_name, function_name),
+                    source_function: format!(
+                        "{}::{}::{}",
+                        package_addr, module_name, function_name
+                    ),
                     is_transitive: access.sink_depth > 0,
                 }
             })
@@ -330,10 +338,7 @@ impl FieldAccessPredictor {
                 value_type: resolved_value,
                 kind: pattern.access_kind,
                 confidence,
-                source_function: format!(
-                    "{}::{}::{}",
-                    package_addr, module_name, function_name
-                ),
+                source_function: format!("{}::{}::{}", package_addr, module_name, function_name),
                 is_transitive: depth > 0,
             });
         }
@@ -401,9 +406,17 @@ impl FieldAccessPredictor {
             modules_loaded: self.modules.len(),
             analyses_cached: self.analysis_cache.len(),
             call_graph_enabled: self.call_graph.is_some(),
-            call_graph_functions: call_graph_stats.as_ref().map(|s| s.functions_tracked).unwrap_or(0),
-            call_graph_sinks: call_graph_stats.as_ref().map(|s| s.direct_sinks).unwrap_or(0),
-            call_graph_transitive: call_graph_stats.map(|s| s.transitive_sink_functions).unwrap_or(0),
+            call_graph_functions: call_graph_stats
+                .as_ref()
+                .map(|s| s.functions_tracked)
+                .unwrap_or(0),
+            call_graph_sinks: call_graph_stats
+                .as_ref()
+                .map(|s| s.direct_sinks)
+                .unwrap_or(0),
+            call_graph_transitive: call_graph_stats
+                .map(|s| s.transitive_sink_functions)
+                .unwrap_or(0),
         }
     }
 }

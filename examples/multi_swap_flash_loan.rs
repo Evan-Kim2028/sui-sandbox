@@ -30,8 +30,6 @@ use base64::Engine;
 use common::{extract_package_ids_from_type, parse_type_tag_simple};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
-use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
@@ -41,6 +39,8 @@ use sui_sandbox_core::utilities::{
     HistoricalStateReconstructor,
 };
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_transport::graphql::GraphQLClient;
+use sui_transport::grpc::{GrpcClient, GrpcInput};
 
 /// Kriya multi-hop swap with flash loan - successful on-chain
 /// Routes: SUI -> USDC (Portal) -> USDC (native) -> SCA -> SUI
@@ -112,10 +112,19 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let graphql = GraphQLClient::mainnet();
     let mut prefetcher = PredictivePrefetcher::new();
     let mm2_config = PredictivePrefetchConfig::default();
-    let mm2_result = prefetcher.prefetch_for_transaction(&grpc, Some(&graphql), rt.as_ref(), &grpc_tx, &mm2_config);
+    let mm2_result = prefetcher.prefetch_for_transaction(
+        &grpc,
+        Some(&graphql),
+        rt.as_ref(),
+        &grpc_tx,
+        &mm2_config,
+    );
 
     let stats = &mm2_result.prediction_stats;
-    println!("   Predictions: {} (matched: {})", stats.predictions_made, stats.predictions_matched_ground_truth);
+    println!(
+        "   Predictions: {} (matched: {})",
+        stats.predictions_made, stats.predictions_matched_ground_truth
+    );
     println!("   Packages analyzed: {}", stats.packages_analyzed);
 
     // Step 4: Collect historical versions
@@ -133,14 +142,28 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     }
     for input in &grpc_tx.inputs {
         match input {
-            GrpcInput::Object { object_id, version, .. } => {
-                historical_versions.entry(object_id.clone()).or_insert(*version);
+            GrpcInput::Object {
+                object_id, version, ..
+            } => {
+                historical_versions
+                    .entry(object_id.clone())
+                    .or_insert(*version);
             }
-            GrpcInput::SharedObject { object_id, initial_version, .. } => {
-                historical_versions.entry(object_id.clone()).or_insert(*initial_version);
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                ..
+            } => {
+                historical_versions
+                    .entry(object_id.clone())
+                    .or_insert(*initial_version);
             }
-            GrpcInput::Receiving { object_id, version, .. } => {
-                historical_versions.entry(object_id.clone()).or_insert(*version);
+            GrpcInput::Receiving {
+                object_id, version, ..
+            } => {
+                historical_versions
+                    .entry(object_id.clone())
+                    .or_insert(*version);
             }
             GrpcInput::Pure { .. } => {}
         }
@@ -161,7 +184,10 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let mut fetched_count = 0;
     for (obj_id, version) in &historical_versions {
-        if let Ok(Some(obj)) = rt.as_ref().block_on(async { grpc.get_object_at_version(obj_id, Some(*version)).await }) {
+        if let Ok(Some(obj)) = rt
+            .as_ref()
+            .block_on(async { grpc.get_object_at_version(obj_id, Some(*version)).await })
+        {
             if let Some(bcs) = &obj.bcs {
                 raw_objects.insert(obj_id.clone(), bcs.clone());
                 if let Some(type_str) = &obj.type_string {
@@ -187,9 +213,13 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let fetcher = CallbackPackageFetcher::new(move |pkg_id: &str, version: Option<u64>| {
         let actual_version = version.or_else(|| historical_for_fetcher.get(pkg_id).copied());
         let result = rt_for_fetcher.as_ref().block_on(async {
-            grpc_for_fetcher.get_object_at_version(pkg_id, actual_version).await
+            grpc_for_fetcher
+                .get_object_at_version(pkg_id, actual_version)
+                .await
         })?;
-        Ok(result.as_ref().and_then(|obj| grpc_object_to_package_data(pkg_id, obj)))
+        Ok(result
+            .as_ref()
+            .and_then(|obj| grpc_object_to_package_data(pkg_id, obj)))
     });
 
     let mut pkg_resolver = HistoricalPackageResolver::new(fetcher);
@@ -197,15 +227,21 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     pkg_resolver.resolve_packages(&package_ids_to_fetch)?;
 
     let linkage_upgrades = pkg_resolver.linkage_upgrades();
-    println!("   ✓ Resolved {} packages ({} linkage upgrades)", pkg_resolver.package_count(), linkage_upgrades.len());
+    println!(
+        "   ✓ Resolved {} packages ({} linkage upgrades)",
+        pkg_resolver.package_count(),
+        linkage_upgrades.len()
+    );
 
     // Step 7: Build resolver
     println!("\nStep 7: Building module resolver...");
     let mut resolver = LocalModuleResolver::new();
     let mut module_count = 0;
 
-    let all_packages: Vec<(String, Vec<(String, String)>)> = pkg_resolver.packages_as_base64().into_iter().collect();
-    let mut packages_with_source: Vec<(String, Vec<(String, String)>, Option<String>, bool)> = Vec::new();
+    let all_packages: Vec<(String, Vec<(String, String)>)> =
+        pkg_resolver.packages_as_base64().into_iter().collect();
+    let mut packages_with_source: Vec<(String, Vec<(String, String)>, Option<String>, bool)> =
+        Vec::new();
 
     for (pkg_id, modules_b64) in all_packages {
         if let Some(upgraded) = linkage_upgrades.get(&pkg_id as &str) {
@@ -215,30 +251,54 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
         }
 
         let source_addr_opt: Option<String> = modules_b64.first().and_then(|(_, b64)| {
-            base64::engine::general_purpose::STANDARD.decode(b64).ok().and_then(|bytes| {
-                CompiledModule::deserialize_with_defaults(&bytes).ok().map(|m| m.self_id().address().to_hex_literal())
-            })
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .ok()
+                .and_then(|bytes| {
+                    CompiledModule::deserialize_with_defaults(&bytes)
+                        .ok()
+                        .map(|m| m.self_id().address().to_hex_literal())
+                })
         });
 
-        let is_original = source_addr_opt.as_ref().map(|src| {
-            pkg_id.contains(&src[..src.len().min(20)]) || src.contains(&pkg_id[..pkg_id.len().min(20)])
-        }).unwrap_or(false);
+        let is_original = source_addr_opt
+            .as_ref()
+            .map(|src| {
+                pkg_id.contains(&src[..src.len().min(20)])
+                    || src.contains(&pkg_id[..pkg_id.len().min(20)])
+            })
+            .unwrap_or(false);
 
         packages_with_source.push((pkg_id, modules_b64, source_addr_opt, is_original));
     }
 
-    packages_with_source.sort_by(|a, b| if a.3 != b.3 { b.3.cmp(&a.3) } else { a.0.cmp(&b.0) });
+    packages_with_source.sort_by(|a, b| {
+        if a.3 != b.3 {
+            b.3.cmp(&a.3)
+        } else {
+            a.0.cmp(&b.0)
+        }
+    });
 
-    let mut loaded_source_addrs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut loaded_source_addrs: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for (pkg_id, modules_b64, source_addr_opt, _) in packages_with_source {
         if let Some(ref source_addr) = source_addr_opt {
-            if loaded_source_addrs.contains(source_addr) { continue; }
+            if loaded_source_addrs.contains(source_addr) {
+                continue;
+            }
         }
 
         let target_addr = AccountAddress::from_hex_literal(&pkg_id).ok();
-        let decoded: Vec<(String, Vec<u8>)> = modules_b64.iter()
-            .filter_map(|(name, b64)| base64::engine::general_purpose::STANDARD.decode(b64).ok().map(|bytes| (name.clone(), bytes)))
+        let decoded: Vec<(String, Vec<u8>)> = modules_b64
+            .iter()
+            .filter_map(|(name, b64)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .ok()
+                    .map(|bytes| (name.clone(), bytes))
+            })
             .collect();
 
         if let Ok((count, source_addr)) = resolver.add_package_modules_at(decoded, target_addr) {
@@ -259,11 +319,22 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     reconstructor.configure_from_modules(resolver.compiled_modules());
 
     let reconstructed = reconstructor.reconstruct(&raw_objects, &object_types);
-    println!("   ✓ Patched {} objects (struct: {}, raw: {})",
-        reconstructed.stats.total_patched(), reconstructed.stats.struct_patched, reconstructed.stats.raw_patched);
+    println!(
+        "   ✓ Patched {} objects (struct: {}, raw: {})",
+        reconstructed.stats.total_patched(),
+        reconstructed.stats.struct_patched,
+        reconstructed.stats.raw_patched
+    );
 
-    let patched_objects_b64: HashMap<String, String> = reconstructed.objects.iter()
-        .map(|(id, bcs)| (id.clone(), base64::engine::general_purpose::STANDARD.encode(bcs)))
+    let patched_objects_b64: HashMap<String, String> = reconstructed
+        .objects
+        .iter()
+        .map(|(id, bcs)| {
+            (
+                id.clone(),
+                base64::engine::general_purpose::STANDARD.encode(bcs),
+            )
+        })
         .collect();
 
     // Step 9: Create VM harness
@@ -303,7 +374,9 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
             let version = historical.get(&child_id_str).copied();
             let rt = tokio::runtime::Runtime::new().ok()?;
-            if let Ok(Some(obj)) = rt.block_on(async { grpc.get_object_at_version(&child_id_str, version).await }) {
+            if let Ok(Some(obj)) =
+                rt.block_on(async { grpc.get_object_at_version(&child_id_str, version).await })
+            {
                 if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
                     if let Some(type_tag) = parse_type_tag_simple(type_str) {
                         return Some((type_tag, bcs.clone()));
@@ -322,9 +395,12 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     for (obj_id, version) in &historical_versions {
         if let Ok(addr) = AccountAddress::from_hex_literal(obj_id) {
             harness.add_sui_input_object(
-                addr, *version,
+                addr,
+                *version,
                 sui_types::object::Owner::Shared {
-                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(*version),
+                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
+                        *version,
+                    ),
                 },
             );
         }
@@ -345,14 +421,28 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     harness.set_address_aliases(address_aliases.clone());
 
     let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(
-        &cached.transaction, &mut harness, &cached.objects, &address_aliases,
+        &cached.transaction,
+        &mut harness,
+        &cached.objects,
+        &address_aliases,
     )?;
 
-    println!("\n  Local execution: {}", if result.local_success { "SUCCESS" } else { "FAILURE" });
+    println!(
+        "\n  Local execution: {}",
+        if result.local_success {
+            "SUCCESS"
+        } else {
+            "FAILURE"
+        }
+    );
     if !result.local_success {
         if let Some(err) = &result.local_error {
             let err_str = err.to_string();
-            let display = if err_str.len() > 80 { &err_str[..80] } else { &err_str };
+            let display = if err_str.len() > 80 {
+                &err_str[..80]
+            } else {
+                &err_str
+            };
             println!("  Error: {}...", display);
         }
     }

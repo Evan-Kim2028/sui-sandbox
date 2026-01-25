@@ -71,6 +71,7 @@ pub fn ground_truth_prefetch_for_transaction(
 ### Limitations
 
 Ground truth only knows about objects that were *actually* accessed in the original execution. It cannot predict:
+
 - Dynamic fields accessed through wrapper functions
 - Objects accessed conditionally based on runtime values
 - New access patterns if the transaction is modified
@@ -82,11 +83,13 @@ The predictive layer uses static bytecode analysis to predict which dynamic fiel
 ### Why This Exists
 
 Many DeFi protocols use dynamic fields (tables, bags, linked lists) to store data. For example:
+
 - DeepBook stores balances in `Table<BalanceKey<T>, Balance<T>>`
 - Cetus uses skip lists with dynamic field children
 - Scallop uses bags for lending positions
 
 Ground truth catches these when replaying the *exact* original transaction, but predictive analysis:
+
 1. Validates our understanding of the code
 2. Catches accesses through wrapper functions that ground truth might not enumerate
 3. Enables future use cases (modified transactions, what-if analysis)
@@ -172,6 +175,7 @@ When the VM tries to access a child object that isn't in the local store, this c
 ### Performance Impact
 
 On-demand fetching is slow because it:
+
 1. Interrupts VM execution
 2. Makes a synchronous network call
 3. Resumes execution

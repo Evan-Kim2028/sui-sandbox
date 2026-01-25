@@ -561,13 +561,15 @@ mod mock_native_state_tests {
 
         // IDs should NOT be the old predictable pattern (zeros + counter)
         // Old pattern would have first 24 bytes as zeros
-        let has_old_pattern = bytes1[0..24].iter().all(|&b| b == 0)
-            || bytes2[0..24].iter().all(|&b| b == 0);
+        let has_old_pattern =
+            bytes1[0..24].iter().all(|&b| b == 0) || bytes2[0..24].iter().all(|&b| b == 0);
 
         // With hash-derived IDs, it's extremely unlikely to have 24 zero bytes
         // (probability ~2^-192), so this effectively verifies the new behavior
-        assert!(!has_old_pattern || bytes1[24..32] != [0u8; 8],
-            "IDs should be hash-derived, not predictable sequential values");
+        assert!(
+            !has_old_pattern || bytes1[24..32] != [0u8; 8],
+            "IDs should be hash-derived, not predictable sequential values"
+        );
     }
 }
 

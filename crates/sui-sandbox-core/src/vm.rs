@@ -36,8 +36,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::gas::{
-    AccurateGasMeter, GasParameters, GasSummary, GasSummaryBuilder, StorageTracker,
-    bucketize_computation,
+    bucketize_computation, AccurateGasMeter, GasParameters, GasSummary, GasSummaryBuilder,
+    StorageTracker,
 };
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
 use crate::object_runtime::{
@@ -286,11 +286,11 @@ impl Default for SimulationConfig {
             tx_timestamp_ms: None,
             epoch: DEFAULT_EPOCH,
             gas_budget: Some(DEFAULT_GAS_BUDGET), // Enable gas metering by default for Sui parity
-            enforce_immutability: false, // Backwards compatible default
-            use_sui_natives: false,      // Use custom natives by default
-            tx_hash,                     // Random per instance for unique IDs
+            enforce_immutability: false,          // Backwards compatible default
+            use_sui_natives: false,               // Use custom natives by default
+            tx_hash,                              // Random per instance for unique IDs
             reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
-            gas_price: DEFAULT_REFERENCE_GAS_PRICE,  // No tip by default
+            gas_price: DEFAULT_REFERENCE_GAS_PRICE, // No tip by default
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             storage_price: DEFAULT_STORAGE_PRICE,
             track_versions: false, // Opt-in for backwards compatibility
@@ -328,15 +328,15 @@ impl SimulationConfig {
             tx_timestamp_ms: None,
             epoch: DEFAULT_EPOCH,
             gas_budget: Some(DEFAULT_GAS_BUDGET),
-            enforce_immutability: true,  // Strict mode enforces immutability
-            use_sui_natives: false,      // Backwards compatible
-            tx_hash: default.tx_hash,    // Keep unique tx_hash
+            enforce_immutability: true, // Strict mode enforces immutability
+            use_sui_natives: false,     // Backwards compatible
+            tx_hash: default.tx_hash,   // Keep unique tx_hash
             reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
             gas_price: DEFAULT_REFERENCE_GAS_PRICE,
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             storage_price: DEFAULT_STORAGE_PRICE,
-            track_versions: false,       // Opt-in feature
-            accurate_gas: true,          // Strict mode uses accurate gas
+            track_versions: false, // Opt-in feature
+            accurate_gas: true,    // Strict mode uses accurate gas
         }
     }
 
@@ -510,8 +510,7 @@ impl ExecutionTrace {
 }
 
 /// A return value with its type information.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TypedReturnValue {
     /// The BCS-serialized return value bytes.
     pub bytes: Vec<u8>,
@@ -542,7 +541,6 @@ pub struct ExecutionOutput {
     /// - Cost per byte of return values
     pub gas_used: u64,
 }
-
 
 // =============================================================================
 // Structured Error Types
@@ -1298,6 +1296,7 @@ impl GasMeter for MeteredGasMeter {
 }
 
 /// Enum to hold either a metered or unmetered gas meter.
+#[allow(clippy::large_enum_variant)]
 pub enum GasMeterImpl {
     /// Simple metered gas meter with hardcoded costs (~30-40% accuracy)
     Metered(MeteredGasMeter),
@@ -1678,8 +1677,8 @@ fn create_tx_context_bytes_with_config(config: &SimulationConfig) -> Vec<u8> {
     bytes.extend_from_slice(&config.sender_address);
     // tx_hash: vector<u8> (length prefix + 32 bytes)
     bytes.push(32); // ULEB128 length = 32
-    bytes.extend_from_slice(&config.tx_hash);  // Use actual tx_hash from config
-    // epoch: u64 (8 bytes, little-endian) - use configured epoch
+    bytes.extend_from_slice(&config.tx_hash); // Use actual tx_hash from config
+                                              // epoch: u64 (8 bytes, little-endian) - use configured epoch
     bytes.extend_from_slice(&config.epoch.to_le_bytes());
     // epoch_timestamp_ms: u64 (8 bytes, little-endian)
     let timestamp = config.tx_timestamp_ms.unwrap_or(config.clock_base_ms);
@@ -1834,7 +1833,8 @@ impl<'a> VMHarness<'a> {
         // If accurate gas is enabled, set native function costs
         if config.accurate_gas {
             let protocol_config = crate::gas::load_protocol_config(config.protocol_version);
-            let native_costs = crate::gas::NativeFunctionCosts::from_protocol_config(&protocol_config);
+            let native_costs =
+                crate::gas::NativeFunctionCosts::from_protocol_config(&protocol_config);
             native_state.native_costs = Some(native_costs);
         }
 
@@ -1861,9 +1861,9 @@ impl<'a> VMHarness<'a> {
         let trace = Arc::new(Mutex::new(ExecutionTrace::new()));
         // Create storage tracker if accurate gas is enabled
         let storage_tracker = if config.accurate_gas {
-            let params = GasParameters::from_protocol_config(
-                &crate::gas::load_protocol_config(config.protocol_version),
-            );
+            let params = GasParameters::from_protocol_config(&crate::gas::load_protocol_config(
+                config.protocol_version,
+            ));
             Some(StorageTracker::new(&params))
         } else {
             None
@@ -2009,7 +2009,8 @@ impl<'a> VMHarness<'a> {
         // Apply bucketization based on protocol config
         let protocol_config = crate::gas::load_protocol_config(self.config.protocol_version);
         let params = GasParameters::from_protocol_config(&protocol_config);
-        let computation_cost = bucketize_computation(computation_gas, params.max_gas_computation_bucket);
+        let computation_cost =
+            bucketize_computation(computation_gas, params.max_gas_computation_bucket);
 
         let storage_cost = storage_summary.total_cost();
         let storage_rebate = storage_summary.storage_rebate;
@@ -2354,7 +2355,10 @@ impl<'a> VMHarness<'a> {
             .new_session_with_extensions(&self.storage, extensions);
 
         // Relocate module ID if there's an address alias
-        let relocated_module = self.storage.relocate(module).unwrap_or_else(|_| module.clone());
+        let relocated_module = self
+            .storage
+            .relocate(module)
+            .unwrap_or_else(|_| module.clone());
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {
@@ -2367,7 +2371,13 @@ impl<'a> VMHarness<'a> {
         let mut gas_meter = GasMeterImpl::from_config(&self.config);
 
         session
-            .execute_entry_function(&relocated_module, function_name, loaded_ty_args, args, &mut gas_meter)
+            .execute_entry_function(
+                &relocated_module,
+                function_name,
+                loaded_ty_args,
+                args,
+                &mut gas_meter,
+            )
             .map_err(|e| anyhow!("execution failed: {:?}", e))?;
 
         let (result, _store) = session.finish();
@@ -2407,7 +2417,10 @@ impl<'a> VMHarness<'a> {
             .new_session_with_extensions(&self.storage, extensions);
 
         // Relocate module ID if there's an address alias
-        let relocated_module = self.storage.relocate(module).unwrap_or_else(|_| module.clone());
+        let relocated_module = self
+            .storage
+            .relocate(module)
+            .unwrap_or_else(|_| module.clone());
 
         let mut loaded_ty_args = Vec::new();
         for tag in &ty_args {
@@ -2457,7 +2470,8 @@ impl<'a> VMHarness<'a> {
         // Heuristic estimation is only used for unmetered execution (e.g., when no gas budget).
         let gas_used = if gas_meter.is_unmetered() {
             // No gas metering - use heuristic estimation for backwards compatibility
-            let return_bytes: Vec<Vec<u8>> = return_values.iter().map(|v| v.bytes.clone()).collect();
+            let return_bytes: Vec<Vec<u8>> =
+                return_values.iter().map(|v| v.bytes.clone()).collect();
             let ref_bytes: Vec<(u8, Vec<u8>)> = mutable_ref_outputs
                 .iter()
                 .map(|(idx, bytes, _)| (*idx, bytes.clone()))
@@ -2520,7 +2534,10 @@ impl<'a> VMHarness<'a> {
         // Relocate module ID if there's an address alias.
         // This is necessary because the VM's function resolution doesn't use LinkageResolver
         // for the target module, only for dependencies during module loading.
-        let relocated_module = self.storage.relocate(module).unwrap_or_else(|_| module.clone());
+        let relocated_module = self
+            .storage
+            .relocate(module)
+            .unwrap_or_else(|_| module.clone());
 
         // Load type arguments
         let mut loaded_ty_args = Vec::new();
@@ -2598,7 +2615,8 @@ impl<'a> VMHarness<'a> {
         // Heuristic estimation is only used for unmetered execution (e.g., when no gas budget).
         let gas_used = if gas_meter.is_unmetered() {
             // No gas metering - use heuristic estimation for backwards compatibility
-            let return_bytes: Vec<Vec<u8>> = return_values.iter().map(|v| v.bytes.clone()).collect();
+            let return_bytes: Vec<Vec<u8>> =
+                return_values.iter().map(|v| v.bytes.clone()).collect();
             let ref_bytes: Vec<(u8, Vec<u8>)> = mutable_ref_outputs
                 .iter()
                 .map(|(idx, bytes, _)| (*idx, bytes.clone()))
@@ -2777,7 +2795,11 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             .new_session_with_extensions(self.harness.storage(), extensions);
 
         // Relocate module ID if there's an address alias
-        let relocated_module = self.harness.storage().relocate(module).unwrap_or_else(|_| module.clone());
+        let relocated_module = self
+            .harness
+            .storage()
+            .relocate(module)
+            .unwrap_or_else(|_| module.clone());
 
         let mut loaded_ty_args = Vec::new();
         for tag in ty_args {
@@ -2953,10 +2975,7 @@ mod structured_error_tests {
 
         assert_eq!(structured.major_status, StatusCode::ABORTED);
         assert_eq!(structured.sub_status, Some(1234));
-        assert_eq!(
-            structured.message.as_deref(),
-            Some("insufficient balance")
-        );
+        assert_eq!(structured.message.as_deref(), Some("insufficient balance"));
         assert!(structured.abort_info.is_some());
         assert_eq!(structured.abort_info.as_ref().unwrap().abort_code, 1234);
     }

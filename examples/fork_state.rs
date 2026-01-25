@@ -39,7 +39,8 @@ use sui_transport::grpc::{GrpcClient, GrpcOwner};
 
 // DeepBook V3 - a real DeFi protocol we'll interact with
 const DEEPBOOK_PACKAGE: &str = "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809";
-const DEEPBOOK_REGISTRY: &str = "0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d";
+const DEEPBOOK_REGISTRY: &str =
+    "0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d";
 
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
@@ -87,7 +88,10 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("Registry not found"))?;
     let registry_bcs = registry_obj.bcs.ok_or_else(|| anyhow!("No BCS data"))?;
     let registry_is_shared = matches!(registry_obj.owner, GrpcOwner::Shared { .. });
-    println!("  ✓ DeepBook Registry object (version {})", registry_obj.version);
+    println!(
+        "  ✓ DeepBook Registry object (version {})",
+        registry_obj.version
+    );
 
     // =========================================================================
     // STEP 2: Create sandbox and load the forked state

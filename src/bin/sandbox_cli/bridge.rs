@@ -376,12 +376,15 @@ impl TransitionInfo {
                 step: 5,
                 title: "Note Package ID".to_string(),
                 command: None,
-                description: "Save the published package ID from the transaction output".to_string(),
+                description: "Save the published package ID from the transaction output"
+                    .to_string(),
             },
             WorkflowStep {
                 step: 6,
                 title: "Test Deployment".to_string(),
-                command: Some("sui client call --package <PKG_ID> --module <mod> --function <fn>".to_string()),
+                command: Some(
+                    "sui client call --package <PKG_ID> --module <mod> --function <fn>".to_string(),
+                ),
                 description: "Call functions to verify deployment works".to_string(),
             },
         ];
@@ -391,7 +394,8 @@ impl TransitionInfo {
                 ToolRequirement {
                     name: "Sui CLI".to_string(),
                     check_command: "sui --version".to_string(),
-                    install_hint: "cargo install --git https://github.com/MystenLabs/sui.git sui".to_string(),
+                    install_hint: "cargo install --git https://github.com/MystenLabs/sui.git sui"
+                        .to_string(),
                 },
                 ToolRequirement {
                     name: "Active Address".to_string(),
@@ -425,13 +429,16 @@ impl TransitionInfo {
             "Use 'sui-sandbox bridge publish' to generate the exact publish command".to_string(),
             "Use 'sui-sandbox bridge call' to translate sandbox function calls".to_string(),
             "Replace sandbox addresses (0x100, 0xcafe, etc.) with real package IDs".to_string(),
-            "Use --preview with 'sui client ptb' to test transactions without executing".to_string(),
+            "Use --preview with 'sui client ptb' to test transactions without executing"
+                .to_string(),
         ];
 
         let advanced = if verbose {
             Some(AdvancedInfo {
                 protocol_version: 73, // Default protocol version
-                version_tracking_hint: "Use 'sui-sandbox run --track-versions' to see expected object version changes".to_string(),
+                version_tracking_hint:
+                    "Use 'sui-sandbox run --track-versions' to see expected object version changes"
+                        .to_string(),
                 error_handling_tips: vec![
                     "Abort codes in sandbox map directly to on-chain abort codes".to_string(),
                     "Common abort 1: Invalid arguments or type mismatch".to_string(),
@@ -457,13 +464,20 @@ impl TransitionInfo {
         println!("\x1b[36m━━━ Environment Check ━━━\x1b[0m\n");
         println!("\x1b[33mRequired Tools:\x1b[0m");
         for tool in &self.environment_check.required_tools {
-            println!("  • {} - check: \x1b[90m{}\x1b[0m", tool.name, tool.check_command);
+            println!(
+                "  • {} - check: \x1b[90m{}\x1b[0m",
+                tool.name, tool.check_command
+            );
         }
         println!();
 
         println!("\x1b[33mNetwork Options:\x1b[0m");
         for network in &self.environment_check.network_options {
-            let faucet = if network.faucet { "✓ faucet" } else { "✗ no faucet" };
+            let faucet = if network.faucet {
+                "✓ faucet"
+            } else {
+                "✗ no faucet"
+            };
             println!(
                 "  • \x1b[32m{}\x1b[0m ({}) - {} - {}",
                 network.name, network.env_name, faucet, network.notes

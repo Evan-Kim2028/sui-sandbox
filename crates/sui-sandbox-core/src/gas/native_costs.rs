@@ -290,9 +290,7 @@ impl NativeFunctionCosts {
                 .bcs_per_byte_serialized_cost_as_option()
                 .map(|_| 52u64)
                 .unwrap_or(52),
-            bcs_to_bytes_per_byte: config
-                .bcs_per_byte_serialized_cost_as_option()
-                .unwrap_or(2),
+            bcs_to_bytes_per_byte: config.bcs_per_byte_serialized_cost_as_option().unwrap_or(2),
 
             // Vector natives - use simple defaults
             vector_empty_base: DEFAULT_VECTOR_COST,

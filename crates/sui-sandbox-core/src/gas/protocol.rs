@@ -158,18 +158,17 @@ impl GasParameters {
 
             // Execution limits
             max_num_event_emit: config.max_num_event_emit(),
-            max_event_emit_size: config.max_event_emit_size() as u64,
-            max_num_new_move_object_ids: config.max_num_new_move_object_ids() as u64,
-            max_num_deleted_move_object_ids: config.max_num_deleted_move_object_ids() as u64,
-            max_num_transferred_move_object_ids: config.max_num_transferred_move_object_ids()
-                as u64,
+            max_event_emit_size: config.max_event_emit_size(),
+            max_num_new_move_object_ids: config.max_num_new_move_object_ids(),
+            max_num_deleted_move_object_ids: config.max_num_deleted_move_object_ids(),
+            max_num_transferred_move_object_ids: config.max_num_transferred_move_object_ids(),
 
             // VM limits
-            max_function_parameters: config.max_function_parameters() as u64,
+            max_function_parameters: config.max_function_parameters(),
             max_move_vector_len: config.max_move_vector_len(),
-            max_type_argument_depth: config.max_type_argument_depth() as u64,
-            max_type_arguments: config.max_type_arguments() as u64,
-            max_value_stack_depth: config.max_value_stack_size() as u64,
+            max_type_argument_depth: u64::from(config.max_type_argument_depth()),
+            max_type_arguments: u64::from(config.max_type_arguments()),
+            max_value_stack_depth: config.max_value_stack_size(),
 
             // BCS costs (used by native functions)
             bcs_per_byte_serialized_cost: config.bcs_per_byte_serialized_cost(),
@@ -243,6 +242,7 @@ pub fn apply_gas_rounding(gas_units: u64) -> u64 {
     if gas_units == 0 {
         return 0;
     }
+    #[allow(clippy::manual_is_multiple_of)]
     if gas_units % GAS_ROUNDING_STEP == 0 {
         gas_units
     } else {
@@ -339,6 +339,9 @@ mod tests {
     #[test]
     fn test_default_gas_parameters() {
         let params = GasParameters::default();
-        assert!(params.gas_model_version >= 8, "Default should use recent protocol version");
+        assert!(
+            params.gas_model_version >= 8,
+            "Default should use recent protocol version"
+        );
     }
 }

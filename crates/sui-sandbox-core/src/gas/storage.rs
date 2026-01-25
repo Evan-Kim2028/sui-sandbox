@@ -220,7 +220,7 @@ impl StorageTracker {
     /// # Arguments
     /// * `bytes` - Size of the deleted object in bytes
     /// * `previous_storage_cost` - The storage cost that was paid when the object was created
-    ///                             (if known, otherwise use bytes * obj_data_cost_refundable)
+    ///   (if known, otherwise use bytes * obj_data_cost_refundable)
     pub fn charge_delete(&mut self, bytes: usize, previous_storage_cost: Option<u64>) {
         let bytes = bytes as u64;
 
@@ -260,11 +260,7 @@ impl StorageTracker {
         // Verification cost is added to read cost
         self.read_cost = self.read_cost.saturating_add(cost);
 
-        tracing::trace!(
-            bytes = bytes,
-            cost = cost,
-            "storage: charged verify"
-        );
+        tracing::trace!(bytes = bytes, cost = cost, "storage: charged verify");
     }
 
     /// Calculate the sender rebate for a given storage cost.
@@ -474,8 +470,8 @@ mod tests {
     fn test_total_and_net_cost() {
         let mut tracker = StorageTracker::new(&test_params());
 
-        tracker.charge_read(100);     // 1_500
-        tracker.charge_create(100);   // 10_050
+        tracker.charge_read(100); // 1_500
+        tracker.charge_create(100); // 10_050
         tracker.charge_delete(50, None); // delete: 2_000, rebate: 4_975
 
         let summary = tracker.summary();

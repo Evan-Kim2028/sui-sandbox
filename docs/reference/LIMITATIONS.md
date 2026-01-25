@@ -84,6 +84,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 **Original Issue:** When `SplitCoins` couldn't determine the coin type, it fell back to `Coin<SUI>`.
 
 **Solution Implemented:**
+
 - Added `FunctionSignature` lookup in `resolver.rs` to inspect compiled bytecode BEFORE execution
 - `signature_token_to_type_tag()` converts Move bytecode signatures to `TypeTag`, including:
   - All primitives (u8, u64, bool, address, etc.)
@@ -94,11 +95,13 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - `execute_move_call()` now pre-computes return types and pairs them with values via `TypedValue`
 
 **Technical Details:**
+
 - Code locations: `resolver.rs:signature_token_to_type_tag()`, `resolver.rs:resolve_function_return_types()`, `ptb.rs:execute_move_call()`
 - Type resolution uses `CompiledModule::function_handles`, `signatures`, and `datatype_handles`
 - Falls back gracefully if signature lookup fails (empty return type list)
 
 **Sui Source Comparison:**
+
 - Sui uses `LoadedFunctionInfo` with return types resolved at load time
 - Our approach achieves the same result by looking up function signatures before execution
 
@@ -111,17 +114,20 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 **Original Issue:** The `get_object_id_and_type_from_arg` function assumed the first 32 bytes of any Result value are the object ID.
 
 **Solution Implemented:**
+
 - `TypedValue` now carries type information with Result values from function signature lookup
 - MoveCall returns are paired with pre-computed types from `resolve_function_return_types()`
 - `get_object_id_and_type_from_arg` checks TypedValue's `type_tag` for proper type identification
 
 **Technical Details:**
+
 - Function signature lookup provides return types BEFORE execution
 - `TypedValue::new(bytes, Some(type_tag))` pairs bytes with known types
 - All built-in commands (SplitCoins, MergeCoins, MakeMoveVec, Receive) preserve types
 - MoveCall returns now have proper types from bytecode introspection
 
 **Sui Source Comparison:**
+
 - Sui uses typed values (`ObjectValue` struct in `execution_value.rs`) with explicit type info
 - Our solution achieves similar type tracking via function signature lookup
 
@@ -134,6 +140,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 **Original Issue:** Object versions were not incremented when objects were mutated, and digests were not computed.
 
 **Solution Implemented:**
+
 - Added `TrackedObject` struct with `version`, `is_modified`, `owner`, and `digest` fields
 - Added `ObjectVersionInfo` struct to capture version changes (input/output version and digest)
 - Added `VersionChangeType` enum (Created, Mutated, Deleted, Wrapped)
@@ -146,6 +153,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - `TransactionEffects` now includes optional `object_versions` and `lamport_timestamp` fields
 
 **Technical Details:**
+
 - Version tracking is opt-in via `set_track_versions(true)` for backwards compatibility
 - Input versions are registered via `register_input_version()` or `register_input_version_and_digest()`
 - Lamport timestamp is set via `set_lamport_timestamp()`
@@ -154,6 +162,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - Deleted/wrapped objects get marker digest (all zeros)
 
 **Sui Source Comparison:**
+
 - Sui uses `LoadedRuntimeObject` struct with `version: SequenceNumber` and `is_modified: bool`
 - Our `TrackedObject` mirrors this with additional type and digest tracking
 - Sui's `update_version_and_previous_tx()` assigns lamport_timestamp to all modified objects
@@ -168,6 +177,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 **Original Issue:** Abort codes were extracted from error messages using string parsing, which was fragile and could fail with non-standard error formats.
 
 **Solution Implemented:**
+
 - Added `StructuredAbortInfo` struct in `vm.rs` that captures abort info directly from `VMError`
 - Added `StructuredVMError` struct to preserve full error details from the Move VM
 - Added `ExecutionResult` enum that can be Success or Failure with structured error info
@@ -177,6 +187,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - String parsing fallback is kept for backwards compatibility
 
 **Technical Details:**
+
 - `VMError::major_status()` provides the StatusCode (e.g., ABORTED)
 - `VMError::sub_status()` provides the abort code directly (no parsing needed)
 - `VMError::location()` provides module ID where abort occurred
@@ -184,6 +195,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - `VMError::exec_state()` provides full stack trace if available
 
 **Sui Source Comparison:**
+
 - Sui uses `convert_vm_error_impl()` in `error.rs:15-80` for structured error conversion
 - Our implementation now mirrors this approach by capturing VMError fields directly
 
@@ -251,6 +263,7 @@ The following edge cases were identified through comprehensive analysis of the S
 **Status:** ⚠️ Partial Implementation
 
 **Description:** TransferObjects validation doesn't fully verify:
+
 - Object capabilities (is the object transferable?)
 - Store ability requirements
 - Recipient address validity
@@ -285,6 +298,7 @@ The following edge cases were identified through comprehensive analysis of the S
 **Status:** ⚠️ Partial Implementation
 
 **Description:** Shared objects have specific mutability rules:
+
 - Can only be mutated once per transaction
 - Must be accessed in a specific order
 
@@ -372,6 +386,7 @@ The following edge cases were identified through comprehensive analysis of the S
 **Status:** Gas metering is now Sui-compatible and enabled by default.
 
 **Details:**
+
 - `AccurateGasMeter` with per-instruction costs matching Sui's cost tables
 - Storage tracking for read/write/delete charges
 - Native function gas costs from `native_costs.rs`
@@ -379,6 +394,7 @@ The following edge cases were identified through comprehensive analysis of the S
 - Computation bucketing matching Sui's gas model
 
 **Configuration:**
+
 ```rust
 // Gas metering is enabled by default
 let config = SimulationConfig::default();
@@ -392,6 +408,7 @@ let config = SimulationConfig::default().without_gas_metering();
 **Limitation:** Storage rebates are approximated rather than precisely calculated.
 
 **Details:**
+
 - On-chain storage rebates depend on the exact object size and historical storage price when the object was created
 - The sandbox uses a formula: `object_size_bytes * 100 * storage_price * 0.99` (99% refundable)
 - For precise rebate tracking, use `SimulationConfig::with_storage_price()` to set the storage price
@@ -407,6 +424,7 @@ let config = SimulationConfig::default().without_gas_metering();
 **Limitation:** Shared object initial versions are tracked but may not match on-chain exactly for dynamically created shared objects.
 
 **Details:**
+
 - When creating a shared object during simulation, the initial shared version is set to the object's creation version
 - For replayed transactions, the initial shared version comes from the transaction input data
 
@@ -417,6 +435,7 @@ let config = SimulationConfig::default().without_gas_metering();
 **Limitation:** The sandbox requires all input objects to be provided upfront.
 
 **Details:**
+
 - Missing objects will cause an explicit error (not silent failures)
 - Dynamic field children discovered during execution require pre-fetching
 - There's no on-chain state oracle for discovering objects at runtime
@@ -441,6 +460,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 | ECVRF | **Mocked** | Always returns `true` |
 
 **Details:**
+
 - Invalid signatures return `false` (not abort), matching mainnet behavior
 - Public key recovery (`ecrecover`) performs real cryptographic recovery
 - Groth16 proof verification is fully implemented for both curve types
@@ -457,6 +477,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 | sha3_256 | **Real** |
 
 **Details:**
+
 - All hash functions produce correct outputs matching on-chain behavior
 - Object ID derivation uses proper hashing
 
@@ -471,6 +492,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** The mock clock can be frozen or advancing, differing from on-chain.
 
 **Details:**
+
 - On-chain, `Clock::timestamp_ms()` is fixed for the entire transaction
 - By default, the sandbox uses an "advancing" clock (each access increments)
 - For replay, set `tx_timestamp_ms` to freeze the clock at the transaction's timestamp
@@ -482,6 +504,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Random values are deterministic by default.
 
 **Details:**
+
 - `sui::random::Random` uses a configurable seed
 - The same seed produces the same sequence of random values
 - On-chain randomness comes from the blockchain's random beacon
@@ -497,6 +520,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** The default sender is the zero address (`0x0`).
 
 **Details:**
+
 - When not explicitly configured, `tx_context::sender()` returns `0x0`
 - This is intentional - most testing doesn't need a specific sender
 - Use `SimulationConfig::with_sender_address()` to set a specific sender
@@ -509,6 +533,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Protocol version affects feature availability.
 
 **Details:**
+
 - Default protocol version is 74 (recent mainnet)
 - Some features are version-gated (e.g., `is_feature_enabled` checks version >= 60)
 - Use `SimulationConfig::with_protocol_version()` for specific versions
@@ -524,6 +549,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Dynamic fields computed at runtime cannot be pre-fetched.
 
 **Details:**
+
 - Some DeFi protocols (Cetus, Turbos) use skip_list data structures
 - These compute tick indices at runtime during traversal
 - The sandbox cannot predict which dynamic fields will be accessed
@@ -531,6 +557,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Example:** A Cetus swap traverses: `head(0) → 481316 → 512756 → tail(887272)`. If the swap needs tick `500000`, this is computed at runtime.
 
 **Workarounds:**
+
 1. Cache all dynamic field children at transaction time
 2. Use synthetic/mocked transactions for testing
 3. Pre-fetch all known indices for specific pools
@@ -540,6 +567,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Fully supported using the same algorithm as Sui.
 
 **Details:**
+
 - Uses `Blake2b256(0xf0 || parent || len(key_bytes) || key_bytes || bcs(key_type_tag))`
 - The `derive_dynamic_field_id()` function produces correct IDs
 
@@ -554,6 +582,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Package upgrades require address aliasing.
 
 **Details:**
+
 - On-chain, upgraded packages have new addresses but can reference types from original packages
 - The sandbox maintains an alias map for address resolution
 - Bytecode may contain the original (pre-upgrade) address while on-chain ID differs
@@ -565,6 +594,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Linkage information must be provided explicitly.
 
 **Details:**
+
 - Package linkage (which original packages are used) comes from cached transaction data
 - The `package_upgrades` field in `CachedTransaction` tracks these mappings
 
@@ -579,6 +609,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Receiving object parent IDs are not always available.
 
 **Details:**
+
 - Receiving objects are owned by another object (the parent)
 - The `TransactionInput::Receiving` only provides object_id, version, digest
 - Parent ID must be determined from on-chain object owner data
@@ -590,6 +621,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 **Limitation:** Receiving authorization checks are simplified.
 
 **Details:**
+
 - On-chain, the sender must prove ownership of the parent object
 - The sandbox tracks receiving objects but may not enforce all authorization rules
 - Use `permissive_ownership: false` for stricter checks
@@ -601,6 +633,7 @@ Cryptographic operations use **fastcrypto**, the same library used by Sui valida
 ### Supported Natives
 
 Most Sui-specific native functions are implemented:
+
 - `tx_context::*` - Transaction context (sender, epoch, fresh_id)
 - `clock::*` - Clock timestamp
 - `object::*` - Object operations (new, delete, borrow)
@@ -614,6 +647,7 @@ Most Sui-specific native functions are implemented:
 ### Unsupported or Partial Natives
 
 Some natives have limitations:
+
 - **Consensus-dependent natives** - May not reflect real network state
 - **Validator-specific natives** - Not applicable in local simulation
 - **zkLogin natives** - Signature verification mocked
@@ -643,6 +677,7 @@ let config = SimulationConfig::strict()
 ### For Understanding Differences
 
 When local execution differs from on-chain:
+
 1. Check gas budget and metering differences
 2. Verify all input objects are cached
 3. Ensure clock/timestamp is correctly set

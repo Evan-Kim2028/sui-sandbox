@@ -31,15 +31,15 @@ use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
-use sui_state_fetcher::{
-    get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
-};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::HistoricalStateReconstructor;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_state_fetcher::{
+    get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
+};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
 
@@ -89,21 +89,21 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("Step 1: Fetching state via HistoricalStateProvider...");
 
-    let provider: HistoricalStateProvider = rt.block_on(async {
-        HistoricalStateProvider::mainnet().await
-    })?;
-    let state: ReplayState = rt.block_on(async {
-        provider.fetch_replay_state(tx_digest).await
-    })?;
+    let provider: HistoricalStateProvider =
+        rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
+    let state: ReplayState = rt.block_on(async { provider.fetch_replay_state(tx_digest).await })?;
 
-    println!("   ✓ Transaction: {} commands", state.transaction.commands.len());
+    println!(
+        "   ✓ Transaction: {} commands",
+        state.transaction.commands.len()
+    );
     println!("   ✓ Objects: {}", state.objects.len());
     println!("   ✓ Packages: {}", state.packages.len());
 
     // We still need the original gRPC transaction for MM2 analysis
-    let grpc_tx = rt.block_on(async {
-        provider.grpc().get_transaction(tx_digest).await
-    })?.ok_or_else(|| anyhow::anyhow!("Transaction not found"))?;
+    let grpc_tx = rt
+        .block_on(async { provider.grpc().get_transaction(tx_digest).await })?
+        .ok_or_else(|| anyhow::anyhow!("Transaction not found"))?;
 
     let tx_timestamp_ms = state.transaction.timestamp_ms.unwrap_or(1700000000000);
 
@@ -116,9 +116,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 2: Running MM2 predictive prefetch analysis...");
 
-    let grpc_for_mm2 = rt.block_on(async {
-        GrpcClient::mainnet().await
-    })?;
+    let grpc_for_mm2 = rt.block_on(async { GrpcClient::mainnet().await })?;
     let graphql_for_mm2 = GraphQLClient::mainnet();
 
     let mut prefetcher = PredictivePrefetcher::new();

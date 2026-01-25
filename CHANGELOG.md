@@ -26,6 +26,7 @@ All notable changes to the Sui Move Interface Extractor project will be document
 #### Accurate Gas Metering System
 
 New gas metering module with Sui-compatible implementation:
+
 - `AccurateGasMeter` with per-instruction costs
 - Storage tracking for read/write/delete charges
 - Native function gas costs
@@ -37,6 +38,7 @@ New gas metering module with Sui-compatible implementation:
 #### PTB Execution Improvements
 
 All 9 edge cases from FEASIBILITY_PLAN.md have been fixed:
+
 - **SplitCoins/MergeCoins Result argument handling**: Balance mutations now properly propagate to Result/NestedResult arguments
 - **Version tracking system**: `TrackedObject` with version, `is_modified`, owner, digest fields
 - **Structured abort info**: `StructuredAbortInfo` captures abort codes directly from VMError
@@ -47,6 +49,7 @@ All 9 edge cases from FEASIBILITY_PLAN.md have been fixed:
 #### MM2 Bytecode Analysis (Predictive Prefetch)
 
 Predictive prefetch system for dynamic field access:
+
 - `bytecode_analyzer.rs` - Walks bytecode to find dynamic_field calls
 - `field_access_predictor.rs` - Predicts dynamic field accesses with type resolution
 - `call_graph.rs` - Build call graphs for inter-module analysis

@@ -346,8 +346,7 @@ impl PredictivePrefetcher {
             // =========================================================================
             // Phase 2b: Fetch missing packages needed for MM2 analysis (fallback)
             // =========================================================================
-            let missing_packages =
-                self.find_missing_packages_for_analysis(tx, &result.base_result);
+            let missing_packages = self.find_missing_packages_for_analysis(tx, &result.base_result);
 
             if !missing_packages.is_empty() {
                 let fetched = self.fetch_packages_for_mm2(grpc, rt, &missing_packages);
@@ -383,8 +382,7 @@ impl PredictivePrefetcher {
             let predictions =
                 self.analyze_transaction_commands(tx, config, &mut result.prediction_stats);
 
-            result.prediction_stats.analysis_time_ms =
-                analysis_start.elapsed().as_millis() as u64;
+            result.prediction_stats.analysis_time_ms = analysis_start.elapsed().as_millis() as u64;
             result.prediction_stats.predictions_made = predictions.len();
 
             // Categorize predictions by confidence
@@ -403,8 +401,7 @@ impl PredictivePrefetcher {
             // =========================================================================
             // Build upgrade resolver to normalize storage_id -> original_id in type strings
             // Include bytecode-detected upgrades (most reliable source)
-            let upgrade_resolver =
-                build_upgrade_resolver(&result.base_result, &bytecode_upgrades);
+            let upgrade_resolver = build_upgrade_resolver(&result.base_result, &bytecode_upgrades);
             let ground_truth_types = build_type_index(&result.base_result, &upgrade_resolver);
             let ground_truth_ids = build_id_set(&result.base_result);
             let parent_candidates = collect_parent_candidates(tx, &result.base_result);
@@ -437,10 +434,8 @@ impl PredictivePrefetcher {
                 // Strategy 2: For phantom keys, try to derive child ID and match
                 else if is_phantom {
                     // Try each parent candidate
-                    let derived = synthesizer.derive_child_ids_for_parents(
-                        &parent_candidates,
-                        &pred.key_type,
-                    );
+                    let derived = synthesizer
+                        .derive_child_ids_for_parents(&parent_candidates, &pred.key_type);
 
                     for (_parent, child) in derived {
                         let child_hex = format!("{:#066x}", child);
@@ -492,9 +487,12 @@ impl PredictivePrefetcher {
                     stats.functions_analyzed += 1;
 
                     // Get predictions for this call
-                    let predictions =
-                        self.predictor
-                            .predict_accesses(&pkg_addr, module, function, type_arguments);
+                    let predictions = self.predictor.predict_accesses(
+                        &pkg_addr,
+                        module,
+                        function,
+                        type_arguments,
+                    );
 
                     // Filter by minimum confidence
                     for pred in predictions {

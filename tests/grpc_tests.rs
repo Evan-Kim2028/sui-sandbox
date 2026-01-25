@@ -1,6 +1,7 @@
 //! gRPC Integration Tests
 //!
 //! These tests validate the gRPC client against a Sui gRPC endpoint.
+#![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //!
 //! ## Requirements
 //!

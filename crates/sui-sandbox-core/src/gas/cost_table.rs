@@ -103,7 +103,10 @@ impl CostTableSummary {
         let mut s = format!("Cost Table for Gas Model v{}\n", self.gas_model_version);
         s.push_str("\nInstruction Tiers:\n");
         for (threshold, multiplier) in &self.instruction_tiers {
-            s.push_str(&format!("  {} instructions -> {}x cost\n", threshold, multiplier));
+            s.push_str(&format!(
+                "  {} instructions -> {}x cost\n",
+                threshold, multiplier
+            ));
         }
         s.push_str("\nStack Height Tiers:\n");
         for (threshold, multiplier) in &self.stack_height_tiers {
@@ -165,7 +168,10 @@ mod tests {
         let table = zero_cost_schedule();
 
         let tier = instruction_tier_info(&table, 1_000_000);
-        assert_eq!(tier.multiplier, 0, "Zero cost schedule should have 0 multiplier");
+        assert_eq!(
+            tier.multiplier, 0,
+            "Zero cost schedule should have 0 multiplier"
+        );
     }
 
     #[test]

@@ -80,15 +80,14 @@ pub use historical_package::{
 pub use historical_state::{
     HistoricalStateReconstructor, ReconstructedState, ReconstructionConfig, ReconstructorBuilder,
 };
+pub use historical_version_finder::{
+    extract_version_constant_from_bytecode, extract_version_constant_from_modules, GrpcLikeClient,
+    GrpcObjectResult, GrpcPackageFetcher, HistoricalVersionFinder, PackageModuleFetcher,
+    SearchStrategy, VersionConstantCache, VersionFindResult, VersionFinderConfig,
+};
 pub use offset_calculator::{OffsetCalculator, OffsetResult};
 pub use version_field_detector::{
     calculate_offset, default_patterns, find_well_known_config, find_well_known_offset,
     DetectedVersionField, FieldPosition, FieldType, VersionFieldDetector, VersionPattern,
     WELL_KNOWN_VERSION_CONFIGS, WELL_KNOWN_VERSION_OFFSETS,
-};
-pub use historical_version_finder::{
-    extract_version_constant_from_bytecode, extract_version_constant_from_modules,
-    GrpcLikeClient, GrpcObjectResult, GrpcPackageFetcher, HistoricalVersionFinder,
-    PackageModuleFetcher, SearchStrategy, VersionConstantCache, VersionFindResult,
-    VersionFinderConfig,
 };

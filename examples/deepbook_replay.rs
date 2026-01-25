@@ -21,13 +21,13 @@ use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
-use sui_state_fetcher::{
-    get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
-};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_state_fetcher::{
+    get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
+};
 
 use common::{
     create_dynamic_discovery_cache, create_enhanced_child_fetcher_with_cache,
@@ -80,14 +80,14 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("Step 1: Fetching state via HistoricalStateProvider...");
 
-    let provider: HistoricalStateProvider = rt.block_on(async {
-        HistoricalStateProvider::mainnet().await
-    })?;
-    let state: ReplayState = rt.block_on(async {
-        provider.fetch_replay_state(tx_digest).await
-    })?;
+    let provider: HistoricalStateProvider =
+        rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
+    let state: ReplayState = rt.block_on(async { provider.fetch_replay_state(tx_digest).await })?;
 
-    println!("   ✓ Transaction: {} commands", state.transaction.commands.len());
+    println!(
+        "   ✓ Transaction: {} commands",
+        state.transaction.commands.len()
+    );
     println!("   ✓ Objects: {}", state.objects.len());
     println!("   ✓ Packages: {}", state.packages.len());
 
@@ -151,11 +151,17 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     println!("\nStep 4: Prefetching dynamic fields...");
 
     let graphql = GraphQLClient::mainnet();
-    let grpc_for_prefetch = rt.block_on(async {
-        sui_transport::grpc::GrpcClient::mainnet().await
-    })?;
+    let grpc_for_prefetch =
+        rt.block_on(async { sui_transport::grpc::GrpcClient::mainnet().await })?;
 
-    let prefetched = prefetch_dynamic_fields(&graphql, &grpc_for_prefetch, &rt, &historical_versions, 3, 200);
+    let prefetched = prefetch_dynamic_fields(
+        &graphql,
+        &grpc_for_prefetch,
+        &rt,
+        &historical_versions,
+        3,
+        200,
+    );
 
     println!(
         "   ✓ Discovered {} fields, fetched {} children",
@@ -174,9 +180,8 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     patcher.add_default_rules();
 
     // Create child fetcher with enhanced fallback strategies (gRPC + GraphQL)
-    let grpc_for_fetcher = rt.block_on(async {
-        sui_transport::grpc::GrpcClient::mainnet().await
-    })?;
+    let grpc_for_fetcher =
+        rt.block_on(async { sui_transport::grpc::GrpcClient::mainnet().await })?;
     let graphql_for_fetcher = GraphQLClient::mainnet();
     let discovery_cache = create_dynamic_discovery_cache();
 
@@ -230,11 +235,18 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // Add prefetched objects to the cached transaction
     // This fills in objects that weren't available at historical versions but were fetched via GraphQL
     for (child_id, (version, type_str, bcs)) in &prefetched.children {
-        cached.objects.entry(child_id.clone()).or_insert_with(|| {
-            base64::engine::general_purpose::STANDARD.encode(bcs)
-        });
-        cached.object_types.entry(child_id.clone()).or_insert_with(|| type_str.clone());
-        cached.object_versions.entry(child_id.clone()).or_insert(*version);
+        cached
+            .objects
+            .entry(child_id.clone())
+            .or_insert_with(|| base64::engine::general_purpose::STANDARD.encode(bcs));
+        cached
+            .object_types
+            .entry(child_id.clone())
+            .or_insert_with(|| type_str.clone());
+        cached
+            .object_versions
+            .entry(child_id.clone())
+            .or_insert(*version);
     }
 
     let address_aliases = sui_sandbox_core::tx_replay::build_address_aliases_for_test(&cached);

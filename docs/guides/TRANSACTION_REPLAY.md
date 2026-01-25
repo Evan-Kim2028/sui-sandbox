@@ -5,6 +5,7 @@ Replay Sui mainnet transactions locally to verify behavior and debug issues.
 ## Overview
 
 Transaction replay:
+
 1. Fetches a historical transaction from Sui mainnet
 2. Fetches all objects at their historical versions (before the transaction modified them)
 3. Executes the transaction in the local Move VM
@@ -37,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The `HistoricalStateProvider`:
+
 - Automatically fetches objects at their **input versions** from `unchanged_loaded_runtime_objects`
 - Uses a **versioned cache** keyed by `(object_id, version)`
 - Resolves package **linkage tables** for upgraded packages
@@ -240,6 +242,7 @@ Step 2: Fetching transaction via gRPC...
 **Cause**: An object accessed during execution wasn't prefetched
 
 **Solution**: The on-demand fetcher should handle this automatically. If it persists, check that:
+
 - Your API key is valid
 - The object exists at the historical version
 - Network connectivity is working
@@ -259,6 +262,7 @@ Step 2: Fetching transaction via gRPC...
 **Cause**: Input objects registered with wrong ownership type
 
 Objects must be registered with their correct ownership:
+
 - `GrpcInput::Object` → owned by sender (`Owner::AddressOwner`)
 - `GrpcInput::SharedObject` → shared (`Owner::Shared`)
 - `GrpcInput::Receiving` → owned by sender
@@ -291,6 +295,7 @@ Sui package upgrades create a key architectural complexity:
 - **`storage_id`**: Where the upgraded bytecode is actually stored on-chain
 
 You need **both** directions of mapping:
+
 - **Forward** (`storage_id → original_id`): For module resolution - load bytecode from storage, execute at original address
 - **Reverse** (`original_id → storage_id`): For dynamic field hashing - child IDs are computed using the type's address
 

@@ -160,4 +160,4 @@ If you encounter issues during migration:
 
 1. Check the [CHANGELOG.md](../CHANGELOG.md) for detailed release notes
 2. Review the [ARCHITECTURE.md](../ARCHITECTURE.md) for system design
-3. Open an issue at https://github.com/anthropics/claude-code/issues
+3. Open an issue at <https://github.com/anthropics/claude-code/issues>

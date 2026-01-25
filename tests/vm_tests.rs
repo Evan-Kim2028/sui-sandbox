@@ -249,10 +249,7 @@ mod execution_output_tests {
     fn test_output_with_mutable_refs() {
         let output = ExecutionOutput {
             return_values: vec![],
-            mutable_ref_outputs: vec![
-                (0, vec![10, 20], None),
-                (2, vec![30, 40, 50], None),
-            ],
+            mutable_ref_outputs: vec![(0, vec![10, 20], None), (2, vec![30, 40, 50], None)],
             gas_used: 500,
         };
 

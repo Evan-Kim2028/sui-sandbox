@@ -146,7 +146,9 @@ pub struct LocalModuleResolver {
     address_aliases: BTreeMap<AccountAddress, AccountAddress>,
     /// Cache for function signatures and visibility (thread-safe).
     /// Key: (package_addr, module_name, function_name)
-    function_cache: std::sync::Arc<parking_lot::RwLock<std::collections::HashMap<FunctionKey, CachedFunctionInfo>>>,
+    function_cache: std::sync::Arc<
+        parking_lot::RwLock<std::collections::HashMap<FunctionKey, CachedFunctionInfo>>,
+    >,
 }
 
 impl Default for LocalModuleResolver {
@@ -161,7 +163,9 @@ impl LocalModuleResolver {
             modules: BTreeMap::new(),
             modules_bytes: BTreeMap::new(),
             address_aliases: BTreeMap::new(),
-            function_cache: std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+            function_cache: std::sync::Arc::new(parking_lot::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -288,7 +292,10 @@ impl LocalModuleResolver {
         let client = sui_transport::GraphQLClient::mainnet();
         match self.load_sui_framework_from_graphql(&client) {
             Ok(count) if count > 0 => {
-                info!(count = count, "loaded framework modules from mainnet GraphQL");
+                info!(
+                    count = count,
+                    "loaded framework modules from mainnet GraphQL"
+                );
                 return Ok(count);
             }
             Ok(0) => {
@@ -407,7 +414,9 @@ impl LocalModuleResolver {
 
     /// Invalidate cached function info for a specific package.
     fn invalidate_package_cache(&self, package_addr: &AccountAddress) {
-        self.function_cache.write().retain(|k, _| k.package != *package_addr);
+        self.function_cache
+            .write()
+            .retain(|k, _| k.package != *package_addr);
     }
 
     /// Clear the entire function cache.
@@ -607,10 +616,7 @@ impl LocalModuleResolver {
 
     /// Get all address aliases as a HashMap for use with VMHarness and ObjectRuntime.
     pub fn get_all_aliases(&self) -> std::collections::HashMap<AccountAddress, AccountAddress> {
-        self.address_aliases
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect()
+        self.address_aliases.iter().map(|(k, v)| (*k, *v)).collect()
     }
 
     /// Validate that all aliased addresses have modules loaded.
@@ -623,10 +629,7 @@ impl LocalModuleResolver {
 
         for (target, source) in &self.address_aliases {
             // Check if any module exists at the source address
-            let has_modules = self
-                .modules
-                .keys()
-                .any(|id| id.address() == source);
+            let has_modules = self.modules.keys().any(|id| id.address() == source);
 
             if !has_modules {
                 missing.push((*target, *source));
@@ -1163,7 +1166,10 @@ impl LocalModuleResolver {
 
         // Populate cache and return
         if self.ensure_function_cached(package_addr, module_name, function_name) {
-            self.function_cache.read().get(&key).map(|info| info.signature.clone())
+            self.function_cache
+                .read()
+                .get(&key)
+                .map(|info| info.signature.clone())
         } else {
             None
         }
@@ -1264,7 +1270,11 @@ impl LocalModuleResolver {
 
         // Populate cache and check
         if self.ensure_function_cached(package_addr, module_name, function_name) {
-            self.function_cache.read().get(&key).map(|info| info.is_entry).unwrap_or(false)
+            self.function_cache
+                .read()
+                .get(&key)
+                .map(|info| info.is_entry)
+                .unwrap_or(false)
         } else {
             false
         }
@@ -1399,8 +1409,10 @@ impl LocalModuleResolver {
                 }
 
                 // Check ability constraints for each type argument
-                for (i, (type_arg, constraint)) in
-                    type_args.iter().zip(handle.type_parameters.iter()).enumerate()
+                for (i, (type_arg, constraint)) in type_args
+                    .iter()
+                    .zip(handle.type_parameters.iter())
+                    .enumerate()
                 {
                     if let Err(msg) = self.check_type_satisfies_constraints(type_arg, constraint) {
                         return Err(anyhow!(
@@ -1454,10 +1466,14 @@ impl LocalModuleResolver {
 
         match type_tag {
             // Primitives have copy, drop, store but NOT key
-            TypeTag::Bool | TypeTag::U8 | TypeTag::U16 | TypeTag::U32 | TypeTag::U64
-            | TypeTag::U128 | TypeTag::U256 | TypeTag::Address => {
-                primitive_abilities(has_key)
-            }
+            TypeTag::Bool
+            | TypeTag::U8
+            | TypeTag::U16
+            | TypeTag::U32
+            | TypeTag::U64
+            | TypeTag::U128
+            | TypeTag::U256
+            | TypeTag::Address => primitive_abilities(has_key),
 
             // Signer has drop but NOT copy, store, or key
             TypeTag::Signer => {
@@ -1482,16 +1498,19 @@ impl LocalModuleResolver {
                 // We reconstruct the constraint set without key using union of singletons
                 let mut inner_constraints = move_binary_format::file_format::AbilitySet::EMPTY;
                 if has_copy {
-                    inner_constraints = inner_constraints
-                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Copy));
+                    inner_constraints = inner_constraints.union(
+                        move_binary_format::file_format::AbilitySet::singleton(Ability::Copy),
+                    );
                 }
                 if has_drop {
-                    inner_constraints = inner_constraints
-                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Drop));
+                    inner_constraints = inner_constraints.union(
+                        move_binary_format::file_format::AbilitySet::singleton(Ability::Drop),
+                    );
                 }
                 if has_store {
-                    inner_constraints = inner_constraints
-                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Store));
+                    inner_constraints = inner_constraints.union(
+                        move_binary_format::file_format::AbilitySet::singleton(Ability::Store),
+                    );
                 }
                 self.check_type_satisfies_constraints(inner, &inner_constraints)
             }
@@ -1550,7 +1569,7 @@ impl LocalModuleResolver {
                             // This catches cases like passing a type without 'store' to Coin<T> where T: store
                             if !struct_tag.type_params.is_empty() {
                                 self.validate_struct_type_params(
-                                    &struct_tag,
+                                    struct_tag,
                                     &handle.type_parameters,
                                 )?;
                             }
@@ -1591,7 +1610,12 @@ impl LocalModuleResolver {
         }
 
         // Validate each type argument against its parameter's constraints
-        for (i, (type_arg, param)) in struct_tag.type_params.iter().zip(type_params.iter()).enumerate() {
+        for (i, (type_arg, param)) in struct_tag
+            .type_params
+            .iter()
+            .zip(type_params.iter())
+            .enumerate()
+        {
             // Phantom type parameters don't affect runtime, so we skip validation
             // (they only need to satisfy constraints for compile-time reasons)
             if param.is_phantom {
@@ -1601,14 +1625,16 @@ impl LocalModuleResolver {
             let param_constraints = param.constraints;
             if param_constraints != move_binary_format::file_format::AbilitySet::EMPTY {
                 self.check_type_satisfies_constraints(type_arg, &param_constraints)
-                    .map_err(|e| format!(
-                        "Type argument {} for {}::{}::{} does not satisfy constraints: {}",
-                        i,
-                        struct_tag.address.to_hex_literal(),
-                        struct_tag.module,
-                        struct_tag.name,
-                        e
-                    ))?;
+                    .map_err(|e| {
+                        format!(
+                            "Type argument {} for {}::{}::{} does not satisfy constraints: {}",
+                            i,
+                            struct_tag.address.to_hex_literal(),
+                            struct_tag.module,
+                            struct_tag.name,
+                            e
+                        )
+                    })?;
             }
         }
 
@@ -1631,10 +1657,13 @@ impl LocalModuleResolver {
         // Try direct lookup first, then check for alias
         let module = self.modules.get(&id).or_else(|| {
             // Check if this address has an alias (for deployed packages)
-            self.address_aliases.get(package_addr).and_then(|aliased_addr| {
-                let aliased_id = ModuleId::new(*aliased_addr, Identifier::new(module_name).ok()?);
-                self.modules.get(&aliased_id)
-            })
+            self.address_aliases
+                .get(package_addr)
+                .and_then(|aliased_addr| {
+                    let aliased_id =
+                        ModuleId::new(*aliased_addr, Identifier::new(module_name).ok()?);
+                    self.modules.get(&aliased_id)
+                })
         })?;
 
         // Find the function

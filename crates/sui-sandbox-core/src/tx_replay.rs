@@ -528,9 +528,8 @@ fn to_ptb_commands_internal(
 
     // Helper to parse object ID with proper error handling
     let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
-        AccountAddress::from_hex_literal(object_id).map_err(|e| {
-            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
-        })
+        AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow::anyhow!("invalid object ID '{}': {}", object_id, e))
     };
 
     // Helper to get object bytes from cache.
@@ -586,9 +585,7 @@ fn to_ptb_commands_internal(
                 inputs.push(InputValue::Pure(bytes.clone()));
             }
             TransactionInput::Object {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -614,9 +611,7 @@ fn to_ptb_commands_internal(
                 }));
             }
             TransactionInput::ImmutableObject {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -629,9 +624,7 @@ fn to_ptb_commands_internal(
                 }));
             }
             TransactionInput::Receiving {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -761,9 +754,8 @@ fn to_ptb_commands_internal_with_versions(
 
     // Helper to parse object ID with proper error handling
     let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
-        AccountAddress::from_hex_literal(object_id).map_err(|e| {
-            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
-        })
+        AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow::anyhow!("invalid object ID '{}': {}", object_id, e))
     };
 
     // Helper to get object bytes from cache
@@ -772,20 +764,27 @@ fn to_ptb_commands_internal_with_versions(
             .get(object_id)
             .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache", object_id))
             .and_then(|b64| {
-                base64::engine::general_purpose::STANDARD.decode(b64)
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
                     .map_err(|e| anyhow::anyhow!("failed to decode object '{}': {}", object_id, e))
             })
     };
 
     // Helper to get version for an object - prefers external map, falls back to input version
     let get_version = |object_id: &str, input_version: u64| -> u64 {
-        object_versions.get(object_id).copied().unwrap_or(input_version)
+        object_versions
+            .get(object_id)
+            .copied()
+            .unwrap_or(input_version)
     };
 
     // Check if any command uses GasCoin
     let uses_gas_coin = tx.commands.iter().any(|cmd| match cmd {
         PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
-        PtbCommand::MergeCoins { destination, sources } => {
+        PtbCommand::MergeCoins {
+            destination,
+            sources,
+        } => {
             matches!(destination, PtbArgument::GasCoin)
                 || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
         }
@@ -815,9 +814,7 @@ fn to_ptb_commands_internal_with_versions(
                 inputs.push(InputValue::Pure(bytes.clone()));
             }
             TransactionInput::Object {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -845,9 +842,7 @@ fn to_ptb_commands_internal_with_versions(
                 }));
             }
             TransactionInput::ImmutableObject {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -860,9 +855,7 @@ fn to_ptb_commands_internal_with_versions(
                 }));
             }
             TransactionInput::Receiving {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -883,9 +876,10 @@ fn to_ptb_commands_internal_with_versions(
         match arg {
             PtbArgument::Input { index } => Argument::Input(index + input_offset),
             PtbArgument::Result { index } => Argument::Result(*index),
-            PtbArgument::NestedResult { index, result_index } => {
-                Argument::NestedResult(*index, *result_index)
-            }
+            PtbArgument::NestedResult {
+                index,
+                result_index,
+            } => Argument::NestedResult(*index, *result_index),
             PtbArgument::GasCoin => Argument::Input(0),
         }
     };
@@ -924,7 +918,10 @@ fn to_ptb_commands_internal_with_versions(
                     amounts: amounts.iter().map(&convert_arg).collect(),
                 });
             }
-            PtbCommand::MergeCoins { destination, sources } => {
+            PtbCommand::MergeCoins {
+                destination,
+                sources,
+            } => {
                 commands.push(Command::MergeCoins {
                     destination: convert_arg(destination),
                     sources: sources.iter().map(&convert_arg).collect(),
@@ -963,9 +960,8 @@ fn to_ptb_commands_internal_with_aliases(
 
     // Helper to parse object ID with proper error handling
     let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
-        AccountAddress::from_hex_literal(object_id).map_err(|e| {
-            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
-        })
+        AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow::anyhow!("invalid object ID '{}': {}", object_id, e))
     };
 
     // Helper to get object bytes from cache.
@@ -1043,9 +1039,7 @@ fn to_ptb_commands_internal_with_aliases(
                 inputs.push(InputValue::Pure(bytes.clone()));
             }
             TransactionInput::Object {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -1071,9 +1065,7 @@ fn to_ptb_commands_internal_with_aliases(
                 }));
             }
             TransactionInput::ImmutableObject {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -1085,9 +1077,7 @@ fn to_ptb_commands_internal_with_aliases(
                 }));
             }
             TransactionInput::Receiving {
-                object_id,
-                version,
-                ..
+                object_id, version, ..
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -1370,7 +1360,11 @@ pub fn replay_with_version_tracking(
         comparison,
         commands_executed: if effects.success { commands_count } else { 0 },
         commands_failed: if effects.success { 0 } else { commands_count },
-        objects_tracked: effects.object_versions.as_ref().map(|v| v.len()).unwrap_or(0),
+        objects_tracked: effects
+            .object_versions
+            .as_ref()
+            .map(|v| v.len())
+            .unwrap_or(0),
         lamport_timestamp: effects.lamport_timestamp,
         version_summary,
         gas_used: effects.gas_used,

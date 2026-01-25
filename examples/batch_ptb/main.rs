@@ -307,7 +307,11 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
         for (digest, local, onchain, error, is_framework) in stats.mismatches.iter().take(20) {
             let local_str = if *local { "SUCCESS" } else { "FAILURE" };
             let onchain_str = if *onchain { "SUCCESS" } else { "FAILURE" };
-            let category = if *is_framework { "framework" } else { "complex" };
+            let category = if *is_framework {
+                "framework"
+            } else {
+                "complex"
+            };
             println!(
                 "  {} [{}] local={} onchain={}",
                 &digest[..16],

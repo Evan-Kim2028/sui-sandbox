@@ -45,7 +45,6 @@ use base64::Engine;
 use common::{extract_package_ids_from_type, parse_type_tag_simple};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
-use sui_transport::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
@@ -54,6 +53,7 @@ use sui_sandbox_core::utilities::{
     HistoricalStateReconstructor,
 };
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_transport::grpc::{GrpcClient, GrpcInput};
 
 /// Kriya multi-hop swap with flash loan - a complex transaction that requires patching
 const KRIYA_SWAP_TX: &str = "63fPrufC6iYHdNzG7mXscaKkqTaYH8h4RQHuiUfUCXqz";

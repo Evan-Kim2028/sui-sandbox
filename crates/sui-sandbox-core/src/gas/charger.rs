@@ -31,8 +31,8 @@
 use std::sync::Arc;
 
 use super::{
-    AccurateGasMeter, GasParameters, GasSummary, GasSummaryBuilder, StorageTracker,
-    bucketize_computation, load_protocol_config,
+    bucketize_computation, load_protocol_config, AccurateGasMeter, GasParameters, GasSummary,
+    GasSummaryBuilder, StorageTracker,
 };
 
 /// Unified gas charger that orchestrates all gas operations.
@@ -295,20 +295,15 @@ impl std::fmt::Debug for AccurateGasCharger {
 }
 
 /// Gas charging mode for the VM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GasChargingMode {
     /// Use accurate gas metering with protocol-accurate costs.
     Accurate,
     /// Use simple metering with hardcoded costs (legacy behavior).
+    #[default]
     Simple,
     /// No gas metering (unlimited gas).
     Unmetered,
-}
-
-impl Default for GasChargingMode {
-    fn default() -> Self {
-        GasChargingMode::Simple // Backwards compatible default
-    }
 }
 
 /// Callback interface for storage tracking during ObjectRuntime operations.
@@ -326,7 +321,12 @@ pub trait StorageCallback: Send + Sync {
     fn on_object_mutated(&self, object_id: &[u8; 32], old_bytes: usize, new_bytes: usize);
 
     /// Called when an object is deleted.
-    fn on_object_deleted(&self, object_id: &[u8; 32], bytes: usize, previous_storage_cost: Option<u64>);
+    fn on_object_deleted(
+        &self,
+        object_id: &[u8; 32],
+        bytes: usize,
+        previous_storage_cost: Option<u64>,
+    );
 }
 
 /// A storage callback that forwards events to a StorageTracker.
@@ -373,11 +373,22 @@ impl StorageCallback for StorageTrackerCallback {
     }
 
     fn on_object_mutated(&self, _object_id: &[u8; 32], old_bytes: usize, new_bytes: usize) {
-        self.tracker.lock().unwrap().charge_mutate(old_bytes, new_bytes);
+        self.tracker
+            .lock()
+            .unwrap()
+            .charge_mutate(old_bytes, new_bytes);
     }
 
-    fn on_object_deleted(&self, _object_id: &[u8; 32], bytes: usize, previous_storage_cost: Option<u64>) {
-        self.tracker.lock().unwrap().charge_delete(bytes, previous_storage_cost);
+    fn on_object_deleted(
+        &self,
+        _object_id: &[u8; 32],
+        bytes: usize,
+        previous_storage_cost: Option<u64>,
+    ) {
+        self.tracker
+            .lock()
+            .unwrap()
+            .charge_delete(bytes, previous_storage_cost);
     }
 }
 

@@ -58,12 +58,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use base64::Engine;
-use sui_transport::grpc::{GrpcClient, GrpcTransaction};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_transport::grpc::{GrpcClient, GrpcTransaction};
 
 /// Build a GenericObjectPatcher with modules from the resolver.
 ///
@@ -295,8 +295,8 @@ pub fn register_input_objects(
 }
 
 // Re-export prefetch utilities
-pub use sui_transport::graphql::GraphQLClient;
 pub use sui_prefetch::{prefetch_dynamic_fields, PrefetchedDynamicFields};
+pub use sui_transport::graphql::GraphQLClient;
 
 use move_core_types::language_storage::TypeTag;
 use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
@@ -373,7 +373,7 @@ pub fn create_enhanced_child_fetcher_with_cache(
         // Strategy 0: Check prefetched cache first
         if let Some((version, type_str, bcs)) = prefetched_arc.get(&child_id_str) {
             let _ = version; // silence unused warning
-            // Apply patching if available
+                             // Apply patching if available
             let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                 if let Some(ref mut p) = *guard {
                     p.patch_object(type_str, bcs)
@@ -413,8 +413,11 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
         // Strategy 1: Try gRPC with historical version (if known) or current
         // If no historical version is known, we'll fetch current and validate
-        let result =
-            rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, known_version).await });
+        let result = rt.block_on(async {
+            grpc_arc
+                .get_object_at_version(&child_id_str, known_version)
+                .await
+        });
 
         if let Ok(Some(obj)) = &result {
             // Validate version if we don't have a known historical version

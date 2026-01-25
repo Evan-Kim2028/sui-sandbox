@@ -77,7 +77,10 @@ fn test_protocol_versions() {
     let params = GasParameters::from_protocol_config(&config);
 
     // Verify gas model version is set correctly (v8+ for protocol 68)
-    assert!(params.gas_model_version >= 8, "protocol 68 should have gas model version >= 8");
+    assert!(
+        params.gas_model_version >= 8,
+        "protocol 68 should have gas model version >= 8"
+    );
 
     // Verify cost table can be loaded
     let cost_table = cost_table_for_version(params.gas_model_version);
@@ -122,7 +125,10 @@ fn test_tiered_costs_increase() {
     // Due to tiering, later batches should cost more per instruction
     // (at least some batches should show increased cost)
     // Note: The exact behavior depends on the gas model version
-    assert!(costs.iter().all(|&c| c > 0), "All batches should have non-zero cost");
+    assert!(
+        costs.iter().all(|&c| c > 0),
+        "All batches should have non-zero cost"
+    );
 }
 
 #[test]
@@ -151,8 +157,14 @@ fn test_create_delete_rebate_flow() {
     // storage_cost = 100 * 100 + 50 = 10_050 (from creation)
     // delete_cost = 100 * 40 = 4_000
     // rebate = (10_050 * 9900 + 5000) / 10000 ≈ 9_950
-    assert!(summary.storage_rebate > 9_900, "Rebate should be ~99% of storage");
-    assert!(summary.storage_rebate < 10_050, "Rebate should be less than total storage");
+    assert!(
+        summary.storage_rebate > 9_900,
+        "Rebate should be ~99% of storage"
+    );
+    assert!(
+        summary.storage_rebate < 10_050,
+        "Rebate should be less than total storage"
+    );
     assert_eq!(summary.new_storage_cost, 10_050);
     assert_eq!(summary.delete_cost, 4_000);
 }
@@ -208,8 +220,8 @@ fn test_charger_end_to_end() {
 
     // Simulate a typical transaction:
     // 1. Read some input objects
-    charger.storage_tracker().charge_read(256);  // 256 byte object
-    charger.storage_tracker().charge_read(128);  // 128 byte object
+    charger.storage_tracker().charge_read(256); // 256 byte object
+    charger.storage_tracker().charge_read(128); // 128 byte object
 
     // 2. Execute some computation
     for _ in 0..5000 {
@@ -244,12 +256,7 @@ fn test_charger_end_to_end() {
 #[test]
 fn test_charger_with_deletion_and_rebate() {
     // Test that deletion rebates are correctly calculated through the charger
-    let mut charger = AccurateGasCharger::new(
-        50_000_000_000,
-        1000,
-        1000,
-        68,
-    );
+    let mut charger = AccurateGasCharger::new(50_000_000_000, 1000, 1000, 68);
 
     // Create an object
     charger.storage_tracker().charge_create(100);

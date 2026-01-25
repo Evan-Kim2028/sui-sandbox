@@ -86,9 +86,7 @@ impl GasSummary {
     /// Get the computation cost in MIST (multiplied by gas price).
     pub fn computation_cost_mist(&self) -> u64 {
         if self.reference_gas_price > 0 {
-            self.computation_cost
-                .saturating_mul(self.gas_price)
-                / self.reference_gas_price
+            self.computation_cost.saturating_mul(self.gas_price) / self.reference_gas_price
         } else {
             self.computation_cost.saturating_mul(self.gas_price)
         }
@@ -215,7 +213,9 @@ impl GasSummaryBuilder {
 
         GasSummary {
             computation_cost: self.computation_cost,
-            computation_cost_pre_bucket: self.pre_bucket_computation.unwrap_or(self.computation_cost),
+            computation_cost_pre_bucket: self
+                .pre_bucket_computation
+                .unwrap_or(self.computation_cost),
             storage_cost: self.storage_cost,
             storage_rebate: self.storage_rebate,
             non_refundable_storage_fee: self.non_refundable_storage_fee,
@@ -233,15 +233,7 @@ impl GasSummaryBuilder {
 ///
 /// Sui rounds computation costs to discrete buckets to reduce
 /// transaction cost variability.
-pub const COMPUTATION_BUCKETS: &[u64] = &[
-    1_000,
-    5_000,
-    10_000,
-    20_000,
-    50_000,
-    200_000,
-    1_000_000,
-];
+pub const COMPUTATION_BUCKETS: &[u64] = &[1_000, 5_000, 10_000, 20_000, 50_000, 200_000, 1_000_000];
 
 /// Bucketize a computation cost to the nearest bucket.
 ///

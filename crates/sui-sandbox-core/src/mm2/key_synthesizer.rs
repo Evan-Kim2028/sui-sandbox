@@ -297,8 +297,8 @@ fn derive_dynamic_field_id(
     const CHILD_OBJECT_ID_SCOPE: u8 = 0xf0;
 
     // BCS-serialize the type tag
-    let type_tag_bytes =
-        bcs::to_bytes(key_type_tag).map_err(|e| format!("Failed to BCS-serialize type tag: {}", e))?;
+    let type_tag_bytes = bcs::to_bytes(key_type_tag)
+        .map_err(|e| format!("Failed to BCS-serialize type tag: {}", e))?;
 
     // Build the input: scope || parent || len(key) || key || type_tag
     let mut input = Vec::with_capacity(1 + 32 + 8 + key_bytes.len() + type_tag_bytes.len());

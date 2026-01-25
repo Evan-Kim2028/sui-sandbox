@@ -39,7 +39,11 @@ pub struct FunctionKey {
 }
 
 impl FunctionKey {
-    pub fn new(package: AccountAddress, module: impl Into<String>, function: impl Into<String>) -> Self {
+    pub fn new(
+        package: AccountAddress,
+        module: impl Into<String>,
+        function: impl Into<String>,
+    ) -> Self {
         Self {
             package,
             module: module.into(),
@@ -151,7 +155,8 @@ struct SinkInfo {
 }
 
 // Well-known addresses
-const SUI_FRAMEWORK_ADDR: &str = "0x0000000000000000000000000000000000000000000000000000000000000002";
+const SUI_FRAMEWORK_ADDR: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000002";
 
 impl Default for CallGraph {
     fn default() -> Self {
@@ -179,7 +184,7 @@ impl CallGraph {
         let module_name = module.self_id().name().to_string();
 
         // Process each function definition
-        for (_func_def_idx, func_def) in module.function_defs().iter().enumerate() {
+        for func_def in module.function_defs() {
             let func_handle = &module.function_handles()[func_def.function.0 as usize];
             let func_name = module.identifier_at(func_handle.name).to_string();
 
@@ -288,7 +293,9 @@ impl CallGraph {
         token: &SignatureToken,
     ) -> TypeParamResolution {
         match token {
-            SignatureToken::TypeParameter(idx) => TypeParamResolution::CallerTypeParam(*idx as usize),
+            SignatureToken::TypeParameter(idx) => {
+                TypeParamResolution::CallerTypeParam(*idx as usize)
+            }
             _ => {
                 let type_str = self.format_signature_token(module, token);
                 TypeParamResolution::Concrete(type_str)
@@ -428,7 +435,11 @@ impl CallGraph {
             let dominated = self
                 .transitive_sinks
                 .get(&func_key)
-                .map(|paths| paths.iter().any(|p| p.sink == path.sink && p.depth <= path.depth))
+                .map(|paths| {
+                    paths
+                        .iter()
+                        .any(|p| p.sink == path.sink && p.depth <= path.depth)
+                })
                 .unwrap_or(false);
 
             if dominated {
@@ -446,12 +457,12 @@ impl CallGraph {
             if let Some(callers) = self.callers.get(&func_key).cloned() {
                 for caller in callers {
                     // Find the edge from caller to func_key to get type mapping
-                    let type_mapping = self.calls.get(&caller)
-                        .and_then(|edges| {
-                            edges.iter()
-                                .find(|e| e.callee == func_key)
-                                .map(|e| &e.type_mapping)
-                        });
+                    let type_mapping = self.calls.get(&caller).and_then(|edges| {
+                        edges
+                            .iter()
+                            .find(|e| e.callee == func_key)
+                            .map(|e| &e.type_mapping)
+                    });
 
                     // Create caller's path with remapped types
                     let caller_path = if let Some(mapping) = type_mapping {
@@ -459,8 +470,10 @@ impl CallGraph {
                             sink: path.sink.clone(),
                             access_kind: path.access_kind,
                             key_type_params: self.remap_type_params(&path.key_type_params, mapping),
-                            key_type_pattern: self.remap_type_pattern(&path.key_type_pattern, mapping),
-                            value_type_pattern: self.remap_type_pattern(&path.value_type_pattern, mapping),
+                            key_type_pattern: self
+                                .remap_type_pattern(&path.key_type_pattern, mapping),
+                            value_type_pattern: self
+                                .remap_type_pattern(&path.value_type_pattern, mapping),
                             depth: path.depth + 1,
                         }
                     } else {
@@ -477,11 +490,7 @@ impl CallGraph {
     }
 
     /// Remap type parameter indices through a call edge.
-    fn remap_type_params(
-        &self,
-        params: &[usize],
-        mapping: &TypeParamMapping,
-    ) -> Vec<usize> {
+    fn remap_type_params(&self, params: &[usize], mapping: &TypeParamMapping) -> Vec<usize> {
         params
             .iter()
             .filter_map(|&idx| {
@@ -684,18 +693,12 @@ mod tests {
 
     #[test]
     fn test_resolve_pattern() {
-        assert_eq!(
-            resolve_pattern("Key<T0>", &["u64".to_string()]),
-            "Key<u64>"
-        );
+        assert_eq!(resolve_pattern("Key<T0>", &["u64".to_string()]), "Key<u64>");
         assert_eq!(
             resolve_pattern("Pair<T0, T1>", &["A".to_string(), "B".to_string()]),
             "Pair<A, B>"
         );
-        assert_eq!(
-            resolve_pattern("NoParams", &[]),
-            "NoParams"
-        );
+        assert_eq!(resolve_pattern("NoParams", &[]), "NoParams");
     }
 
     #[test]

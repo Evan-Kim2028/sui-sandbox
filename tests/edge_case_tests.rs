@@ -55,7 +55,8 @@ mod empty_input_tests {
         let resolver = empty_resolver();
 
         // Should succeed - empty resolver is valid for harness creation
-        VMHarness::new(&resolver, true).expect("harness creation with empty resolver should succeed");
+        VMHarness::new(&resolver, true)
+            .expect("harness creation with empty resolver should succeed");
     }
 
     #[test]
@@ -63,7 +64,10 @@ mod empty_input_tests {
         let resolver = load_fixture_resolver();
         let validator = Validator::new(&resolver);
 
-        let module = resolver.iter_modules().next().expect("resolver should have at least one module");
+        let module = resolver
+            .iter_modules()
+            .next()
+            .expect("resolver should have at least one module");
 
         // Empty function name
         let result = validator.validate_target(
@@ -106,7 +110,9 @@ mod empty_input_tests {
 
         let layout = MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U8));
         let value = MoveValue::Vector(vec![]);
-        let bytes = value.simple_serialize().expect("serializing empty vector should succeed");
+        let bytes = value
+            .simple_serialize()
+            .expect("serializing empty vector should succeed");
 
         validator
             .validate_bcs_roundtrip(&layout, &bytes)
@@ -203,8 +209,14 @@ mod boundary_value_tests {
         let configs = [
             (0, SimulationConfig::default().with_epoch(0)),
             (1, SimulationConfig::default().with_epoch(1)),
-            (u64::MAX / 2, SimulationConfig::default().with_epoch(u64::MAX / 2)),
-            (u64::MAX - 1, SimulationConfig::default().with_epoch(u64::MAX - 1)),
+            (
+                u64::MAX / 2,
+                SimulationConfig::default().with_epoch(u64::MAX / 2),
+            ),
+            (
+                u64::MAX - 1,
+                SimulationConfig::default().with_epoch(u64::MAX - 1),
+            ),
             (u64::MAX, SimulationConfig::default().with_epoch(u64::MAX)),
         ];
 
@@ -221,14 +233,21 @@ mod boundary_value_tests {
             ("None", SimulationConfig::default().with_gas_budget(None)),
             ("0", SimulationConfig::default().with_gas_budget(Some(0))),
             ("1", SimulationConfig::default().with_gas_budget(Some(1))),
-            ("MAX/2", SimulationConfig::default().with_gas_budget(Some(u64::MAX / 2))),
-            ("MAX", SimulationConfig::default().with_gas_budget(Some(u64::MAX))),
+            (
+                "MAX/2",
+                SimulationConfig::default().with_gas_budget(Some(u64::MAX / 2)),
+            ),
+            (
+                "MAX",
+                SimulationConfig::default().with_gas_budget(Some(u64::MAX)),
+            ),
         ];
 
         for (label, config) in configs {
             let resolver = empty_resolver();
-            VMHarness::with_config(&resolver, true, config)
-                .unwrap_or_else(|e| panic!("should create harness with gas budget {}: {}", label, e));
+            VMHarness::with_config(&resolver, true, config).unwrap_or_else(|e| {
+                panic!("should create harness with gas budget {}: {}", label, e)
+            });
         }
     }
 
@@ -295,10 +314,7 @@ mod malformed_input_tests {
         for len in 0..8 {
             let bytes = vec![0u8; len];
             let result = validator.validate_bcs_roundtrip(&MoveTypeLayout::U64, &bytes);
-            assert_err(
-                result,
-                &format!("BCS roundtrip with {} bytes for u64", len),
-            );
+            assert_err(result, &format!("BCS roundtrip with {} bytes for u64", len));
         }
     }
 
@@ -537,8 +553,8 @@ mod error_quality_tests {
         let resolver = load_fixture_resolver();
         let validator = Validator::new(&resolver);
 
-        let addr = AccountAddress::from_hex_literal("0x9999")
-            .expect("valid hex literal for test address");
+        let addr =
+            AccountAddress::from_hex_literal("0x9999").expect("valid hex literal for test address");
 
         let result = validator.validate_target(addr, "totally_fake_module", "some_func");
 
@@ -575,8 +591,7 @@ mod error_quality_tests {
     #[test]
     fn test_execution_error_is_informative() {
         let resolver = load_fixture_resolver();
-        let mut harness = VMHarness::new(&resolver, true)
-            .expect("harness creation should succeed");
+        let mut harness = VMHarness::new(&resolver, true).expect("harness creation should succeed");
 
         let module = find_test_module(&resolver).expect("test_module should exist");
 

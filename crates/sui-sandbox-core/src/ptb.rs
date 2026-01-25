@@ -1028,7 +1028,14 @@ impl PTBExecutionTrace {
         gas_used: u64,
         return_count: usize,
     ) {
-        self.add_success_with_timing(index, command_type, description, gas_used, return_count, None);
+        self.add_success_with_timing(
+            index,
+            command_type,
+            description,
+            gas_used,
+            return_count,
+            None,
+        );
     }
 
     /// Add a successful command trace with timing information.
@@ -1113,11 +1120,7 @@ impl PTBExecutionTrace {
     /// Get a summary of the execution.
     pub fn summary(&self) -> PTBTraceSummary {
         // Calculate timing statistics
-        let total_duration_us: u64 = self
-            .commands
-            .iter()
-            .filter_map(|c| c.duration_us)
-            .sum();
+        let total_duration_us: u64 = self.commands.iter().filter_map(|c| c.duration_us).sum();
         let commands_with_timing: Vec<_> = self
             .commands
             .iter()
@@ -1409,12 +1412,10 @@ impl CommandResult {
     /// Get the primary (first) return value with type info.
     pub fn primary_typed_value(&self) -> Result<&TypedValue> {
         match self {
-            CommandResult::Empty => Err(anyhow!(
-                "Command returned Empty result (no values)."
-            )),
-            CommandResult::Values(vs) if vs.is_empty() => Err(anyhow!(
-                "Command returned an empty Values list."
-            )),
+            CommandResult::Empty => Err(anyhow!("Command returned Empty result (no values).")),
+            CommandResult::Values(vs) if vs.is_empty() => {
+                Err(anyhow!("Command returned an empty Values list."))
+            }
             CommandResult::Values(vs) => Ok(&vs[0]),
             CommandResult::Created(_) => Err(anyhow!(
                 "Command returned created object IDs, not BCS values."
@@ -1740,7 +1741,6 @@ pub struct TransactionEffects {
     // =========================================================================
     // Version Tracking Fields (populated when track_versions is enabled)
     // =========================================================================
-
     /// Object version information for created and mutated objects.
     /// Only populated when `PTBExecutor::set_track_versions(true)` is called.
     /// Maps object ID to version info (input_version, output_version, digest).
@@ -1948,7 +1948,6 @@ pub struct PTBExecutor<'a, 'b> {
     // =========================================================================
     // Version Tracking Fields
     // =========================================================================
-
     /// Whether to track object versions during execution.
     /// When enabled, object_versions will be populated in TransactionEffects.
     track_versions: bool,
@@ -2480,10 +2479,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 }
             }
             Argument::NestedResult(cmd_idx, val_idx) => {
-                let result = self
-                    .results
-                    .get_mut(*cmd_idx as usize)
-                    .ok_or_else(|| anyhow!("NestedResult({}, {}) command out of bounds", cmd_idx, val_idx))?;
+                let result = self.results.get_mut(*cmd_idx as usize).ok_or_else(|| {
+                    anyhow!(
+                        "NestedResult({}, {}) command out of bounds",
+                        cmd_idx,
+                        val_idx
+                    )
+                })?;
                 if !result.update_value(*val_idx as usize, new_bytes) {
                     return Err(anyhow!(
                         "NestedResult({}, {}) index out of bounds or result cannot be updated (result has {} values)",
@@ -2536,8 +2538,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         match type_tag {
             // Primitives have store
-            TypeTag::Bool | TypeTag::U8 | TypeTag::U16 | TypeTag::U32 | TypeTag::U64
-            | TypeTag::U128 | TypeTag::U256 | TypeTag::Address => true,
+            TypeTag::Bool
+            | TypeTag::U8
+            | TypeTag::U16
+            | TypeTag::U32
+            | TypeTag::U64
+            | TypeTag::U128
+            | TypeTag::U256
+            | TypeTag::Address => true,
 
             // Signer does NOT have store
             TypeTag::Signer => false,
@@ -2780,10 +2788,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // TYPE ARGUMENT VALIDATION: Check type argument count and ability constraints.
         // This catches errors like passing a type without 'store' ability where 'store'
         // is required, providing clearer errors than the VM would produce.
-        self.vm
-            .storage()
-            .module_resolver()
-            .validate_type_args(&package, module.as_str(), function.as_str(), &type_args)?;
+        self.vm.storage().module_resolver().validate_type_args(
+            &package,
+            module.as_str(),
+            function.as_str(),
+            &type_args,
+        )?;
 
         // RETURN TYPE VALIDATION: Public non-entry functions cannot return references.
         // References cannot escape the transaction boundary. This matches Sui client
@@ -2800,12 +2810,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             .vm
             .storage()
             .module_resolver()
-            .resolve_function_return_types(
-                &package,
-                module.as_str(),
-                function.as_str(),
-                &type_args,
-            ) {
+            .resolve_function_return_types(&package, module.as_str(), function.as_str(), &type_args)
+        {
             Some(types) => types,
             None => {
                 // Log that we couldn't resolve return types - VM types will be used as fallback
@@ -2835,7 +2841,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Uses expected types when available, falls back to VM-provided types.
         let pair_with_types = |return_values: Vec<crate::vm::TypedReturnValue>| -> Vec<TypedValue> {
             // Warn if return value count doesn't match expected - this indicates a resolution issue
-            if !expected_return_types.is_empty() && return_values.len() != expected_return_types.len() {
+            if !expected_return_types.is_empty()
+                && return_values.len() != expected_return_types.len()
+            {
                 tracing::warn!(
                     expected = expected_return_types.len(),
                     actual = return_values.len(),
@@ -2972,7 +2980,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                     // Track storage mutate cost for gas metering
                     // Get old bytes size from current state (could be input or previously mutated)
-                    let old_bytes_len = self.get_object_bytes(object_id).map(|b| b.len()).unwrap_or(0);
+                    let old_bytes_len = self
+                        .get_object_bytes(object_id)
+                        .map(|b| b.len())
+                        .unwrap_or(0);
                     self.vm.track_object_mutate(old_bytes_len, new_bytes.len());
 
                     // Use the type from mutable_ref_outputs if available, otherwise fall back to existing
@@ -3050,7 +3061,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                     // Also mark as transferable by sender
                     self.transferable_objects.insert(potential_id);
-                    self.object_owners.insert(potential_id, Owner::Address(self.sender));
+                    self.object_owners
+                        .insert(potential_id, Owner::Address(self.sender));
                 }
             }
         }
@@ -3148,7 +3160,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         if let Some((obj_id, _)) = self.get_object_id_and_type_from_arg(&coin) {
             // Track storage mutate cost (coin size doesn't change for balance update)
-            self.vm.track_object_mutate(coin_bytes.len(), updated_coin_bytes.len());
+            self.vm
+                .track_object_mutate(coin_bytes.len(), updated_coin_bytes.len());
 
             self.mutated_objects
                 .insert(obj_id, (updated_coin_bytes.clone(), coin_type.clone()));
@@ -3197,20 +3210,16 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.check_owned_object_consumption(&sources)?;
 
         // TYPE MATCHING: All coins must have the same type
-        let dest_type = self
-            .get_type_from_arg(&destination)
-            .or_else(|| {
-                self.get_object_id_and_type_from_arg(&destination)
-                    .and_then(|(_, t)| t)
-            });
+        let dest_type = self.get_type_from_arg(&destination).or_else(|| {
+            self.get_object_id_and_type_from_arg(&destination)
+                .and_then(|(_, t)| t)
+        });
 
         for (i, source) in sources.iter().enumerate() {
-            let source_type = self
-                .get_type_from_arg(source)
-                .or_else(|| {
-                    self.get_object_id_and_type_from_arg(source)
-                        .and_then(|(_, t)| t)
-                });
+            let source_type = self.get_type_from_arg(source).or_else(|| {
+                self.get_object_id_and_type_from_arg(source)
+                    .and_then(|(_, t)| t)
+            });
 
             // If both types are known, they must match
             if let (Some(ref dt), Some(ref st)) = (&dest_type, &source_type) {
@@ -3247,9 +3256,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     source_bytes.len()
                 )
             })?;
-            total_merge = total_merge
-                .checked_add(source_value)
-                .ok_or_else(|| anyhow!("CoinBalanceOverflow: merge source values exceed u64::MAX"))?;
+            total_merge = total_merge.checked_add(source_value).ok_or_else(|| {
+                anyhow!("CoinBalanceOverflow: merge source values exceed u64::MAX")
+            })?;
         }
 
         // Create new destination with merged balance
@@ -3273,7 +3282,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Mark destination as mutated with the new bytes
         if let Some((dest_id, _)) = self.get_object_id_and_type_from_arg(&destination) {
             // Track storage mutate cost for destination (size doesn't change for balance update)
-            self.vm.track_object_mutate(dest_bytes.len(), new_dest_bytes.len());
+            self.vm
+                .track_object_mutate(dest_bytes.len(), new_dest_bytes.len());
 
             self.mutated_objects
                 .insert(dest_id, (new_dest_bytes.clone(), coin_type.clone()));
@@ -3295,8 +3305,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             if source_bytes.len() >= 40 {
                 let mut zeroed = source_bytes.clone();
                 zeroed[32..40].fill(0); // Zero the balance
-                // Best effort update - if it fails (e.g., for Created results), that's OK
-                // since the object is tracked as consumed anyway
+                                        // Best effort update - if it fails (e.g., for Created results), that's OK
+                                        // since the object is tracked as consumed anyway
                 let _ = self.update_arg_bytes(source, zeroed);
             }
         }
@@ -3620,7 +3630,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Create a vector TypeTag if we have the element type
         let vec_type = type_tag.map(|t| TypeTag::Vector(Box::new(t)));
 
-        Ok(CommandResult::Values(vec![TypedValue::new(vec_bytes, vec_type)]))
+        Ok(CommandResult::Values(vec![TypedValue::new(
+            vec_bytes, vec_type,
+        )]))
     }
 
     /// Execute a Publish command.
@@ -3771,7 +3783,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             + (object_bytes.len() as u64) * gas_costs::OUTPUT_BYTE;
 
         // Return the object bytes as the result with type info
-        Ok(CommandResult::Values(vec![TypedValue::new(object_bytes, actual_type)]))
+        Ok(CommandResult::Values(vec![TypedValue::new(
+            object_bytes,
+            actual_type,
+        )]))
     }
 
     /// Add an object to the pending receives queue.
@@ -4222,11 +4237,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             if !cmd_result.valid {
                 result.valid = false;
             }
-            result.errors.extend(cmd_result.errors.iter().map(|msg| DryRunError {
-                command_index: idx,
-                phase: "semantic".to_string(),
-                message: msg.clone(),
-            }));
+            result
+                .errors
+                .extend(cmd_result.errors.iter().map(|msg| DryRunError {
+                    command_index: idx,
+                    phase: "semantic".to_string(),
+                    message: msg.clone(),
+                }));
             result.warnings.extend(cmd_result.warnings.iter().cloned());
             result.command_validations.push(cmd_result);
         }
@@ -4256,19 +4273,28 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 let resolver = self.vm.storage().module_resolver();
 
                 // Check function exists and is callable
-                if let Err(e) = resolver.check_function_callable(package, module.as_str(), function.as_str()) {
+                if let Err(e) =
+                    resolver.check_function_callable(package, module.as_str(), function.as_str())
+                {
                     cv.valid = false;
                     cv.errors.push(format!("{}", e));
                 }
 
                 // Check type arguments
-                if let Err(e) = resolver.validate_type_args(package, module.as_str(), function.as_str(), type_args) {
+                if let Err(e) = resolver.validate_type_args(
+                    package,
+                    module.as_str(),
+                    function.as_str(),
+                    type_args,
+                ) {
                     cv.valid = false;
                     cv.errors.push(format!("{}", e));
                 }
 
                 // Check return type references
-                if let Err(e) = resolver.check_no_reference_returns(package, module.as_str(), function.as_str()) {
+                if let Err(e) =
+                    resolver.check_no_reference_returns(package, module.as_str(), function.as_str())
+                {
                     cv.valid = false;
                     cv.errors.push(format!("{}", e));
                 }
@@ -4278,46 +4304,41 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                 cv
             }
-            Command::SplitCoins { amounts, .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "SplitCoins".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: gas_costs::NATIVE_CALL + (amounts.len() as u64) * gas_costs::OBJECT_CREATE,
-                }
-            }
-            Command::MergeCoins { sources, .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "MergeCoins".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: gas_costs::NATIVE_CALL + (sources.len() as u64) * gas_costs::OBJECT_MUTATE,
-                }
-            }
-            Command::TransferObjects { objects, .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "TransferObjects".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: gas_costs::NATIVE_CALL + (objects.len() as u64) * gas_costs::OBJECT_MUTATE,
-                }
-            }
-            Command::MakeMoveVec { elements, .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "MakeMoveVec".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: gas_costs::NATIVE_CALL + (elements.len() as u64) * 100,
-                }
-            }
+            Command::SplitCoins { amounts, .. } => CommandValidation {
+                index,
+                command_type: "SplitCoins".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: gas_costs::NATIVE_CALL
+                    + (amounts.len() as u64) * gas_costs::OBJECT_CREATE,
+            },
+            Command::MergeCoins { sources, .. } => CommandValidation {
+                index,
+                command_type: "MergeCoins".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: gas_costs::NATIVE_CALL
+                    + (sources.len() as u64) * gas_costs::OBJECT_MUTATE,
+            },
+            Command::TransferObjects { objects, .. } => CommandValidation {
+                index,
+                command_type: "TransferObjects".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: gas_costs::NATIVE_CALL
+                    + (objects.len() as u64) * gas_costs::OBJECT_MUTATE,
+            },
+            Command::MakeMoveVec { elements, .. } => CommandValidation {
+                index,
+                command_type: "MakeMoveVec".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: gas_costs::NATIVE_CALL + (elements.len() as u64) * 100,
+            },
             Command::Publish { modules, .. } => {
                 // Publishing has high gas cost
                 CommandValidation {
@@ -4329,26 +4350,22 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     estimated_gas: 50_000 + (modules.len() as u64) * 10_000,
                 }
             }
-            Command::Upgrade { modules, .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "Upgrade".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: 50_000 + (modules.len() as u64) * 10_000,
-                }
-            }
-            Command::Receive { .. } => {
-                CommandValidation {
-                    index,
-                    command_type: "Receive".to_string(),
-                    valid: true,
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                    estimated_gas: gas_costs::NATIVE_CALL + gas_costs::OBJECT_MUTATE,
-                }
-            }
+            Command::Upgrade { modules, .. } => CommandValidation {
+                index,
+                command_type: "Upgrade".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: 50_000 + (modules.len() as u64) * 10_000,
+            },
+            Command::Receive { .. } => CommandValidation {
+                index,
+                command_type: "Receive".to_string(),
+                valid: true,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+                estimated_gas: gas_costs::NATIVE_CALL + gas_costs::OBJECT_MUTATE,
+            },
         }
     }
 
@@ -4493,11 +4510,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // transferred to an address, or wrapped inside another object.
         if let Err(e) = self.validate_shared_objects() {
             use crate::error_context::CommandErrorContext;
-            let error_context = CommandErrorContext::new(
-                commands.len(),
-                "SharedObjectValidation",
-            )
-            .with_gas_consumed(self.gas_used);
+            let error_context = CommandErrorContext::new(commands.len(), "SharedObjectValidation")
+                .with_gas_consumed(self.gas_used);
             let state_at_failure = self.build_execution_snapshot(self.results.len());
 
             self.execution_trace.add_failure(
@@ -5789,8 +5803,7 @@ mod tests {
 
     #[test]
     fn test_tracked_object_with_owner() {
-        let obj = TrackedObject::new(vec![], None)
-            .with_owner(Owner::Shared);
+        let obj = TrackedObject::new(vec![], None).with_owner(Owner::Shared);
 
         assert_eq!(obj.owner, Some(Owner::Shared));
     }

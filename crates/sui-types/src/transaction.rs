@@ -232,7 +232,6 @@ pub struct ReplayResult {
     // =========================================================================
     // Version Tracking Results (populated when version tracking is enabled)
     // =========================================================================
-
     /// Number of objects with version tracking info
     #[serde(default)]
     pub objects_tracked: usize,
@@ -248,7 +247,6 @@ pub struct ReplayResult {
     // =========================================================================
     // Gas Tracking Results (populated when accurate_gas is enabled)
     // =========================================================================
-
     /// Computation gas used (from PTB execution, in gas units)
     #[serde(default)]
     pub gas_used: u64,
@@ -291,7 +289,6 @@ pub struct EffectsComparison {
     // =========================================================================
     // Version Tracking Comparison (populated when version info is provided)
     // =========================================================================
-
     /// Whether version tracking comparison was performed
     #[serde(default)]
     pub version_tracking_enabled: bool,
@@ -525,7 +522,8 @@ impl EffectsComparison {
             // Adjust match score to include version tracking
             if input_total > 0 || increment_total > 0 {
                 let version_score = if input_total + increment_total > 0 {
-                    (input_matched + increment_valid) as f64 / (input_total + increment_total) as f64
+                    (input_matched + increment_valid) as f64
+                        / (input_total + increment_total) as f64
                 } else {
                     1.0
                 };

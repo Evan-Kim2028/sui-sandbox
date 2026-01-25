@@ -34,7 +34,8 @@ use move_core_types::account_address::AccountAddress;
 use std::collections::HashMap;
 
 // Well-known addresses for dynamic field modules
-const SUI_FRAMEWORK_ADDR: &str = "0x0000000000000000000000000000000000000000000000000000000000000002";
+const SUI_FRAMEWORK_ADDR: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000002";
 
 /// Patterns of dynamic field access found in bytecode.
 #[derive(Debug, Clone)]
@@ -249,12 +250,14 @@ impl BytecodeAnalyzer {
             ("unknown".to_string(), "unknown".to_string())
         };
 
-        analysis.dynamic_field_accesses.push(DynamicFieldAccessPattern {
-            key_type_pattern,
-            value_type_pattern,
-            access_kind,
-            instruction_index: instruction_idx,
-        });
+        analysis
+            .dynamic_field_accesses
+            .push(DynamicFieldAccessPattern {
+                key_type_pattern,
+                value_type_pattern,
+                access_kind,
+                instruction_index: instruction_idx,
+            });
     }
 
     /// Extract key and value type patterns from generic instantiation.
@@ -413,10 +416,7 @@ mod tests {
     #[test]
     fn test_resolve_type_pattern_multiple() {
         let pattern = "0xabc::module::Pair<T0, T1>";
-        let type_args = vec![
-            "0xdef::a::A".to_string(),
-            "0xdef::b::B".to_string(),
-        ];
+        let type_args = vec!["0xdef::a::A".to_string(), "0xdef::b::B".to_string()];
         let resolved = resolve_type_pattern(pattern, &type_args);
         assert_eq!(resolved, "0xabc::module::Pair<0xdef::a::A, 0xdef::b::B>");
     }

@@ -1,6 +1,7 @@
 # Archived Documentation
 
 These documents have been archived because they were:
+
 - Redundant with other documentation
 - Completed plans that are no longer current
 - Internal specifications not needed for users
@@ -18,6 +19,7 @@ These documents have been archived because they were:
 ## Current Documentation
 
 For up-to-date documentation, see:
+
 - [Examples](../../examples/README.md) - Start here
 - [Architecture](../ARCHITECTURE.md) - System overview
 - [Guides](../guides/) - How-to guides

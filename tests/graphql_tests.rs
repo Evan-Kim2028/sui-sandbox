@@ -1,4 +1,5 @@
 #![allow(unused_imports)]
+#![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //! GraphQL Integration Tests
 //!
 //! These tests validate the GraphQL client and DataFetcher against mainnet.

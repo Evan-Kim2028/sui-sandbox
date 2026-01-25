@@ -1,4 +1,5 @@
 //! **DEPRECATED**: Use [`sui_state_fetcher::HistoricalStateProvider`] instead.
+#![allow(deprecated)] // This module is deprecated but still functional for backwards compatibility
 //!
 //! This module is deprecated in favor of the `sui-state-fetcher` crate which provides:
 //! - **Versioned caching**: Objects cached by `(id, version)` for historical replay

@@ -23,11 +23,9 @@ use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
-use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 use sui_prefetch::{ground_truth_prefetch_for_transaction, GroundTruthPrefetchConfig};
-use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::object_runtime::VersionedChildFetcherFn;
+use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
 use sui_sandbox_core::utilities::bcs_scanner::{
@@ -38,10 +36,11 @@ use sui_sandbox_core::utilities::{
     normalize_address, parse_type_tag, rewrite_type_tag,
 };
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_transport::graphql::GraphQLClient;
+use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 
 /// Prefetch strategy for data fetching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PrefetchStrategy {
     /// Ground-truth-first: Use transaction effects to determine exact objects/versions.
     #[default]
@@ -59,7 +58,9 @@ fn extract_missing_package_from_error(error: &str) -> Option<String> {
     if let Some(start) = error.find("address: ") {
         let rest = &error[start + 9..];
         // Find the end of the address (comma or space or closing brace)
-        let end = rest.find(|c: char| c == ',' || c == ' ' || c == '}').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ',' || c == ' ' || c == '}')
+            .unwrap_or(rest.len());
         let addr = rest[..end].trim();
         if !addr.is_empty() && addr.chars().all(|c| c.is_ascii_hexdigit()) {
             return Some(normalize_address(&format!("0x{}", addr)));
@@ -67,7 +68,6 @@ fn extract_missing_package_from_error(error: &str) -> Option<String> {
     }
     None
 }
-
 
 /// Statistics collected during batch processing.
 #[derive(Debug, Default)]
@@ -191,8 +191,16 @@ impl ComparisonResult {
         );
 
         // Timing comparison
-        let gt_total_ms: u64 = self.per_tx_comparison.iter().map(|c| c.ground_truth_prefetch_ms).sum();
-        let legacy_total_ms: u64 = self.per_tx_comparison.iter().map(|c| c.legacy_prefetch_ms).sum();
+        let gt_total_ms: u64 = self
+            .per_tx_comparison
+            .iter()
+            .map(|c| c.ground_truth_prefetch_ms)
+            .sum();
+        let legacy_total_ms: u64 = self
+            .per_tx_comparison
+            .iter()
+            .map(|c| c.legacy_prefetch_ms)
+            .sum();
         println!("\nPREFETCH TIMING:");
         println!("  Ground-Truth-First: {}ms total", gt_total_ms);
         println!("  Legacy GraphQL:     {}ms total", legacy_total_ms);
@@ -204,9 +212,21 @@ impl ComparisonResult {
         }
 
         // Strategy agreement
-        let agree_count = self.per_tx_comparison.iter().filter(|c| c.strategies_agree).count();
-        let gt_better = self.per_tx_comparison.iter().filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches).count();
-        let legacy_better = self.per_tx_comparison.iter().filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches).count();
+        let agree_count = self
+            .per_tx_comparison
+            .iter()
+            .filter(|c| c.strategies_agree)
+            .count();
+        let gt_better = self
+            .per_tx_comparison
+            .iter()
+            .filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches)
+            .count();
+        let legacy_better = self
+            .per_tx_comparison
+            .iter()
+            .filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches)
+            .count();
 
         println!("\nSTRATEGY AGREEMENT:");
         println!(
@@ -221,8 +241,17 @@ impl ComparisonResult {
         // Show transactions where ground-truth won (most interesting)
         if gt_better > 0 {
             println!("\nTRANSACTIONS WHERE GROUND-TRUTH WON:");
-            for cmp in self.per_tx_comparison.iter().filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches).take(5) {
-                let category = if cmp.is_framework_only { "framework" } else { "complex" };
+            for cmp in self
+                .per_tx_comparison
+                .iter()
+                .filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches)
+                .take(5)
+            {
+                let category = if cmp.is_framework_only {
+                    "framework"
+                } else {
+                    "complex"
+                };
                 println!("  {} [{}]", &cmp.digest[..16], category);
                 if let Some(err) = &cmp.legacy_error {
                     println!("    Legacy error: {}", truncate_error(err, 80));
@@ -233,8 +262,17 @@ impl ComparisonResult {
         // Show transactions where legacy won (potential regressions to investigate)
         if legacy_better > 0 {
             println!("\nTRANSACTIONS WHERE LEGACY WON (POTENTIAL REGRESSIONS):");
-            for cmp in self.per_tx_comparison.iter().filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches).take(5) {
-                let category = if cmp.is_framework_only { "framework" } else { "complex" };
+            for cmp in self
+                .per_tx_comparison
+                .iter()
+                .filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches)
+                .take(5)
+            {
+                let category = if cmp.is_framework_only {
+                    "framework"
+                } else {
+                    "complex"
+                };
                 println!("  {} [{}]", &cmp.digest[..16], category);
                 if let Some(err) = &cmp.ground_truth_error {
                     println!("    Ground-truth error: {}", truncate_error(err, 80));
@@ -326,7 +364,13 @@ impl BatchPipeline {
         strategy: PrefetchStrategy,
     ) -> Result<BatchStats> {
         let stats = tokio::task::spawn_blocking(move || {
-            run_checkpoint_batch(start_checkpoint, num_checkpoints, fetch_mode, quiet_mode, strategy)
+            run_checkpoint_batch(
+                start_checkpoint,
+                num_checkpoints,
+                fetch_mode,
+                quiet_mode,
+                strategy,
+            )
         })
         .await??;
 
@@ -557,7 +601,14 @@ fn run_checkpoint_batch(
             "complex"
         };
 
-        match process_single_transaction(&rt, &grpc, &graphql, grpc_tx, Some(&shared_cache), strategy) {
+        match process_single_transaction(
+            &rt,
+            &grpc,
+            &graphql,
+            grpc_tx,
+            Some(&shared_cache),
+            strategy,
+        ) {
             Ok(result) => {
                 stats.transactions_processed += 1;
                 stats.total_objects_fetched += result.objects_fetched;
@@ -613,7 +664,12 @@ fn run_checkpoint_batch(
             }
             Err(e) => {
                 stats.skipped_fetch_errors += 1;
-                eprintln!("\n   SKIP {} [{}]: {}", &grpc_tx.digest[..16], tx_category, e);
+                eprintln!(
+                    "\n   SKIP {} [{}]: {}",
+                    &grpc_tx.digest[..16],
+                    tx_category,
+                    e
+                );
             }
         }
     }
@@ -771,12 +827,22 @@ fn process_single_transaction(
 
     // Dispatch to appropriate strategy
     match strategy {
-        PrefetchStrategy::GroundTruth => {
-            process_with_ground_truth_prefetch(rt, grpc, graphql, grpc_tx, shared_cache, onchain_success)
-        }
-        PrefetchStrategy::MM2Predictive => {
-            process_with_mm2_predictive_prefetch(rt, grpc, graphql, grpc_tx, shared_cache, onchain_success)
-        }
+        PrefetchStrategy::GroundTruth => process_with_ground_truth_prefetch(
+            rt,
+            grpc,
+            graphql,
+            grpc_tx,
+            shared_cache,
+            onchain_success,
+        ),
+        PrefetchStrategy::MM2Predictive => process_with_mm2_predictive_prefetch(
+            rt,
+            grpc,
+            graphql,
+            grpc_tx,
+            shared_cache,
+            onchain_success,
+        ),
         PrefetchStrategy::LegacyGraphQL => {
             process_with_legacy_prefetch(rt, grpc, graphql, grpc_tx, shared_cache, onchain_success)
         }
@@ -796,13 +862,8 @@ fn process_with_ground_truth_prefetch(
 
     // Use the new ground-truth-first prefetch
     let config = GroundTruthPrefetchConfig::default();
-    let prefetch_result = ground_truth_prefetch_for_transaction(
-        grpc,
-        Some(graphql),
-        rt,
-        grpc_tx,
-        &config,
-    );
+    let prefetch_result =
+        ground_truth_prefetch_for_transaction(grpc, Some(graphql), rt, grpc_tx, &config);
 
     let prefetch_time_ms = prefetch_start.elapsed().as_millis() as u64;
 
@@ -811,7 +872,8 @@ fn process_with_ground_truth_prefetch(
     let mut object_types: HashMap<String, String> = HashMap::new();
     let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut historical_versions: HashMap<String, u64> = HashMap::new();
-    let mut linkage_upgrades: HashMap<String, String> = prefetch_result.discovered_linkage_upgrades.clone();
+    let mut linkage_upgrades: HashMap<String, String> =
+        prefetch_result.discovered_linkage_upgrades.clone();
 
     // Process objects from ground truth
     for (obj_id, obj) in &prefetch_result.objects {
@@ -824,7 +886,12 @@ fn process_with_ground_truth_prefetch(
 
         // Store to shared cache
         if let Some(cache) = shared_cache {
-            cache.add_object(obj_id, obj.version, obj.type_string.clone(), Some(obj.bcs.clone()));
+            cache.add_object(
+                obj_id,
+                obj.version,
+                obj.type_string.clone(),
+                Some(obj.bcs.clone()),
+            );
         }
     }
 
@@ -864,7 +931,8 @@ fn process_with_ground_truth_prefetch(
         }
     }
 
-    let objects_fetched = prefetch_result.stats.ground_truth_fetched + prefetch_result.stats.supplemental_fetched;
+    let objects_fetched =
+        prefetch_result.stats.ground_truth_fetched + prefetch_result.stats.supplemental_fetched;
     let packages_fetched = prefetch_result.stats.packages_fetched;
     let dynamic_fields_prefetched = prefetch_result.stats.ground_truth_count;
 
@@ -905,13 +973,8 @@ fn process_with_mm2_predictive_prefetch(
     // Use the predictive prefetcher with MM2 analysis
     let mut prefetcher = PredictivePrefetcher::new();
     let config = PredictivePrefetchConfig::default();
-    let prefetch_result = prefetcher.prefetch_for_transaction(
-        grpc,
-        Some(graphql),
-        rt,
-        grpc_tx,
-        &config,
-    );
+    let prefetch_result =
+        prefetcher.prefetch_for_transaction(grpc, Some(graphql), rt, grpc_tx, &config);
 
     let prefetch_time_ms = prefetch_start.elapsed().as_millis() as u64;
 
@@ -934,7 +997,10 @@ fn process_with_mm2_predictive_prefetch(
     let mut object_types: HashMap<String, String> = HashMap::new();
     let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut historical_versions: HashMap<String, u64> = HashMap::new();
-    let mut linkage_upgrades: HashMap<String, String> = prefetch_result.base_result.discovered_linkage_upgrades.clone();
+    let mut linkage_upgrades: HashMap<String, String> = prefetch_result
+        .base_result
+        .discovered_linkage_upgrades
+        .clone();
 
     // Process objects from ground truth
     for (obj_id, obj) in &prefetch_result.base_result.objects {
@@ -947,7 +1013,12 @@ fn process_with_mm2_predictive_prefetch(
 
         // Store to shared cache
         if let Some(cache) = shared_cache {
-            cache.add_object(obj_id, obj.version, obj.type_string.clone(), Some(obj.bcs.clone()));
+            cache.add_object(
+                obj_id,
+                obj.version,
+                obj.type_string.clone(),
+                Some(obj.bcs.clone()),
+            );
         }
     }
 
@@ -1297,7 +1368,8 @@ fn process_with_legacy_prefetch(
                                 linkage_upgrades
                                     .insert(orig_normalized.clone(), upgraded_normalized.clone());
                                 // Track the version from linkage table
-                                linkage_versions.insert(upgraded_normalized.clone(), l.upgraded_version);
+                                linkage_versions
+                                    .insert(upgraded_normalized.clone(), l.upgraded_version);
                                 if !fetched_packages.contains(&upgraded_normalized)
                                     && !packages.contains_key(&upgraded_normalized)
                                 {
@@ -1383,7 +1455,8 @@ fn process_with_legacy_prefetch(
     // CRITICAL: Sort packages by version (ascending) so that higher versions load last and overwrite.
     // This ensures that for package upgrades where both v1 (original) and vN (upgrade) share the
     // same bytecode address, the newer version's bytecode is used.
-    let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> = cached.packages.iter().collect();
+    let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> =
+        cached.packages.iter().collect();
     packages_sorted.sort_by(|a, b| {
         let ver_a = historical_versions.get(a.0).copied().unwrap_or(1);
         let ver_b = historical_versions.get(b.0).copied().unwrap_or(1);
@@ -1658,7 +1731,8 @@ fn execute_replay(
         // Check if we got a LINKER_ERROR or FUNCTION_RESOLUTION_FAILURE
         if !result.outcome_matches && !result.local_success {
             if let Some(ref error) = result.error {
-                let is_linker_error = error.contains("LINKER_ERROR") || error.contains("FUNCTION_RESOLUTION_FAILURE");
+                let is_linker_error =
+                    error.contains("LINKER_ERROR") || error.contains("FUNCTION_RESOLUTION_FAILURE");
                 if is_linker_error && retry < MAX_PACKAGE_RETRIES {
                     let extracted = extract_missing_package_from_error(error);
                     if let Some(missing_pkg) = extracted {
@@ -1671,7 +1745,9 @@ fn execute_replay(
                         // In that case, we need to fetch the latest upgrade via GraphQL.
                         if !already_attempted {
                             // Try to find if this is an original package with upgrades
-                            if let Ok(Some((latest_addr, _latest_ver))) = graphql.get_latest_package_upgrade(&missing_pkg) {
+                            if let Ok(Some((latest_addr, _latest_ver))) =
+                                graphql.get_latest_package_upgrade(&missing_pkg)
+                            {
                                 let have_latest = packages.contains_key(&latest_addr);
                                 let attempted_latest = attempted_packages.contains(&latest_addr);
                                 // Fetch the latest upgrade instead
@@ -1690,7 +1766,10 @@ fn execute_replay(
                                                     .collect();
                                                 packages.insert(latest_addr.clone(), encoded);
                                                 // Also record the upgrade mapping
-                                                linkage_upgrades.insert(missing_pkg.clone(), latest_addr.clone());
+                                                linkage_upgrades.insert(
+                                                    missing_pkg.clone(),
+                                                    latest_addr.clone(),
+                                                );
                                                 packages_fetched += 1;
                                                 attempted_packages.insert(latest_addr);
                                                 attempted_packages.insert(missing_pkg.clone());
@@ -1721,7 +1800,8 @@ fn execute_replay(
                                             .map(|(name, bytes)| {
                                                 (
                                                     name.clone(),
-                                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                                    base64::engine::general_purpose::STANDARD
+                                                        .encode(bytes),
                                                 )
                                             })
                                             .collect();
@@ -1806,7 +1886,8 @@ fn execute_replay_inner(
     let mut pkg_id_to_bytecode_addr: HashMap<String, AccountAddress> = HashMap::new();
 
     // CRITICAL: Sort packages by version (ascending) so that higher versions load last and overwrite.
-    let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> = cached.packages.iter().collect();
+    let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> =
+        cached.packages.iter().collect();
     packages_sorted.sort_by(|a, b| {
         let ver_a = historical_versions.get(a.0).copied().unwrap_or(1);
         let ver_b = historical_versions.get(b.0).copied().unwrap_or(1);
@@ -2014,10 +2095,7 @@ fn execute_replay_inner(
 }
 
 /// Run comparison between both prefetch strategies.
-fn run_comparison_batch(
-    start_checkpoint: u64,
-    num_checkpoints: u64,
-) -> Result<ComparisonResult> {
+fn run_comparison_batch(start_checkpoint: u64, num_checkpoints: u64) -> Result<ComparisonResult> {
     let rt = tokio::runtime::Runtime::new()?;
     let end_checkpoint = start_checkpoint + num_checkpoints - 1;
 

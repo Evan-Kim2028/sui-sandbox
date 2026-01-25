@@ -625,7 +625,10 @@ impl MockNativeState {
     }
 
     /// Get the gas cost for a native function, or 0 if costs not enabled.
-    pub fn get_native_cost(&self, cost_fn: impl FnOnce(&crate::gas::NativeFunctionCosts) -> u64) -> u64 {
+    pub fn get_native_cost(
+        &self,
+        cost_fn: impl FnOnce(&crate::gas::NativeFunctionCosts) -> u64,
+    ) -> u64 {
         self.native_costs.as_ref().map(cost_fn).unwrap_or(0)
     }
 
@@ -1812,15 +1815,17 @@ fn remove_child_from_shared_state(
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         let mut state = shared.shared_state().lock();
-        let before = state.children.len();
+        let _before = state.children.len();
         state.remove_child(parent, child_id);
-        let after = state.children.len();
-        debug_native!("[remove_child_from_shared_state] parent={}, child={}, removed={} (children {} -> {})",
+        let _after = state.children.len();
+        debug_native!(
+            "[remove_child_from_shared_state] parent={}, child={}, removed={} (children {} -> {})",
             &parent.to_hex_literal()[..20],
             &child_id.to_hex_literal()[..20],
             before > after,
             before,
-            after);
+            after
+        );
     }
 }
 
@@ -1837,18 +1842,24 @@ fn check_shared_state_for_child(
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         let arc = shared.shared_state();
-        let arc_ptr = std::sync::Arc::as_ptr(arc);
         let state = arc.lock();
         let result = state.has_child(parent, child_id);
-        let child_id_short = &child_id.to_hex_literal()[..22.min(child_id.to_hex_literal().len())];
-        if child_id.to_hex_literal().starts_with("0x716ce7f7") || child_id.to_hex_literal().starts_with("0x49fc691a") {
-            debug_native!("[check_shared_state_for_child] arc={:p}, parent={}, child={}, found={}, total_children={}",
-                arc_ptr,
-                &parent.to_hex_literal()[..22.min(parent.to_hex_literal().len())],
-                child_id_short,
-                result,
-                state.children.len()
-            );
+        #[cfg(debug_assertions)]
+        {
+            let _arc_ptr = std::sync::Arc::as_ptr(arc);
+            let _child_id_short =
+                &child_id.to_hex_literal()[..22.min(child_id.to_hex_literal().len())];
+            if child_id.to_hex_literal().starts_with("0x716ce7f7")
+                || child_id.to_hex_literal().starts_with("0x49fc691a")
+            {
+                debug_native!("[check_shared_state_for_child] arc={:p}, parent={}, child={}, found={}, total_children={}",
+                    _arc_ptr,
+                    &parent.to_hex_literal()[..22.min(parent.to_hex_literal().len())],
+                    _child_id_short,
+                    result,
+                    state.children.len()
+                );
+            }
         }
         return result;
     }
@@ -1974,9 +1985,13 @@ fn add_dynamic_field_natives(
                 // Check if this child is already in shared state
                 if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
                     let state = shared.shared_state().lock();
-                    let found = state.has_child(parent, child_id);
-                    debug_native!("[hash_type_and_key] Child {} in shared_state? {} (total children={})",
-                        child_id.to_hex_literal(), found, state.children.len());
+                    let _found = state.has_child(parent, child_id);
+                    debug_native!(
+                        "[hash_type_and_key] Child {} in shared_state? {} (total children={})",
+                        child_id.to_hex_literal(),
+                        _found,
+                        state.children.len()
+                    );
                 }
             }
 
@@ -2129,11 +2144,11 @@ fn add_dynamic_field_natives(
                         state.children.len()
                     );
                     // Debug: print first few children keys
-                    for (k, _) in state.children.iter().take(5) {
+                    for (_key, _) in state.children.iter().take(5) {
                         debug_native!(
                             "[borrow_child_object]   - parent={}, child={}",
-                            k.0.to_hex_literal(),
-                            k.1.to_hex_literal()
+                            _key.0.to_hex_literal(),
+                            _key.1.to_hex_literal()
                         );
                     }
                     state
@@ -2402,23 +2417,30 @@ fn add_dynamic_field_natives(
             let parent = pop_arg!(args, AccountAddress);
 
             let child_tag = ctx.type_to_type_tag(&child_ty)?;
-            debug_native!("[remove_child_object] parent={}, child_id={}, type={:?}",
-                parent.to_hex_literal(), child_id.to_hex_literal(), child_tag);
+            debug_native!(
+                "[remove_child_object] parent={}, child_id={}, type={:?}",
+                parent.to_hex_literal(),
+                child_id.to_hex_literal(),
+                child_tag
+            );
 
             // First check if the child is in local runtime
             {
                 let runtime = get_object_runtime_ref(ctx)?;
                 if runtime.child_object_exists(parent, child_id) {
-            debug_native!("[remove_child_object] found in local runtime");
+                    debug_native!("[remove_child_object] found in local runtime");
                     let runtime = get_object_runtime_mut(ctx)?;
                     match runtime.remove_child_object(parent, child_id, &child_tag) {
                         Ok(value) => {
-            debug_native!("[remove_child_object] SUCCESS from local runtime");
+                            debug_native!("[remove_child_object] SUCCESS from local runtime");
                             remove_child_from_shared_state(ctx, parent, child_id);
                             return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
                         }
                         Err(code) => {
-            debug_native!("[remove_child_object] FAILED from local runtime with code {}", code);
+                            debug_native!(
+                                "[remove_child_object] FAILED from local runtime with code {}",
+                                code
+                            );
                             return Ok(NativeResult::err(InternalGas::new(cost), code));
                         }
                     }
@@ -2429,8 +2451,11 @@ fn add_dynamic_field_natives(
             let type_layout = match ctx.type_to_type_layout(&child_ty) {
                 Ok(Some(layout)) => layout,
                 _ => {
-            debug_native!("[remove_child_object] Failed to get type layout");
-                    return Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_TYPE_MISMATCH));
+                    debug_native!("[remove_child_object] Failed to get type layout");
+                    return Ok(NativeResult::err(
+                        InternalGas::new(cost),
+                        E_FIELD_TYPE_MISMATCH,
+                    ));
                 }
             };
 
@@ -2438,55 +2463,89 @@ fn add_dynamic_field_natives(
                 // Try to get from shared state
                 let child_bytes_opt = {
                     let state = shared.shared_state().lock();
-            debug_native!("[remove_child_object] checking shared state, has {} children", state.children.len());
-                    state.get_child(parent, child_id).map(|(_, bytes)| bytes.clone())
+                    debug_native!(
+                        "[remove_child_object] checking shared state, has {} children",
+                        state.children.len()
+                    );
+                    state
+                        .get_child(parent, child_id)
+                        .map(|(_, bytes)| bytes.clone())
                 };
 
                 // If not in shared state, try on-demand fetching
                 let child_bytes_opt = if child_bytes_opt.is_none() {
-            debug_native!("[remove_child_object] not in shared state, trying on-demand fetch");
-                    if let Some((_fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
-            debug_native!("[remove_child_object] on-demand fetch succeeded, {} bytes", fetched_bytes.len());
+                    debug_native!(
+                        "[remove_child_object] not in shared state, trying on-demand fetch"
+                    );
+                    if let Some((_fetched_tag, fetched_bytes)) =
+                        shared.try_fetch_child(parent, child_id)
+                    {
+                        debug_native!(
+                            "[remove_child_object] on-demand fetch succeeded, {} bytes",
+                            fetched_bytes.len()
+                        );
                         Some(fetched_bytes)
                     } else {
-            debug_native!("[remove_child_object] on-demand fetch failed");
+                        debug_native!("[remove_child_object] on-demand fetch failed");
                         None
                     }
                 } else {
-            debug_native!("[remove_child_object] found in shared state");
+                    debug_native!("[remove_child_object] found in shared state");
                     child_bytes_opt
                 };
 
                 if let Some(child_bytes) = child_bytes_opt {
                     // Deserialize and add to local runtime, then remove
                     if let Some(value) = Value::simple_deserialize(&child_bytes, &type_layout) {
-            debug_native!("[remove_child_object] Deserialization SUCCESS");
+                        debug_native!("[remove_child_object] Deserialization SUCCESS");
                         // Add to local runtime first so we can remove it
                         let runtime = shared.local_mut();
-                        if let Err(e) = runtime.add_child_object(parent, child_id, value.copy_value().unwrap(), child_tag.clone()) {
-            debug_native!("[remove_child_object] Failed to add to local runtime: {}", e);
+                        if let Err(e) = runtime.add_child_object(
+                            parent,
+                            child_id,
+                            value.copy_value().unwrap(),
+                            child_tag.clone(),
+                        ) {
+                            debug_native!(
+                                "[remove_child_object] Failed to add to local runtime: {}",
+                                e
+                            );
                             return Ok(NativeResult::err(InternalGas::new(cost), e));
                         }
                         // Now remove it
                         match runtime.remove_child_object(parent, child_id, &child_tag) {
                             Ok(value) => {
-            debug_native!("[remove_child_object] SUCCESS after loading from shared state");
+                                debug_native!(
+                                    "[remove_child_object] SUCCESS after loading from shared state"
+                                );
                                 remove_child_from_shared_state(ctx, parent, child_id);
-                                return Ok(NativeResult::ok(InternalGas::new(cost), smallvec![value]));
+                                return Ok(NativeResult::ok(
+                                    InternalGas::new(cost),
+                                    smallvec![value],
+                                ));
                             }
                             Err(code) => {
-            debug_native!("[remove_child_object] FAILED after loading, code {}", code);
+                                debug_native!(
+                                    "[remove_child_object] FAILED after loading, code {}",
+                                    code
+                                );
                                 return Ok(NativeResult::err(InternalGas::new(cost), code));
                             }
                         }
                     } else {
-            debug_native!("[remove_child_object] Deserialization FAILED for type {:?}", child_tag);
+                        debug_native!(
+                            "[remove_child_object] Deserialization FAILED for type {:?}",
+                            child_tag
+                        );
                     }
                 }
             }
 
             debug_native!("[remove_child_object] FAILED - child not found anywhere");
-            Ok(NativeResult::err(InternalGas::new(cost), E_FIELD_DOES_NOT_EXIST))
+            Ok(NativeResult::err(
+                InternalGas::new(cost),
+                E_FIELD_DOES_NOT_EXIST,
+            ))
         }),
     ));
 
@@ -2500,7 +2559,11 @@ fn add_dynamic_field_natives(
             let child_id = pop_arg!(args, AccountAddress);
             let parent = pop_arg!(args, AccountAddress);
 
-            debug_native!("[has_child_object] parent={}, child_id={}", parent.to_hex_literal(), child_id.to_hex_literal());
+            debug_native!(
+                "[has_child_object] parent={}, child_id={}",
+                parent.to_hex_literal(),
+                child_id.to_hex_literal()
+            );
 
             // Check local runtime first (this borrow ends before we check shared state)
             let in_local = {
@@ -2518,8 +2581,12 @@ fn add_dynamic_field_natives(
             // Check if this child was removed during this PTB - if so, don't re-fetch
             use crate::object_runtime::SharedObjectRuntime;
             if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
-                if shared.shared_state().lock().is_child_removed(parent, child_id) {
-            debug_native!("[has_child_object] child was removed, returning false");
+                if shared
+                    .shared_state()
+                    .lock()
+                    .is_child_removed(parent, child_id)
+                {
+                    debug_native!("[has_child_object] child was removed, returning false");
                     return Ok(NativeResult::ok(
                         InternalGas::new(cost),
                         smallvec![Value::bool(false)],
@@ -2620,18 +2687,21 @@ fn add_dynamic_field_natives(
                         // Add to shared state for future lookups
                         {
                             let arc = shared.shared_state();
-                            let arc_ptr = std::sync::Arc::as_ptr(arc);
+                            #[cfg(debug_assertions)]
+                            let _arc_ptr = std::sync::Arc::as_ptr(arc);
                             let mut state = arc.lock();
-                            let before_count = state.children.len();
+                            #[cfg(debug_assertions)]
+                            let _before_count = state.children.len();
                             state.add_child(
                                 parent,
                                 child_id,
                                 fetched_tag,
                                 fetched_bytes,
                             );
-                            let after_count = state.children.len();
+                            #[cfg(debug_assertions)]
+                            let _after_count = state.children.len();
             debug_native!("[has_child_object_with_ty] arc={:p}, Added child to shared state. Count: {} -> {}. Parent={}, Child={}",
-                                arc_ptr, before_count, after_count, parent.to_hex_literal(), child_id.to_hex_literal());
+                                _arc_ptr, _before_count, _after_count, parent.to_hex_literal(), child_id.to_hex_literal());
                         }
                         true
                     } else {
