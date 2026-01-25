@@ -252,6 +252,7 @@ fn test_view_packages_after_publish() {
 }
 
 #[test]
+#[ignore = "requires network access - may be rate limited"]
 fn test_view_module_framework() {
     let temp_dir = TempDir::new().unwrap();
     let state_file = temp_dir.path().join("state.bin");
@@ -294,6 +295,7 @@ fn test_view_module_json() {
 }
 
 #[test]
+#[ignore = "requires network access to fetch Sui framework - may be rate limited"]
 fn test_view_modules_in_framework_package() {
     let temp_dir = TempDir::new().unwrap();
     let state_file = temp_dir.path().join("state.bin");
@@ -1056,4 +1058,68 @@ fn test_bridge_output_valid_shell_syntax() {
     assert!(stdout.contains("--type-args"));
     assert!(stdout.contains("--args"));
     assert!(stdout.contains("--gas-budget"));
+}
+
+// ============================================================================
+// Bridge Info Command Tests
+// ============================================================================
+
+#[test]
+fn test_bridge_info_basic() {
+    sandbox_cmd()
+        .arg("bridge")
+        .arg("info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Transition Guide"))
+        .stdout(predicate::str::contains("Deployment Workflow"))
+        .stdout(predicate::str::contains("testnet"));
+}
+
+#[test]
+fn test_bridge_info_verbose() {
+    sandbox_cmd()
+        .arg("bridge")
+        .arg("info")
+        .arg("--verbose")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Protocol Version"))
+        .stdout(predicate::str::contains("Error Handling"));
+}
+
+#[test]
+fn test_bridge_info_json() {
+    let output = sandbox_cmd()
+        .arg("--json")
+        .arg("bridge")
+        .arg("info")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).expect("Valid JSON");
+    assert!(json["workflow"].is_array());
+    assert!(json["environment_check"].is_object());
+    assert!(json["tips"].is_array());
+}
+
+#[test]
+fn test_bridge_info_verbose_json() {
+    let output = sandbox_cmd()
+        .arg("--json")
+        .arg("bridge")
+        .arg("info")
+        .arg("--verbose")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value = serde_json::from_slice(&output).expect("Valid JSON");
+    assert!(json["advanced"].is_object());
+    assert!(json["advanced"]["protocol_version"].as_u64().is_some());
 }

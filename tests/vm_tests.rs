@@ -1,4 +1,3 @@
-#![allow(unused_imports)]
 //! Comprehensive tests for vm.rs - Execution engine, gas metering, configuration
 //!
 //! Test coverage areas:
@@ -9,34 +8,17 @@
 //! - VMHarness: creation, execution, error handling, dynamic fields
 //! - PTBSession: persistent state across calls
 
-use std::path::Path;
-// use std::sync::{Arc, Mutex};
+mod common;
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 
-use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::vm::{
     gas_costs, ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig,
     VMHarness,
 };
 
-// =============================================================================
-// Test Fixtures
-// =============================================================================
-
-fn load_fixture_resolver() -> LocalModuleResolver {
-    let fixture_dir = Path::new("tests/fixture/build/fixture");
-    let mut resolver = LocalModuleResolver::new();
-    resolver
-        .load_from_dir(fixture_dir)
-        .expect("fixture should load");
-    resolver
-}
-
-fn empty_resolver() -> LocalModuleResolver {
-    LocalModuleResolver::new()
-}
+use common::{empty_resolver, find_test_module, load_fixture_resolver};
 
 // =============================================================================
 // SimulationConfig Tests
@@ -58,7 +40,9 @@ mod simulation_config_tests {
         assert_eq!(config.sender_address, [0u8; 32]);
         assert!(config.tx_timestamp_ms.is_none());
         assert_eq!(config.epoch, 100);
-        assert!(config.gas_budget.is_none());
+        // Default now has gas budget enabled for Sui parity
+        assert!(config.gas_budget.is_some());
+        assert_eq!(config.gas_budget.unwrap(), 50_000_000_000);
         assert!(!config.enforce_immutability);
     }
 
@@ -154,14 +138,7 @@ mod simulation_config_tests {
 
 mod execution_trace_tests {
     use super::*;
-    use move_core_types::identifier::Identifier;
-
-    fn make_module_id(addr: &str, name: &str) -> ModuleId {
-        ModuleId::new(
-            AccountAddress::from_hex_literal(addr).unwrap(),
-            Identifier::new(name).unwrap(),
-        )
-    }
+    use common::make_module_id;
 
     // Removed: test_trace_new_is_empty - redundant with test_trace_default_is_empty
     // Removed: test_trace_default_is_empty - trivial, covered by other tests implicitly
@@ -252,28 +229,36 @@ mod execution_output_tests {
 
     #[test]
     fn test_output_with_return_values() {
+        use sui_sandbox_core::vm::TypedReturnValue;
+
         let output = ExecutionOutput {
-            return_values: vec![vec![1, 2, 3], vec![4, 5]],
+            return_values: vec![
+                TypedReturnValue::new(vec![1, 2, 3], None),
+                TypedReturnValue::new(vec![4, 5], None),
+            ],
             mutable_ref_outputs: vec![],
             gas_used: 1000,
         };
 
         assert_eq!(output.return_values.len(), 2);
-        assert_eq!(output.return_values[0], vec![1, 2, 3]);
-        assert_eq!(output.return_values[1], vec![4, 5]);
+        assert_eq!(output.return_values[0].bytes, vec![1, 2, 3]);
+        assert_eq!(output.return_values[1].bytes, vec![4, 5]);
     }
 
     #[test]
     fn test_output_with_mutable_refs() {
         let output = ExecutionOutput {
             return_values: vec![],
-            mutable_ref_outputs: vec![(0, vec![10, 20]), (2, vec![30, 40, 50])],
+            mutable_ref_outputs: vec![
+                (0, vec![10, 20], None),
+                (2, vec![30, 40, 50], None),
+            ],
             gas_used: 500,
         };
 
         assert_eq!(output.mutable_ref_outputs.len(), 2);
-        assert_eq!(output.mutable_ref_outputs[0], (0, vec![10, 20]));
-        assert_eq!(output.mutable_ref_outputs[1], (2, vec![30, 40, 50]));
+        assert_eq!(output.mutable_ref_outputs[0], (0, vec![10, 20], None));
+        assert_eq!(output.mutable_ref_outputs[1], (2, vec![30, 40, 50], None));
     }
 }
 
@@ -366,34 +351,28 @@ mod vm_harness_creation_tests {
     #[test]
     fn test_harness_new_with_fixture() {
         let resolver = load_fixture_resolver();
-        let result = VMHarness::new(&resolver, true);
-
-        assert!(result.is_ok(), "should create harness with fixture");
+        VMHarness::new(&resolver, true).expect("should create harness with fixture");
     }
 
     #[test]
     fn test_harness_new_with_empty_resolver() {
         let resolver = empty_resolver();
-        let result = VMHarness::new(&resolver, true);
-
         // Should still succeed - empty resolver is valid
-        assert!(result.is_ok(), "should create harness with empty resolver");
+        VMHarness::new(&resolver, true).expect("should create harness with empty resolver");
     }
 
     #[test]
     fn test_harness_with_default_config() {
         let resolver = load_fixture_resolver();
-        let result = VMHarness::with_config(&resolver, true, SimulationConfig::default());
-
-        assert!(result.is_ok());
+        VMHarness::with_config(&resolver, true, SimulationConfig::default())
+            .expect("should create harness with default config");
     }
 
     #[test]
     fn test_harness_with_strict_config() {
         let resolver = load_fixture_resolver();
-        let result = VMHarness::with_config(&resolver, true, SimulationConfig::strict());
-
-        assert!(result.is_ok());
+        VMHarness::with_config(&resolver, true, SimulationConfig::strict())
+            .expect("should create harness with strict config");
     }
 
     #[test]
@@ -403,10 +382,8 @@ mod vm_harness_creation_tests {
             .with_epoch(500)
             .with_gas_budget(Some(100_000));
 
-        let result = VMHarness::with_config(&resolver, true, config);
-        assert!(result.is_ok());
-
-        let harness = result.expect("harness creation already verified as ok");
+        let harness = VMHarness::with_config(&resolver, true, config)
+            .expect("should create harness with custom config");
         assert_eq!(harness.config().epoch, 500);
         assert_eq!(harness.config().gas_budget, Some(100_000));
     }
@@ -414,9 +391,7 @@ mod vm_harness_creation_tests {
     #[test]
     fn test_harness_unrestricted_mode() {
         let resolver = load_fixture_resolver();
-        let result = VMHarness::new(&resolver, false); // unrestricted
-
-        assert!(result.is_ok());
+        VMHarness::new(&resolver, false).expect("should create harness in unrestricted mode");
     }
 }
 
@@ -426,61 +401,40 @@ mod vm_harness_creation_tests {
 
 mod vm_harness_execution_tests {
     use super::*;
-    use move_core_types::identifier::Identifier;
 
     #[test]
     fn test_harness_execute_simple_function() {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        // Find test_module
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
         // Execute simple_func(42) -> should return 42
-        let result = harness.execute_function(
-            &module_id,
-            "simple_func",
-            vec![],
-            vec![42u64.to_le_bytes().to_vec()],
-        );
-
-        assert!(
-            result.is_ok(),
-            "simple_func should execute: {:?}",
-            result.err()
-        );
+        harness
+            .execute_function(
+                &module_id,
+                "simple_func",
+                vec![],
+                vec![42u64.to_le_bytes().to_vec()],
+            )
+            .expect("simple_func should execute");
     }
 
     #[test]
     fn test_harness_execute_with_return() {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
-        let result = harness.execute_function_with_return(
-            &module_id,
-            "simple_func",
-            vec![],
-            vec![42u64.to_le_bytes().to_vec()],
-        );
-
-        assert!(result.is_ok());
-        let return_values = result.expect("execution already verified as ok");
+        let return_values = harness
+            .execute_function_with_return(
+                &module_id,
+                "simple_func",
+                vec![],
+                vec![42u64.to_le_bytes().to_vec()],
+            )
+            .expect("execute_function_with_return should succeed");
         assert!(!return_values.is_empty(), "should have return value");
 
         // The return value should be the same as input (identity function)
@@ -498,24 +452,17 @@ mod vm_harness_execution_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
-        let result = harness.execute_function_full(
-            &module_id,
-            "simple_func",
-            vec![],
-            vec![100u64.to_le_bytes().to_vec()],
-        );
-
-        assert!(result.is_ok());
-        let output = result.expect("execution already verified as ok");
+        let output = harness
+            .execute_function_full(
+                &module_id,
+                "simple_func",
+                vec![],
+                vec![100u64.to_le_bytes().to_vec()],
+            )
+            .expect("execute_function_full should succeed");
         assert!(!output.return_values.is_empty());
         assert!(output.gas_used > 0, "should report gas used");
     }
@@ -539,13 +486,7 @@ mod vm_harness_execution_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
         // simple_func expects u64, but we provide nothing
@@ -559,13 +500,7 @@ mod vm_harness_execution_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
         // simple_func expects u64 (8 bytes), but we provide only 3 bytes
@@ -595,13 +530,7 @@ mod vm_harness_trace_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
+        let module = find_test_module(&resolver).expect("test_module should exist");
         let module_id = module.self_id();
 
         // Execute a function
@@ -624,12 +553,7 @@ mod vm_harness_trace_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         // Execute to populate trace
         let _ = harness.execute_function(
@@ -727,10 +651,9 @@ mod vm_harness_synthesize_tests {
         let resolver = load_fixture_resolver();
         let harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let result = harness.synthesize_tx_context();
-        assert!(result.is_ok());
-
-        let bytes = result.unwrap();
+        let bytes = harness
+            .synthesize_tx_context()
+            .expect("synthesize_tx_context should succeed");
         // TxContext has: sender (32) + tx_hash (1 + 32) + epoch (8) + timestamp (8) + ids_created (8) = 89 bytes
         assert!(
             bytes.len() >= 80,
@@ -743,10 +666,9 @@ mod vm_harness_synthesize_tests {
         let resolver = load_fixture_resolver();
         let harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let result = harness.synthesize_clock();
-        assert!(result.is_ok());
-
-        let bytes = result.unwrap();
+        let bytes = harness
+            .synthesize_clock()
+            .expect("synthesize_clock should succeed");
         // Clock has: id (32) + timestamp_ms (8) = 40 bytes
         assert_eq!(bytes.len(), 40, "Clock bytes should be 40 bytes");
     }
@@ -756,8 +678,12 @@ mod vm_harness_synthesize_tests {
         let resolver = load_fixture_resolver();
         let harness = VMHarness::new(&resolver, true).expect("harness should create");
 
-        let clock1 = harness.synthesize_clock().unwrap();
-        let clock2 = harness.synthesize_clock().unwrap();
+        let clock1 = harness
+            .synthesize_clock()
+            .expect("first synthesize_clock should succeed");
+        let clock2 = harness
+            .synthesize_clock()
+            .expect("second synthesize_clock should succeed");
 
         // The timestamp (last 8 bytes) should differ
         let ts1 = u64::from_le_bytes(clock1[32..40].try_into().unwrap());
@@ -814,12 +740,7 @@ mod error_handling_tests {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness");
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         // simple_func doesn't take type args, so passing some should fail or be ignored
         let result = harness.execute_function(

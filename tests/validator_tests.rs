@@ -7,32 +7,15 @@
 //! - validate_bcs_roundtrip: valid/invalid inputs, edge cases, malformed data
 //! - Error propagation: actionable error messages
 
-use std::path::Path;
+mod common;
 
+use common::{empty_resolver, find_test_module, load_fixture_resolver};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::annotated_value::{MoveTypeLayout, MoveValue};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::u256::U256;
-use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::validator::Validator;
-
-// =============================================================================
-// Test Fixtures and Helpers
-// =============================================================================
-
-fn load_fixture_resolver() -> LocalModuleResolver {
-    let fixture_dir = Path::new("tests/fixture/build/fixture");
-    let mut resolver = LocalModuleResolver::new();
-    resolver
-        .load_from_dir(fixture_dir)
-        .expect("fixture should load");
-    resolver
-}
-
-fn empty_resolver() -> LocalModuleResolver {
-    LocalModuleResolver::new()
-}
 
 // =============================================================================
 // validate_target Tests
@@ -46,17 +29,12 @@ mod validate_target_tests {
         let resolver = load_fixture_resolver();
         let validator = Validator::new(&resolver);
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         let result =
             validator.validate_target(*module.self_id().address(), "test_module", "simple_func");
 
-        assert!(result.is_ok(), "should validate existing public function");
+        result.expect("should validate existing public function");
     }
 
     #[test]
@@ -73,8 +51,7 @@ mod validate_target_tests {
             "any_function",
         );
 
-        assert!(result.is_err(), "should fail for nonexistent module");
-        let err = result.unwrap_err().to_string();
+        let err = result.expect_err("should fail for nonexistent module").to_string();
         assert!(
             err.contains("module not found") || err.contains("nonexistent"),
             "error should mention module not found: {err}"
@@ -95,8 +72,7 @@ mod validate_target_tests {
             "nonexistent_function_xyz",
         );
 
-        assert!(result.is_err(), "should fail for nonexistent function");
-        let err = result.unwrap_err().to_string();
+        let err = result.expect_err("should fail for nonexistent function").to_string();
         assert!(
             err.contains("function not found") || err.contains("nonexistent_function_xyz"),
             "error should mention function not found: {err}"
@@ -110,7 +86,7 @@ mod validate_target_tests {
 
         let result = validator.validate_target(AccountAddress::ZERO, "any_module", "any_function");
 
-        assert!(result.is_err(), "should fail with empty resolver");
+        result.expect_err("should fail with empty resolver");
     }
 
     #[test]
@@ -128,7 +104,7 @@ mod validate_target_tests {
             "", // Empty function name
         );
 
-        assert!(result.is_err(), "should fail with empty function name");
+        result.expect_err("should fail with empty function name");
     }
 }
 
@@ -144,9 +120,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::Bool);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::Bool));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::Bool)
+            .expect("should resolve Bool type");
+        assert!(matches!(layout, MoveTypeLayout::Bool));
     }
 
     #[test]
@@ -154,9 +131,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U8);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U8));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U8)
+            .expect("should resolve U8 type");
+        assert!(matches!(layout, MoveTypeLayout::U8));
     }
 
     #[test]
@@ -164,9 +142,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U16);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U16));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U16)
+            .expect("should resolve U16 type");
+        assert!(matches!(layout, MoveTypeLayout::U16));
     }
 
     #[test]
@@ -174,9 +153,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U32);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U32));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U32)
+            .expect("should resolve U32 type");
+        assert!(matches!(layout, MoveTypeLayout::U32));
     }
 
     #[test]
@@ -184,9 +164,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U64);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U64));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U64)
+            .expect("should resolve U64 type");
+        assert!(matches!(layout, MoveTypeLayout::U64));
     }
 
     #[test]
@@ -194,9 +175,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U128);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U128));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U128)
+            .expect("should resolve U128 type");
+        assert!(matches!(layout, MoveTypeLayout::U128));
     }
 
     #[test]
@@ -204,9 +186,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::U256);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::U256));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::U256)
+            .expect("should resolve U256 type");
+        assert!(matches!(layout, MoveTypeLayout::U256));
     }
 
     #[test]
@@ -214,9 +197,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::Address);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::Address));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::Address)
+            .expect("should resolve Address type");
+        assert!(matches!(layout, MoveTypeLayout::Address));
     }
 
     #[test]
@@ -224,9 +208,10 @@ mod resolve_type_layout_primitives {
         let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
-        let result = validator.resolve_type_layout(&TypeTag::Signer);
-        assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), MoveTypeLayout::Signer));
+        let layout = validator
+            .resolve_type_layout(&TypeTag::Signer)
+            .expect("should resolve Signer type");
+        assert!(matches!(layout, MoveTypeLayout::Signer));
     }
 }
 
@@ -243,10 +228,11 @@ mod resolve_type_layout_vectors {
         let validator = Validator::new(&resolver);
 
         let tag = TypeTag::Vector(Box::new(TypeTag::U8));
-        let result = validator.resolve_type_layout(&tag);
+        let layout = validator
+            .resolve_type_layout(&tag)
+            .expect("should resolve vector<u8> type");
 
-        assert!(result.is_ok());
-        match result.unwrap() {
+        match layout {
             MoveTypeLayout::Vector(inner) => {
                 assert!(matches!(*inner, MoveTypeLayout::U8));
             }
@@ -260,10 +246,11 @@ mod resolve_type_layout_vectors {
         let validator = Validator::new(&resolver);
 
         let tag = TypeTag::Vector(Box::new(TypeTag::Address));
-        let result = validator.resolve_type_layout(&tag);
+        let layout = validator
+            .resolve_type_layout(&tag)
+            .expect("should resolve vector<address> type");
 
-        assert!(result.is_ok());
-        match result.unwrap() {
+        match layout {
             MoveTypeLayout::Vector(inner) => {
                 assert!(matches!(*inner, MoveTypeLayout::Address));
             }
@@ -278,10 +265,11 @@ mod resolve_type_layout_vectors {
 
         // vector<vector<u64>>
         let tag = TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::U64))));
-        let result = validator.resolve_type_layout(&tag);
+        let layout = validator
+            .resolve_type_layout(&tag)
+            .expect("should resolve vector<vector<u64>> type");
 
-        assert!(result.is_ok());
-        match result.unwrap() {
+        match layout {
             MoveTypeLayout::Vector(inner) => match *inner {
                 MoveTypeLayout::Vector(inner2) => {
                     assert!(matches!(*inner2, MoveTypeLayout::U64));
@@ -301,9 +289,10 @@ mod resolve_type_layout_vectors {
         let tag = TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::Vector(
             Box::new(TypeTag::Bool),
         )))));
-        let result = validator.resolve_type_layout(&tag);
 
-        assert!(result.is_ok(), "should handle deeply nested vectors");
+        validator
+            .resolve_type_layout(&tag)
+            .expect("should handle deeply nested vectors");
     }
 }
 
@@ -331,8 +320,9 @@ mod resolve_type_layout_structs {
 
         let result = validator.resolve_type_layout(&TypeTag::Struct(Box::new(struct_tag)));
 
-        assert!(result.is_err(), "should fail for nonexistent struct");
-        let err = result.unwrap_err().to_string();
+        let err = result
+            .expect_err("should fail for nonexistent struct")
+            .to_string();
         assert!(
             err.contains("module not found") || err.contains("nonexistent"),
             "error should mention module not found: {err}"
@@ -353,9 +343,10 @@ mod resolve_type_layout_structs {
             type_params: vec![TypeTag::U64],
         };
 
-        let result = validator.resolve_type_layout(&TypeTag::Struct(Box::new(struct_tag)));
         // We expect this to fail since the struct doesn't exist
-        assert!(result.is_err());
+        validator
+            .resolve_type_layout(&TypeTag::Struct(Box::new(struct_tag)))
+            .expect_err("should fail for nonexistent generic struct");
     }
 }
 
@@ -375,8 +366,9 @@ mod validate_bcs_roundtrip_valid {
         let value = MoveValue::Bool(true);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "bool true should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("bool true should roundtrip");
     }
 
     #[test]
@@ -388,8 +380,9 @@ mod validate_bcs_roundtrip_valid {
         let value = MoveValue::Bool(false);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "bool false should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("bool false should roundtrip");
     }
 
     #[test]
@@ -400,8 +393,9 @@ mod validate_bcs_roundtrip_valid {
         let layout = MoveTypeLayout::U8;
         let bytes = vec![0u8];
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u8 zero should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u8 zero should roundtrip");
     }
 
     #[test]
@@ -412,8 +406,9 @@ mod validate_bcs_roundtrip_valid {
         let layout = MoveTypeLayout::U8;
         let bytes = vec![255u8];
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u8 max should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u8 max should roundtrip");
     }
 
     #[test]
@@ -424,8 +419,9 @@ mod validate_bcs_roundtrip_valid {
         let layout = MoveTypeLayout::U64;
         let bytes = 0u64.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u64 zero should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u64 zero should roundtrip");
     }
 
     #[test]
@@ -436,8 +432,9 @@ mod validate_bcs_roundtrip_valid {
         let layout = MoveTypeLayout::U64;
         let bytes = u64::MAX.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u64 max should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u64 max should roundtrip");
     }
 
     #[test]
@@ -448,8 +445,9 @@ mod validate_bcs_roundtrip_valid {
         let layout = MoveTypeLayout::U128;
         let bytes = u128::MAX.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u128 max should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u128 max should roundtrip");
     }
 
     #[test]
@@ -461,8 +459,9 @@ mod validate_bcs_roundtrip_valid {
         let value = MoveValue::U256(U256::zero());
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "u256 zero should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u256 zero should roundtrip");
     }
 
     #[test]
@@ -474,8 +473,9 @@ mod validate_bcs_roundtrip_valid {
         let value = MoveValue::Address(AccountAddress::ZERO);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "address zero should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("address zero should roundtrip");
     }
 
     #[test]
@@ -487,8 +487,9 @@ mod validate_bcs_roundtrip_valid {
         let value = MoveValue::Vector(vec![]);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "empty vector should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("empty vector should roundtrip");
     }
 
     #[test]
@@ -504,8 +505,9 @@ mod validate_bcs_roundtrip_valid {
         ]);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "vector with elements should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("vector with elements should roundtrip");
     }
 
     #[test]
@@ -520,8 +522,9 @@ mod validate_bcs_roundtrip_valid {
         ]);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "vector of addresses should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("vector of addresses should roundtrip");
     }
 
     #[test]
@@ -538,8 +541,9 @@ mod validate_bcs_roundtrip_valid {
         ]);
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "nested vector should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("nested vector should roundtrip");
     }
 }
 
@@ -558,8 +562,9 @@ mod validate_bcs_roundtrip_invalid {
         let layout = MoveTypeLayout::U64;
         let bytes: Vec<u8> = vec![];
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "empty bytes should fail for u64");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("empty bytes should fail for u64");
     }
 
     #[test]
@@ -570,8 +575,9 @@ mod validate_bcs_roundtrip_invalid {
         let layout = MoveTypeLayout::U64;
         let bytes = vec![1u8, 2u8, 3u8]; // Only 3 bytes, need 8
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "short bytes should fail for u64");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("short bytes should fail for u64");
     }
 
     #[test]
@@ -582,10 +588,9 @@ mod validate_bcs_roundtrip_invalid {
         let layout = MoveTypeLayout::Bool;
         let bytes = vec![0u8, 1u8]; // Extra byte after bool
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
         // BCS deserialization may succeed but roundtrip may differ
-        // depending on implementation
-        let _ = result; // Don't assert, just ensure no panic
+        // depending on implementation - just ensure no panic
+        let _ = validator.validate_bcs_roundtrip(&layout, &bytes);
     }
 
     #[test]
@@ -596,8 +601,9 @@ mod validate_bcs_roundtrip_invalid {
         let layout = MoveTypeLayout::Bool;
         let bytes = vec![2u8]; // Invalid bool (not 0 or 1)
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "invalid bool value should fail");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("invalid bool value should fail");
     }
 
     #[test]
@@ -608,8 +614,9 @@ mod validate_bcs_roundtrip_invalid {
         let layout = MoveTypeLayout::Address;
         let bytes = vec![0u8; 16]; // Only 16 bytes, need 32
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "short address should fail");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("short address should fail");
     }
 
     #[test]
@@ -621,8 +628,9 @@ mod validate_bcs_roundtrip_invalid {
         // Malformed ULEB128 length prefix indicating more data than present
         let bytes = vec![0xFF, 0xFF, 0xFF, 0x0F]; // Very large length
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "malformed vector should fail");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("malformed vector should fail");
     }
 
     #[test]
@@ -634,8 +642,9 @@ mod validate_bcs_roundtrip_invalid {
         // Length says 2 elements, but only partial data provided
         let bytes = vec![2u8, 0, 0, 0, 0, 0, 0, 0, 0]; // Length 2, but only 1 element
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_err(), "truncated vector should fail");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect_err("truncated vector should fail");
     }
 }
 
@@ -654,8 +663,9 @@ mod validate_bcs_roundtrip_boundaries {
         let layout = MoveTypeLayout::U16;
         let bytes = 0u16.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok());
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u16 min should roundtrip");
     }
 
     #[test]
@@ -666,8 +676,9 @@ mod validate_bcs_roundtrip_boundaries {
         let layout = MoveTypeLayout::U16;
         let bytes = u16::MAX.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok());
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u16 max should roundtrip");
     }
 
     #[test]
@@ -678,8 +689,9 @@ mod validate_bcs_roundtrip_boundaries {
         let layout = MoveTypeLayout::U32;
         let bytes = u32::MAX.to_le_bytes().to_vec();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok());
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("u32 max should roundtrip");
     }
 
     #[test]
@@ -692,8 +704,9 @@ mod validate_bcs_roundtrip_boundaries {
         let value = MoveValue::Vector((0..1000).map(|i| MoveValue::U8(i as u8)).collect());
         let bytes = value.simple_serialize().unwrap();
 
-        let result = validator.validate_bcs_roundtrip(&layout, &bytes);
-        assert!(result.is_ok(), "large vector should roundtrip");
+        validator
+            .validate_bcs_roundtrip(&layout, &bytes)
+            .expect("large vector should roundtrip");
     }
 }
 
@@ -776,12 +789,7 @@ mod struct_layout_with_fixture {
         let validator = Validator::new(&resolver);
 
         // Find the fixture module address
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         let struct_tag = StructTag {
             address: *module.self_id().address(),
@@ -790,11 +798,11 @@ mod struct_layout_with_fixture {
             type_params: vec![],
         };
 
-        let result = validator.resolve_type_layout(&TypeTag::Struct(Box::new(struct_tag)));
-        assert!(result.is_ok(), "should resolve SimpleStruct layout");
+        let layout = validator
+            .resolve_type_layout(&TypeTag::Struct(Box::new(struct_tag)))
+            .expect("should resolve SimpleStruct layout");
 
         // Verify it's a struct layout
-        let layout = result.unwrap();
         assert!(
             matches!(layout, MoveTypeLayout::Struct(_)),
             "should be a struct layout"

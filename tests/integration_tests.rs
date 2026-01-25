@@ -6,28 +6,16 @@
 //! - Cross-component error propagation
 //! - Real-world usage patterns
 
-use std::path::Path;
+mod common;
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 
-use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::validator::Validator;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
-// =============================================================================
-// Test Fixtures
-// =============================================================================
-
-fn load_fixture_resolver() -> LocalModuleResolver {
-    let fixture_dir = Path::new("tests/fixture/build/fixture");
-    let mut resolver = LocalModuleResolver::new();
-    resolver
-        .load_from_dir(fixture_dir)
-        .expect("fixture should load");
-    resolver
-}
+use common::{empty_resolver, find_test_module, format_module_path, load_fixture_resolver};
 
 // =============================================================================
 // End-to-End Pipeline Tests
@@ -41,13 +29,8 @@ mod pipeline_tests {
         // Load modules
         let resolver = load_fixture_resolver();
 
-        // Find test_module
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        // Find test_module using shared helper
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         let package_addr = *module.self_id().address();
 
@@ -112,12 +95,7 @@ mod pipeline_tests {
     fn test_pipeline_with_config_options() {
         let resolver = load_fixture_resolver();
 
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
+        let module = find_test_module(&resolver).expect("test_module should exist");
 
         // Test with various configs
         let configs = vec![
@@ -247,19 +225,8 @@ mod resolver_introspection_tests {
     #[test]
     fn test_list_functions_for_module() {
         let resolver = load_fixture_resolver();
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
-        let module_path = format!(
-            "{}::{}",
-            module.self_id().address().to_hex_literal(),
-            module.self_id().name()
-        );
+        let module = find_test_module(&resolver).expect("test_module should exist");
+        let module_path = format_module_path(module);
 
         let functions = resolver.list_functions(&module_path);
         assert!(functions.is_some(), "should list functions");
@@ -274,19 +241,8 @@ mod resolver_introspection_tests {
     #[test]
     fn test_list_structs_for_module() {
         let resolver = load_fixture_resolver();
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
-        let module_path = format!(
-            "{}::{}",
-            module.self_id().address().to_hex_literal(),
-            module.self_id().name()
-        );
+        let module = find_test_module(&resolver).expect("test_module should exist");
+        let module_path = format_module_path(module);
 
         let structs = resolver.list_structs(&module_path);
         assert!(structs.is_some(), "should list structs");
@@ -299,19 +255,8 @@ mod resolver_introspection_tests {
     #[test]
     fn test_get_function_info() {
         let resolver = load_fixture_resolver();
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
-        let module_path = format!(
-            "{}::{}",
-            module.self_id().address().to_hex_literal(),
-            module.self_id().name()
-        );
+        let module = find_test_module(&resolver).expect("test_module should exist");
+        let module_path = format_module_path(module);
 
         let info = resolver.get_function_info(&module_path, "simple_func");
         assert!(info.is_some(), "should get function info");
@@ -325,19 +270,8 @@ mod resolver_introspection_tests {
     #[test]
     fn test_get_struct_info() {
         let resolver = load_fixture_resolver();
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
-        let type_path = format!(
-            "{}::{}::SimpleStruct",
-            module.self_id().address().to_hex_literal(),
-            module.self_id().name()
-        );
+        let module = find_test_module(&resolver).expect("test_module should exist");
+        let type_path = format!("{}::SimpleStruct", format_module_path(module));
 
         let info = resolver.get_struct_info(&type_path);
         assert!(info.is_some(), "should get struct info");
@@ -377,19 +311,8 @@ mod resolver_introspection_tests {
     #[test]
     fn test_disassemble_function() {
         let resolver = load_fixture_resolver();
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module should exist");
-
-        let module_path = format!(
-            "{}::{}",
-            module.self_id().address().to_hex_literal(),
-            module.self_id().name()
-        );
+        let module = find_test_module(&resolver).expect("test_module should exist");
+        let module_path = format_module_path(module);
 
         let disasm = resolver.disassemble_function(&module_path, "simple_func");
         assert!(disasm.is_some(), "should disassemble function");
@@ -408,7 +331,7 @@ mod error_propagation_tests {
 
     #[test]
     fn test_resolver_error_propagates_to_validator() {
-        let resolver = LocalModuleResolver::new(); // Empty resolver
+        let resolver = empty_resolver(); // Empty resolver
         let validator = Validator::new(&resolver);
 
         let result = validator.validate_target(AccountAddress::ZERO, "any_module", "any_func");
@@ -443,7 +366,7 @@ mod error_propagation_tests {
 
     #[test]
     fn test_type_resolution_error_propagates() {
-        let resolver = LocalModuleResolver::new();
+        let resolver = empty_resolver();
         let validator = Validator::new(&resolver);
 
         use move_core_types::language_storage::{StructTag, TypeTag};
@@ -493,7 +416,7 @@ mod dynamic_loading_tests {
 
     #[test]
     fn test_add_invalid_module_bytes() {
-        let mut resolver = LocalModuleResolver::new();
+        let mut resolver = empty_resolver();
 
         let result = resolver.add_module_bytes(vec![0, 1, 2, 3, 4]); // Invalid bytecode
 
@@ -502,7 +425,7 @@ mod dynamic_loading_tests {
 
     #[test]
     fn test_add_empty_module_bytes() {
-        let mut resolver = LocalModuleResolver::new();
+        let mut resolver = empty_resolver();
 
         let result = resolver.add_module_bytes(vec![]); // Empty bytecode
 
@@ -521,14 +444,7 @@ mod execution_state_tests {
     fn test_execution_trace_tracking() {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness");
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module");
-
+        let module = find_test_module(&resolver).expect("test_module");
         let package_addr = *module.self_id().address();
 
         // Clear trace
@@ -555,13 +471,7 @@ mod execution_state_tests {
     fn test_multiple_executions() {
         let resolver = load_fixture_resolver();
         let mut harness = VMHarness::new(&resolver, true).expect("harness");
-
-        let module = resolver
-            .iter_modules()
-            .find(|m| {
-                sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module"
-            })
-            .expect("test_module");
+        let module = find_test_module(&resolver).expect("test_module");
 
         // Execute multiple times
         for i in 0..10u64 {

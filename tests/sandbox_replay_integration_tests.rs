@@ -89,7 +89,7 @@ fn test_simulation_environment_create_multiple_coins() {
 // =============================================================================
 
 #[test]
-fn test_ptb_split_coins() {
+fn test_simulation_env_split_coins() {
     let mut env = SimulationEnvironment::new().expect("create env");
 
     // Create a coin with enough balance
@@ -104,6 +104,7 @@ fn test_ptb_split_coins() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()), // Split amount
     ];
@@ -126,7 +127,7 @@ fn test_ptb_split_coins() {
 }
 
 #[test]
-fn test_ptb_merge_coins() {
+fn test_simulation_env_merge_coins() {
     let mut env = SimulationEnvironment::new().expect("create env");
 
     // Create two coins
@@ -146,11 +147,13 @@ fn test_ptb_merge_coins() {
             id: coin1_id,
             bytes: coin1_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Object(ObjectInput::Owned {
             id: coin2_id,
             bytes: coin2_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
     ];
 
@@ -169,7 +172,7 @@ fn test_ptb_merge_coins() {
 }
 
 #[test]
-fn test_ptb_transfer_objects() {
+fn test_simulation_env_transfer_objects() {
     let mut env = SimulationEnvironment::new().expect("create env");
 
     // Create a coin to transfer
@@ -188,6 +191,7 @@ fn test_ptb_transfer_objects() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(recipient.to_vec()),
     ];
@@ -227,6 +231,7 @@ fn test_ptb_multi_command_sequence() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()),
         InputValue::Pure(recipient.to_vec()),
@@ -272,6 +277,7 @@ fn test_ptb_insufficient_balance_error() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(1_000_000u64.to_le_bytes().to_vec()), // More than balance
     ];
@@ -305,6 +311,7 @@ fn test_ptb_missing_object_error() {
             id: fake_id,
             bytes: vec![], // Empty bytes
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100u64.to_le_bytes().to_vec()),
     ];
@@ -340,6 +347,7 @@ fn test_state_persists_across_ptbs() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100_000_000u64.to_le_bytes().to_vec()),
     ];
@@ -375,6 +383,7 @@ fn test_state_persists_across_ptbs() {
             id: created_id,
             bytes: created_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(recipient.to_vec()),
     ];
@@ -495,6 +504,7 @@ fn test_gas_usage_tracking() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100u64.to_le_bytes().to_vec()),
     ];
@@ -539,6 +549,7 @@ fn test_events_are_captured() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100u64.to_le_bytes().to_vec()),
     ];
@@ -590,6 +601,7 @@ fn test_execute_ptb_with_missing_object() {
         id: fake_object_id,
         bytes: vec![], // Empty bytes for non-existent object
         type_tag: None,
+        version: None,
     })];
 
     let commands = vec![Command::TransferObjects {
@@ -657,6 +669,7 @@ fn test_execute_ptb_with_invalid_arguments() {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(vec![1, 2, 3]), // Invalid - should be u64 for amount
     ];

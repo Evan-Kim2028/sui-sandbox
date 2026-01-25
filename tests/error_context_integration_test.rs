@@ -27,6 +27,7 @@ fn test_error_context_on_split_coins_insufficient_balance() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(split_amount.to_le_bytes().to_vec()),
     ];
@@ -85,6 +86,7 @@ fn test_error_context_tracks_successful_commands() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100u64.to_le_bytes().to_vec()),
         InputValue::Pure(200u64.to_le_bytes().to_vec()),
@@ -145,6 +147,7 @@ fn test_no_error_context_on_success() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(split_amount.to_le_bytes().to_vec()),
     ];
@@ -191,11 +194,13 @@ fn test_error_context_on_merge_coins_type_mismatch() {
             id: coin_id_1,
             bytes: env.get_object(&coin_id_1).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Object(ObjectInput::Owned {
             id: coin_id_2,
             bytes: env.get_object(&coin_id_2).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
     ];
 
@@ -228,6 +233,7 @@ fn test_error_context_gas_tracking() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(100u64.to_le_bytes().to_vec()),
         InputValue::Pure(5000u64.to_le_bytes().to_vec()), // More than remaining balance
@@ -274,6 +280,7 @@ fn test_error_context_object_snapshots() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(500u64.to_le_bytes().to_vec()),
     ];
@@ -318,6 +325,7 @@ fn test_error_context_display() {
             id: coin_id,
             bytes: env.get_object(&coin_id).unwrap().bcs_bytes.clone(),
             type_tag: None,
+            version: None,
         }),
         InputValue::Pure(500u64.to_le_bytes().to_vec()),
     ];

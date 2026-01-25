@@ -545,26 +545,29 @@ mod mock_native_state_tests {
     }
 
     #[test]
-    fn test_state_fresh_id_sequential_pattern() {
+    fn test_state_fresh_id_hash_derived() {
         let state = MockNativeState::new();
 
-        // IDs should follow a sequential pattern in the last 8 bytes
+        // IDs should be derived from hash(tx_hash || ids_created)
+        // They should NOT be predictable sequential values
         let id1 = state.fresh_id();
         let id2 = state.fresh_id();
 
         let bytes1 = id1.into_bytes();
         let bytes2 = id2.into_bytes();
 
-        // First 24 bytes should be zero
-        assert_eq!(&bytes1[0..24], &[0u8; 24]);
-        assert_eq!(&bytes2[0..24], &[0u8; 24]);
+        // IDs should be different (same tx_hash but different ids_created counter)
+        assert_ne!(bytes1, bytes2, "Sequential IDs should differ");
 
-        // Last 8 bytes contain the counter
-        let counter1 = u64::from_le_bytes(bytes1[24..32].try_into().unwrap());
-        let counter2 = u64::from_le_bytes(bytes2[24..32].try_into().unwrap());
+        // IDs should NOT be the old predictable pattern (zeros + counter)
+        // Old pattern would have first 24 bytes as zeros
+        let has_old_pattern = bytes1[0..24].iter().all(|&b| b == 0)
+            || bytes2[0..24].iter().all(|&b| b == 0);
 
-        assert_eq!(counter1, 0);
-        assert_eq!(counter2, 1);
+        // With hash-derived IDs, it's extremely unlikely to have 24 zero bytes
+        // (probability ~2^-192), so this effectively verifies the new behavior
+        assert!(!has_old_pattern || bytes1[24..32] != [0u8; 8],
+            "IDs should be hash-derived, not predictable sequential values");
     }
 }
 

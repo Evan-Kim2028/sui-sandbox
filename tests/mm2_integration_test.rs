@@ -3,15 +3,17 @@
 //! These tests verify that the MM2-based static type checking works correctly
 //! with real Move bytecode.
 
+mod common;
+
+use common::fixtures::framework_resolver;
 use sui_sandbox_core::mm2::{ConstructorGraph, TypeModel, TypeValidator};
 use sui_sandbox_core::phases::{resolution, typecheck};
-use sui_sandbox_core::resolver::LocalModuleResolver;
 
 /// Test that MM2 can build a model from framework modules.
 #[test]
 fn test_mm2_model_from_sui_framework() {
     // Load Sui framework modules
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
 
     // Collect all modules
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
@@ -44,7 +46,7 @@ fn test_mm2_model_from_sui_framework() {
 /// Test that MM2 can validate function existence.
 #[test]
 fn test_mm2_function_validation() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -67,7 +69,7 @@ fn test_mm2_function_validation() {
 /// Test that MM2 can get struct information.
 #[test]
 fn test_mm2_struct_info() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -97,7 +99,7 @@ fn test_mm2_struct_info() {
 /// Test constructor graph building.
 #[test]
 fn test_constructor_graph() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -120,7 +122,7 @@ fn test_constructor_graph() {
 /// Test phase-based resolution.
 #[test]
 fn test_phase_resolution() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
 
     let sui_addr = move_core_types::account_address::AccountAddress::TWO;
 
@@ -147,7 +149,7 @@ fn test_phase_resolution() {
 /// Test phase-based type checking.
 #[test]
 fn test_phase_typecheck() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
 
     let sui_addr = move_core_types::account_address::AccountAddress::TWO;
 
@@ -179,7 +181,7 @@ fn test_phase_typecheck() {
 /// Test function existence check.
 #[test]
 fn test_function_exists_quick_check() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
 
     let sui_addr = move_core_types::account_address::AccountAddress::TWO;
 
@@ -205,7 +207,7 @@ fn test_function_exists_quick_check() {
 /// Test producer chain discovery in constructor graph.
 #[test]
 fn test_producer_chain_discovery() {
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -241,7 +243,7 @@ fn test_producer_chain_discovery() {
 fn test_type_synthesizer_sui_system_state() {
     use sui_sandbox_core::mm2::TypeSynthesizer;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -285,7 +287,7 @@ fn test_type_synthesizer_sui_system_state() {
 fn test_type_synthesizer_validator_set() {
     use sui_sandbox_core::mm2::TypeSynthesizer;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -321,7 +323,7 @@ fn test_type_synthesizer_validator_set() {
 fn test_coin_synthesis_has_balance() {
     use sui_sandbox_core::mm2::TypeSynthesizer;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let modules: Vec<_> = resolver.iter_modules().cloned().collect();
     let model = TypeModel::from_modules(modules).expect("Failed to build MM2 model");
 
@@ -364,7 +366,7 @@ fn test_ptb_simple_move_call() {
     use sui_sandbox_core::ptb::PTBBuilder;
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
 
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
@@ -402,7 +404,7 @@ fn test_ptb_chained_results() {
     use sui_sandbox_core::ptb::PTBBuilder;
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
     let mut builder = PTBBuilder::new();
@@ -442,7 +444,7 @@ fn test_ptb_split_coins() {
     use sui_sandbox_core::ptb::{Argument, PTBBuilder};
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
     let mut builder = PTBBuilder::new();
@@ -482,7 +484,7 @@ fn test_ptb_merge_coins() {
     use sui_sandbox_core::ptb::{Argument, PTBBuilder};
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
     let mut builder = PTBBuilder::new();
@@ -521,7 +523,7 @@ fn test_ptb_make_move_vec() {
     use sui_sandbox_core::ptb::{Argument, PTBBuilder};
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
     let mut builder = PTBBuilder::new();
@@ -554,7 +556,7 @@ fn test_ptb_transfer_objects() {
     use sui_sandbox_core::ptb::PTBBuilder;
     use sui_sandbox_core::vm::VMHarness;
 
-    let resolver = LocalModuleResolver::with_sui_framework().expect("Failed to load framework");
+    let resolver = framework_resolver();
     let mut harness = VMHarness::new(&resolver, false).expect("Failed to create VM harness");
 
     let mut builder = PTBBuilder::new();
@@ -610,6 +612,7 @@ fn test_cross_ptb_transfer_receive() {
         id: coin_id,
         bytes: coin_obj.bcs_bytes.clone(),
         type_tag: Some(coin_type.clone()),
+        version: None,
     });
 
     let result1 = env.execute_ptb(
@@ -768,11 +771,13 @@ fn test_multi_transfer_receive() {
                 id: coin1_id,
                 bytes: coin1_obj.bcs_bytes.clone(),
                 type_tag: Some(coin1_obj.type_tag.clone()),
+                version: None,
             }),
             InputValue::Object(ObjectInput::Owned {
                 id: coin2_id,
                 bytes: coin2_obj.bcs_bytes.clone(),
                 type_tag: Some(coin2_obj.type_tag.clone()),
+                version: None,
             }),
             InputValue::Pure(recipient1.to_vec()),
             InputValue::Pure(recipient2.to_vec()),

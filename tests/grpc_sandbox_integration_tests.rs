@@ -17,7 +17,7 @@
 //! Run with:
 //!   cargo test --test grpc_sandbox_integration_tests -- --ignored --nocapture
 
-mod test_utils;
+mod common;
 
 use std::time::Duration;
 
@@ -26,20 +26,6 @@ use sui_move_interface_extractor::graphql::GraphQLClient;
 use sui_move_interface_extractor::grpc::{
     GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction,
 };
-use test_utils::get_grpc_endpoint;
-
-/// Skip test if no gRPC endpoint configured
-macro_rules! require_grpc_endpoint {
-    () => {
-        match get_grpc_endpoint() {
-            Some(endpoint) => endpoint,
-            None => {
-                eprintln!("SKIPPED: SUI_GRPC_ENDPOINT not set");
-                return;
-            }
-        }
-    };
-}
 
 // =============================================================================
 // Data Format Consistency Tests
@@ -50,7 +36,7 @@ macro_rules! require_grpc_endpoint {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_graphql_transaction_consistency() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     let grpc_client = GrpcClient::new(&endpoint).await.expect("gRPC connect");
     let graphql_client = GraphQLClient::mainnet();
@@ -116,7 +102,7 @@ async fn test_grpc_graphql_transaction_consistency() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_input_type_parsing() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     let checkpoint = client
@@ -163,7 +149,7 @@ async fn test_grpc_input_type_parsing() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_command_type_parsing() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     let checkpoint = client
@@ -218,7 +204,7 @@ async fn test_grpc_command_type_parsing() {
 #[tokio::test]
 #[ignore]
 async fn test_datafetcher_grpc_checkpoint_fetch() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     let fetcher = DataFetcher::mainnet()
         .with_grpc_endpoint(&endpoint)
@@ -252,8 +238,8 @@ async fn test_datafetcher_grpc_checkpoint_fetch() {
 /// Test hybrid workflow: gRPC for transactions, GraphQL for packages.
 #[tokio::test]
 #[ignore]
-async fn test_hybrid_grpc_graphql_workflow() {
-    let endpoint = require_grpc_endpoint!();
+async fn test_sandbox_hybrid_grpc_graphql_workflow() {
+    let endpoint = require_grpc!();
 
     let fetcher = DataFetcher::mainnet()
         .with_grpc_endpoint(&endpoint)
@@ -311,7 +297,7 @@ async fn test_hybrid_grpc_graphql_workflow() {
 #[tokio::test]
 #[ignore]
 async fn test_streaming_transaction_validation() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     println!("Validating streamed transactions for 10 seconds...\n");
@@ -419,7 +405,7 @@ fn validate_transaction_structure(tx: &GrpcTransaction) -> Result<(), String> {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_transaction_structure() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     let checkpoint = client
@@ -466,7 +452,7 @@ async fn test_grpc_transaction_structure() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_streaming_throughput() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     println!("=== gRPC Streaming Throughput Test ===\n");
@@ -568,7 +554,7 @@ async fn test_grpc_connection_error_handling() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_stream_interruption_handling() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     let mut stream = client.subscribe_checkpoints().await.expect("subscribe");
@@ -605,7 +591,7 @@ async fn test_grpc_stream_interruption_handling() {
 #[tokio::test]
 #[ignore = "requires network access to Sui mainnet"]
 async fn test_grpc_invalid_object_id_handling() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     // Test with obviously invalid object ID
@@ -623,7 +609,7 @@ async fn test_grpc_invalid_object_id_handling() {
 #[tokio::test]
 #[ignore = "requires network access to Sui mainnet"]
 async fn test_grpc_nonexistent_object_handling() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     // Use a valid-looking but non-existent object ID (all zeros except last byte)
@@ -645,7 +631,7 @@ async fn test_grpc_nonexistent_object_handling() {
 #[tokio::test]
 #[ignore = "requires network access to Sui mainnet"]
 async fn test_grpc_invalid_transaction_digest_handling() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     // Invalid digest (wrong format)
@@ -662,7 +648,7 @@ async fn test_grpc_invalid_transaction_digest_handling() {
 #[tokio::test]
 #[ignore = "requires network access to Sui mainnet"]
 async fn test_grpc_future_checkpoint_handling() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("connect");
 
     // Request a checkpoint far in the future (should not exist)

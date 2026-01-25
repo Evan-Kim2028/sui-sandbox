@@ -24,27 +24,11 @@
 //! Note: These tests use `panic!()` for failures because they're explicitly
 //! testing network connectivity when the environment is properly configured.
 
-mod test_utils;
+mod common;
 
 use std::time::Duration;
 use sui_move_interface_extractor::data_fetcher::DataFetcher;
 use sui_move_interface_extractor::grpc::{GrpcClient, GrpcCommand};
-use test_utils::get_grpc_endpoint;
-
-/// Helper macro to skip test if no endpoint configured
-macro_rules! require_grpc_endpoint {
-    () => {
-        match get_grpc_endpoint() {
-            Some(endpoint) => endpoint,
-            None => {
-                eprintln!("SKIPPED: SUI_GRPC_ENDPOINT not set");
-                eprintln!("To run gRPC tests, set the environment variable:");
-                eprintln!("  export SUI_GRPC_ENDPOINT=\"https://your-endpoint:9000\"");
-                return;
-            }
-        }
-    };
-}
 
 // =============================================================================
 // GrpcClient Unit Tests (no network required)
@@ -65,7 +49,7 @@ fn test_grpc_client_creation_doesnt_panic() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_connection() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     println!("Connecting to gRPC endpoint: {}", endpoint);
 
@@ -99,7 +83,7 @@ async fn test_grpc_connection() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_get_latest_checkpoint() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     println!("Fetching latest checkpoint...");
@@ -132,7 +116,7 @@ async fn test_grpc_get_latest_checkpoint() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_get_specific_checkpoint() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     // Get latest first to know a valid checkpoint number
@@ -167,7 +151,7 @@ async fn test_grpc_get_specific_checkpoint() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_checkpoint_stream() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     println!("Starting checkpoint subscription...");
@@ -232,7 +216,7 @@ async fn test_grpc_checkpoint_stream() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_transaction_parsing() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     // Get a checkpoint with transactions
@@ -289,7 +273,7 @@ async fn test_grpc_transaction_parsing() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_move_call_details() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     let checkpoint = client
@@ -344,7 +328,7 @@ async fn test_grpc_move_call_details() {
 #[tokio::test]
 #[ignore]
 async fn test_datafetcher_with_grpc() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     println!("Creating DataFetcher with gRPC endpoint...");
 
@@ -389,7 +373,7 @@ async fn test_datafetcher_with_grpc() {
 #[tokio::test]
 #[ignore]
 async fn test_datafetcher_grpc_stream() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     let fetcher = DataFetcher::mainnet()
         .with_grpc_endpoint(&endpoint)
@@ -443,7 +427,7 @@ async fn test_datafetcher_grpc_stream() {
 #[tokio::test]
 #[ignore]
 async fn test_hybrid_grpc_graphql_workflow() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
 
     let fetcher = DataFetcher::mainnet()
         .with_grpc_endpoint(&endpoint)
@@ -516,7 +500,7 @@ async fn test_hybrid_grpc_graphql_workflow() {
 #[tokio::test]
 #[ignore]
 async fn test_grpc_one_minute_collection() {
-    let endpoint = require_grpc_endpoint!();
+    let endpoint = require_grpc!();
     let client = GrpcClient::new(&endpoint).await.expect("Failed to connect");
 
     println!("=== 1-Minute gRPC Collection Test ===\n");
