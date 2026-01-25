@@ -683,6 +683,104 @@ pub fn is_primitive_vector(tag: &TypeTag) -> bool {
 }
 
 // =============================================================================
+// Type Tag Address Normalization
+// =============================================================================
+
+/// Normalize a TypeTag by replacing addresses using an alias map.
+///
+/// This is useful when type tags may contain storage/deployment addresses
+/// that need to be converted to bytecode addresses for proper comparison.
+///
+/// The alias map should contain: storage_addr -> bytecode_addr mappings.
+pub fn normalize_type_tag_with_aliases(
+    tag: &TypeTag,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> TypeTag {
+    match tag {
+        TypeTag::Struct(st) => {
+            TypeTag::Struct(Box::new(normalize_struct_tag_with_aliases(st, aliases)))
+        }
+        TypeTag::Vector(inner) => {
+            TypeTag::Vector(Box::new(normalize_type_tag_with_aliases(inner, aliases)))
+        }
+        // Primitives don't have addresses
+        other => other.clone(),
+    }
+}
+
+/// Normalize a StructTag by replacing addresses using an alias map.
+pub fn normalize_struct_tag_with_aliases(
+    tag: &StructTag,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> StructTag {
+    // Check if this address has an alias
+    let normalized_addr = aliases.get(&tag.address).copied().unwrap_or(tag.address);
+
+    StructTag {
+        address: normalized_addr,
+        module: tag.module.clone(),
+        name: tag.name.clone(),
+        type_params: tag
+            .type_params
+            .iter()
+            .map(|tp| normalize_type_tag_with_aliases(tp, aliases))
+            .collect(),
+    }
+}
+
+/// Normalize a type string by replacing addresses using an alias map.
+///
+/// Scans through the string and replaces any addresses that have aliases.
+/// This is useful when parsing type strings from external sources (like GraphQL)
+/// that may use storage addresses instead of bytecode addresses.
+pub fn normalize_type_string_with_aliases(
+    type_str: &str,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> String {
+    let mut result = String::with_capacity(type_str.len());
+    let chars: Vec<char> = type_str.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Look for 0x prefix indicating an address
+        if i + 1 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
+            // Extract the full hex address
+            let mut end = i + 2;
+            while end < chars.len() && chars[end].is_ascii_hexdigit() {
+                end += 1;
+            }
+
+            let addr_str: String = chars[i..end].iter().collect();
+            // Try to parse and normalize
+            if let Ok(addr) = AccountAddress::from_hex_literal(&addr_str) {
+                let normalized = aliases.get(&addr).copied().unwrap_or(addr);
+                result.push_str(&normalized.to_hex_literal());
+            } else {
+                result.push_str(&addr_str);
+            }
+            i = end;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Parse a type string and normalize addresses using an alias map.
+///
+/// Combines parsing with address normalization in one step.
+pub fn parse_type_tag_with_aliases(
+    type_str: &str,
+    aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+) -> Result<TypeTag> {
+    // First normalize the string, then parse
+    let normalized_str = normalize_type_string_with_aliases(type_str, aliases);
+    parse_type_tag(&normalized_str)
+}
+
+// =============================================================================
 // Framework Type Detection
 // =============================================================================
 

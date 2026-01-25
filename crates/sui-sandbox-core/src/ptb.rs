@@ -157,6 +157,51 @@ pub enum ValidationErrorKind {
     Other,
 }
 
+/// Result of a dry-run validation.
+///
+/// Contains validation status, errors, warnings, and estimated gas usage.
+#[derive(Debug, Clone)]
+pub struct DryRunResult {
+    /// Whether the PTB is valid.
+    pub valid: bool,
+    /// Validation errors.
+    pub errors: Vec<DryRunError>,
+    /// Validation warnings.
+    pub warnings: Vec<String>,
+    /// Estimated total gas for execution.
+    pub estimated_gas: u64,
+    /// Per-command validation results.
+    pub command_validations: Vec<CommandValidation>,
+}
+
+/// A dry-run validation error.
+#[derive(Debug, Clone)]
+pub struct DryRunError {
+    /// Command index where the error occurred.
+    pub command_index: usize,
+    /// Validation phase that caught the error.
+    pub phase: String,
+    /// Error message.
+    pub message: String,
+}
+
+/// Validation result for a single command.
+#[derive(Debug, Clone)]
+pub struct CommandValidation {
+    /// Command index.
+    pub index: usize,
+    /// Type of command.
+    pub command_type: String,
+    /// Whether this command is valid.
+    pub valid: bool,
+    /// Errors for this command.
+    pub errors: Vec<String>,
+    /// Warnings for this command.
+    pub warnings: Vec<String>,
+    /// Estimated gas for this command.
+    pub estimated_gas: u64,
+}
+
 /// Validate a PTB before execution.
 ///
 /// This performs static validation to catch issues like:
@@ -983,6 +1028,19 @@ impl PTBExecutionTrace {
         gas_used: u64,
         return_count: usize,
     ) {
+        self.add_success_with_timing(index, command_type, description, gas_used, return_count, None);
+    }
+
+    /// Add a successful command trace with timing information.
+    pub fn add_success_with_timing(
+        &mut self,
+        index: usize,
+        command_type: &str,
+        description: String,
+        gas_used: u64,
+        return_count: usize,
+        duration_us: Option<u64>,
+    ) {
         self.commands.push(CommandTrace {
             index,
             command_type: command_type.to_string(),
@@ -990,7 +1048,7 @@ impl PTBExecutionTrace {
             success: true,
             gas_used,
             error: None,
-            duration_us: None,
+            duration_us,
             return_count,
             objects_created: Vec::new(),
             objects_consumed: Vec::new(),
@@ -1054,6 +1112,28 @@ impl PTBExecutionTrace {
 
     /// Get a summary of the execution.
     pub fn summary(&self) -> PTBTraceSummary {
+        // Calculate timing statistics
+        let total_duration_us: u64 = self
+            .commands
+            .iter()
+            .filter_map(|c| c.duration_us)
+            .sum();
+        let commands_with_timing: Vec<_> = self
+            .commands
+            .iter()
+            .filter_map(|c| c.duration_us.map(|d| (c.index, d)))
+            .collect();
+        let (max_duration_us, slowest_command_index) = commands_with_timing
+            .iter()
+            .max_by_key(|(_, d)| d)
+            .map(|(idx, d)| (*d, Some(*idx)))
+            .unwrap_or((0, None));
+        let avg_duration_us = if commands_with_timing.is_empty() {
+            0
+        } else {
+            total_duration_us / commands_with_timing.len() as u64
+        };
+
         PTBTraceSummary {
             total_commands: self.commands.len(),
             successful_commands: self.commands.iter().filter(|c| c.success).count(),
@@ -1079,6 +1159,10 @@ impl PTBExecutionTrace {
                 .iter()
                 .filter(|c| c.command_type == "MergeCoins")
                 .count(),
+            total_duration_us,
+            avg_duration_us,
+            max_duration_us,
+            slowest_command_index,
         }
     }
 }
@@ -1102,6 +1186,14 @@ pub struct PTBTraceSummary {
     pub splits: usize,
     /// Number of MergeCoins commands.
     pub merges: usize,
+    /// Total execution time in microseconds across all commands.
+    pub total_duration_us: u64,
+    /// Average command execution time in microseconds.
+    pub avg_duration_us: u64,
+    /// Slowest command execution time in microseconds.
+    pub max_duration_us: u64,
+    /// Slowest command index.
+    pub slowest_command_index: Option<usize>,
 }
 
 /// An input value to the PTB.
@@ -1122,6 +1214,8 @@ pub enum ObjectInput {
         id: ObjectID,
         bytes: Vec<u8>,
         type_tag: Option<TypeTag>,
+        /// Object version (for version tracking)
+        version: Option<u64>,
     },
 
     /// Object passed by mutable reference
@@ -1129,6 +1223,8 @@ pub enum ObjectInput {
         id: ObjectID,
         bytes: Vec<u8>,
         type_tag: Option<TypeTag>,
+        /// Object version (for version tracking)
+        version: Option<u64>,
     },
 
     /// Object passed by value (ownership transferred)
@@ -1136,6 +1232,8 @@ pub enum ObjectInput {
         id: ObjectID,
         bytes: Vec<u8>,
         type_tag: Option<TypeTag>,
+        /// Object version (for version tracking)
+        version: Option<u64>,
     },
 
     /// Shared object
@@ -1143,6 +1241,28 @@ pub enum ObjectInput {
         id: ObjectID,
         bytes: Vec<u8>,
         type_tag: Option<TypeTag>,
+        /// Object version (for version tracking)
+        version: Option<u64>,
+    },
+
+    /// Receiving object (sent to another object via transfer::public_receive).
+    ///
+    /// These objects are owned by another object (the parent), not by an address.
+    /// To receive them, the sender must prove ownership of the parent object.
+    /// The `parent_id` is the object that owns this receiving object, if known.
+    ///
+    /// During tx_replay, the parent_id may not be available from the transaction
+    /// input data alone. It can be determined by:
+    /// 1. Parsing the object's owner field from on-chain data
+    /// 2. Examining the transaction's input arguments to find the parent
+    Receiving {
+        id: ObjectID,
+        bytes: Vec<u8>,
+        type_tag: Option<TypeTag>,
+        /// The object that owns this receiving object (if known)
+        parent_id: Option<ObjectID>,
+        /// Object version (for version tracking)
+        version: Option<u64>,
     },
 }
 
@@ -1153,6 +1273,7 @@ impl ObjectInput {
             ObjectInput::MutRef { id, .. } => id,
             ObjectInput::Owned { id, .. } => id,
             ObjectInput::Shared { id, .. } => id,
+            ObjectInput::Receiving { id, .. } => id,
         }
     }
 
@@ -1162,6 +1283,7 @@ impl ObjectInput {
             ObjectInput::MutRef { bytes, .. } => bytes,
             ObjectInput::Owned { bytes, .. } => bytes,
             ObjectInput::Shared { bytes, .. } => bytes,
+            ObjectInput::Receiving { bytes, .. } => bytes,
         }
     }
 
@@ -1171,6 +1293,43 @@ impl ObjectInput {
             ObjectInput::MutRef { type_tag, .. } => type_tag.as_ref(),
             ObjectInput::Owned { type_tag, .. } => type_tag.as_ref(),
             ObjectInput::Shared { type_tag, .. } => type_tag.as_ref(),
+            ObjectInput::Receiving { type_tag, .. } => type_tag.as_ref(),
+        }
+    }
+
+    /// Returns the parent object ID for Receiving objects, None for others.
+    /// Returns None if this is a Receiving object but parent_id is unknown.
+    pub fn parent_id(&self) -> Option<&ObjectID> {
+        match self {
+            ObjectInput::Receiving { parent_id, .. } => parent_id.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this is a Receiving object input.
+    pub fn is_receiving(&self) -> bool {
+        matches!(self, ObjectInput::Receiving { .. })
+    }
+
+    /// Returns the object version if set.
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            ObjectInput::ImmRef { version, .. } => *version,
+            ObjectInput::MutRef { version, .. } => *version,
+            ObjectInput::Owned { version, .. } => *version,
+            ObjectInput::Shared { version, .. } => *version,
+            ObjectInput::Receiving { version, .. } => *version,
+        }
+    }
+
+    /// Sets the object version.
+    pub fn set_version(&mut self, ver: Option<u64>) {
+        match self {
+            ObjectInput::ImmRef { version, .. } => *version = ver,
+            ObjectInput::MutRef { version, .. } => *version = ver,
+            ObjectInput::Owned { version, .. } => *version = ver,
+            ObjectInput::Shared { version, .. } => *version = ver,
+            ObjectInput::Receiving { version, .. } => *version = ver,
         }
     }
 }
@@ -1185,21 +1344,49 @@ impl InputValue {
     }
 }
 
+/// A value with its optional type information.
+///
+/// This tracks both the BCS-serialized bytes and the TypeTag for values
+/// returned from commands, enabling proper type inference for subsequent
+/// operations (e.g., knowing the coin type for SplitCoins on a Result).
+#[derive(Debug, Clone)]
+pub struct TypedValue {
+    /// The BCS-serialized value bytes
+    pub bytes: Vec<u8>,
+    /// The type of this value (if known)
+    pub type_tag: Option<TypeTag>,
+}
+
+impl TypedValue {
+    /// Create a new typed value with known type.
+    pub fn new(bytes: Vec<u8>, type_tag: Option<TypeTag>) -> Self {
+        Self { bytes, type_tag }
+    }
+
+    /// Create a typed value without type information.
+    pub fn untyped(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            type_tag: None,
+        }
+    }
+}
+
 /// Result of executing a single command.
 #[derive(Debug, Clone)]
 pub enum CommandResult {
     /// Command returned no values
     Empty,
 
-    /// Command returned one or more values (BCS-serialized)
-    Values(Vec<Vec<u8>>),
+    /// Command returned one or more typed values (BCS-serialized with optional type info)
+    Values(Vec<TypedValue>),
 
     /// Command created objects (for Publish/Upgrade)
     Created(Vec<ObjectID>),
 }
 
 impl CommandResult {
-    /// Get the primary (first) return value.
+    /// Get the primary (first) return value bytes.
     pub fn primary_value(&self) -> Result<Vec<u8>> {
         match self {
             CommandResult::Empty => Err(anyhow!(
@@ -1210,7 +1397,7 @@ impl CommandResult {
                 "Command returned an empty Values list. \
                  The function may return unit type or all values were filtered out."
             )),
-            CommandResult::Values(vs) => Ok(vs[0].clone()),
+            CommandResult::Values(vs) => Ok(vs[0].bytes.clone()),
             CommandResult::Created(ids) => Err(anyhow!(
                 "Command returned {} created object IDs, not BCS values. \
                  Use CommandResult::created_ids() to access created objects.",
@@ -1219,14 +1406,30 @@ impl CommandResult {
         }
     }
 
-    /// Get a specific return value by index.
+    /// Get the primary (first) return value with type info.
+    pub fn primary_typed_value(&self) -> Result<&TypedValue> {
+        match self {
+            CommandResult::Empty => Err(anyhow!(
+                "Command returned Empty result (no values)."
+            )),
+            CommandResult::Values(vs) if vs.is_empty() => Err(anyhow!(
+                "Command returned an empty Values list."
+            )),
+            CommandResult::Values(vs) => Ok(&vs[0]),
+            CommandResult::Created(_) => Err(anyhow!(
+                "Command returned created object IDs, not BCS values."
+            )),
+        }
+    }
+
+    /// Get a specific return value bytes by index.
     pub fn get(&self, index: usize) -> Result<Vec<u8>> {
         match self {
             CommandResult::Empty => Err(anyhow!(
                 "Command returned Empty result; cannot get value at index {}",
                 index
             )),
-            CommandResult::Values(vs) => vs.get(index).cloned().ok_or_else(|| {
+            CommandResult::Values(vs) => vs.get(index).map(|v| v.bytes.clone()).ok_or_else(|| {
                 anyhow!(
                     "Result index {} out of bounds: command returned {} value(s)",
                     index,
@@ -1237,6 +1440,26 @@ impl CommandResult {
                 "Command returned {} created object IDs, not indexable values. \
                  Use CommandResult::created_ids() to access them.",
                 ids.len()
+            )),
+        }
+    }
+
+    /// Get a specific typed value by index.
+    pub fn get_typed(&self, index: usize) -> Result<&TypedValue> {
+        match self {
+            CommandResult::Empty => Err(anyhow!(
+                "Command returned Empty result; cannot get value at index {}",
+                index
+            )),
+            CommandResult::Values(vs) => vs.get(index).ok_or_else(|| {
+                anyhow!(
+                    "Result index {} out of bounds: command returned {} value(s)",
+                    index,
+                    vs.len()
+                )
+            }),
+            CommandResult::Created(_) => Err(anyhow!(
+                "Command returned created object IDs, not indexable values."
             )),
         }
     }
@@ -1266,7 +1489,7 @@ impl CommandResult {
         match self {
             CommandResult::Values(vs) => {
                 if index < vs.len() {
-                    vs[index] = new_bytes;
+                    vs[index].bytes = new_bytes;
                     true
                 } else {
                     false
@@ -1286,6 +1509,107 @@ pub enum Owner {
     Shared,
     /// Immutable (frozen)
     Immutable,
+}
+
+/// A tracked object with version and modification state.
+///
+/// This struct enables proper version tracking for objects during PTB execution,
+/// mirroring Sui's `LoadedRuntimeObject` structure. When `track_versions` is enabled
+/// in `SimulationConfig`, this is used instead of the simple `(bytes, type)` tuple.
+///
+/// ## Sui's Approach
+///
+/// In Sui (`sui-move-natives/object_runtime/mod.rs:75-78`):
+/// ```text
+/// pub struct LoadedRuntimeObject {
+///     pub version: SequenceNumber,
+///     pub is_modified: bool,
+/// }
+/// ```
+///
+/// All modified objects get the transaction's lamport_timestamp as their new version.
+#[derive(Debug, Clone)]
+pub struct TrackedObject {
+    /// BCS-serialized object bytes.
+    pub bytes: Vec<u8>,
+    /// Type of the object (if known).
+    pub type_tag: Option<TypeTag>,
+    /// Object version (SequenceNumber). Starts at 1 for new objects.
+    pub version: u64,
+    /// Whether this object was modified during execution.
+    pub is_modified: bool,
+    /// Object owner.
+    pub owner: Option<Owner>,
+    /// Digest of the object (computed from bytes).
+    /// None until computed at transaction finalization.
+    pub digest: Option<[u8; 32]>,
+}
+
+impl TrackedObject {
+    /// Create a new TrackedObject with default values.
+    pub fn new(bytes: Vec<u8>, type_tag: Option<TypeTag>) -> Self {
+        Self {
+            bytes,
+            type_tag,
+            version: 1, // New objects start at version 1
+            is_modified: false,
+            owner: None,
+            digest: None,
+        }
+    }
+
+    /// Create a TrackedObject with a specific version (for loaded objects).
+    pub fn with_version(bytes: Vec<u8>, type_tag: Option<TypeTag>, version: u64) -> Self {
+        Self {
+            bytes,
+            type_tag,
+            version,
+            is_modified: false,
+            owner: None,
+            digest: None,
+        }
+    }
+
+    /// Mark this object as modified.
+    pub fn mark_modified(&mut self) {
+        self.is_modified = true;
+    }
+
+    /// Set the owner of this object.
+    pub fn with_owner(mut self, owner: Owner) -> Self {
+        self.owner = Some(owner);
+        self
+    }
+
+    /// Compute the digest of this object using Blake2b256.
+    ///
+    /// The digest is computed from the BCS-serialized object bytes.
+    /// This is a simplified version of Sui's `ObjectDigest::new(default_hash(self))`.
+    pub fn compute_digest(&mut self) {
+        use fastcrypto::hash::{Blake2b256, HashFunction};
+        let hash = Blake2b256::digest(&self.bytes);
+        self.digest = Some(hash.into());
+    }
+
+    /// Get the digest, computing it if necessary.
+    pub fn get_or_compute_digest(&mut self) -> [u8; 32] {
+        if self.digest.is_none() {
+            self.compute_digest();
+        }
+        self.digest.unwrap()
+    }
+}
+
+impl From<(Vec<u8>, Option<TypeTag>)> for TrackedObject {
+    fn from((bytes, type_tag): (Vec<u8>, Option<TypeTag>)) -> Self {
+        Self::new(bytes, type_tag)
+    }
+}
+
+impl From<TrackedObject> for (Vec<u8>, Option<TypeTag>) {
+    fn from(obj: TrackedObject) -> Self {
+        (obj.bytes, obj.type_tag)
+    }
 }
 
 /// Status of an object after PTB execution.
@@ -1412,6 +1736,50 @@ pub struct TransactionEffects {
     /// Snapshot of execution state at the time of failure.
     /// Includes all objects loaded, commands that succeeded, etc.
     pub state_at_failure: Option<crate::error_context::ExecutionSnapshot>,
+
+    // =========================================================================
+    // Version Tracking Fields (populated when track_versions is enabled)
+    // =========================================================================
+
+    /// Object version information for created and mutated objects.
+    /// Only populated when `PTBExecutor::set_track_versions(true)` is called.
+    /// Maps object ID to version info (input_version, output_version, digest).
+    pub object_versions: Option<HashMap<ObjectID, ObjectVersionInfo>>,
+
+    /// The lamport timestamp used for this transaction.
+    /// All modified objects get this version after execution.
+    /// Only populated when version tracking is enabled.
+    pub lamport_timestamp: Option<u64>,
+}
+
+/// Version and digest information for a single object.
+///
+/// This mirrors Sui's object version tracking in `ExecutionResultsV2`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectVersionInfo {
+    /// Version of the object before this transaction (None if created).
+    pub input_version: Option<u64>,
+    /// Version of the object after this transaction.
+    pub output_version: u64,
+    /// Digest of the object before this transaction (None if created).
+    pub input_digest: Option<[u8; 32]>,
+    /// Digest of the object after this transaction.
+    pub output_digest: [u8; 32],
+    /// Change type (Created, Mutated, Deleted).
+    pub change_type: VersionChangeType,
+}
+
+/// Type of version change for an object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionChangeType {
+    /// Object was created in this transaction.
+    Created,
+    /// Object was mutated in this transaction.
+    Mutated,
+    /// Object was deleted in this transaction.
+    Deleted,
+    /// Object was wrapped in this transaction.
+    Wrapped,
 }
 
 impl TransactionEffects {
@@ -1554,6 +1922,15 @@ pub struct PTBExecutor<'a, 'b> {
     /// Whether to enforce immutability constraints.
     enforce_immutability: bool,
 
+    /// Shared objects that were taken by value (not by reference).
+    /// At the end of PTB execution, these must either be re-shared or deleted.
+    /// This enforces Sui's rule that shared objects cannot be frozen, transferred, or wrapped.
+    shared_objects_by_value: HashSet<ObjectID>,
+
+    /// Whether to enforce shared object validation.
+    /// When enabled, shared objects taken by value must be re-shared or deleted.
+    enforce_shared_object_rules: bool,
+
     /// Object lifecycle tracker for provenance and double-use detection.
     lifecycle_tracker: ObjectLifecycleTracker,
 
@@ -1562,6 +1939,37 @@ pub struct PTBExecutor<'a, 'b> {
 
     /// Whether to enable detailed lifecycle tracking.
     enable_lifecycle_tracking: bool,
+
+    /// Last structured VM error from MoveCall execution.
+    /// This is populated by `execute_move_call` when using `execute_function_with_structured_error`
+    /// and used by `build_error_context` to extract abort info without string parsing.
+    last_structured_error: Option<crate::vm::StructuredVMError>,
+
+    // =========================================================================
+    // Version Tracking Fields
+    // =========================================================================
+
+    /// Whether to track object versions during execution.
+    /// When enabled, object_versions will be populated in TransactionEffects.
+    track_versions: bool,
+
+    /// Input object versions: object ID -> version at start of transaction.
+    /// Populated when objects are loaded as inputs.
+    input_object_versions: HashMap<ObjectID, u64>,
+
+    /// Input object digests: object ID -> digest at start of transaction.
+    /// Populated when objects are loaded as inputs.
+    input_object_digests: HashMap<ObjectID, [u8; 32]>,
+
+    /// Lamport timestamp for this transaction.
+    /// Used as the output version for all modified objects.
+    /// Default is 1 (the first version after genesis).
+    lamport_timestamp: u64,
+
+    /// Gas coin object ID (if set).
+    /// The gas coin can only be used with TransferObjects command.
+    /// Any other usage will fail with InvalidGasCoinUsage error.
+    gas_coin_id: Option<ObjectID>,
 }
 
 impl<'a, 'b> PTBExecutor<'a, 'b> {
@@ -1595,10 +2003,18 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             wrapped_objects: HashMap::new(),
             received_objects: Vec::new(),
             immutable_objects: HashSet::new(),
-            enforce_immutability: false,
+            enforce_immutability: true, // Default to enforcing immutability for Sui parity
+            shared_objects_by_value: HashSet::new(),
+            enforce_shared_object_rules: true, // Default to enforcing for Sui parity
             lifecycle_tracker: ObjectLifecycleTracker::new(),
             execution_trace: PTBExecutionTrace::new(),
             enable_lifecycle_tracking: true,
+            last_structured_error: None,
+            track_versions: false,
+            input_object_versions: HashMap::new(),
+            input_object_digests: HashMap::new(),
+            lamport_timestamp: 1,
+            gas_coin_id: None,
         }
     }
 
@@ -1652,11 +2068,26 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             wrapped_objects: HashMap::new(),
             received_objects: Vec::new(),
             immutable_objects: HashSet::new(),
-            enforce_immutability: false,
+            enforce_immutability: true, // Default to enforcing immutability for Sui parity
+            shared_objects_by_value: HashSet::new(),
+            enforce_shared_object_rules: true, // Default to enforcing for Sui parity
             lifecycle_tracker: ObjectLifecycleTracker::new(),
             execution_trace: PTBExecutionTrace::new(),
             enable_lifecycle_tracking: true,
+            last_structured_error: None,
+            track_versions: false,
+            input_object_versions: HashMap::new(),
+            input_object_digests: HashMap::new(),
+            lamport_timestamp: 1,
+            gas_coin_id: None,
         }
+    }
+
+    /// Set the gas coin for this PTB execution.
+    /// The gas coin can only be used with TransferObjects command.
+    /// Any other by-value usage will fail with InvalidGasCoinUsage error.
+    pub fn set_gas_coin(&mut self, gas_coin_id: ObjectID) {
+        self.gas_coin_id = Some(gas_coin_id);
     }
 
     /// Set the gas budget for this PTB execution.
@@ -1704,6 +2135,69 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.enable_lifecycle_tracking = enable;
     }
 
+    // =========================================================================
+    // Version Tracking Methods
+    // =========================================================================
+
+    /// Enable or disable version tracking.
+    ///
+    /// When enabled:
+    /// - Input object versions are tracked when objects are registered
+    /// - Modified objects get the lamport_timestamp as their new version
+    /// - Digests are computed for created/mutated objects
+    /// - `TransactionEffects::object_versions` is populated
+    ///
+    /// Default: disabled for backwards compatibility.
+    pub fn set_track_versions(&mut self, enable: bool) {
+        self.track_versions = enable;
+    }
+
+    /// Check if version tracking is enabled.
+    pub fn is_tracking_versions(&self) -> bool {
+        self.track_versions
+    }
+
+    /// Set the lamport timestamp for this transaction.
+    ///
+    /// All modified objects will get this version number after execution.
+    /// In Sui, this is computed from the max of all input object versions + 1.
+    ///
+    /// Default: 1
+    pub fn set_lamport_timestamp(&mut self, timestamp: u64) {
+        self.lamport_timestamp = timestamp;
+    }
+
+    /// Get the current lamport timestamp.
+    pub fn lamport_timestamp(&self) -> u64 {
+        self.lamport_timestamp
+    }
+
+    /// Register an input object with its version for version tracking.
+    ///
+    /// This should be called when adding Object inputs to track their
+    /// input version. Only effective when version tracking is enabled.
+    pub fn register_input_version(&mut self, object_id: ObjectID, version: u64) {
+        if self.track_versions {
+            self.input_object_versions.insert(object_id, version);
+        }
+    }
+
+    /// Register an input object with its version and digest.
+    ///
+    /// This should be called when adding Object inputs to track both
+    /// version and digest. Only effective when version tracking is enabled.
+    pub fn register_input_version_and_digest(
+        &mut self,
+        object_id: ObjectID,
+        version: u64,
+        digest: [u8; 32],
+    ) {
+        if self.track_versions {
+            self.input_object_versions.insert(object_id, version);
+            self.input_object_digests.insert(object_id, digest);
+        }
+    }
+
     /// Check if lifecycle tracking is enabled.
     pub fn is_lifecycle_tracking_enabled(&self) -> bool {
         self.enable_lifecycle_tracking
@@ -1744,14 +2238,92 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Check if mutating an object is allowed. Returns an error if the object is immutable
     /// and enforcement is enabled.
+    ///
+    /// This enforces Sui's immutability rules: objects passed by immutable reference
+    /// (&T) cannot be mutated. This matches the behavior of the real Sui network.
     fn check_mutation_allowed(&self, object_id: &ObjectID) -> Result<()> {
         if self.enforce_immutability && self.immutable_objects.contains(object_id) {
             return Err(anyhow!(
-                "cannot mutate immutable object {}",
+                "Cannot mutate immutable object {}. Objects passed by immutable reference \
+                 (&T) cannot be modified. This matches Sui network behavior where mutable \
+                 access requires passing the object by mutable reference (&mut T).",
                 object_id.to_hex_literal()
             ));
         }
         Ok(())
+    }
+
+    /// Enable or disable shared object validation.
+    /// When enabled, shared objects taken by value must be re-shared or deleted.
+    pub fn set_enforce_shared_object_rules(&mut self, enforce: bool) {
+        self.enforce_shared_object_rules = enforce;
+    }
+
+    /// Check if a shared object was taken by value in this transaction.
+    pub fn is_shared_by_value(&self, object_id: &ObjectID) -> bool {
+        self.shared_objects_by_value.contains(object_id)
+    }
+
+    /// Validate that all shared objects taken by value have been properly handled.
+    ///
+    /// Shared objects in Sui have special rules: when taken by value, they must either
+    /// be re-shared (via transfer::share_object) or deleted. They cannot be:
+    /// - Frozen (made immutable)
+    /// - Transferred to an address
+    /// - Wrapped inside another object
+    ///
+    /// This validation should be called at the end of PTB execution.
+    ///
+    /// Returns `Ok(())` if all shared objects are valid, or an error listing violations.
+    ///
+    /// Note: This is a best-effort validation based on the PTB executor's tracked state.
+    /// It detects wrapped and deleted objects directly. For objects that are neither
+    /// wrapped nor deleted, we assume they were properly re-shared through a Move call.
+    /// Full validation would require deeper integration with the Move VM's native
+    /// function tracking.
+    pub fn validate_shared_objects(&self) -> Result<()> {
+        if !self.enforce_shared_object_rules || self.shared_objects_by_value.is_empty() {
+            return Ok(());
+        }
+
+        let mut violations = Vec::new();
+
+        for object_id in &self.shared_objects_by_value {
+            // Check what happened to this shared object
+            let is_deleted = self.deleted_objects.contains_key(object_id);
+            let is_wrapped = self.wrapped_objects.contains_key(object_id);
+
+            // Wrapped is an invalid operation for shared objects
+            if is_wrapped {
+                violations.push(format!(
+                    "Shared object {} was wrapped inside another object. \
+                     Shared objects cannot be wrapped - they must be re-shared or deleted.",
+                    object_id.to_hex_literal()
+                ));
+                continue;
+            }
+
+            // Deleted is valid
+            if is_deleted {
+                continue;
+            }
+
+            // If not wrapped and not deleted, we assume it was re-shared via transfer::share_object.
+            // The share_object_impl native would have been called during MoveCall execution.
+            // A more thorough check would track the actual share_object calls, but this
+            // catches the common error case of wrapping shared objects.
+        }
+
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "SharedObjectOperationNotAllowed: {}\n\n\
+                 Sui's shared object rules require that shared objects taken by value \
+                 must be either re-shared (via transfer::share_object) or deleted.",
+                violations.join("\n")
+            ))
+        }
     }
 
     /// Mark an object as wrapped (stored inside another object).
@@ -1796,10 +2368,33 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         if idx > u16::MAX as usize {
             return Err(anyhow!("too many inputs"));
         }
+        // Track storage read cost for gas metering and get computation cost
+        // On Sui, object reads are charged as computation gas (not storage gas)
+        let read_computation_cost = self.vm.track_object_read(obj.bytes().len());
+        self.gas_used += read_computation_cost;
+
         // Track Owned objects as transferable by the sender
         if let ObjectInput::Owned { id, .. } = &obj {
             self.transferable_objects.insert(*id);
             self.object_owners.insert(*id, Owner::Address(self.sender));
+        }
+        // Track ImmRef objects as immutable (cannot be mutated).
+        // This enforces that objects passed by immutable reference cannot be modified,
+        // matching Sui client behavior.
+        if let ObjectInput::ImmRef { id, .. } = &obj {
+            self.immutable_objects.insert(*id);
+        }
+        // Track Shared objects that are taken by value.
+        // These must be re-shared or deleted by the end of the transaction.
+        // This enforces Sui's rule: shared objects cannot be frozen, transferred, or wrapped.
+        if let ObjectInput::Shared { id, .. } = &obj {
+            self.shared_objects_by_value.insert(*id);
+        }
+        // Register version if version tracking is enabled and version is provided
+        if self.track_versions {
+            if let Some(version) = obj.version() {
+                self.register_input_version(*obj.id(), version);
+            }
         }
         self.inputs.push(InputValue::Object(obj));
         Ok(idx as u16)
@@ -1810,9 +2405,30 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     pub fn add_input(&mut self, input: InputValue) -> u16 {
         let idx = self.inputs.len();
         // Track Owned objects as transferable by the sender
-        if let InputValue::Object(ObjectInput::Owned { id, .. }) = &input {
-            self.transferable_objects.insert(*id);
-            self.object_owners.insert(*id, Owner::Address(self.sender));
+        if let InputValue::Object(ref obj) = &input {
+            // Track storage read cost for gas metering and get computation cost
+            // On Sui, object reads are charged as computation gas (not storage gas)
+            let read_computation_cost = self.vm.track_object_read(obj.bytes().len());
+            self.gas_used += read_computation_cost;
+
+            if let ObjectInput::Owned { id, .. } = obj {
+                self.transferable_objects.insert(*id);
+                self.object_owners.insert(*id, Owner::Address(self.sender));
+            }
+            // Track ImmRef objects as immutable (cannot be mutated).
+            if let ObjectInput::ImmRef { id, .. } = obj {
+                self.immutable_objects.insert(*id);
+            }
+            // Track Shared objects that are taken by value.
+            if let ObjectInput::Shared { id, .. } = obj {
+                self.shared_objects_by_value.insert(*id);
+            }
+            // Register version if version tracking is enabled and version is provided
+            if self.track_versions {
+                if let Some(version) = obj.version() {
+                    self.register_input_version(*obj.id(), version);
+                }
+            }
         }
         self.inputs.push(input);
         idx as u16
@@ -1830,8 +2446,173 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 ObjectInput::Shared { bytes, .. } => *bytes = new_bytes,
                 ObjectInput::ImmRef { bytes, .. } => *bytes = new_bytes,
                 ObjectInput::MutRef { bytes, .. } => *bytes = new_bytes,
+                ObjectInput::Receiving { bytes, .. } => *bytes = new_bytes,
             },
             InputValue::Pure(bytes) => *bytes = new_bytes,
+        }
+        Ok(())
+    }
+
+    /// Update any argument's bytes in place (Input, Result, or NestedResult).
+    ///
+    /// This is the unified method for updating argument state after mutations.
+    /// It handles all argument types consistently:
+    /// - Input: Updates the input storage directly
+    /// - Result: Updates the primary (index 0) value in the command result
+    /// - NestedResult: Updates the specific indexed value in the command result
+    ///
+    /// Returns an error if the argument index is out of bounds.
+    fn update_arg_bytes(&mut self, arg: &Argument, new_bytes: Vec<u8>) -> Result<()> {
+        match arg {
+            Argument::Input(idx) => {
+                self.update_input_bytes(*idx, new_bytes)?;
+            }
+            Argument::Result(cmd_idx) => {
+                let result = self
+                    .results
+                    .get_mut(*cmd_idx as usize)
+                    .ok_or_else(|| anyhow!("Result({}) out of bounds", cmd_idx))?;
+                if !result.update_value(0, new_bytes) {
+                    return Err(anyhow!(
+                        "Result({}) cannot be updated (empty or created result)",
+                        cmd_idx
+                    ));
+                }
+            }
+            Argument::NestedResult(cmd_idx, val_idx) => {
+                let result = self
+                    .results
+                    .get_mut(*cmd_idx as usize)
+                    .ok_or_else(|| anyhow!("NestedResult({}, {}) command out of bounds", cmd_idx, val_idx))?;
+                if !result.update_value(*val_idx as usize, new_bytes) {
+                    return Err(anyhow!(
+                        "NestedResult({}, {}) index out of bounds or result cannot be updated (result has {} values)",
+                        cmd_idx,
+                        val_idx,
+                        result.len()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the type of an argument from Result/NestedResult type tracking.
+    ///
+    /// This looks up the type information stored when commands produce results,
+    /// enabling proper type inference for subsequent operations like SplitCoins.
+    /// Note: Input types are tracked via object registration (created_objects map).
+    fn get_type_from_arg(&self, arg: &Argument) -> Option<TypeTag> {
+        match arg {
+            Argument::Input(_) => {
+                // Input types are not tracked directly in PTBExecutor.
+                // They should be tracked via the get_object_id_and_type_from_arg path
+                // which checks created_objects and the VM's object store.
+                None
+            }
+            Argument::Result(cmd_idx) => {
+                // Get type from the result's first value
+                self.results
+                    .get(*cmd_idx as usize)
+                    .and_then(|r| r.get_typed(0).ok())
+                    .and_then(|v| v.type_tag.clone())
+            }
+            Argument::NestedResult(cmd_idx, val_idx) => {
+                // Get type from the specific nested result value
+                self.results
+                    .get(*cmd_idx as usize)
+                    .and_then(|r| r.get_typed(*val_idx as usize).ok())
+                    .and_then(|v| v.type_tag.clone())
+            }
+        }
+    }
+
+    /// Check if a type has the `store` ability.
+    ///
+    /// Required for public transfer eligibility - objects must have `store`
+    /// to be transferred via TransferObjects command.
+    fn check_type_has_store_ability(&self, type_tag: &TypeTag) -> bool {
+        use move_binary_format::file_format::Ability;
+
+        match type_tag {
+            // Primitives have store
+            TypeTag::Bool | TypeTag::U8 | TypeTag::U16 | TypeTag::U32 | TypeTag::U64
+            | TypeTag::U128 | TypeTag::U256 | TypeTag::Address => true,
+
+            // Signer does NOT have store
+            TypeTag::Signer => false,
+
+            // Vector has store if element type has store
+            TypeTag::Vector(inner) => self.check_type_has_store_ability(inner),
+
+            // Structs - look up the actual abilities
+            TypeTag::Struct(struct_tag) => {
+                // Get the module from the resolver using the available method
+                if let Some(module) = self
+                    .vm
+                    .storage()
+                    .module_resolver()
+                    .get_module_by_addr_name(&struct_tag.address, struct_tag.module.as_str())
+                {
+                    // Find the struct definition
+                    for struct_def in &module.struct_defs {
+                        let handle = &module.datatype_handles[struct_def.struct_handle.0 as usize];
+                        let name = module.identifier_at(handle.name).to_string();
+                        if name == struct_tag.name.as_str() {
+                            return handle.abilities.has_ability(Ability::Store);
+                        }
+                    }
+                }
+
+                // If we can't find the struct, conservatively allow transfer
+                // (the VM will catch any real issues)
+                true
+            }
+        }
+    }
+
+    /// Check if any of the arguments use the gas coin by value.
+    /// Gas coin can only be used with TransferObjects command.
+    /// Returns an error if gas coin is used inappropriately.
+    fn check_gas_coin_usage(&self, args: &[Argument], command_name: &str) -> Result<()> {
+        let Some(gas_coin_id) = self.gas_coin_id else {
+            return Ok(()); // No gas coin tracking
+        };
+
+        for arg in args {
+            if let Some((obj_id, _)) = self.get_object_id_and_type_from_arg(arg) {
+                if obj_id == gas_coin_id {
+                    return Err(anyhow!(
+                        "Invalid gas coin usage: gas coin {} cannot be used as argument to {}. \
+                         Gas coin can only be used with TransferObjects command.",
+                        gas_coin_id.to_hex_literal(),
+                        command_name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if any owned objects in the arguments have already been consumed.
+    ///
+    /// In Sui, owned objects can only be used once per transaction. This enforces that:
+    /// - Objects that were transferred cannot be used again
+    /// - Objects that were merged into another coin cannot be used again
+    /// - Objects that were passed by value to a function cannot be used again
+    ///
+    /// Returns an error if any consumed object is found in the arguments.
+    fn check_owned_object_consumption(&self, args: &[Argument]) -> Result<()> {
+        for arg in args {
+            if let Some((obj_id, _)) = self.get_object_id_and_type_from_arg(arg) {
+                if self.consumed_objects.contains(&obj_id) {
+                    return Err(anyhow!(
+                        "Object {} has already been consumed in this transaction and cannot be used again. \
+                         Owned objects can only be used once per transaction.",
+                        obj_id.to_hex_literal()
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1843,6 +2624,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     }
 
     /// Generate a fresh object ID.
+    ///
+    /// IDs are deterministic based on the internal counter, making tests reproducible.
+    /// Use `set_id_seed` to set a custom starting counter for different test scenarios.
     fn fresh_id(&mut self) -> ObjectID {
         let id = self.id_counter;
         self.id_counter += 1;
@@ -1850,6 +2634,20 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let mut bytes = [0u8; 32];
         bytes[24..32].copy_from_slice(&id.to_le_bytes());
         AccountAddress::new(bytes)
+    }
+
+    /// Set the ID counter seed for deterministic object ID generation.
+    ///
+    /// This allows tests to control the object IDs generated during execution,
+    /// making tests fully reproducible. Different seeds can be used to test
+    /// different scenarios without ID collisions.
+    pub fn set_id_seed(&mut self, seed: u64) {
+        self.id_counter = seed;
+    }
+
+    /// Get the current ID counter value.
+    pub fn id_seed(&self) -> u64 {
+        self.id_counter
     }
 
     /// Resolve an argument to its BCS bytes.
@@ -1947,6 +2745,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// This method automatically handles TxContext injection for entry functions.
     /// Sui entry functions receive TxContext as an implicit last argument from the runtime.
     /// It also tracks mutable reference outputs to update object state.
+    ///
+    /// **Type Tracking**: Before execution, this method looks up the function signature
+    /// in bytecode to determine the return types. This enables full type tracking
+    /// for coins and other objects, eliminating the "defaults to SUI" issue.
     fn execute_move_call(
         &mut self,
         package: AccountAddress,
@@ -1955,8 +2757,67 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         type_args: Vec<TypeTag>,
         args: Vec<Argument>,
     ) -> Result<CommandResult> {
+        // GAS COIN CHECK: Gas coin can only be used with TransferObjects
+        self.check_gas_coin_usage(&args, "MoveCall")?;
+
+        // OWNED OBJECT CONSUMPTION CHECK: Prevent using already-consumed owned objects.
+        // In Sui, owned objects can only be used once per transaction. Once consumed
+        // (transferred, merged, or passed by value), they cannot be used again.
+        self.check_owned_object_consumption(&args)?;
+
         let mut resolved_args = self.resolve_args(&args)?;
         let module_id = ModuleId::new(package, module.clone());
+
+        // VISIBILITY CHECK: Ensure function is public or entry before execution.
+        // This matches Sui network behavior - private/friend functions cannot be
+        // called directly from PTBs. Checking here provides a clear error message
+        // instead of a cryptic VM error later.
+        self.vm
+            .storage()
+            .module_resolver()
+            .check_function_callable(&package, module.as_str(), function.as_str())?;
+
+        // TYPE ARGUMENT VALIDATION: Check type argument count and ability constraints.
+        // This catches errors like passing a type without 'store' ability where 'store'
+        // is required, providing clearer errors than the VM would produce.
+        self.vm
+            .storage()
+            .module_resolver()
+            .validate_type_args(&package, module.as_str(), function.as_str(), &type_args)?;
+
+        // RETURN TYPE VALIDATION: Public non-entry functions cannot return references.
+        // References cannot escape the transaction boundary. This matches Sui client
+        // behavior at execution.rs:check_non_entry_signature.
+        self.vm
+            .storage()
+            .module_resolver()
+            .check_no_reference_returns(&package, module.as_str(), function.as_str())?;
+
+        // CRITICAL: Look up function return types BEFORE execution.
+        // This enables full type tracking for MoveCall results, solving the
+        // "Unknown Coin Type Defaults to SUI" issue.
+        let expected_return_types: Vec<TypeTag> = match self
+            .vm
+            .storage()
+            .module_resolver()
+            .resolve_function_return_types(
+                &package,
+                module.as_str(),
+                function.as_str(),
+                &type_args,
+            ) {
+            Some(types) => types,
+            None => {
+                // Log that we couldn't resolve return types - VM types will be used as fallback
+                tracing::debug!(
+                    package = %package.to_hex_literal(),
+                    module = %module,
+                    function = %function,
+                    "could not resolve function return types from bytecode, using VM types as fallback"
+                );
+                Vec::new()
+            }
+        };
 
         // Track which arguments map to which object IDs and their original Argument reference.
         // We need the Argument to update input bytes for subsequent commands.
@@ -1970,14 +2831,41 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             })
             .collect();
 
-        // First attempt: execute as-is
-        match self.vm.execute_function_full(
+        // Helper to pair return values with pre-computed types.
+        // Uses expected types when available, falls back to VM-provided types.
+        let pair_with_types = |return_values: Vec<crate::vm::TypedReturnValue>| -> Vec<TypedValue> {
+            // Warn if return value count doesn't match expected - this indicates a resolution issue
+            if !expected_return_types.is_empty() && return_values.len() != expected_return_types.len() {
+                tracing::warn!(
+                    expected = expected_return_types.len(),
+                    actual = return_values.len(),
+                    "return value count mismatch - type resolution may be incorrect"
+                );
+            }
+            return_values
+                .into_iter()
+                .enumerate()
+                .map(|(i, rv)| {
+                    // Use pre-computed type if available, otherwise fall back to VM's type (usually None)
+                    let type_tag = expected_return_types.get(i).cloned().or(rv.type_tag);
+                    TypedValue::new(rv.bytes, type_tag)
+                })
+                .collect()
+        };
+
+        // Clear any previous structured error
+        self.last_structured_error = None;
+
+        // First attempt: execute with structured error handling
+        let result = self.vm.execute_function_with_structured_error(
             &module_id,
             function.as_str(),
             type_args.clone(),
             resolved_args.clone(),
-        ) {
-            Ok(output) => {
+        );
+
+        match result {
+            crate::vm::ExecutionResult::Success(output) => {
                 // Track mutations from mutable reference outputs
                 self.apply_mutable_ref_outputs(&arg_to_info, &output.mutable_ref_outputs)?;
 
@@ -1987,26 +2875,36 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 if output.return_values.is_empty() {
                     Ok(CommandResult::Empty)
                 } else {
-                    Ok(CommandResult::Values(output.return_values))
+                    let typed_values = pair_with_types(output.return_values);
+
+                    // Track newly created objects from return values
+                    // (e.g., objects created by coin::split, object::new, etc.)
+                    self.track_created_objects_from_returns(&typed_values);
+
+                    Ok(CommandResult::Values(typed_values))
                 }
             }
-            Err(e) => {
+            crate::vm::ExecutionResult::Failure {
+                error,
+                error_message,
+            } => {
                 // Check if this is an argument count mismatch - might need TxContext
-                let err_msg = e.to_string();
-                if err_msg.contains("argument length mismatch")
-                    || err_msg.contains("NUMBER_OF_ARGUMENTS_MISMATCH")
+                if error_message.contains("argument length mismatch")
+                    || error_message.contains("NUMBER_OF_ARGUMENTS_MISMATCH")
                 {
                     // Try again with TxContext appended
                     let tx_context_bytes = self.vm.synthesize_tx_context()?;
                     resolved_args.push(tx_context_bytes);
 
-                    match self.vm.execute_function_full(
+                    let retry_result = self.vm.execute_function_with_structured_error(
                         &module_id,
                         function.as_str(),
                         type_args,
                         resolved_args,
-                    ) {
-                        Ok(output) => {
+                    );
+
+                    match retry_result {
+                        crate::vm::ExecutionResult::Success(output) => {
                             // Track mutations from mutable reference outputs
                             self.apply_mutable_ref_outputs(
                                 &arg_to_info,
@@ -2019,17 +2917,28 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                             if output.return_values.is_empty() {
                                 return Ok(CommandResult::Empty);
                             } else {
-                                return Ok(CommandResult::Values(output.return_values));
+                                let typed_values = pair_with_types(output.return_values);
+
+                                // Track newly created objects from return values
+                                self.track_created_objects_from_returns(&typed_values);
+
+                                return Ok(CommandResult::Values(typed_values));
                             }
                         }
-                        Err(e2) => {
-                            // TxContext injection didn't help - return the retry error
-                            // which is more informative about the actual problem
-                            return Err(e2);
+                        crate::vm::ExecutionResult::Failure {
+                            error: retry_error,
+                            error_message: retry_msg,
+                        } => {
+                            // Store structured error for build_error_context
+                            self.last_structured_error = Some(retry_error);
+                            return Err(anyhow::anyhow!("{}", retry_msg));
                         }
                     }
                 }
-                Err(e)
+
+                // Store structured error for build_error_context
+                self.last_structured_error = Some(error);
+                Err(anyhow::anyhow!("{}", error_message))
             }
         }
     }
@@ -2049,9 +2958,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     fn apply_mutable_ref_outputs(
         &mut self,
         arg_to_info: &[(Argument, Option<ObjectID>)],
-        mutable_ref_outputs: &[(u8, Vec<u8>)],
+        mutable_ref_outputs: &[(u8, Vec<u8>, Option<TypeTag>)],
     ) -> Result<()> {
-        for (arg_idx, new_bytes) in mutable_ref_outputs {
+        for (arg_idx, new_bytes, type_tag) in mutable_ref_outputs {
             let idx = *arg_idx as usize;
             if idx < arg_to_info.len() {
                 let (original_arg, maybe_object_id) = &arg_to_info[idx];
@@ -2061,11 +2970,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     // Check immutability enforcement before allowing mutation
                     self.check_mutation_allowed(object_id)?;
 
-                    // Get the type from the existing tracking if available
-                    let existing_type = self
-                        .mutated_objects
-                        .get(object_id)
-                        .and_then(|(_, t)| t.clone());
+                    // Track storage mutate cost for gas metering
+                    // Get old bytes size from current state (could be input or previously mutated)
+                    let old_bytes_len = self.get_object_bytes(object_id).map(|b| b.len()).unwrap_or(0);
+                    self.vm.track_object_mutate(old_bytes_len, new_bytes.len());
+
+                    // Use the type from mutable_ref_outputs if available, otherwise fall back to existing
+                    let existing_type = type_tag.clone().or_else(|| {
+                        self.mutated_objects
+                            .get(object_id)
+                            .and_then(|(_, t)| t.clone())
+                    });
 
                     // Record the mutation with updated bytes
                     self.mutated_objects
@@ -2073,27 +2988,72 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 }
 
                 // CRITICAL: Update the stored value in place so subsequent commands
-                // see the modified object state.
-                match original_arg {
-                    Argument::Input(input_idx) => {
-                        self.update_input_bytes(*input_idx, new_bytes.clone())?;
-                    }
-                    Argument::Result(cmd_idx) => {
-                        // Update the primary result value from this command
-                        if let Some(result) = self.results.get_mut(*cmd_idx as usize) {
-                            result.update_value(0, new_bytes.clone());
-                        }
-                    }
-                    Argument::NestedResult(cmd_idx, val_idx) => {
-                        // Update the specific nested value
-                        if let Some(result) = self.results.get_mut(*cmd_idx as usize) {
-                            result.update_value(*val_idx as usize, new_bytes.clone());
-                        }
-                    }
-                }
+                // see the modified object state. Use the unified update method that
+                // handles Input, Result, and NestedResult uniformly with proper error checking.
+                self.update_arg_bytes(original_arg, new_bytes.clone())?;
             }
         }
         Ok(())
+    }
+
+    /// Track newly created objects from MoveCall return values.
+    ///
+    /// When a MoveCall creates new objects (e.g., coin::split, object::new), the new object
+    /// bytes are returned as return values. This function detects such objects by checking
+    /// if the first 32 bytes of a return value form an ObjectID we haven't seen before.
+    ///
+    /// Objects created during MoveCall are transferable by the sender, just like objects
+    /// created by SplitCoins or other built-in commands.
+    fn track_created_objects_from_returns(&mut self, return_values: &[TypedValue]) {
+        for typed_value in return_values {
+            // Objects have a UID as their first field (32 bytes)
+            if typed_value.bytes.len() >= 32 {
+                // Extract potential ObjectID from first 32 bytes
+                let potential_id_bytes: [u8; 32] = typed_value.bytes[..32]
+                    .try_into()
+                    .expect("slice is 32 bytes");
+                let potential_id = ObjectID::from(potential_id_bytes);
+
+                // Check if this is a NEW object (not in inputs or previously created)
+                let is_known = self.inputs.iter().any(|input| {
+                    if let InputValue::Object(obj_input) = input {
+                        match obj_input {
+                            ObjectInput::Owned { id, .. }
+                            | ObjectInput::ImmRef { id, .. }
+                            | ObjectInput::MutRef { id, .. }
+                            | ObjectInput::Shared { id, .. }
+                            | ObjectInput::Receiving { id, .. } => *id == potential_id,
+                        }
+                    } else {
+                        false
+                    }
+                }) || self.created_objects.contains_key(&potential_id)
+                    || self.mutated_objects.contains_key(&potential_id);
+
+                if !is_known {
+                    // This looks like a newly created object
+                    tracing::debug!(
+                        object_id = %potential_id.to_hex_literal(),
+                        bytes_len = typed_value.bytes.len(),
+                        type_tag = ?typed_value.type_tag,
+                        "detected newly created object from MoveCall return"
+                    );
+
+                    // Track storage create cost for gas metering
+                    self.vm.track_object_create(typed_value.bytes.len());
+
+                    // Add to created_objects so it can be transferred
+                    self.created_objects.insert(
+                        potential_id,
+                        (typed_value.bytes.clone(), typed_value.type_tag.clone()),
+                    );
+
+                    // Also mark as transferable by sender
+                    self.transferable_objects.insert(potential_id);
+                    self.object_owners.insert(potential_id, Owner::Address(self.sender));
+                }
+            }
+        }
     }
 
     /// Execute a SplitCoins command.
@@ -2111,6 +3071,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         coin: Argument,
         amounts: Vec<Argument>,
     ) -> Result<CommandResult> {
+        // GAS COIN CHECK: Gas coin can only be used with TransferObjects
+        self.check_gas_coin_usage(&[coin], "SplitCoins")?;
+
+        // OWNED OBJECT CONSUMPTION CHECK: Prevent using already-consumed coins.
+        self.check_owned_object_consumption(&[coin])?;
+
         let coin_bytes = self.resolve_arg(&coin)?;
         let amount_bytes: Vec<Vec<u8>> = self.resolve_args(&amounts)?;
 
@@ -2129,8 +3095,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             )
         })?;
 
-        // Check we have enough balance
-        let total_split: u64 = amounts.iter().sum();
+        // Check we have enough balance (with overflow protection)
+        let total_split: u64 = amounts
+            .iter()
+            .try_fold(0u64, |acc, &x| acc.checked_add(x))
+            .ok_or_else(|| anyhow!("coin balance overflow: split amounts sum exceeds u64::MAX"))?;
+
         if total_split > original_value {
             return Err(anyhow!(
                 "insufficient balance: have {}, trying to split {}",
@@ -2140,11 +3110,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Try to get the coin type from the input argument
+        // First check Result/NestedResult type tracking (from MoveCall return types)
+        // Then fall back to object type tracking, and finally default to SUI
         let coin_type = self
-            .get_object_id_and_type_from_arg(&coin)
-            .and_then(|(_, t)| t)
+            .get_type_from_arg(&coin)
+            .or_else(|| {
+                self.get_object_id_and_type_from_arg(&coin)
+                    .and_then(|(_, t)| t)
+            })
             .or_else(|| {
                 // Default to Coin<SUI> if type not known
+                // This fallback is a known limitation - see KNOWN_LIMITATIONS.md
                 Some(well_known::types::sui_coin())
             });
 
@@ -2155,6 +3131,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             let mut new_coin_bytes = Vec::with_capacity(40);
             new_coin_bytes.extend_from_slice(new_id.as_ref());
             new_coin_bytes.extend_from_slice(&amount.to_le_bytes());
+
+            // Track storage create cost for the new coin
+            self.vm.track_object_create(new_coin_bytes.len());
+
             self.created_objects
                 .insert(new_id, (new_coin_bytes.clone(), coin_type.clone()));
             new_coins.push(new_coin_bytes);
@@ -2167,14 +3147,16 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         updated_coin_bytes[32..40].copy_from_slice(&new_balance.to_le_bytes());
 
         if let Some((obj_id, _)) = self.get_object_id_and_type_from_arg(&coin) {
+            // Track storage mutate cost (coin size doesn't change for balance update)
+            self.vm.track_object_mutate(coin_bytes.len(), updated_coin_bytes.len());
+
             self.mutated_objects
                 .insert(obj_id, (updated_coin_bytes.clone(), coin_type.clone()));
         }
 
-        // Also update the input in place so subsequent commands see the new balance
-        if let Argument::Input(idx) = coin {
-            self.update_input_bytes(idx, updated_coin_bytes)?;
-        }
+        // Update the coin argument in place so subsequent commands see the new balance.
+        // This handles Input, Result, and NestedResult arguments uniformly.
+        self.update_arg_bytes(&coin, updated_coin_bytes)?;
 
         // Estimate gas: native call + object mutation + object creation per new coin
         let num_new_coins = new_coins.len() as u64;
@@ -2183,7 +3165,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             + num_new_coins * gas_costs::OBJECT_CREATE  // new coins created
             + num_new_coins * 40 * gas_costs::STORAGE_BYTE; // storage for new coins
 
-        Ok(CommandResult::Values(new_coins))
+        // Convert to TypedValue with coin type info
+        let typed_coins: Vec<TypedValue> = new_coins
+            .into_iter()
+            .map(|bytes| TypedValue::new(bytes, coin_type.clone()))
+            .collect();
+
+        Ok(CommandResult::Values(typed_coins))
     }
 
     /// Execute a MergeCoins command.
@@ -2197,6 +3185,47 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         destination: Argument,
         sources: Vec<Argument>,
     ) -> Result<CommandResult> {
+        // GAS COIN CHECK: Gas coin can only be used with TransferObjects
+        // Check both destination and sources
+        self.check_gas_coin_usage(&[destination], "MergeCoins (destination)")?;
+        self.check_gas_coin_usage(&sources, "MergeCoins (source)")?;
+
+        // OWNED OBJECT CONSUMPTION CHECK: Prevent using already-consumed coins.
+        // Check destination (can be used if not consumed yet)
+        self.check_owned_object_consumption(&[destination])?;
+        // Check source coins (they will be consumed after merge)
+        self.check_owned_object_consumption(&sources)?;
+
+        // TYPE MATCHING: All coins must have the same type
+        let dest_type = self
+            .get_type_from_arg(&destination)
+            .or_else(|| {
+                self.get_object_id_and_type_from_arg(&destination)
+                    .and_then(|(_, t)| t)
+            });
+
+        for (i, source) in sources.iter().enumerate() {
+            let source_type = self
+                .get_type_from_arg(source)
+                .or_else(|| {
+                    self.get_object_id_and_type_from_arg(source)
+                        .and_then(|(_, t)| t)
+                });
+
+            // If both types are known, they must match
+            if let (Some(ref dt), Some(ref st)) = (&dest_type, &source_type) {
+                if dt != st {
+                    return Err(anyhow!(
+                        "TypeMismatch in MergeCoins: source coin {} has type {}, \
+                         but destination has type {}. All coins must have the same type.",
+                        i,
+                        crate::types::format_type_tag(st),
+                        crate::types::format_type_tag(dt)
+                    ));
+                }
+            }
+        }
+
         let dest_bytes = self.resolve_arg(&destination)?;
         let source_bytes_list = self.resolve_args(&sources)?;
 
@@ -2220,22 +3249,21 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             })?;
             total_merge = total_merge
                 .checked_add(source_value)
-                .ok_or_else(|| anyhow!("merge would overflow"))?;
+                .ok_or_else(|| anyhow!("CoinBalanceOverflow: merge source values exceed u64::MAX"))?;
         }
 
         // Create new destination with merged balance
         let new_value = dest_value
             .checked_add(total_merge)
-            .ok_or_else(|| anyhow!("merge would overflow"))?;
+            .ok_or_else(|| anyhow!("CoinBalanceOverflow: merged coin balance exceeds u64::MAX"))?;
 
         let mut new_dest_bytes = Vec::with_capacity(40);
         new_dest_bytes.extend_from_slice(&dest_bytes[0..32]); // Keep same UID
         new_dest_bytes.extend_from_slice(&new_value.to_le_bytes());
 
-        // Update the destination input IN PLACE so subsequent commands see the merged balance
-        if let Argument::Input(idx) = destination {
-            self.update_input_bytes(idx, new_dest_bytes.clone())?;
-        }
+        // Update the destination argument in place so subsequent commands see the merged balance.
+        // This handles Input, Result, and NestedResult destinations uniformly.
+        self.update_arg_bytes(&destination, new_dest_bytes.clone())?;
 
         // Get coin type for tracking
         let coin_type = self
@@ -2244,33 +3272,41 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         // Mark destination as mutated with the new bytes
         if let Some((dest_id, _)) = self.get_object_id_and_type_from_arg(&destination) {
+            // Track storage mutate cost for destination (size doesn't change for balance update)
+            self.vm.track_object_mutate(dest_bytes.len(), new_dest_bytes.len());
+
             self.mutated_objects
                 .insert(dest_id, (new_dest_bytes.clone(), coin_type.clone()));
         }
 
-        // Sources are destroyed (track as deleted)
+        // Sources are absorbed into the destination (mark as consumed, not deleted).
+        // In Sui's on-chain semantics, MergeCoins source coins do NOT appear in the
+        // `deleted` effects list - they are absorbed/consumed but not explicitly deleted.
+        // We track them as consumed to prevent double-spending.
         for source in &sources {
-            // Mark source as deleted with type info
+            // Mark source as consumed (prevents reuse but doesn't add to effects.deleted)
             if let Some((source_id, _)) = self.get_object_id_and_type_from_arg(source) {
-                self.deleted_objects.insert(source_id, coin_type.clone());
+                self.consumed_objects.insert(source_id);
             }
 
-            if let Argument::Input(idx) = source {
-                // Mark source as deleted (set balance to 0)
-                let source_bytes = self.resolve_arg(source)?;
-                if source_bytes.len() >= 40 {
-                    let mut zeroed = source_bytes.clone();
-                    zeroed[32..40].fill(0);
-                    self.update_input_bytes(*idx, zeroed)?;
-                }
+            // Zero out the source coin bytes to prevent reuse (double-spend).
+            // This handles Input, Result, and NestedResult sources uniformly.
+            let source_bytes = self.resolve_arg(source)?;
+            if source_bytes.len() >= 40 {
+                let mut zeroed = source_bytes.clone();
+                zeroed[32..40].fill(0); // Zero the balance
+                // Best effort update - if it fails (e.g., for Created results), that's OK
+                // since the object is tracked as consumed anyway
+                let _ = self.update_arg_bytes(source, zeroed);
             }
         }
 
-        // Estimate gas: native call + object mutation + object deletion per source
+        // Estimate gas: native call + object mutation per source
+        // Note: No deletion gas since merged coins are absorbed, not deleted
         let num_sources = sources.len() as u64;
         self.gas_used += gas_costs::NATIVE_CALL
             + gas_costs::OBJECT_MUTATE  // destination coin mutated
-            + num_sources * gas_costs::OBJECT_DELETE; // source coins deleted
+            + num_sources * gas_costs::OBJECT_MUTATE; // source coins absorbed (similar cost to mutation)
 
         // MergeCoins returns empty (no return value in Sui PTB semantics)
         Ok(CommandResult::Empty)
@@ -2283,6 +3319,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Validates that:
     /// 1. The sender owns or created the objects being transferred
     /// 2. The objects haven't already been consumed
+    /// 3. The objects have the `store` ability (required for public transfer)
     fn execute_transfer_objects(
         &mut self,
         objects: Vec<Argument>,
@@ -2345,6 +3382,18 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         "cannot transfer object {}: sender does not own it",
                         obj_id.to_hex_literal()
                     ));
+                }
+
+                // Check store ability for public transfer eligibility
+                // Objects must have `store` ability to be transferred via TransferObjects
+                if let Some(ref type_tag) = obj_type {
+                    if !self.check_type_has_store_ability(type_tag) {
+                        return Err(anyhow!(
+                            "cannot transfer object {}: type {} does not have the 'store' ability required for public transfer",
+                            obj_id.to_hex_literal(),
+                            crate::types::format_type_tag(type_tag)
+                        ));
+                    }
                 }
 
                 objects_to_transfer.push((obj_id, obj_type));
@@ -2442,12 +3491,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                 } else if let Some(CommandResult::Values(vs)) = self.results.get(*idx as usize) {
                     // Try to extract UID from first 32 bytes
-                    if let Some(bytes) = vs.first() {
+                    if let Some(typed_val) = vs.first() {
+                        let bytes = &typed_val.bytes;
                         if bytes.len() >= 32 {
                             if let Ok(id) = AccountAddress::from_bytes(&bytes[..32]) {
-                                // Look up type from created_objects
-                                let obj_type =
-                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone());
+                                // Use type from TypedValue if available, else fall back to created_objects
+                                let obj_type = typed_val.type_tag.clone().or_else(|| {
+                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone())
+                                });
                                 Some((id, obj_type))
                             } else {
                                 None
@@ -2472,11 +3523,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                 } else if let Some(CommandResult::Values(vs)) = self.results.get(*cmd_idx as usize)
                 {
-                    if let Some(bytes) = vs.get(*val_idx as usize) {
+                    if let Some(typed_val) = vs.get(*val_idx as usize) {
+                        let bytes = &typed_val.bytes;
                         if bytes.len() >= 32 {
                             if let Ok(id) = AccountAddress::from_bytes(&bytes[..32]) {
-                                let obj_type =
-                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone());
+                                // Use type from TypedValue if available, else fall back to created_objects
+                                let obj_type = typed_val.type_tag.clone().or_else(|| {
+                                    self.created_objects.get(&id).and_then(|(_, t)| t.clone())
+                                });
                                 Some((id, obj_type))
                             } else {
                                 None
@@ -2563,12 +3617,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Estimate gas: native call + input bytes + output bytes
         self.gas_used += gas_costs::NATIVE_CALL + (vec_bytes.len() as u64) * gas_costs::OUTPUT_BYTE;
 
-        // Note: type_tag is used by the VM for type checking at the Move level.
-        // In our simulation, we trust the caller provides the correct type.
-        // The type_tag is stored in Sui's type registry but not in the BCS bytes.
-        let _ = type_tag; // Acknowledged: type is used for Move VM type checking
+        // Create a vector TypeTag if we have the element type
+        let vec_type = type_tag.map(|t| TypeTag::Vector(Box::new(t)));
 
-        Ok(CommandResult::Values(vec![vec_bytes]))
+        Ok(CommandResult::Values(vec![TypedValue::new(vec_bytes, vec_type)]))
     }
 
     /// Execute a Publish command.
@@ -2695,7 +3747,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
 
         // Use stored type if expected type is not provided
-        let actual_type = expected_type.cloned().or(stored_type);
+        let actual_type = expected_type.cloned().or_else(|| stored_type.clone());
 
         // Track that this object was received (unwrapped from pending state)
         // Store in created_objects so it can be referenced in subsequent commands
@@ -2710,7 +3762,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.object_changes.push(ObjectChange::Unwrapped {
             id: *object_id,
             owner: Owner::Address(self.sender),
-            object_type: actual_type,
+            object_type: actual_type.clone(),
         });
 
         // Estimate gas: native call + unwrap operation
@@ -2718,8 +3770,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             + gas_costs::OBJECT_CREATE  // receiving materializes the object
             + (object_bytes.len() as u64) * gas_costs::OUTPUT_BYTE;
 
-        // Return the object bytes as the result
-        Ok(CommandResult::Values(vec![object_bytes]))
+        // Return the object bytes as the result with type info
+        Ok(CommandResult::Values(vec![TypedValue::new(object_bytes, actual_type)]))
     }
 
     /// Add an object to the pending receives queue.
@@ -2781,12 +3833,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     }
                 }
 
-                // Parse abort info from error message if it's an abort
-                if let Some(abort_info) =
-                    Self::parse_abort_info(error_msg, module.as_str(), function.as_str())
-                {
-                    ctx.abort_info = Some(abort_info);
-                }
+                // Try to get abort info from structured error first (preferred - no string parsing)
+                // Fall back to string parsing if structured error is not available
+                ctx.abort_info = self
+                    .build_abort_info_from_structured_error(module.as_str(), function.as_str())
+                    .or_else(|| {
+                        Self::parse_abort_info(error_msg, module.as_str(), function.as_str())
+                    });
             }
             Command::SplitCoins { coin, amounts } => {
                 // Add the source coin snapshot
@@ -2930,7 +3983,52 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         Some(format!("{}", type_tag))
     }
 
-    /// Parse abort information from an error message.
+    /// Build abort info from the stored structured VM error.
+    ///
+    /// This is the preferred method for extracting abort info because it uses
+    /// direct access to VMError fields rather than string parsing.
+    fn build_abort_info_from_structured_error(
+        &self,
+        module: &str,
+        function: &str,
+    ) -> Option<crate::error_context::AbortInfo> {
+        use crate::error_context::AbortInfo;
+
+        let structured = self.last_structured_error.as_ref()?;
+        let abort_info = structured.abort_info.as_ref()?;
+
+        // Use the function name from bytecode lookup if available,
+        // otherwise fall back to the function name from the command
+        let resolved_function = abort_info
+            .function_name
+            .clone()
+            .unwrap_or_else(|| function.to_string());
+
+        // Use the module name from the abort location if available,
+        // otherwise fall back to the module name from the command
+        let resolved_module = abort_info
+            .module_id
+            .as_ref()
+            .map(|id| id.name().to_string())
+            .unwrap_or_else(|| module.to_string());
+
+        let abort_meaning =
+            crate::error_context::get_abort_code_context(abort_info.abort_code, &resolved_module);
+
+        Some(AbortInfo {
+            module: resolved_module,
+            function: resolved_function,
+            abort_code: abort_info.abort_code,
+            constant_name: None, // Could be resolved from bytecode in the future
+            abort_meaning,
+            involved_objects: Vec::new(),
+        })
+    }
+
+    /// Parse abort information from an error message (fallback method).
+    ///
+    /// This is the legacy method that uses string parsing. It's kept as a fallback
+    /// for cases where structured error info is not available.
     fn parse_abort_info(
         error_msg: &str,
         module: &str,
@@ -3081,6 +4179,179 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         snapshot
     }
 
+    /// Perform a dry-run validation of the PTB without actual execution.
+    ///
+    /// This performs comprehensive validation including:
+    /// - Structural validation (references, bounds)
+    /// - Module/function existence
+    /// - Function visibility (public/entry)
+    /// - Type argument count validation
+    /// - Return type reference checks
+    ///
+    /// Does NOT execute any Move code or modify state.
+    ///
+    /// # Returns
+    /// A `DryRunResult` containing validation status, errors, and estimated gas.
+    pub fn dry_run(&self, commands: &[Command]) -> DryRunResult {
+        let mut result = DryRunResult {
+            valid: true,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            estimated_gas: 0,
+            command_validations: Vec::new(),
+        };
+
+        // Phase 1: Structural validation (references, bounds)
+        let structural = validate_ptb(commands, self.inputs.len());
+        if !structural.valid {
+            result.valid = false;
+            for err in structural.errors {
+                result.errors.push(DryRunError {
+                    command_index: err.command_index,
+                    phase: "structural".to_string(),
+                    message: err.message,
+                });
+            }
+        }
+        result.warnings.extend(structural.warnings);
+
+        // Phase 2: Per-command semantic validation
+        for (idx, cmd) in commands.iter().enumerate() {
+            let cmd_result = self.validate_command_semantic(cmd, idx);
+            result.estimated_gas += cmd_result.estimated_gas;
+            if !cmd_result.valid {
+                result.valid = false;
+            }
+            result.errors.extend(cmd_result.errors.iter().map(|msg| DryRunError {
+                command_index: idx,
+                phase: "semantic".to_string(),
+                message: msg.clone(),
+            }));
+            result.warnings.extend(cmd_result.warnings.iter().cloned());
+            result.command_validations.push(cmd_result);
+        }
+
+        result
+    }
+
+    /// Validate a single command semantically (module/function existence, visibility, types).
+    fn validate_command_semantic(&self, cmd: &Command, index: usize) -> CommandValidation {
+        match cmd {
+            Command::MoveCall {
+                package,
+                module,
+                function,
+                type_args,
+                args,
+            } => {
+                let mut cv = CommandValidation {
+                    index,
+                    command_type: "MoveCall".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::FUNCTION_CALL_BASE,
+                };
+
+                let resolver = self.vm.storage().module_resolver();
+
+                // Check function exists and is callable
+                if let Err(e) = resolver.check_function_callable(package, module.as_str(), function.as_str()) {
+                    cv.valid = false;
+                    cv.errors.push(format!("{}", e));
+                }
+
+                // Check type arguments
+                if let Err(e) = resolver.validate_type_args(package, module.as_str(), function.as_str(), type_args) {
+                    cv.valid = false;
+                    cv.errors.push(format!("{}", e));
+                }
+
+                // Check return type references
+                if let Err(e) = resolver.check_no_reference_returns(package, module.as_str(), function.as_str()) {
+                    cv.valid = false;
+                    cv.errors.push(format!("{}", e));
+                }
+
+                // Estimate additional gas for args (read cost per arg)
+                cv.estimated_gas += (args.len() as u64) * gas_costs::INPUT_BYTE * 100;
+
+                cv
+            }
+            Command::SplitCoins { amounts, .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "SplitCoins".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::NATIVE_CALL + (amounts.len() as u64) * gas_costs::OBJECT_CREATE,
+                }
+            }
+            Command::MergeCoins { sources, .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "MergeCoins".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::NATIVE_CALL + (sources.len() as u64) * gas_costs::OBJECT_MUTATE,
+                }
+            }
+            Command::TransferObjects { objects, .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "TransferObjects".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::NATIVE_CALL + (objects.len() as u64) * gas_costs::OBJECT_MUTATE,
+                }
+            }
+            Command::MakeMoveVec { elements, .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "MakeMoveVec".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::NATIVE_CALL + (elements.len() as u64) * 100,
+                }
+            }
+            Command::Publish { modules, .. } => {
+                // Publishing has high gas cost
+                CommandValidation {
+                    index,
+                    command_type: "Publish".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: 50_000 + (modules.len() as u64) * 10_000,
+                }
+            }
+            Command::Upgrade { modules, .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "Upgrade".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: 50_000 + (modules.len() as u64) * 10_000,
+                }
+            }
+            Command::Receive { .. } => {
+                CommandValidation {
+                    index,
+                    command_type: "Receive".to_string(),
+                    valid: true,
+                    errors: Vec::new(),
+                    warnings: Vec::new(),
+                    estimated_gas: gas_costs::NATIVE_CALL + gas_costs::OBJECT_MUTATE,
+                }
+            }
+        }
+    }
+
     /// Execute all commands in the PTB.
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<TransactionEffects> {
         let start_time = std::time::Instant::now();
@@ -3144,18 +4415,23 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 None
             };
 
+            // Capture timing for this command
+            let cmd_start = std::time::Instant::now();
+
             match self.execute_command(cmd.clone()) {
                 Ok(result) => {
+                    let cmd_duration_us = cmd_start.elapsed().as_micros() as u64;
                     let return_count = result.len();
                     self.results.push(result);
 
-                    // Record success in trace
-                    self.execution_trace.add_success(
+                    // Record success in trace with timing
+                    self.execution_trace.add_success_with_timing(
                         index,
                         &cmd_type,
                         cmd_description.clone(),
                         self.gas_used,
                         return_count,
+                        Some(cmd_duration_us),
                     );
                     if let Some(info) = func_info {
                         self.execution_trace.add_function_call(info);
@@ -3209,6 +4485,37 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     ));
                 }
             }
+        }
+
+        // SHARED OBJECT VALIDATION: Ensure shared objects taken by value are properly handled.
+        // This must happen after all commands complete but before we finalize effects.
+        // Shared objects must be either re-shared or deleted - they cannot be frozen,
+        // transferred to an address, or wrapped inside another object.
+        if let Err(e) = self.validate_shared_objects() {
+            use crate::error_context::CommandErrorContext;
+            let error_context = CommandErrorContext::new(
+                commands.len(),
+                "SharedObjectValidation",
+            )
+            .with_gas_consumed(self.gas_used);
+            let state_at_failure = self.build_execution_snapshot(self.results.len());
+
+            self.execution_trace.add_failure(
+                commands.len(),
+                "SharedObjectValidation",
+                "Post-execution shared object check".to_string(),
+                e.to_string(),
+            );
+            self.execution_trace
+                .complete(false, Some(start_time.elapsed().as_millis() as u64));
+            return Ok(TransactionEffects::failure_at_with_context(
+                e.to_string(),
+                commands.len(),
+                "Shared object validation failed".to_string(),
+                self.results.len(),
+                error_context,
+                state_at_failure,
+            ));
         }
 
         // Complete trace with success
@@ -3428,7 +4735,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             .map(|result| {
                 match result {
                     CommandResult::Empty => vec![],
-                    CommandResult::Values(values) => values.clone(),
+                    CommandResult::Values(values) => {
+                        // Extract just the bytes from TypedValue
+                        values.iter().map(|v| v.bytes.clone()).collect()
+                    }
                     CommandResult::Created(ids) => {
                         // For created objects, return their IDs as BCS-encoded bytes
                         ids.iter().map(|id| id.to_vec()).collect()
@@ -3465,7 +4775,110 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Set accumulated gas usage
         effects.gas_used = self.gas_used;
 
+        // Compute version information if version tracking is enabled
+        if self.track_versions {
+            effects.object_versions = Some(self.compute_object_versions());
+            effects.lamport_timestamp = Some(self.lamport_timestamp);
+        }
+
         effects
+    }
+
+    /// Compute version information for all created/mutated/deleted objects.
+    ///
+    /// This is called at the end of execution to assign versions based on:
+    /// - Input versions (if object was an input)
+    /// - Lamport timestamp (all modified objects get this as output version)
+    fn compute_object_versions(&self) -> HashMap<ObjectID, ObjectVersionInfo> {
+        use fastcrypto::hash::{Blake2b256, HashFunction};
+
+        let mut versions = HashMap::new();
+
+        // Created objects: no input version, output version is lamport_timestamp
+        for (id, (bytes, _type_tag)) in &self.created_objects {
+            let output_digest: [u8; 32] = Blake2b256::digest(bytes).into();
+            versions.insert(
+                *id,
+                ObjectVersionInfo {
+                    input_version: None,
+                    output_version: self.lamport_timestamp,
+                    input_digest: None,
+                    output_digest,
+                    change_type: VersionChangeType::Created,
+                },
+            );
+        }
+
+        // Mutated objects: input version from tracking, output version is lamport_timestamp
+        for (id, (bytes, _type_tag)) in &self.mutated_objects {
+            // Skip if also in created_objects (newly created then mutated = still created)
+            if self.created_objects.contains_key(id) {
+                continue;
+            }
+            // Skip if deleted
+            if self.deleted_objects.contains_key(id) {
+                continue;
+            }
+
+            let input_version = self.input_object_versions.get(id).copied();
+            let input_digest = self.input_object_digests.get(id).copied();
+            let output_digest: [u8; 32] = Blake2b256::digest(bytes).into();
+
+            versions.insert(
+                *id,
+                ObjectVersionInfo {
+                    input_version,
+                    output_version: self.lamport_timestamp,
+                    input_digest,
+                    output_digest,
+                    change_type: VersionChangeType::Mutated,
+                },
+            );
+        }
+
+        // Deleted objects: input version from tracking, output version is lamport_timestamp
+        for id in self.deleted_objects.keys() {
+            let input_version = self.input_object_versions.get(id).copied();
+            let input_digest = self.input_object_digests.get(id).copied();
+            // Deleted objects have a special marker digest (all zeros)
+            let output_digest = [0u8; 32];
+
+            versions.insert(
+                *id,
+                ObjectVersionInfo {
+                    input_version,
+                    output_version: self.lamport_timestamp,
+                    input_digest,
+                    output_digest,
+                    change_type: VersionChangeType::Deleted,
+                },
+            );
+        }
+
+        // Wrapped objects
+        for id in self.wrapped_objects.keys() {
+            // Skip if already handled
+            if versions.contains_key(id) {
+                continue;
+            }
+
+            let input_version = self.input_object_versions.get(id).copied();
+            let input_digest = self.input_object_digests.get(id).copied();
+            let output_digest = [0u8; 32]; // Wrapped objects also get marker digest
+
+            versions.insert(
+                *id,
+                ObjectVersionInfo {
+                    input_version,
+                    output_version: self.lamport_timestamp,
+                    input_digest,
+                    output_digest,
+                    change_type: VersionChangeType::Wrapped,
+                },
+            );
+        }
+
+        versions
     }
 
     /// Get the results of all executed commands.
@@ -3543,6 +4956,7 @@ impl PTBBuilder {
             id,
             bytes,
             type_tag: None,
+            version: None,
         }));
         Argument::Input(idx as u16)
     }
@@ -3559,6 +4973,7 @@ impl PTBBuilder {
             id,
             bytes,
             type_tag: Some(type_tag),
+            version: None,
         }));
         Argument::Input(idx as u16)
     }
@@ -3693,7 +5108,10 @@ mod tests {
 
     #[test]
     fn test_command_result_values() {
-        let result = CommandResult::Values(vec![vec![1, 2, 3], vec![4, 5, 6]]);
+        let result = CommandResult::Values(vec![
+            TypedValue::untyped(vec![1, 2, 3]),
+            TypedValue::untyped(vec![4, 5, 6]),
+        ]);
         assert!(!result.is_empty());
         assert_eq!(result.len(), 2);
         assert_eq!(result.primary_value().unwrap(), vec![1, 2, 3]);
@@ -4327,5 +5745,249 @@ mod tests {
         assert_eq!(snapshot.successful_commands.len(), 1);
         assert_eq!(snapshot.successful_commands[0].index, 0);
         assert_eq!(snapshot.total_gas_consumed, 500);
+    }
+
+    // =========================================================================
+    // Version Tracking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tracked_object_creation() {
+        let bytes = vec![1, 2, 3, 4];
+        let type_tag = Some(TypeTag::U64);
+
+        let obj = TrackedObject::new(bytes.clone(), type_tag.clone());
+
+        assert_eq!(obj.bytes, bytes);
+        assert_eq!(obj.type_tag, type_tag);
+        assert_eq!(obj.version, 1); // Default version for new objects
+        assert!(!obj.is_modified);
+        assert!(obj.owner.is_none());
+        assert!(obj.digest.is_none());
+    }
+
+    #[test]
+    fn test_tracked_object_with_version() {
+        let bytes = vec![1, 2, 3];
+        let type_tag = None;
+
+        let obj = TrackedObject::with_version(bytes.clone(), type_tag, 42);
+
+        assert_eq!(obj.bytes, bytes);
+        assert_eq!(obj.version, 42);
+        assert!(!obj.is_modified);
+    }
+
+    #[test]
+    fn test_tracked_object_mark_modified() {
+        let mut obj = TrackedObject::new(vec![], None);
+        assert!(!obj.is_modified);
+
+        obj.mark_modified();
+        assert!(obj.is_modified);
+    }
+
+    #[test]
+    fn test_tracked_object_with_owner() {
+        let obj = TrackedObject::new(vec![], None)
+            .with_owner(Owner::Shared);
+
+        assert_eq!(obj.owner, Some(Owner::Shared));
+    }
+
+    #[test]
+    fn test_tracked_object_compute_digest() {
+        let mut obj = TrackedObject::new(vec![1, 2, 3, 4], None);
+        assert!(obj.digest.is_none());
+
+        obj.compute_digest();
+        assert!(obj.digest.is_some());
+
+        // Digest should be deterministic
+        let digest1 = obj.digest.unwrap();
+        obj.digest = None;
+        obj.compute_digest();
+        let digest2 = obj.digest.unwrap();
+        assert_eq!(digest1, digest2);
+    }
+
+    #[test]
+    fn test_tracked_object_get_or_compute_digest() {
+        let mut obj = TrackedObject::new(vec![5, 6, 7], None);
+
+        let digest1 = obj.get_or_compute_digest();
+        assert!(obj.digest.is_some());
+
+        // Should return same digest without recomputing
+        let digest2 = obj.get_or_compute_digest();
+        assert_eq!(digest1, digest2);
+    }
+
+    #[test]
+    fn test_tracked_object_from_tuple() {
+        let bytes = vec![1, 2, 3];
+        let type_tag = Some(TypeTag::Bool);
+
+        let obj: TrackedObject = (bytes.clone(), type_tag.clone()).into();
+
+        assert_eq!(obj.bytes, bytes);
+        assert_eq!(obj.type_tag, type_tag);
+        assert_eq!(obj.version, 1);
+    }
+
+    #[test]
+    fn test_tracked_object_into_tuple() {
+        let bytes = vec![9, 8, 7];
+        let type_tag = Some(TypeTag::Address);
+
+        let obj = TrackedObject::new(bytes.clone(), type_tag.clone());
+        let (result_bytes, result_type): (Vec<u8>, Option<TypeTag>) = obj.into();
+
+        assert_eq!(result_bytes, bytes);
+        assert_eq!(result_type, type_tag);
+    }
+
+    #[test]
+    fn test_object_version_info_created() {
+        let info = ObjectVersionInfo {
+            input_version: None,
+            output_version: 100,
+            input_digest: None,
+            output_digest: [42u8; 32],
+            change_type: VersionChangeType::Created,
+        };
+
+        assert!(info.input_version.is_none());
+        assert_eq!(info.output_version, 100);
+        assert!(info.input_digest.is_none());
+        assert_eq!(info.change_type, VersionChangeType::Created);
+    }
+
+    #[test]
+    fn test_object_version_info_mutated() {
+        let info = ObjectVersionInfo {
+            input_version: Some(5),
+            output_version: 10,
+            input_digest: Some([1u8; 32]),
+            output_digest: [2u8; 32],
+            change_type: VersionChangeType::Mutated,
+        };
+
+        assert_eq!(info.input_version, Some(5));
+        assert_eq!(info.output_version, 10);
+        assert_eq!(info.change_type, VersionChangeType::Mutated);
+    }
+
+    #[test]
+    fn test_version_change_type_variants() {
+        assert_eq!(VersionChangeType::Created, VersionChangeType::Created);
+        assert_eq!(VersionChangeType::Mutated, VersionChangeType::Mutated);
+        assert_eq!(VersionChangeType::Deleted, VersionChangeType::Deleted);
+        assert_eq!(VersionChangeType::Wrapped, VersionChangeType::Wrapped);
+
+        // Different variants should not be equal
+        assert_ne!(VersionChangeType::Created, VersionChangeType::Mutated);
+    }
+
+    #[test]
+    fn test_version_tracking_input_registration() {
+        // Test that add_input registers versions when tracking is enabled
+        use crate::resolver::LocalModuleResolver;
+        use crate::vm::VMHarness;
+
+        let resolver = LocalModuleResolver::with_sui_framework().unwrap();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        // Enable version tracking
+        executor.set_track_versions(true);
+        executor.set_lamport_timestamp(100);
+
+        // Add an object input with version
+        let test_id = AccountAddress::from_hex_literal("0x123").unwrap();
+        let input = InputValue::Object(ObjectInput::Owned {
+            id: test_id,
+            bytes: vec![1, 2, 3, 4],
+            type_tag: None,
+            version: Some(42),
+        });
+
+        executor.add_input(input);
+
+        // The version should be registered
+        assert_eq!(executor.input_object_versions.get(&test_id), Some(&42));
+    }
+
+    #[test]
+    fn test_version_tracking_disabled_no_registration() {
+        // Test that add_input does NOT register versions when tracking is disabled
+        use crate::resolver::LocalModuleResolver;
+        use crate::vm::VMHarness;
+
+        let resolver = LocalModuleResolver::with_sui_framework().unwrap();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        // Version tracking is disabled by default
+        assert!(!executor.track_versions);
+
+        // Add an object input with version
+        let test_id = AccountAddress::from_hex_literal("0x456").unwrap();
+        let input = InputValue::Object(ObjectInput::Owned {
+            id: test_id,
+            bytes: vec![1, 2, 3, 4],
+            type_tag: None,
+            version: Some(99),
+        });
+
+        executor.add_input(input);
+
+        // The version should NOT be registered since tracking is disabled
+        assert!(executor.input_object_versions.is_empty());
+    }
+
+    #[test]
+    fn test_object_input_version_method() {
+        // Test the version() method on ObjectInput
+        let obj1 = ObjectInput::Owned {
+            id: AccountAddress::ZERO,
+            bytes: vec![],
+            type_tag: None,
+            version: Some(10),
+        };
+        assert_eq!(obj1.version(), Some(10));
+
+        let obj2 = ObjectInput::MutRef {
+            id: AccountAddress::ZERO,
+            bytes: vec![],
+            type_tag: None,
+            version: None,
+        };
+        assert_eq!(obj2.version(), None);
+
+        let obj3 = ObjectInput::Shared {
+            id: AccountAddress::ZERO,
+            bytes: vec![],
+            type_tag: None,
+            version: Some(999),
+        };
+        assert_eq!(obj3.version(), Some(999));
+
+        let obj4 = ObjectInput::ImmRef {
+            id: AccountAddress::ZERO,
+            bytes: vec![],
+            type_tag: None,
+            version: Some(1),
+        };
+        assert_eq!(obj4.version(), Some(1));
+
+        let obj5 = ObjectInput::Receiving {
+            id: AccountAddress::ZERO,
+            bytes: vec![],
+            type_tag: None,
+            parent_id: None,
+            version: Some(50),
+        };
+        assert_eq!(obj5.version(), Some(50));
     }
 }
