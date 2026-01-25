@@ -57,7 +57,8 @@ See [CLI Reference](docs/reference/CLI_REFERENCE.md) for all commands.
 | 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
 | 3 | `fork_state` | Yes | Fork mainnet state into local sandbox |
 | 4 | `cetus_swap` | Yes | Full transaction replay with validation |
-| 5 | `multi_swap_flash_loan` | Yes | Complex multi-DEX arbitrage replay |
+| 5 | `scallop_deposit` | Yes | Lending protocol replay with MM2 bytecode analysis |
+| 6 | `multi_swap_flash_loan` | Yes | Complex multi-DEX arbitrage replay |
 
 ```bash
 # Start with the CLI workflow (no setup required)
@@ -68,6 +69,9 @@ cargo run --example ptb_basics
 
 # Graduate to mainnet replay
 cargo run --example cetus_swap
+
+# See MM2 predictive prefetch in action
+cargo run --example scallop_deposit
 ```
 
 See **[examples/README.md](examples/README.md)** for detailed documentation on each example.
@@ -144,7 +148,8 @@ sui-sandbox/
 │   ├── cli_workflow.sh     # CLI demo (no setup)
 │   ├── ptb_basics.rs       # Basic PTB
 │   ├── fork_state.rs       # Mainnet forking
-│   └── cetus_swap.rs       # Canonical replay example
+│   ├── cetus_swap.rs       # Canonical replay example
+│   └── scallop_deposit.rs  # MM2 bytecode analysis
 ├── src/                    # Main library and CLI
 ├── crates/
 │   ├── sui-sandbox-core/   # Core VM, PTB execution, gas metering
