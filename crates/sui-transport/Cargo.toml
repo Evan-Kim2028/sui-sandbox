@@ -1,8 +1,8 @@
 [package]
-name = "sui-data-fetcher"
+name = "sui-transport"
 version = "0.1.0"
 edition = "2021"
-description = "Data fetching layer for Sui network (GraphQL, gRPC, cache)"
+description = "Network transport layer for Sui (gRPC + GraphQL)"
 
 [dependencies]
 # Core utilities
@@ -27,9 +27,7 @@ prost-types.workspace = true
 # Sui types
 move-core-types.workspace = true
 sui-types.workspace = true
-
-# Workspace crates
-sui-sandbox-types.workspace = true
+bcs.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

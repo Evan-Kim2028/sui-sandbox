@@ -1,0 +1,12 @@
+[package]
+name = "sui-resolver"
+version = "0.1.0"
+edition = "2021"
+description = "Package upgrade resolution and address normalization for Sui"
+
+[dependencies]
+anyhow.workspace = true
+move-core-types.workspace = true
+
+# Workspace crates
+sui-transport.workspace = true

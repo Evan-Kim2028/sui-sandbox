@@ -19,32 +19,187 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use move_core_types::account_address::AccountAddress;
 
-use crate::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
+use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
+
+/// Compute the dynamic field child object ID using Sui's exact formula.
+///
+/// The child ID is computed as:
+/// `Blake2b256(0xf0 || parent || len(key_bytes) as u64 LE || key_bytes || type_tag_bytes)`
+///
+/// Where:
+/// - 0xf0 is the HashingIntentScope::ChildObjectId constant
+/// - parent is the 32-byte parent object address
+/// - key_bytes is the BCS-encoded key value
+/// - type_tag_bytes is the BCS-encoded key type tag
+///
+/// # Arguments
+/// * `parent_address` - The parent object's address (hex string)
+/// * `key_bcs` - BCS-encoded key bytes
+/// * `key_type_bcs` - BCS-encoded type tag bytes
+///
+/// # Returns
+/// The computed child object ID as a hex string (0x-prefixed)
+pub fn compute_dynamic_field_id(
+    parent_address: &str,
+    key_bcs: &[u8],
+    key_type_bcs: &[u8],
+) -> Option<String> {
+    use fastcrypto::hash::{Blake2b256, HashFunction};
+
+    // Parse parent address
+    let parent_hex = parent_address.strip_prefix("0x").unwrap_or(parent_address);
+    let parent_bytes = hex::decode(parent_hex).ok()?;
+    if parent_bytes.len() != 32 {
+        return None;
+    }
+
+    const CHILD_OBJECT_ID_SCOPE: u8 = 0xf0;
+
+    let mut hasher = Blake2b256::default();
+    hasher.update([CHILD_OBJECT_ID_SCOPE]);
+    hasher.update(&parent_bytes);
+    hasher.update((key_bcs.len() as u64).to_le_bytes());
+    hasher.update(key_bcs);
+    hasher.update(key_type_bcs);
+
+    let hash = hasher.finalize();
+    Some(format!("0x{}", hex::encode(hash.digest)))
+}
+
+/// Serialize a Move type string to BCS-encoded TypeTag bytes.
+///
+/// This function parses a type string like "u64" or "0x2::object::ID" and
+/// serializes it to the BCS format that Sui uses for type tag encoding.
+pub fn type_string_to_bcs(type_str: &str) -> Option<Vec<u8>> {
+    // Parse the type string to a TypeTag
+    let type_tag = parse_type_string_to_tag(type_str)?;
+
+    // Serialize the TypeTag to BCS
+    bcs::to_bytes(&type_tag).ok()
+}
+
+/// Parse a type string to a Move TypeTag.
+fn parse_type_string_to_tag(type_str: &str) -> Option<move_core_types::language_storage::TypeTag> {
+    use move_core_types::identifier::Identifier;
+    use move_core_types::language_storage::{StructTag, TypeTag};
+
+    let type_str = type_str.trim();
+
+    // Handle primitive types
+    match type_str {
+        "bool" => return Some(TypeTag::Bool),
+        "u8" => return Some(TypeTag::U8),
+        "u16" => return Some(TypeTag::U16),
+        "u32" => return Some(TypeTag::U32),
+        "u64" => return Some(TypeTag::U64),
+        "u128" => return Some(TypeTag::U128),
+        "u256" => return Some(TypeTag::U256),
+        "address" => return Some(TypeTag::Address),
+        "signer" => return Some(TypeTag::Signer),
+        _ => {}
+    }
+
+    // Handle vector types
+    if let Some(inner) = type_str
+        .strip_prefix("vector<")
+        .and_then(|s| s.strip_suffix('>'))
+    {
+        let inner_tag = parse_type_string_to_tag(inner)?;
+        return Some(TypeTag::Vector(Box::new(inner_tag)));
+    }
+
+    // Handle struct types: 0x<address>::<module>::<name><type_args>
+    // Example: 0x2::object::ID or 0xefe8b...::market::Market<0x2::sui::SUI>
+    let (base_type, type_args_str) = if let Some(angle_pos) = type_str.find('<') {
+        let base = &type_str[..angle_pos];
+        let args_str = &type_str[angle_pos..];
+        (base, Some(args_str))
+    } else {
+        (type_str, None)
+    };
+
+    let parts: Vec<&str> = base_type.split("::").collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let address_str = parts[0];
+    let module_name = parts[1];
+    let struct_name = parts[2];
+
+    let address = AccountAddress::from_hex_literal(address_str).ok()?;
+    let module = Identifier::new(module_name).ok()?;
+    let name = Identifier::new(struct_name).ok()?;
+
+    // Parse type arguments if present
+    let type_params = if let Some(args_str) = type_args_str {
+        parse_type_args(args_str)?
+    } else {
+        vec![]
+    };
+
+    Some(TypeTag::Struct(Box::new(StructTag {
+        address,
+        module,
+        name,
+        type_params,
+    })))
+}
+
+/// Parse type arguments string like "<T1, T2, T3>"
+fn parse_type_args(args_str: &str) -> Option<Vec<move_core_types::language_storage::TypeTag>> {
+    let inner = args_str.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() {
+        return Some(vec![]);
+    }
+
+    let mut args = vec![];
+    let mut depth = 0;
+    let mut current_start = 0;
+
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                let arg = inner[current_start..i].trim();
+                args.push(parse_type_string_to_tag(arg)?);
+                current_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    // Handle last argument
+    let last_arg = inner[current_start..].trim();
+    if !last_arg.is_empty() {
+        args.push(parse_type_string_to_tag(last_arg)?);
+    }
+
+    Some(args)
+}
 
 /// Create a Tokio runtime and connect to a gRPC endpoint.
 ///
-/// Configuration via environment variables (in order of priority):
+/// Configuration via environment variables:
 ///
-/// **Endpoint** (reads in order, first found wins):
-/// 1. `SUI_GRPC_ENDPOINT` - Generic gRPC endpoint
-/// 2. `SURFLUX_GRPC_ENDPOINT` - Surflux-specific (legacy)
-/// 3. Falls back to Sui public mainnet: `https://fullnode.mainnet.sui.io:443`
+/// **Endpoint**:
+/// - `SUI_GRPC_ENDPOINT` - gRPC endpoint (default: `https://fullnode.mainnet.sui.io:443`)
 ///
-/// **API Key** (reads in order, first found wins):
-/// 1. `SUI_GRPC_API_KEY` - Generic API key
-/// 2. `SURFLUX_API_KEY` - Surflux-specific (legacy)
-/// 3. No API key (works for public endpoints)
+/// **API Key**:
+/// - `SUI_GRPC_API_KEY` - API key (optional, depends on provider)
 ///
 /// Returns both the runtime (for blocking operations) and the connected client.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use sui_data_fetcher::utilities::create_grpc_client;
+/// use sui_prefetch::create_grpc_client;
 ///
 /// // Using environment variables:
-/// // SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
+/// // SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
 /// // SUI_GRPC_API_KEY=your-api-key
 ///
 /// let (rt, grpc) = create_grpc_client()?;
@@ -53,15 +208,9 @@ use crate::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 pub fn create_grpc_client() -> Result<(tokio::runtime::Runtime, GrpcClient)> {
     let rt = tokio::runtime::Runtime::new()?;
 
-    // Read endpoint: SUI_GRPC_ENDPOINT > SURFLUX_GRPC_ENDPOINT > default
     let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .or_else(|_| std::env::var("SURFLUX_GRPC_ENDPOINT"))
         .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-
-    // Read API key: SUI_GRPC_API_KEY > SURFLUX_API_KEY > None
-    let api_key = std::env::var("SUI_GRPC_API_KEY")
-        .or_else(|_| std::env::var("SURFLUX_API_KEY"))
-        .ok();
+    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
 
@@ -76,10 +225,10 @@ pub fn create_grpc_client() -> Result<(tokio::runtime::Runtime, GrpcClient)> {
 /// # Example
 ///
 /// ```ignore
-/// use sui_data_fetcher::utilities::create_grpc_client_with_config;
+/// use sui_prefetch::create_grpc_client_with_config;
 ///
 /// let (rt, grpc) = create_grpc_client_with_config(
-///     "https://grpc.surflux.dev:443",
+///     "https://fullnode.mainnet.sui.io:443",
 ///     Some("your-api-key".to_string()),
 /// )?;
 /// ```
@@ -105,7 +254,7 @@ pub fn create_grpc_client_with_config(
 /// # Example
 ///
 /// ```ignore
-/// use sui_data_fetcher::utilities::collect_historical_versions;
+/// use sui_prefetch::collect_historical_versions;
 ///
 /// let versions = collect_historical_versions(&grpc_tx);
 /// for (obj_id, version) in &versions {
@@ -222,7 +371,7 @@ pub struct PrefetchedDynamicFields {
 /// # Example
 ///
 /// ```ignore
-/// use sui_data_fetcher::utilities::{collect_historical_versions, prefetch_dynamic_fields};
+/// use sui_prefetch::{collect_historical_versions, prefetch_dynamic_fields};
 ///
 /// let versions = collect_historical_versions(&grpc_tx);
 /// let prefetched = prefetch_dynamic_fields(
@@ -231,12 +380,40 @@ pub struct PrefetchedDynamicFields {
 /// println!("Prefetched {} child objects", prefetched.fetched_count);
 /// ```
 pub fn prefetch_dynamic_fields(
-    graphql: &crate::graphql::GraphQLClient,
+    graphql: &sui_transport::graphql::GraphQLClient,
     grpc: &GrpcClient,
     rt: &tokio::runtime::Runtime,
     historical_versions: &HashMap<String, u64>,
     max_depth: usize,
     max_fields_per_object: usize,
+) -> PrefetchedDynamicFields {
+    // Compute max lamport version from historical_versions to validate discovered children
+    let max_lamport_version = historical_versions.values().copied().max().unwrap_or(0);
+    prefetch_dynamic_fields_with_version_bound(
+        graphql,
+        grpc,
+        rt,
+        historical_versions,
+        max_depth,
+        max_fields_per_object,
+        max_lamport_version,
+    )
+}
+
+/// Prefetch dynamic fields with an explicit version bound.
+///
+/// For children NOT in `historical_versions`, checks if their current version
+/// is <= `max_lamport_version`. If so, uses that version (the object wasn't
+/// modified after the transaction). If the version is higher, the object was
+/// modified and we can't use it for replay without additional historical lookup.
+pub fn prefetch_dynamic_fields_with_version_bound(
+    graphql: &sui_transport::graphql::GraphQLClient,
+    grpc: &GrpcClient,
+    rt: &tokio::runtime::Runtime,
+    historical_versions: &HashMap<String, u64>,
+    max_depth: usize,
+    max_fields_per_object: usize,
+    max_lamport_version: u64,
 ) -> PrefetchedDynamicFields {
     use base64::Engine;
 
@@ -279,12 +456,32 @@ pub fn prefetch_dynamic_fields(
         for df in dfs {
             result.total_discovered += 1;
 
-            // Get the child object ID (the dynamic field wrapper object)
+            // Get the child object ID (the dynamic field wrapper object).
+            // For MoveObject types, GraphQL returns the object_id directly.
+            // For MoveValue types, we need to compute the Field wrapper object ID ourselves.
             let child_id = match &df.object_id {
                 Some(id) => id.clone(),
                 None => {
-                    // MoveValue type - inline value, no separate object
-                    continue;
+                    // MoveValue type - compute the Field wrapper object ID ourselves
+                    // The Field object ID is hash(0xf0 || parent || len(key) || key || key_type)
+                    let name_bcs = match df.decode_name_bcs() {
+                        Some(bcs) => bcs,
+                        None => continue, // Can't compute ID without key bytes
+                    };
+                    let type_bcs = match type_string_to_bcs(&df.name_type) {
+                        Some(bcs) => bcs,
+                        None => {
+                            eprintln!(
+                                "[prefetch_df] Failed to serialize type '{}' to BCS",
+                                df.name_type
+                            );
+                            continue;
+                        }
+                    };
+                    match compute_dynamic_field_id(&normalized_parent, &name_bcs, &type_bcs) {
+                        Some(id) => id,
+                        None => continue,
+                    }
                 }
             };
 
@@ -293,12 +490,35 @@ pub fn prefetch_dynamic_fields(
                 continue;
             }
 
-            // Get version - prefer historical if known, otherwise use current from df
-            let version = historical_versions
-                .get(&child_id)
-                .copied()
-                .or(df.version)
-                .unwrap_or(0);
+            // Get version - prefer historical if known, otherwise try to validate current version
+            let version = if let Some(hist_ver) = historical_versions.get(&child_id).copied() {
+                hist_ver
+            } else if let Some(current_ver) = df.version {
+                // Child is NOT in historical_versions - check if current version is valid
+                if current_ver <= max_lamport_version {
+                    // Object hasn't been modified since the transaction, safe to use
+                    eprintln!(
+                        "[prefetch_df] Child {} not in effects, using current version {} (valid: <= {})",
+                        &child_id[..20.min(child_id.len())],
+                        current_ver,
+                        max_lamport_version
+                    );
+                    current_ver
+                } else {
+                    // Object was modified after the transaction - we can't use current version!
+                    // For now, skip this object with a warning
+                    eprintln!(
+                        "[prefetch_df] WARNING: Child {} has version {} > max {} - SKIPPING (stale data)",
+                        &child_id[..20.min(child_id.len())],
+                        current_ver,
+                        max_lamport_version
+                    );
+                    continue;
+                }
+            } else {
+                // No version info at all, use 0 (will likely fail)
+                0
+            };
 
             // Try to fetch the full object BCS
             let fetch_result =
@@ -310,7 +530,7 @@ pub fn prefetch_dynamic_fields(
                                version: u64,
                                type_str: String,
                                bcs: Vec<u8>,
-                               df: &crate::graphql::DynamicFieldInfo,
+                               df: &sui_transport::graphql::DynamicFieldInfo,
                                normalized_parent: &str| {
                 // Store by ID for direct lookup
                 result.children.insert(
@@ -629,7 +849,7 @@ impl PrefetchedDynamicFields {
 ///
 /// Uses max_depth=3 and max_fields_per_object=100.
 pub fn prefetch_dynamic_fields_default(
-    graphql: &crate::graphql::GraphQLClient,
+    graphql: &sui_transport::graphql::GraphQLClient,
     grpc: &GrpcClient,
     rt: &tokio::runtime::Runtime,
     historical_versions: &HashMap<String, u64>,
@@ -655,7 +875,7 @@ pub fn prefetch_dynamic_fields_default(
 /// # Returns
 /// Number of epoch-keyed fields identified (already in cache).
 pub fn prefetch_epoch_keyed_fields(
-    _graphql: &crate::graphql::GraphQLClient,
+    _graphql: &sui_transport::graphql::GraphQLClient,
     _grpc: &GrpcClient,
     _rt: &tokio::runtime::Runtime,
     prefetched: &mut PrefetchedDynamicFields,

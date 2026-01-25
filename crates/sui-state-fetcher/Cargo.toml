@@ -1,0 +1,30 @@
+[package]
+name = "sui-state-fetcher"
+version = "0.1.0"
+edition = "2021"
+description = "Unified historical state fetching for Sui transaction replay"
+
+[dependencies]
+# Core utilities
+anyhow.workspace = true
+base64.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Sui types
+move-core-types.workspace = true
+bcs.workspace = true
+
+# Workspace crates
+sui-transport.workspace = true
+sui-prefetch.workspace = true
+sui-resolver.workspace = true
+sui-sandbox-types.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

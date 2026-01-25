@@ -7494,30 +7494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sui-data-fetcher"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "futures",
- "hex",
- "move-core-types",
- "prost 0.13.5",
- "prost-build",
- "prost-types 0.13.5",
- "serde",
- "serde_json",
- "sui-sandbox-types",
- "sui-types",
- "tokio",
- "tokio-stream",
- "tonic 0.12.3",
- "tonic-build",
- "ureq",
-]
-
-[[package]]
 name = "sui-enum-compat-util"
 version = "0.1.0"
 source = "git+https://github.com/MystenLabs/sui?tag=mainnet-v1.63.4#363bb937dce4962f449b33bc061bc5e20aaa2994"
@@ -7796,9 +7772,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "sui-data-fetcher",
  "sui-sandbox-types",
  "sui-sdk",
+ "sui-transport",
  "sui-types",
  "tokio",
 ]
@@ -7835,6 +7811,23 @@ dependencies = [
  "serde",
  "sui-types",
  "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "sui-prefetch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bcs",
+ "fastcrypto",
+ "hex",
+ "move-binary-format",
+ "move-core-types",
+ "sui-resolver",
+ "sui-sandbox-types",
+ "sui-transport",
  "tokio",
 ]
 
@@ -7880,6 +7873,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-resolver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "move-core-types",
+ "sui-transport",
+]
+
+[[package]]
 name = "sui-rpc"
 version = "0.1.1"
 source = "git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=339c2272fd5b8fb4e1fa6662cfa9acdbb0d05704#339c2272fd5b8fb4e1fa6662cfa9acdbb0d05704"
@@ -7905,6 +7907,7 @@ name = "sui-sandbox-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "bcs",
  "better_any",
@@ -7915,6 +7918,7 @@ dependencies = [
  "hex",
  "move-binary-format",
  "move-bytecode-source-map",
+ "move-bytecode-utils",
  "move-command-line-common",
  "move-core-types",
  "move-disassembler",
@@ -7932,11 +7936,16 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "smallvec",
- "sui-data-fetcher",
  "sui-move-natives-latest",
+ "sui-prefetch",
  "sui-protocol-config",
+ "sui-resolver",
  "sui-sandbox-types",
+ "sui-transport",
  "sui-types",
+ "tokio",
+ "tracing",
+ "ureq",
  "uuid",
 ]
 
@@ -8006,6 +8015,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-state-fetcher"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bcs",
+ "hex",
+ "move-core-types",
+ "parking_lot 0.12.5",
+ "serde",
+ "serde_json",
+ "sui-prefetch",
+ "sui-resolver",
+ "sui-sandbox-types",
+ "sui-transport",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sui-transaction-builder"
 version = "0.0.0"
 source = "git+https://github.com/MystenLabs/sui?tag=mainnet-v1.63.4#363bb937dce4962f449b33bc061bc5e20aaa2994"
@@ -8020,6 +8049,30 @@ dependencies = [
  "sui-json-rpc-types",
  "sui-protocol-config",
  "sui-types",
+]
+
+[[package]]
+name = "sui-transport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bcs",
+ "chrono",
+ "futures",
+ "hex",
+ "move-core-types",
+ "prost 0.13.5",
+ "prost-build",
+ "prost-types 0.13.5",
+ "serde",
+ "serde_json",
+ "sui-types",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tonic-build",
+ "ureq",
 ]
 
 [[package]]
@@ -8120,6 +8173,7 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "base64 0.22.1",
  "bcs",
  "better_any",
@@ -8157,16 +8211,19 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "smallvec",
- "sui-data-fetcher",
  "sui-json-rpc-types",
  "sui-move-build",
  "sui-move-natives-latest",
  "sui-package-extractor",
+ "sui-prefetch",
  "sui-protocol-config",
+ "sui-resolver",
  "sui-sandbox-core",
  "sui-sandbox-types",
  "sui-sdk",
+ "sui-state-fetcher",
  "sui-transaction-builder",
+ "sui-transport",
  "sui-types",
  "tempfile",
  "tokio",

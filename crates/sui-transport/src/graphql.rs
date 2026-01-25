@@ -843,6 +843,140 @@ impl GraphQLClient {
         })
     }
 
+    /// Get the upgrade chain for a package, from current version to latest.
+    ///
+    /// Returns a list of (address, version) pairs representing all upgrades
+    /// of this package. The first entry is the queried package, subsequent
+    /// entries are upgrades in order.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let upgrades = client.get_package_upgrades("0xb7c36a...")?;
+    /// // Returns: [(v1, addr1), (v2, addr2), ..., (v6, latest_addr)]
+    /// ```
+    pub fn get_package_upgrades(&self, address: &str) -> Result<Vec<(String, u64)>> {
+        let query = r#"
+            query GetPackageUpgrades($address: SuiAddress!) {
+                object(address: $address) {
+                    address
+                    version
+                    asMovePackage {
+                        packageVersionsAfter(first: 50) {
+                            nodes {
+                                address
+                                version
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": address
+        });
+
+        let data = self.query(query, Some(variables))?;
+
+        let obj = data
+            .get("object")
+            .ok_or_else(|| anyhow!("Package not found: {}", address))?;
+
+        if obj.is_null() {
+            return Err(anyhow!("Package not found: {}", address));
+        }
+
+        let mut result = Vec::new();
+
+        // Add the queried package itself
+        let pkg_addr = obj
+            .get("address")
+            .and_then(|a| a.as_str())
+            .unwrap_or(address)
+            .to_string();
+        let pkg_version = obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+        result.push((pkg_addr, pkg_version));
+
+        // Add upgrades
+        if let Some(pkg) = obj.get("asMovePackage") {
+            if let Some(versions) = pkg.get("packageVersionsAfter") {
+                if let Some(nodes) = versions.get("nodes").and_then(|n| n.as_array()) {
+                    for node in nodes {
+                        let addr = node
+                            .get("address")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ver = node.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if !addr.is_empty() && ver > 0 {
+                            result.push((addr, ver));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Get the latest upgrade of a package (if any).
+    ///
+    /// Returns `Some((address, version))` for the latest upgrade,
+    /// or `None` if the package has no upgrades (is at original version).
+    pub fn get_latest_package_upgrade(&self, address: &str) -> Result<Option<(String, u64)>> {
+        let query = r#"
+            query GetLatestPackageUpgrade($address: SuiAddress!) {
+                object(address: $address) {
+                    address
+                    version
+                    asMovePackage {
+                        packageVersionsAfter(last: 1) {
+                            nodes {
+                                address
+                                version
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": address
+        });
+
+        let data = self.query(query, Some(variables))?;
+
+        let obj = data
+            .get("object")
+            .ok_or_else(|| anyhow!("Package not found: {}", address))?;
+
+        if obj.is_null() {
+            return Err(anyhow!("Package not found: {}", address));
+        }
+
+        // Check for upgrades
+        if let Some(pkg) = obj.get("asMovePackage") {
+            if let Some(versions) = pkg.get("packageVersionsAfter") {
+                if let Some(nodes) = versions.get("nodes").and_then(|n| n.as_array()) {
+                    if let Some(node) = nodes.first() {
+                        let addr = node
+                            .get("address")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ver = node.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if !addr.is_empty() && ver > 0 {
+                            return Ok(Some((addr, ver)));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Fetch a package at a specific checkpoint (for historical replay).
     pub fn fetch_package_at_checkpoint(
         &self,
@@ -2388,7 +2522,7 @@ mod tests {
 
     /// Test the unified DataFetcher fallback behavior
     // NOTE: This test uses DataFetcher from the main crate (sui_move_interface_extractor),
-    // not from sui-data-fetcher. Run integration tests via the main crate instead.
+    // not from sui-transport. Run integration tests via the main crate instead.
     // Run with: cargo test test_data_fetcher_integration -- --ignored --nocapture
     // #[test]
     // #[ignore]

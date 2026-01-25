@@ -3,7 +3,7 @@
 //! Converts gRPC transaction data to the `FetchedTransaction` format used
 //! by the replay infrastructure.
 //!
-//! This enables using transactions fetched directly via gRPC (e.g., from Surflux)
+//! This enables using transactions fetched directly via gRPC
 //! with the CachedTransaction and replay infrastructure.
 //!
 //! gRPC transactions provide additional historical data that GraphQL doesn't:
@@ -18,11 +18,11 @@ use sui_sandbox_types::{
     TransactionEffectsSummary, TransactionInput, TransactionStatus,
 };
 
-use crate::grpc::{GrpcArgument, GrpcCommand, GrpcInput, GrpcTransaction};
+use sui_transport::grpc::{GrpcArgument, GrpcCommand, GrpcInput, GrpcTransaction};
 
 /// Convert a gRPC transaction to the internal FetchedTransaction format.
 ///
-/// This enables using transactions fetched directly via gRPC (e.g., from Surflux)
+/// This enables using transactions fetched directly via gRPC
 /// with the CachedTransaction and replay infrastructure.
 ///
 /// gRPC transactions provide additional historical data that GraphQL doesn't:
@@ -396,7 +396,7 @@ mod tests {
             inputs: vec![],
             commands: vec![],
             status: Some("failure".to_string()),
-            execution_error: Some(crate::grpc::GrpcExecutionError {
+            execution_error: Some(sui_transport::grpc::GrpcExecutionError {
                 description: Some("Out of gas".to_string()),
                 command: Some(0),
                 kind: Some("INSUFFICIENT_GAS".to_string()),

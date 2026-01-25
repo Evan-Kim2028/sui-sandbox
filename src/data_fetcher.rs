@@ -1,18 +1,37 @@
-//! Unified Data Fetcher for Sui Network
+//! **DEPRECATED**: Use [`sui_state_fetcher::HistoricalStateProvider`] instead.
 //!
-//! Provides a unified interface for fetching blockchain data with:
-//! - **Cache**: Local transaction cache (fastest, no network)
-//! - **GraphQL**: Rich queries with complete data (primary backend)
-//! - **gRPC**: Real-time streaming (push-based, ~30-40 tx/sec)
+//! This module is deprecated in favor of the `sui-state-fetcher` crate which provides:
+//! - **Versioned caching**: Objects cached by `(id, version)` for historical replay
+//! - **Unified API**: Single `fetch_replay_state()` call fetches everything needed
+//! - **Proper linkage resolution**: Automatic package dependency resolution
 //!
-//! # Choosing a Backend
+//! # Migration Guide
 //!
-//! | Use Case | Recommended | Why |
-//! |----------|-------------|-----|
-//! | Real-time monitoring | gRPC streaming | Push-based, no gaps, ~30-40 tx/sec |
-//! | Transaction replay | GraphQL | Complete effects (created/mutated/deleted) |
-//! | Package/object queries | Cache → GraphQL | Cache-first for speed, GraphQL fallback |
-//! | Historical lookups | GraphQL or gRPC archive | Both support point queries |
+//! Before (deprecated):
+//! ```ignore
+//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//!
+//! let fetcher = DataFetcher::mainnet();
+//! let obj = fetcher.fetch_object("0x...")?;
+//! ```
+//!
+//! After (recommended):
+//! ```ignore
+//! use sui_state_fetcher::HistoricalStateProvider;
+//!
+//! let provider = HistoricalStateProvider::mainnet().await?;
+//! let state = provider.fetch_replay_state("digest...").await?;
+//! // state.objects, state.packages, state.transaction all included
+//! ```
+//!
+//! # Why Deprecated?
+//!
+//! The cache in this module stores objects by ID only, not by version.
+//! This is fundamentally incompatible with historical transaction replay,
+//! which requires objects at their exact historical versions.
+//!
+//! The `sui_state_fetcher` crate provides a version-aware cache that correctly
+//! handles historical state, making replay accurate and reliable.
 //!
 //! # Cache-First Strategy
 //!
@@ -139,6 +158,10 @@ pub use crate::grpc::{
 /// - **GraphQL**: Primary network backend for all queries
 /// - **gRPC**: Optional streaming and batch operations
 /// - **Write-through**: Automatically cache network fetches
+#[deprecated(
+    since = "0.9.0",
+    note = "Use sui_state_fetcher::HistoricalStateProvider instead. DataFetcher's cache is not version-aware, making it unsuitable for historical transaction replay."
+)]
 pub struct DataFetcher {
     graphql: GraphQLClient,
     /// Optional gRPC client for streaming (requires provider endpoint)

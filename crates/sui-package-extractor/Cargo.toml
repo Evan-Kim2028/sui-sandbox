@@ -26,4 +26,4 @@ sui-types.workspace = true
 
 # Workspace crates
 sui-sandbox-types.workspace = true
-sui-data-fetcher.workspace = true
+sui-transport.workspace = true

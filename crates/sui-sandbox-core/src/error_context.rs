@@ -395,7 +395,7 @@ impl AbortInfo {
     ///
     /// This extracts the constant_name from CleverError if available,
     /// and falls back to heuristic abort code meanings.
-    pub fn from_grpc_move_abort(abort: &sui_data_fetcher::grpc::GrpcMoveAbort) -> Self {
+    pub fn from_grpc_move_abort(abort: &sui_transport::grpc::GrpcMoveAbort) -> Self {
         let module = abort.module.clone().unwrap_or_else(|| "unknown".into());
         let function = abort
             .function_name

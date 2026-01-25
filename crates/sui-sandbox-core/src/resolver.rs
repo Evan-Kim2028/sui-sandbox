@@ -66,6 +66,7 @@ use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // ModuleProvider Trait
@@ -120,6 +121,22 @@ pub trait ModuleProvider {
 // LocalModuleResolver
 // =============================================================================
 
+/// Cache key for function lookups.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    package: AccountAddress,
+    module: String,
+    function: String,
+}
+
+/// Cached function information.
+#[derive(Debug, Clone)]
+struct CachedFunctionInfo {
+    signature: FunctionSignature,
+    is_callable: bool,
+    is_entry: bool,
+}
+
 #[derive(Clone)]
 pub struct LocalModuleResolver {
     modules: BTreeMap<ModuleId, CompiledModule>,
@@ -127,6 +144,9 @@ pub struct LocalModuleResolver {
     /// Address aliases: maps target address -> source address
     /// When looking up a module at target address, also try source address
     address_aliases: BTreeMap<AccountAddress, AccountAddress>,
+    /// Cache for function signatures and visibility (thread-safe).
+    /// Key: (package_addr, module_name, function_name)
+    function_cache: std::sync::Arc<parking_lot::RwLock<std::collections::HashMap<FunctionKey, CachedFunctionInfo>>>,
 }
 
 impl Default for LocalModuleResolver {
@@ -141,6 +161,7 @@ impl LocalModuleResolver {
             modules: BTreeMap::new(),
             modules_bytes: BTreeMap::new(),
             address_aliases: BTreeMap::new(),
+            function_cache: std::sync::Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -210,7 +231,7 @@ impl LocalModuleResolver {
     /// as the on-chain framework may have modules not present in the bundled version.
     pub fn load_sui_framework_from_graphql(
         &mut self,
-        graphql: &sui_data_fetcher::GraphQLClient,
+        graphql: &sui_transport::GraphQLClient,
     ) -> Result<usize> {
         let framework_packages = [
             "0x0000000000000000000000000000000000000000000000000000000000000001", // move-stdlib
@@ -237,9 +258,10 @@ impl LocalModuleResolver {
                                         count += 1;
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "Warning: Failed to deserialize framework module {}: {:?}",
-                                            module.name, e
+                                        warn!(
+                                            module = %module.name,
+                                            error = ?e,
+                                            "failed to deserialize framework module"
                                         );
                                     }
                                 }
@@ -248,9 +270,10 @@ impl LocalModuleResolver {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to fetch framework package {}: {}",
-                        pkg_addr, e
+                    warn!(
+                        package = %pkg_addr,
+                        error = %e,
+                        "failed to fetch framework package"
                     );
                 }
             }
@@ -262,19 +285,19 @@ impl LocalModuleResolver {
     /// Load framework from GraphQL, falling back to bundled if fetch fails.
     pub fn load_sui_framework_auto(&mut self) -> Result<usize> {
         // Try to fetch from GraphQL first for latest version
-        let client = sui_data_fetcher::GraphQLClient::mainnet();
+        let client = sui_transport::GraphQLClient::mainnet();
         match self.load_sui_framework_from_graphql(&client) {
             Ok(count) if count > 0 => {
-                eprintln!("[framework] Loaded {} modules from mainnet GraphQL", count);
+                info!(count = count, "loaded framework modules from mainnet GraphQL");
                 return Ok(count);
             }
             Ok(0) => {
-                eprintln!("[framework] GraphQL returned no modules, falling back to bundled");
+                debug!("GraphQL returned no modules, falling back to bundled framework");
             }
             Err(e) => {
-                eprintln!(
-                    "[framework] GraphQL fetch failed: {}, falling back to bundled",
-                    e
+                debug!(
+                    error = %e,
+                    "GraphQL fetch failed, falling back to bundled framework"
                 );
             }
             _ => {}
@@ -322,10 +345,10 @@ impl LocalModuleResolver {
             let id = module.self_id();
             // Check for duplicate modules - warn but don't fail (later module wins)
             if self.modules.contains_key(&id) {
-                eprintln!(
-                    "Warning: duplicate module {} found at {}, overwriting previous",
-                    id,
-                    path.display()
+                warn!(
+                    module = %id,
+                    path = %path.display(),
+                    "duplicate module found, overwriting previous"
                 );
             }
             self.modules.insert(id.clone(), module);
@@ -336,7 +359,7 @@ impl LocalModuleResolver {
     }
 
     pub fn get_module_struct(&self, id: &ModuleId) -> Option<&CompiledModule> {
-        self.modules.get(id)
+        self.get_module_with_alias(id)
     }
 
     pub fn get_module_by_addr_name(
@@ -345,7 +368,23 @@ impl LocalModuleResolver {
         name: &str,
     ) -> Option<&CompiledModule> {
         let id = ModuleId::new(*addr, Identifier::new(name).ok()?);
-        self.modules.get(&id)
+        self.get_module_with_alias(&id)
+    }
+
+    /// Get a compiled module, checking address aliases if direct lookup fails.
+    /// This is the preferred way to look up modules when the address might be
+    /// a deployment address that differs from the bytecode address.
+    fn get_module_with_alias(&self, id: &ModuleId) -> Option<&CompiledModule> {
+        // Try direct lookup first
+        if let Some(module) = self.modules.get(id) {
+            return Some(module);
+        }
+        // Check for alias (deployment address -> bytecode address)
+        if let Some(aliased_addr) = self.address_aliases.get(id.address()) {
+            let aliased_id = ModuleId::new(*aliased_addr, id.name().to_owned());
+            return self.modules.get(&aliased_id);
+        }
+        None
     }
 
     pub fn iter_modules(&self) -> impl Iterator<Item = &CompiledModule> {
@@ -354,13 +393,34 @@ impl LocalModuleResolver {
 
     /// Dynamically add a module from raw bytecode.
     /// This enables loading packages fetched from the RPC at runtime.
+    /// Note: Adding modules invalidates the function cache for consistency.
     pub fn add_module_bytes(&mut self, bytes: Vec<u8>) -> Result<ModuleId> {
         let module = CompiledModule::deserialize_with_defaults(&bytes)
             .map_err(|e| anyhow!("failed to deserialize module: {:?}", e))?;
         let id = module.self_id();
         self.modules.insert(id.clone(), module);
         self.modules_bytes.insert(id.clone(), bytes);
+        // Clear function cache for this package to ensure consistency
+        self.invalidate_package_cache(id.address());
         Ok(id)
+    }
+
+    /// Invalidate cached function info for a specific package.
+    fn invalidate_package_cache(&self, package_addr: &AccountAddress) {
+        self.function_cache.write().retain(|k, _| k.package != *package_addr);
+    }
+
+    /// Clear the entire function cache.
+    pub fn clear_function_cache(&self) {
+        self.function_cache.write().clear();
+    }
+
+    /// Get statistics about the function cache.
+    pub fn function_cache_stats(&self) -> (usize, usize) {
+        let cache = self.function_cache.read();
+        let total = cache.len();
+        let callable = cache.values().filter(|v| v.is_callable).count();
+        (total, callable)
     }
 
     /// Dynamically add multiple modules (e.g., from a package).
@@ -400,7 +460,7 @@ impl LocalModuleResolver {
                     }
                 }
                 Err(e) => {
-                    eprintln!("  Warning: Failed to load module {}: {}", name, e);
+                    warn!(module = %name, error = %e, "failed to load module");
                 }
             }
         }
@@ -408,7 +468,6 @@ impl LocalModuleResolver {
         // Set up address alias if target differs from source
         if let (Some(target), Some(source)) = (target_addr, source_addr) {
             if target != source {
-                // Address alias created (useful for debugging but too verbose for normal use)
                 self.address_aliases.insert(target, source);
             }
         }
@@ -506,6 +565,89 @@ impl LocalModuleResolver {
         self.address_aliases.get(target).copied()
     }
 
+    /// Add an address alias: when looking up modules at `target`, also try `source`.
+    /// This is used for package upgrade linkage where the original package ID
+    /// should resolve to modules in the upgraded package.
+    pub fn add_address_alias(&mut self, target: AccountAddress, source: AccountAddress) {
+        if target != source {
+            self.address_aliases.insert(target, source);
+        }
+    }
+
+    /// Import address aliases from a PackageUpgradeResolver.
+    ///
+    /// This synchronizes the resolver's internal alias map with the comprehensive
+    /// bidirectional mappings from PackageUpgradeResolver. The direction is:
+    /// storage_id -> original_id (bytecode address).
+    ///
+    /// Note: This creates aliases in the OPPOSITE direction from `add_address_alias`
+    /// because PackageUpgradeResolver maps storage->original while we need
+    /// deployment_addr->bytecode_addr for module lookup.
+    pub fn import_upgrade_aliases(
+        &mut self,
+        upgrade_resolver: &sui_resolver::package_upgrades::PackageUpgradeResolver,
+    ) {
+        for (storage_id, original_id) in upgrade_resolver.all_storage_to_original() {
+            if let (Ok(storage_addr), Ok(original_addr)) = (
+                AccountAddress::from_hex_literal(storage_id),
+                AccountAddress::from_hex_literal(original_id),
+            ) {
+                // storage_id is where bytecode is fetched from (on-chain)
+                // original_id is what's in the bytecode self-address
+                // For module lookup: we look up by original_id (from type tags/calls)
+                // and need to find modules stored at original_id
+                // Actually the mapping should be: if someone asks for storage_id,
+                // redirect to original_id where modules are stored
+                if storage_addr != original_addr {
+                    self.address_aliases.insert(storage_addr, original_addr);
+                }
+            }
+        }
+    }
+
+    /// Get all address aliases as a HashMap for use with VMHarness and ObjectRuntime.
+    pub fn get_all_aliases(&self) -> std::collections::HashMap<AccountAddress, AccountAddress> {
+        self.address_aliases
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect()
+    }
+
+    /// Validate that all aliased addresses have modules loaded.
+    ///
+    /// Returns a list of (target_addr, source_addr) pairs where the source
+    /// address has no modules loaded. This helps catch configuration issues
+    /// where aliases are set up but the actual modules weren't loaded.
+    pub fn validate_aliases(&self) -> Vec<(AccountAddress, AccountAddress)> {
+        let mut missing = Vec::new();
+
+        for (target, source) in &self.address_aliases {
+            // Check if any module exists at the source address
+            let has_modules = self
+                .modules
+                .keys()
+                .any(|id| id.address() == source);
+
+            if !has_modules {
+                missing.push((*target, *source));
+            }
+        }
+
+        missing
+    }
+
+    /// Validate aliases and log warnings for any that point to missing modules.
+    pub fn validate_aliases_with_warnings(&self) {
+        let missing = self.validate_aliases();
+        for (target, source) in missing {
+            warn!(
+                target = %target.to_hex_literal(),
+                source = %source.to_hex_literal(),
+                "address alias points to missing modules"
+            );
+        }
+    }
+
     // ========================================================================
     // LLM Agent Tools - Introspection and search methods
     // ========================================================================
@@ -522,7 +664,7 @@ impl LocalModuleResolver {
     pub fn list_functions(&self, module_path: &str) -> Option<Vec<String>> {
         let (addr, name) = Self::parse_module_path(module_path)?;
         let id = ModuleId::new(addr, Identifier::new(name).ok()?);
-        let module = self.modules.get(&id)?;
+        let module = self.get_module_with_alias(&id)?;
 
         let functions: Vec<String> = module
             .function_defs
@@ -539,7 +681,7 @@ impl LocalModuleResolver {
     pub fn list_structs(&self, module_path: &str) -> Option<Vec<String>> {
         let (addr, name) = Self::parse_module_path(module_path)?;
         let id = ModuleId::new(addr, Identifier::new(name).ok()?);
-        let module = self.modules.get(&id)?;
+        let module = self.get_module_with_alias(&id)?;
 
         let structs: Vec<String> = module
             .struct_defs
@@ -560,7 +702,7 @@ impl LocalModuleResolver {
     ) -> Option<serde_json::Value> {
         let (addr, mod_name) = Self::parse_module_path(module_path)?;
         let id = ModuleId::new(addr, Identifier::new(mod_name).ok()?);
-        let module = self.modules.get(&id)?;
+        let module = self.get_module_with_alias(&id)?;
 
         for def in &module.function_defs {
             let handle = &module.function_handles[def.function.0 as usize];
@@ -822,7 +964,7 @@ impl LocalModuleResolver {
     pub fn disassemble_function(&self, module_path: &str, function_name: &str) -> Option<String> {
         let (addr, mod_name) = Self::parse_module_path(module_path)?;
         let id = ModuleId::new(addr, Identifier::new(mod_name).ok()?);
-        let module = self.modules.get(&id)?;
+        let module = self.get_module_with_alias(&id)?;
 
         for def in &module.function_defs {
             let handle = &module.function_handles[def.function.0 as usize];
@@ -887,7 +1029,7 @@ impl LocalModuleResolver {
         module_name: &str,
     ) -> Option<Vec<(String, StructInfo)>> {
         let id = ModuleId::new(*package_addr, Identifier::new(module_name).ok()?);
-        let module = self.modules.get(&id)?;
+        let module = self.get_module_with_alias(&id)?;
 
         let mut structs = Vec::new();
 
@@ -940,6 +1082,581 @@ impl LocalModuleResolver {
         Some(structs)
     }
 
+    /// Populate the function cache for a given function if not already cached.
+    /// Returns true if the function was found and cached.
+    fn ensure_function_cached(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+    ) -> bool {
+        let key = FunctionKey {
+            package: *package_addr,
+            module: module_name.to_string(),
+            function: function_name.to_string(),
+        };
+
+        // Check if already cached
+        if self.function_cache.read().contains_key(&key) {
+            return true;
+        }
+
+        // Look up the function in bytecode
+        let id = match Identifier::new(module_name) {
+            Ok(ident) => ModuleId::new(*package_addr, ident),
+            Err(_) => return false,
+        };
+        let module = match self.get_module_with_alias(&id) {
+            Some(m) => m,
+            None => return false,
+        };
+
+        for def in &module.function_defs {
+            let handle = &module.function_handles[def.function.0 as usize];
+            let fn_name = module.identifier_at(handle.name).to_string();
+            if fn_name == function_name {
+                let return_sig = &module.signatures[handle.return_.0 as usize];
+                let is_public = matches!(
+                    def.visibility,
+                    move_binary_format::file_format::Visibility::Public
+                );
+                let is_entry = def.is_entry;
+
+                let info = CachedFunctionInfo {
+                    signature: FunctionSignature {
+                        type_param_count: handle.type_parameters.len(),
+                        return_types: return_sig.0.clone(),
+                    },
+                    is_callable: is_public || is_entry,
+                    is_entry,
+                };
+
+                self.function_cache.write().insert(key, info);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get a function's signature from the bytecode.
+    ///
+    /// This is used for type resolution - to know the return types of a function
+    /// BEFORE calling it, enabling proper type tracking in PTB execution.
+    ///
+    /// Results are cached for performance on repeated lookups.
+    pub fn get_function_signature(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+    ) -> Option<FunctionSignature> {
+        let key = FunctionKey {
+            package: *package_addr,
+            module: module_name.to_string(),
+            function: function_name.to_string(),
+        };
+
+        // Try cache first
+        if let Some(info) = self.function_cache.read().get(&key) {
+            return Some(info.signature.clone());
+        }
+
+        // Populate cache and return
+        if self.ensure_function_cached(package_addr, module_name, function_name) {
+            self.function_cache.read().get(&key).map(|info| info.signature.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Check if a function is callable from a PTB (i.e., is public or entry).
+    ///
+    /// Returns `Ok(())` if the function is callable, or an error describing why not.
+    /// This validation prevents calling private/friend functions that would fail
+    /// on the real Sui network.
+    ///
+    /// Results are cached for performance on repeated lookups.
+    ///
+    /// # Visibility Rules
+    /// - `public` functions: Always callable from PTBs
+    /// - `entry` functions: Callable from PTBs (this is their purpose)
+    /// - `friend` functions: NOT callable from PTBs (only from friend modules)
+    /// - `private` functions: NOT callable from PTBs (only from same module)
+    pub fn check_function_callable(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+    ) -> Result<()> {
+        let key = FunctionKey {
+            package: *package_addr,
+            module: module_name.to_string(),
+            function: function_name.to_string(),
+        };
+
+        // Check cache first
+        if let Some(info) = self.function_cache.read().get(&key) {
+            if info.is_callable {
+                return Ok(());
+            } else {
+                return Err(anyhow!(
+                    "Function {}::{}::{} is not callable from a PTB. \
+                     Only public or entry functions can be called directly.",
+                    package_addr.to_hex_literal(),
+                    module_name,
+                    function_name
+                ));
+            }
+        }
+
+        // Populate cache
+        if self.ensure_function_cached(package_addr, module_name, function_name) {
+            // Now check the cached result
+            let cache = self.function_cache.read();
+            if let Some(info) = cache.get(&key) {
+                if info.is_callable {
+                    return Ok(());
+                } else {
+                    return Err(anyhow!(
+                        "Function {}::{}::{} is not callable from a PTB. \
+                         Only public or entry functions can be called directly.",
+                        package_addr.to_hex_literal(),
+                        module_name,
+                        function_name
+                    ));
+                }
+            }
+        }
+
+        // Function not found
+        Err(anyhow!(
+            "Function '{}' not found in module {}::{}",
+            function_name,
+            package_addr.to_hex_literal(),
+            module_name
+        ))
+    }
+
+    /// Check if a function is an entry function.
+    ///
+    /// Entry functions are the primary way to invoke Move code from transactions.
+    /// They have special rules:
+    /// - Cannot return values that need to be used (results are dropped)
+    /// - Can accept special types like TxContext, Clock, etc.
+    ///
+    /// Results are cached for performance.
+    pub fn is_entry_function(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+    ) -> bool {
+        let key = FunctionKey {
+            package: *package_addr,
+            module: module_name.to_string(),
+            function: function_name.to_string(),
+        };
+
+        // Check cache first
+        if let Some(info) = self.function_cache.read().get(&key) {
+            return info.is_entry;
+        }
+
+        // Populate cache and check
+        if self.ensure_function_cached(package_addr, module_name, function_name) {
+            self.function_cache.read().get(&key).map(|info| info.is_entry).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Check that a public non-entry function's return types don't contain references.
+    ///
+    /// In Sui/Move, public non-entry functions cannot return references because
+    /// references cannot escape the transaction boundary. Entry functions have
+    /// special handling and are allowed to return references (they're dropped).
+    ///
+    /// This matches Sui client behavior at `execution.rs:check_non_entry_signature`.
+    pub fn check_no_reference_returns(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+    ) -> Result<()> {
+        let id = ModuleId::new(
+            *package_addr,
+            Identifier::new(module_name)
+                .map_err(|e| anyhow!("Invalid module name '{}': {}", module_name, e))?,
+        );
+
+        let module = self.get_module_with_alias(&id).ok_or_else(|| {
+            anyhow!(
+                "Module {}::{} not found",
+                package_addr.to_hex_literal(),
+                module_name
+            )
+        })?;
+
+        // Find the function
+        for def in &module.function_defs {
+            let handle = &module.function_handles[def.function.0 as usize];
+            let fn_name = module.identifier_at(handle.name).to_string();
+            if fn_name == function_name {
+                // Entry functions are exempt - they have special handling
+                if def.is_entry {
+                    return Ok(());
+                }
+
+                // For public non-entry functions, check return types for references
+                let return_sig = &module.signatures[handle.return_.0 as usize];
+                for (i, token) in return_sig.0.iter().enumerate() {
+                    if Self::contains_reference(token) {
+                        let type_str = format_signature_token(module, token);
+                        return Err(anyhow!(
+                            "Function {}::{}::{} has invalid return type at position {}: '{}'. \
+                             Public non-entry functions cannot return references. \
+                             References cannot escape the transaction boundary.",
+                            package_addr.to_hex_literal(),
+                            module_name,
+                            function_name,
+                            i,
+                            type_str
+                        ));
+                    }
+                }
+
+                return Ok(());
+            }
+        }
+
+        // Function not found - let other validation handle this
+        Ok(())
+    }
+
+    /// Check if a signature token contains a reference (including nested).
+    fn contains_reference(token: &move_binary_format::file_format::SignatureToken) -> bool {
+        use move_binary_format::file_format::SignatureToken;
+
+        match token {
+            SignatureToken::Reference(_) | SignatureToken::MutableReference(_) => true,
+            SignatureToken::Vector(inner) => Self::contains_reference(inner),
+            SignatureToken::Datatype(_) => false,
+            SignatureToken::DatatypeInstantiation(inst) => {
+                let (_, type_args) = inst.as_ref();
+                type_args.iter().any(Self::contains_reference)
+            }
+            _ => false,
+        }
+    }
+
+    /// Validate type arguments for a function call.
+    ///
+    /// Checks:
+    /// 1. Correct number of type arguments
+    /// 2. Each type argument satisfies the ability constraints of its type parameter
+    ///
+    /// # Returns
+    /// `Ok(())` if valid, or an error describing the constraint violation.
+    pub fn validate_type_args(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+        type_args: &[TypeTag],
+    ) -> Result<()> {
+        let id = ModuleId::new(
+            *package_addr,
+            Identifier::new(module_name)
+                .map_err(|e| anyhow!("Invalid module name '{}': {}", module_name, e))?,
+        );
+
+        // Try direct lookup first, then check for alias
+        let module = self.get_module_with_alias(&id).ok_or_else(|| {
+            anyhow!(
+                "Module {}::{} not found",
+                package_addr.to_hex_literal(),
+                module_name
+            )
+        })?;
+
+        // Find the function
+        for def in &module.function_defs {
+            let handle = &module.function_handles[def.function.0 as usize];
+            let fn_name = module.identifier_at(handle.name).to_string();
+            if fn_name == function_name {
+                // Check type argument count
+                let expected = handle.type_parameters.len();
+                let provided = type_args.len();
+                if expected != provided {
+                    return Err(anyhow!(
+                        "Function {}::{}::{} expects {} type argument(s), but {} provided",
+                        package_addr.to_hex_literal(),
+                        module_name,
+                        function_name,
+                        expected,
+                        provided
+                    ));
+                }
+
+                // Check ability constraints for each type argument
+                for (i, (type_arg, constraint)) in
+                    type_args.iter().zip(handle.type_parameters.iter()).enumerate()
+                {
+                    if let Err(msg) = self.check_type_satisfies_constraints(type_arg, constraint) {
+                        return Err(anyhow!(
+                            "Type argument {} of {}::{}::{} violates constraints: {}",
+                            i,
+                            package_addr.to_hex_literal(),
+                            module_name,
+                            function_name,
+                            msg
+                        ));
+                    }
+                }
+
+                return Ok(());
+            }
+        }
+
+        Err(anyhow!(
+            "Function '{}' not found in module {}::{}",
+            function_name,
+            package_addr.to_hex_literal(),
+            module_name
+        ))
+    }
+
+    /// Check if a type satisfies the given ability constraints.
+    ///
+    /// This is a conservative check - it returns Ok if the type appears to
+    /// satisfy constraints based on known type information. For unknown types,
+    /// it may conservatively allow them (since the VM will catch violations).
+    fn check_type_satisfies_constraints(
+        &self,
+        type_tag: &TypeTag,
+        constraints: &move_binary_format::file_format::AbilitySet,
+    ) -> Result<(), String> {
+        use move_binary_format::file_format::Ability;
+
+        // Primitives have all abilities except key
+        let primitive_abilities = |has_key_constraint: bool| {
+            if has_key_constraint {
+                Err("Primitive types do not have the 'key' ability".to_string())
+            } else {
+                Ok(())
+            }
+        };
+
+        let has_key = constraints.has_ability(Ability::Key);
+        let has_store = constraints.has_ability(Ability::Store);
+        let has_copy = constraints.has_ability(Ability::Copy);
+        let has_drop = constraints.has_ability(Ability::Drop);
+
+        match type_tag {
+            // Primitives have copy, drop, store but NOT key
+            TypeTag::Bool | TypeTag::U8 | TypeTag::U16 | TypeTag::U32 | TypeTag::U64
+            | TypeTag::U128 | TypeTag::U256 | TypeTag::Address => {
+                primitive_abilities(has_key)
+            }
+
+            // Signer has drop but NOT copy, store, or key
+            TypeTag::Signer => {
+                if has_copy {
+                    return Err("'signer' does not have the 'copy' ability".to_string());
+                }
+                if has_store {
+                    return Err("'signer' does not have the 'store' ability".to_string());
+                }
+                if has_key {
+                    return Err("'signer' does not have the 'key' ability".to_string());
+                }
+                Ok(())
+            }
+
+            // Vector has the abilities of its element type (except key)
+            TypeTag::Vector(inner) => {
+                if has_key {
+                    return Err("'vector' does not have the 'key' ability".to_string());
+                }
+                // Recursively check inner type constraints (minus key)
+                // We reconstruct the constraint set without key using union of singletons
+                let mut inner_constraints = move_binary_format::file_format::AbilitySet::EMPTY;
+                if has_copy {
+                    inner_constraints = inner_constraints
+                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Copy));
+                }
+                if has_drop {
+                    inner_constraints = inner_constraints
+                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Drop));
+                }
+                if has_store {
+                    inner_constraints = inner_constraints
+                        .union(move_binary_format::file_format::AbilitySet::singleton(Ability::Store));
+                }
+                self.check_type_satisfies_constraints(inner, &inner_constraints)
+            }
+
+            // Structs - look up the actual abilities and validate type arguments
+            TypeTag::Struct(struct_tag) => {
+                let struct_id = ModuleId::new(
+                    struct_tag.address,
+                    Identifier::new(struct_tag.module.as_str())
+                        .map_err(|_| "Invalid module name in type".to_string())?,
+                );
+
+                if let Some(module) = self.get_module_with_alias(&struct_id) {
+                    // Find the struct definition
+                    for struct_def in &module.struct_defs {
+                        let handle = &module.datatype_handles[struct_def.struct_handle.0 as usize];
+                        let name = module.identifier_at(handle.name).to_string();
+                        if name == struct_tag.name.as_str() {
+                            let abilities = handle.abilities;
+
+                            // Check each required constraint
+                            if has_key && !abilities.has_ability(Ability::Key) {
+                                return Err(format!(
+                                    "Type '{}::{}::{}' does not have the 'key' ability",
+                                    struct_tag.address.to_hex_literal(),
+                                    struct_tag.module,
+                                    struct_tag.name
+                                ));
+                            }
+                            if has_store && !abilities.has_ability(Ability::Store) {
+                                return Err(format!(
+                                    "Type '{}::{}::{}' does not have the 'store' ability",
+                                    struct_tag.address.to_hex_literal(),
+                                    struct_tag.module,
+                                    struct_tag.name
+                                ));
+                            }
+                            if has_copy && !abilities.has_ability(Ability::Copy) {
+                                return Err(format!(
+                                    "Type '{}::{}::{}' does not have the 'copy' ability",
+                                    struct_tag.address.to_hex_literal(),
+                                    struct_tag.module,
+                                    struct_tag.name
+                                ));
+                            }
+                            if has_drop && !abilities.has_ability(Ability::Drop) {
+                                return Err(format!(
+                                    "Type '{}::{}::{}' does not have the 'drop' ability",
+                                    struct_tag.address.to_hex_literal(),
+                                    struct_tag.module,
+                                    struct_tag.name
+                                ));
+                            }
+
+                            // ENHANCED: Validate type arguments against the struct's type parameter constraints
+                            // This catches cases like passing a type without 'store' to Coin<T> where T: store
+                            if !struct_tag.type_params.is_empty() {
+                                self.validate_struct_type_params(
+                                    &struct_tag,
+                                    &handle.type_parameters,
+                                )?;
+                            }
+
+                            return Ok(());
+                        }
+                    }
+
+                    // Struct not found in module - let VM handle it
+                    Ok(())
+                } else {
+                    // Module not found - let VM handle it (might be runtime loaded)
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Validate that a struct's type arguments satisfy the struct's type parameter constraints.
+    ///
+    /// For example, for `Coin<SUI>` where Coin is defined as `struct Coin<phantom T>`,
+    /// this validates that SUI satisfies any constraints on T.
+    fn validate_struct_type_params(
+        &self,
+        struct_tag: &move_core_types::language_storage::StructTag,
+        type_params: &[move_binary_format::file_format::DatatypeTyParameter],
+    ) -> Result<(), String> {
+        // Number of type args should match type params
+        if struct_tag.type_params.len() != type_params.len() {
+            return Err(format!(
+                "Type argument count mismatch for {}::{}::{}: expected {}, got {}",
+                struct_tag.address.to_hex_literal(),
+                struct_tag.module,
+                struct_tag.name,
+                type_params.len(),
+                struct_tag.type_params.len()
+            ));
+        }
+
+        // Validate each type argument against its parameter's constraints
+        for (i, (type_arg, param)) in struct_tag.type_params.iter().zip(type_params.iter()).enumerate() {
+            // Phantom type parameters don't affect runtime, so we skip validation
+            // (they only need to satisfy constraints for compile-time reasons)
+            if param.is_phantom {
+                continue;
+            }
+
+            let param_constraints = param.constraints;
+            if param_constraints != move_binary_format::file_format::AbilitySet::EMPTY {
+                self.check_type_satisfies_constraints(type_arg, &param_constraints)
+                    .map_err(|e| format!(
+                        "Type argument {} for {}::{}::{} does not satisfy constraints: {}",
+                        i,
+                        struct_tag.address.to_hex_literal(),
+                        struct_tag.module,
+                        struct_tag.name,
+                        e
+                    ))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Resolve the return types of a function to TypeTags given concrete type arguments.
+    ///
+    /// This is the key method for full type tracking - it looks up the function signature
+    /// in bytecode and instantiates the return types with the provided type arguments.
+    pub fn resolve_function_return_types(
+        &self,
+        package_addr: &AccountAddress,
+        module_name: &str,
+        function_name: &str,
+        type_args: &[TypeTag],
+    ) -> Option<Vec<TypeTag>> {
+        let id = ModuleId::new(*package_addr, Identifier::new(module_name).ok()?);
+
+        // Try direct lookup first, then check for alias
+        let module = self.modules.get(&id).or_else(|| {
+            // Check if this address has an alias (for deployed packages)
+            self.address_aliases.get(package_addr).and_then(|aliased_addr| {
+                let aliased_id = ModuleId::new(*aliased_addr, Identifier::new(module_name).ok()?);
+                self.modules.get(&aliased_id)
+            })
+        })?;
+
+        // Find the function
+        for def in &module.function_defs {
+            let handle = &module.function_handles[def.function.0 as usize];
+            let fn_name = module.identifier_at(handle.name).to_string();
+            if fn_name == function_name {
+                let return_sig = &module.signatures[handle.return_.0 as usize];
+
+                // Convert each return type to TypeTag
+                let return_types: Option<Vec<TypeTag>> = return_sig
+                    .0
+                    .iter()
+                    .map(|token| signature_token_to_type_tag(module, token, type_args))
+                    .collect();
+
+                return return_types;
+            }
+        }
+        None
+    }
+
     /// Get struct information by type path.
     /// Type path can be "0x2::coin::Coin" or just "Coin" for search.
     pub fn get_struct_info(&self, type_path: &str) -> Option<serde_json::Value> {
@@ -953,7 +1670,7 @@ impl LocalModuleResolver {
             let type_name = parts[2];
 
             let id = ModuleId::new(addr, Identifier::new(mod_name).ok()?);
-            let module = self.modules.get(&id)?;
+            let module = self.get_module_with_alias(&id)?;
 
             // Find the struct
             for struct_def in &module.struct_defs {
@@ -1159,6 +1876,105 @@ fn format_signature_token(
             format!("T{}", idx)
         }
     }
+}
+
+// =============================================================================
+// Function Signature Type Resolution
+// =============================================================================
+
+use move_core_types::language_storage::{StructTag, TypeTag};
+
+/// Convert a SignatureToken to a TypeTag, substituting type parameters with provided type arguments.
+///
+/// This enables resolving function return types to TypeTags BEFORE execution,
+/// which is critical for proper type tracking in PTB execution.
+///
+/// ## Address Handling
+///
+/// **Important**: The addresses in the returned TypeTags are the **bytecode addresses**
+/// (from the module's self-address), NOT deployment addresses. This is by design:
+///
+/// - The Move VM uses bytecode addresses internally for type checking
+/// - When a package is deployed at address X but compiled with self-address Y,
+///   the types will use address Y (the bytecode address)
+/// - This matches how the Sui client handles types
+///
+/// If you need to compare types from external sources (like GraphQL) that use
+/// storage/deployment addresses, use `normalize_type_tag_with_aliases()` from
+/// the `types` module to normalize them first.
+pub fn signature_token_to_type_tag(
+    module: &CompiledModule,
+    token: &move_binary_format::file_format::SignatureToken,
+    type_args: &[TypeTag],
+) -> Option<TypeTag> {
+    use move_binary_format::file_format::SignatureToken;
+
+    match token {
+        SignatureToken::Bool => Some(TypeTag::Bool),
+        SignatureToken::U8 => Some(TypeTag::U8),
+        SignatureToken::U16 => Some(TypeTag::U16),
+        SignatureToken::U32 => Some(TypeTag::U32),
+        SignatureToken::U64 => Some(TypeTag::U64),
+        SignatureToken::U128 => Some(TypeTag::U128),
+        SignatureToken::U256 => Some(TypeTag::U256),
+        SignatureToken::Address => Some(TypeTag::Address),
+        SignatureToken::Signer => Some(TypeTag::Signer),
+        SignatureToken::Vector(inner) => {
+            let inner_tag = signature_token_to_type_tag(module, inner, type_args)?;
+            Some(TypeTag::Vector(Box::new(inner_tag)))
+        }
+        SignatureToken::Datatype(idx) => {
+            let datatype_handle = &module.datatype_handles[idx.0 as usize];
+            let module_handle = &module.module_handles[datatype_handle.module.0 as usize];
+            let addr = *module.address_identifier_at(module_handle.address);
+            let mod_name = module.identifier_at(module_handle.name).to_owned();
+            let type_name = module.identifier_at(datatype_handle.name).to_owned();
+            Some(TypeTag::Struct(Box::new(StructTag {
+                address: addr,
+                module: mod_name,
+                name: type_name,
+                type_params: vec![],
+            })))
+        }
+        SignatureToken::DatatypeInstantiation(inst) => {
+            let (idx, sig_type_args) = inst.as_ref();
+            let datatype_handle = &module.datatype_handles[idx.0 as usize];
+            let module_handle = &module.module_handles[datatype_handle.module.0 as usize];
+            let addr = *module.address_identifier_at(module_handle.address);
+            let mod_name = module.identifier_at(module_handle.name).to_owned();
+            let type_name = module.identifier_at(datatype_handle.name).to_owned();
+
+            // Recursively resolve type arguments
+            let resolved_type_params: Option<Vec<TypeTag>> = sig_type_args
+                .iter()
+                .map(|t| signature_token_to_type_tag(module, t, type_args))
+                .collect();
+
+            Some(TypeTag::Struct(Box::new(StructTag {
+                address: addr,
+                module: mod_name,
+                name: type_name,
+                type_params: resolved_type_params?,
+            })))
+        }
+        SignatureToken::TypeParameter(idx) => {
+            // Substitute with concrete type argument
+            type_args.get(*idx as usize).cloned()
+        }
+        // References cannot be return types in public functions, but handle gracefully
+        SignatureToken::Reference(inner) | SignatureToken::MutableReference(inner) => {
+            signature_token_to_type_tag(module, inner, type_args)
+        }
+    }
+}
+
+/// Information about a function's signature for type resolution.
+#[derive(Debug, Clone)]
+pub struct FunctionSignature {
+    /// Number of type parameters the function expects
+    pub type_param_count: usize,
+    /// Return types as SignatureTokens (need type_args to fully resolve)
+    pub return_types: Vec<move_binary_format::file_format::SignatureToken>,
 }
 
 // =============================================================================

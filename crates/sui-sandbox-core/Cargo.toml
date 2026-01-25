@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Move VM simulation engine for Sui transactions"
 
+[features]
+default = []
+debug-natives = []  # Enable verbose debug output for native function tracing
+
 [dependencies]
+# Logging/tracing
+tracing.workspace = true
+
 # Core utilities
 anyhow.workspace = true
 serde.workspace = true
@@ -34,6 +41,7 @@ move-disassembler.workspace = true
 move-bytecode-source-map.workspace = true
 move-ir-types.workspace = true
 move-command-line-common.workspace = true
+move-bytecode-utils.workspace = true
 
 # Native function support
 move-stdlib-natives.workspace = true
@@ -47,6 +55,15 @@ sui-protocol-config.workspace = true
 fastcrypto.workspace = true
 fastcrypto-zkp.workspace = true
 
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
 # Workspace crates
 sui-sandbox-types.workspace = true
-sui-data-fetcher.workspace = true
+sui-transport.workspace = true
+sui-resolver.workspace = true
+sui-prefetch.workspace = true
+
+[dev-dependencies]
+ureq = { version = "2", features = ["json"] }

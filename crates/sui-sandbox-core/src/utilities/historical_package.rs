@@ -139,7 +139,7 @@ where
 /// This is provided as a utility for callers who are using gRPC.
 pub fn grpc_object_to_package_data(
     package_id: &str,
-    obj: &sui_data_fetcher::grpc::GrpcObject,
+    obj: &sui_transport::grpc::GrpcObject,
 ) -> Option<FetchedPackageData> {
     obj.package_modules.as_ref().map(|modules| {
         let linkage = obj

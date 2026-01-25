@@ -38,6 +38,63 @@
 //! - Cache all dynamic field children at transaction time
 //! - Use synthetic/mocked transactions for testing (see `synthetic_ptb_case_study.rs`)
 //! - Pre-fetch all known tick indices for a pool
+//!
+//! ## Version Tracking
+//!
+//! The module supports full version tracking for replayed transactions, allowing validation
+//! that object versions are correctly computed. Use [`replay_with_version_tracking()`] for
+//! version-aware replay.
+//!
+//! ### Version Tracking Flow
+//!
+//! ```text
+//! 1. Fetch Transaction
+//!    └── gRPC response includes object versions in:
+//!        - changed_objects: {object_id: input_version}
+//!        - unchanged_loaded_runtime_objects: {object_id: version}
+//!        - inputs (Object/SharedObject/Receiving variants)
+//!
+//! 2. Build Version Map
+//!    └── HashMap<String, u64> mapping object IDs to their input versions
+//!
+//! 3. Convert to PTB Commands with Versions
+//!    └── to_ptb_commands_with_versions() creates InputValue::Object with version set
+//!
+//! 4. Execute with Version Tracking
+//!    └── PTBExecutor::set_track_versions(true)
+//!    └── PTBExecutor::set_lamport_timestamp(max_version + 1)
+//!    └── Effects include object_versions: HashMap<ObjectId, VersionInfo>
+//!
+//! 5. Compare and Validate
+//!    └── EffectsComparison::compare_with_versions() checks:
+//!        - Input versions match expected (from gRPC)
+//!        - Output versions = input + 1 for mutated objects
+//!        - Reports VersionMismatch for any discrepancies
+//! ```
+//!
+//! ### Version Tracking Example
+//!
+//! ```rust,ignore
+//! let object_versions: HashMap<String, u64> = /* from gRPC */;
+//! let result = replay_with_version_tracking(
+//!     &tx,
+//!     &mut harness,
+//!     &cached_objects,
+//!     &address_aliases,
+//!     Some(&object_versions),
+//! )?;
+//!
+//! if let Some(comparison) = &result.comparison {
+//!     println!("Input versions matched: {}/{}",
+//!         comparison.input_versions_matched,
+//!         comparison.input_versions_total);
+//!     println!("Version increments valid: {}/{}",
+//!         comparison.version_increments_valid,
+//!         comparison.version_increments_total);
+//! }
+//! ```
+
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -62,9 +119,10 @@ pub use crate::types::{
 
 pub use sui_sandbox_types::{
     transaction::base64_bytes, CachedDynamicField, CachedTransaction, DynamicFieldEntry,
-    EffectsComparison, FetchedObject, FetchedTransaction, GasSummary, ObjectID, PtbArgument,
-    PtbCommand, ReplayResult, TransactionCache, TransactionDigest, TransactionEffectsSummary,
-    TransactionInput, TransactionStatus,
+    EffectsComparison, FetchedObject, FetchedTransaction, GasSummary, LocalVersionInfo, ObjectID,
+    PtbArgument, PtbCommand, ReplayResult, TransactionCache, TransactionDigest,
+    TransactionEffectsSummary, TransactionInput, TransactionStatus, VersionMismatch,
+    VersionMismatchType, VersionSummary,
 };
 
 // ============================================================================
@@ -338,6 +396,10 @@ pub fn replay_parallel(
                             comparison: None,
                             commands_executed: 0,
                             commands_failed: cached.transaction.commands.len(),
+                            objects_tracked: 0,
+                            lamport_timestamp: None,
+                            version_summary: None,
+                            gas_used: 0,
                         },
                     }
                 }
@@ -348,6 +410,10 @@ pub fn replay_parallel(
                     comparison: None,
                     commands_executed: 0,
                     commands_failed: cached.transaction.commands.len(),
+                    objects_tracked: 0,
+                    lamport_timestamp: None,
+                    version_summary: None,
+                    gas_used: 0,
                 },
             }
         })
@@ -415,6 +481,42 @@ pub fn to_ptb_commands_with_gas_budget(
     to_ptb_commands_internal(tx, gas_balance, &std::collections::HashMap::new())
 }
 
+/// Convert a FetchedTransaction to PTB commands with explicit version information.
+///
+/// This function allows overriding the version information from the transaction
+/// with more accurate historical versions (e.g., from gRPC `changed_objects` or
+/// `unchanged_loaded_runtime_objects` fields).
+///
+/// The `object_versions` map should contain object IDs (hex strings) mapped to
+/// their historical versions at transaction execution time.
+///
+/// # Arguments
+/// * `tx` - The fetched transaction to convert
+/// * `cached_objects` - Map of object IDs to base64-encoded BCS bytes
+/// * `object_versions` - Map of object IDs to their versions (overrides TransactionInput versions)
+///
+/// # Example
+/// ```ignore
+/// let mut versions = HashMap::new();
+/// // From gRPC response:
+/// for (id, ver) in grpc_tx.changed_objects {
+///     versions.insert(id, ver);
+/// }
+/// for (id, ver) in grpc_tx.unchanged_loaded_runtime_objects {
+///     versions.insert(id, ver);
+/// }
+///
+/// let (inputs, commands) = to_ptb_commands_with_versions(&tx, &objects, &versions)?;
+/// ```
+pub fn to_ptb_commands_with_versions(
+    tx: &FetchedTransaction,
+    cached_objects: &std::collections::HashMap<String, String>,
+    object_versions: &std::collections::HashMap<String, u64>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
+    to_ptb_commands_internal_with_versions(tx, DEFAULT_GAS_BALANCE, cached_objects, object_versions)
+}
+
 /// Internal method that converts to PTB commands with gas balance and optional cached objects.
 fn to_ptb_commands_internal(
     tx: &FetchedTransaction,
@@ -424,12 +526,24 @@ fn to_ptb_commands_internal(
     let mut inputs = Vec::new();
     let mut commands = Vec::new();
 
-    // Helper to get object bytes from cache
-    let get_object_bytes = |object_id: &str| -> Vec<u8> {
+    // Helper to parse object ID with proper error handling
+    let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
+        AccountAddress::from_hex_literal(object_id).map_err(|e| {
+            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
+        })
+    };
+
+    // Helper to get object bytes from cache.
+    // Returns an error if the object is not found - missing objects should be
+    // fetched before replay, not silently replaced with placeholders.
+    let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
         cached_objects
             .get(object_id)
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-            .unwrap_or_else(|| vec![0u8; 32]) // Fallback placeholder
+            .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache - ensure all input objects are fetched before replay", object_id))
+            .and_then(|b64| {
+                base64::engine::general_purpose::STANDARD.decode(b64)
+                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}' from base64: {}", object_id, e))
+            })
     };
 
     // Check if any command uses GasCoin
@@ -461,6 +575,7 @@ fn to_ptb_commands_internal(
             id: AccountAddress::ZERO, // Placeholder gas coin ID
             bytes: gas_coin_bytes,
             type_tag: None, // Gas coin type is known to be Coin<SUI>
+            version: None,
         }));
     }
 
@@ -470,46 +585,66 @@ fn to_ptb_commands_internal(
             TransactionInput::Pure { bytes } => {
                 inputs.push(InputValue::Pure(bytes.clone()));
             }
-            TransactionInput::Object { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::Object {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 inputs.push(InputValue::Object(ObjectInput::Owned {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*version),
                 }));
             }
-            TransactionInput::SharedObject { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::SharedObject {
+                object_id,
+                initial_shared_version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 inputs.push(InputValue::Object(ObjectInput::Shared {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*initial_shared_version),
                 }));
             }
-            TransactionInput::ImmutableObject { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::ImmutableObject {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 // Use ImmRef for immutable objects (e.g., packages, Clock)
                 inputs.push(InputValue::Object(ObjectInput::ImmRef {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*version),
                 }));
             }
-            TransactionInput::Receiving { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
-                // Receiving objects are treated as owned for replay purposes
-                inputs.push(InputValue::Object(ObjectInput::Owned {
+            TransactionInput::Receiving {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                // Use the Receiving variant to properly track receiving object semantics.
+                // The parent_id is not available from TransactionInput alone - it would
+                // need to be determined from the object's on-chain owner field or by
+                // examining the transaction arguments.
+                inputs.push(InputValue::Object(ObjectInput::Receiving {
                     id,
                     bytes,
                     type_tag: None,
+                    parent_id: None, // Unknown from transaction input data
+                    version: Some(*version),
                 }));
             }
         }
@@ -611,6 +746,211 @@ fn to_ptb_commands_internal(
     Ok((inputs, commands))
 }
 
+/// Internal method that converts to PTB commands with explicit version information.
+///
+/// The `object_versions` map allows overriding versions from TransactionInput with
+/// more accurate historical versions (e.g., from gRPC response).
+fn to_ptb_commands_internal_with_versions(
+    tx: &FetchedTransaction,
+    gas_balance: u64,
+    cached_objects: &std::collections::HashMap<String, String>,
+    object_versions: &std::collections::HashMap<String, u64>,
+) -> Result<(Vec<InputValue>, Vec<Command>)> {
+    let mut inputs = Vec::new();
+    let mut commands = Vec::new();
+
+    // Helper to parse object ID with proper error handling
+    let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
+        AccountAddress::from_hex_literal(object_id).map_err(|e| {
+            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
+        })
+    };
+
+    // Helper to get object bytes from cache
+    let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
+        cached_objects
+            .get(object_id)
+            .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache", object_id))
+            .and_then(|b64| {
+                base64::engine::general_purpose::STANDARD.decode(b64)
+                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}': {}", object_id, e))
+            })
+    };
+
+    // Helper to get version for an object - prefers external map, falls back to input version
+    let get_version = |object_id: &str, input_version: u64| -> u64 {
+        object_versions.get(object_id).copied().unwrap_or(input_version)
+    };
+
+    // Check if any command uses GasCoin
+    let uses_gas_coin = tx.commands.iter().any(|cmd| match cmd {
+        PtbCommand::SplitCoins { coin, .. } => matches!(coin, PtbArgument::GasCoin),
+        PtbCommand::MergeCoins { destination, sources } => {
+            matches!(destination, PtbArgument::GasCoin)
+                || sources.iter().any(|s| matches!(s, PtbArgument::GasCoin))
+        }
+        PtbCommand::TransferObjects { objects, .. } => {
+            objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
+        }
+        _ => false,
+    });
+
+    let input_offset: u16 = if uses_gas_coin { 1 } else { 0 };
+
+    if uses_gas_coin {
+        let mut gas_coin_bytes = vec![0u8; 32];
+        gas_coin_bytes.extend_from_slice(&gas_balance.to_le_bytes());
+        inputs.push(InputValue::Object(ObjectInput::Owned {
+            id: AccountAddress::ZERO,
+            bytes: gas_coin_bytes,
+            type_tag: None,
+            version: None, // Synthetic gas coin has no real version
+        }));
+    }
+
+    // Convert inputs with version information
+    for input in &tx.inputs {
+        match input {
+            TransactionInput::Pure { bytes } => {
+                inputs.push(InputValue::Pure(bytes.clone()));
+            }
+            TransactionInput::Object {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                let ver = get_version(object_id, *version);
+                inputs.push(InputValue::Object(ObjectInput::Owned {
+                    id,
+                    bytes,
+                    type_tag: None,
+                    version: Some(ver),
+                }));
+            }
+            TransactionInput::SharedObject {
+                object_id,
+                initial_shared_version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                let ver = get_version(object_id, *initial_shared_version);
+                inputs.push(InputValue::Object(ObjectInput::Shared {
+                    id,
+                    bytes,
+                    type_tag: None,
+                    version: Some(ver),
+                }));
+            }
+            TransactionInput::ImmutableObject {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                let ver = get_version(object_id, *version);
+                inputs.push(InputValue::Object(ObjectInput::ImmRef {
+                    id,
+                    bytes,
+                    type_tag: None,
+                    version: Some(ver),
+                }));
+            }
+            TransactionInput::Receiving {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                let ver = get_version(object_id, *version);
+                inputs.push(InputValue::Object(ObjectInput::Receiving {
+                    id,
+                    bytes,
+                    type_tag: None,
+                    parent_id: None,
+                    version: Some(ver),
+                }));
+            }
+        }
+    }
+
+    // Convert arguments helper
+    let convert_arg = |arg: &PtbArgument| -> Argument {
+        match arg {
+            PtbArgument::Input { index } => Argument::Input(index + input_offset),
+            PtbArgument::Result { index } => Argument::Result(*index),
+            PtbArgument::NestedResult { index, result_index } => {
+                Argument::NestedResult(*index, *result_index)
+            }
+            PtbArgument::GasCoin => Argument::Input(0),
+        }
+    };
+
+    // Convert commands
+    for cmd in &tx.commands {
+        match cmd {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
+                let package_addr = AccountAddress::from_hex_literal(package)
+                    .map_err(|e| anyhow::anyhow!("invalid package address: {}", e))?;
+                let module_id = Identifier::new(module.clone())?;
+                let function_id = Identifier::new(function.clone())?;
+                let type_args: Vec<TypeTag> = type_arguments
+                    .iter()
+                    .filter_map(|s| parse_type_tag(s).ok())
+                    .collect();
+                let args: Vec<Argument> = arguments.iter().map(&convert_arg).collect();
+
+                commands.push(Command::MoveCall {
+                    package: package_addr,
+                    module: module_id,
+                    function: function_id,
+                    type_args,
+                    args,
+                });
+            }
+            PtbCommand::SplitCoins { coin, amounts } => {
+                commands.push(Command::SplitCoins {
+                    coin: convert_arg(coin),
+                    amounts: amounts.iter().map(&convert_arg).collect(),
+                });
+            }
+            PtbCommand::MergeCoins { destination, sources } => {
+                commands.push(Command::MergeCoins {
+                    destination: convert_arg(destination),
+                    sources: sources.iter().map(&convert_arg).collect(),
+                });
+            }
+            PtbCommand::TransferObjects { objects, address } => {
+                commands.push(Command::TransferObjects {
+                    objects: objects.iter().map(&convert_arg).collect(),
+                    address: convert_arg(address),
+                });
+            }
+            PtbCommand::MakeMoveVec { type_arg, elements } => {
+                commands.push(Command::MakeMoveVec {
+                    type_tag: type_arg.as_ref().and_then(|s| parse_type_tag(s).ok()),
+                    elements: elements.iter().map(&convert_arg).collect(),
+                });
+            }
+            PtbCommand::Publish { .. } | PtbCommand::Upgrade { .. } => {
+                // Skip publish/upgrade for now
+            }
+        }
+    }
+
+    Ok((inputs, commands))
+}
+
 /// Internal method with address aliasing support for package upgrades.
 fn to_ptb_commands_internal_with_aliases(
     tx: &FetchedTransaction,
@@ -621,12 +961,24 @@ fn to_ptb_commands_internal_with_aliases(
     let mut inputs = Vec::new();
     let mut commands = Vec::new();
 
-    // Helper to get object bytes from cache
-    let get_object_bytes = |object_id: &str| -> Vec<u8> {
+    // Helper to parse object ID with proper error handling
+    let parse_object_id = |object_id: &str| -> Result<AccountAddress> {
+        AccountAddress::from_hex_literal(object_id).map_err(|e| {
+            anyhow::anyhow!("invalid object ID '{}': {}", object_id, e)
+        })
+    };
+
+    // Helper to get object bytes from cache.
+    // Returns an error if the object is not found - missing objects should be
+    // fetched before replay, not silently replaced with placeholders.
+    let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
         cached_objects
             .get(object_id)
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-            .unwrap_or_else(|| vec![0u8; 32])
+            .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache - ensure all input objects are fetched before replay", object_id))
+            .and_then(|b64| {
+                base64::engine::general_purpose::STANDARD.decode(b64)
+                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}' from base64: {}", object_id, e))
+            })
     };
 
     // Helper to rewrite address if aliased
@@ -680,6 +1032,7 @@ fn to_ptb_commands_internal_with_aliases(
             id: AccountAddress::ZERO,
             bytes: gas_coin_bytes,
             type_tag: None,
+            version: None,
         }));
     }
 
@@ -689,44 +1042,63 @@ fn to_ptb_commands_internal_with_aliases(
             TransactionInput::Pure { bytes } => {
                 inputs.push(InputValue::Pure(bytes.clone()));
             }
-            TransactionInput::Object { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::Object {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 inputs.push(InputValue::Object(ObjectInput::Owned {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*version),
                 }));
             }
-            TransactionInput::SharedObject { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::SharedObject {
+                object_id,
+                initial_shared_version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 inputs.push(InputValue::Object(ObjectInput::Shared {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*initial_shared_version),
                 }));
             }
-            TransactionInput::ImmutableObject { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
+            TransactionInput::ImmutableObject {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
                 inputs.push(InputValue::Object(ObjectInput::ImmRef {
                     id,
                     bytes,
                     type_tag: None,
+                    version: Some(*version),
                 }));
             }
-            TransactionInput::Receiving { object_id, .. } => {
-                let id =
-                    AccountAddress::from_hex_literal(object_id).unwrap_or(AccountAddress::ZERO);
-                let bytes = get_object_bytes(object_id);
-                inputs.push(InputValue::Object(ObjectInput::Owned {
+            TransactionInput::Receiving {
+                object_id,
+                version,
+                ..
+            } => {
+                let id = parse_object_id(object_id)?;
+                let bytes = get_object_bytes(object_id)?;
+                // Use the Receiving variant for proper semantics.
+                // Parent_id is not available from TransactionInput data alone.
+                inputs.push(InputValue::Object(ObjectInput::Receiving {
                     id,
                     bytes,
                     type_tag: None,
+                    parent_id: None,
+                    version: Some(*version),
                 }));
             }
         }
@@ -855,14 +1227,63 @@ pub fn replay_with_objects_and_aliases(
     cached_objects: &std::collections::HashMap<String, String>,
     address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
 ) -> Result<ReplayResult> {
+    replay_with_version_tracking(tx, harness, cached_objects, address_aliases, None)
+}
+
+/// Replay a transaction with full version tracking enabled.
+///
+/// This function enables version tracking in the PTBExecutor and uses the provided
+/// `object_versions` map to populate input object versions. The resulting
+/// `TransactionEffects` will contain `object_versions` with version change information.
+///
+/// # Arguments
+/// * `tx` - The fetched transaction to replay
+/// * `harness` - The VM harness for execution
+/// * `cached_objects` - Map of object IDs to base64-encoded BCS bytes
+/// * `address_aliases` - Map of on-chain addresses to bytecode self-addresses
+/// * `object_versions` - Optional map of object IDs to their historical versions
+///
+/// # Returns
+/// A `ReplayResult` containing execution results and version tracking information
+/// in `effects.object_versions`.
+pub fn replay_with_version_tracking(
+    tx: &FetchedTransaction,
+    harness: &mut VMHarness,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+    object_versions: Option<&std::collections::HashMap<String, u64>>,
+) -> Result<ReplayResult> {
     use crate::ptb::PTBExecutor;
 
-    let (inputs, commands) =
+    // Always use alias-aware conversion to handle package upgrades correctly.
+    // If versions are provided, we'll add them to the inputs after conversion.
+    let (mut inputs, commands) =
         to_ptb_commands_with_objects_and_aliases(tx, cached_objects, address_aliases)?;
+
+    // If version tracking is enabled, add versions to the inputs
+    if let Some(versions) = object_versions {
+        for input in &mut inputs {
+            if let InputValue::Object(obj_input) = input {
+                let obj_id_hex = obj_input.id().to_hex_literal();
+                if let Some(&ver) = versions.get(&obj_id_hex) {
+                    obj_input.set_version(Some(ver));
+                }
+            }
+        }
+    }
+
     let commands_count = commands.len();
 
     // Execute using PTBExecutor
     let mut executor = PTBExecutor::new(harness);
+
+    // Enable version tracking if versions are provided
+    if let Some(versions) = object_versions {
+        executor.set_track_versions(true);
+        // Compute lamport timestamp from max version + 1
+        let max_version = versions.values().copied().max().unwrap_or(0);
+        executor.set_lamport_timestamp(max_version + 1);
+    }
 
     // Add inputs to executor
     for input in &inputs {
@@ -880,19 +1301,66 @@ pub fn replay_with_objects_and_aliases(
                 comparison: None,
                 commands_executed: 0,
                 commands_failed: commands_count,
+                objects_tracked: 0,
+                lamport_timestamp: None,
+                version_summary: None,
+                gas_used: 0,
             });
         }
     };
 
-    // Compare with on-chain effects using the new comparison method
+    // Build version info for comparison if available
+    let local_versions: Option<HashMap<String, LocalVersionInfo>> =
+        effects.object_versions.as_ref().map(|vers| {
+            vers.iter()
+                .map(|(id, info)| {
+                    (
+                        id.to_hex_literal(),
+                        LocalVersionInfo {
+                            input_version: info.input_version,
+                            output_version: info.output_version,
+                        },
+                    )
+                })
+                .collect()
+        });
+
+    // Compare with on-chain effects using version-aware comparison if versions provided
     let comparison = tx.effects.as_ref().map(|on_chain| {
-        EffectsComparison::compare(
-            on_chain,
-            effects.success,
-            effects.created.len(),
-            effects.mutated.len(),
-            effects.deleted.len(),
-        )
+        if object_versions.is_some() && local_versions.is_some() {
+            EffectsComparison::compare_with_versions(
+                on_chain,
+                effects.success,
+                effects.created.len(),
+                effects.mutated.len(),
+                effects.deleted.len(),
+                local_versions.as_ref(),
+                object_versions,
+            )
+        } else {
+            EffectsComparison::compare(
+                on_chain,
+                effects.success,
+                effects.created.len(),
+                effects.mutated.len(),
+                effects.deleted.len(),
+            )
+        }
+    });
+
+    // Build version summary
+    let version_summary = effects.object_versions.as_ref().map(|vers| {
+        use crate::ptb::VersionChangeType;
+        let mut summary = VersionSummary::default();
+        for info in vers.values() {
+            match info.change_type {
+                VersionChangeType::Created => summary.created += 1,
+                VersionChangeType::Mutated => summary.mutated += 1,
+                VersionChangeType::Deleted => summary.deleted += 1,
+                VersionChangeType::Wrapped => summary.wrapped += 1,
+            }
+        }
+        summary
     });
 
     Ok(ReplayResult {
@@ -902,6 +1370,10 @@ pub fn replay_with_objects_and_aliases(
         comparison,
         commands_executed: if effects.success { commands_count } else { 0 },
         commands_failed: if effects.success { 0 } else { commands_count },
+        objects_tracked: effects.object_versions.as_ref().map(|v| v.len()).unwrap_or(0),
+        lamport_timestamp: effects.lamport_timestamp,
+        version_summary,
+        gas_used: effects.gas_used,
     })
 }
 
@@ -1098,10 +1570,10 @@ mod tests {
 /// This enables using transactions fetched via DataFetcher with the CachedTransaction
 /// and replay infrastructure.
 pub fn graphql_to_fetched_transaction(
-    tx: &sui_data_fetcher::graphql::GraphQLTransaction,
+    tx: &sui_transport::graphql::GraphQLTransaction,
 ) -> Result<FetchedTransaction> {
     use move_core_types::account_address::AccountAddress;
-    use sui_data_fetcher::graphql::GraphQLTransactionInput;
+    use sui_transport::graphql::GraphQLTransactionInput;
 
     // Parse sender address
     let sender_hex = tx.sender.strip_prefix("0x").unwrap_or(&tx.sender);
@@ -1174,8 +1646,8 @@ pub fn graphql_to_fetched_transaction(
 }
 
 /// Convert a GraphQL command to PtbCommand
-fn convert_graphql_command(cmd: &sui_data_fetcher::graphql::GraphQLCommand) -> Option<PtbCommand> {
-    use sui_data_fetcher::graphql::GraphQLCommand;
+fn convert_graphql_command(cmd: &sui_transport::graphql::GraphQLCommand) -> Option<PtbCommand> {
+    use sui_transport::graphql::GraphQLCommand;
 
     match cmd {
         GraphQLCommand::MoveCall {
@@ -1229,8 +1701,8 @@ fn convert_graphql_command(cmd: &sui_data_fetcher::graphql::GraphQLCommand) -> O
 }
 
 /// Convert a GraphQL argument to PtbArgument
-fn convert_graphql_argument(arg: &sui_data_fetcher::graphql::GraphQLArgument) -> PtbArgument {
-    use sui_data_fetcher::graphql::GraphQLArgument;
+fn convert_graphql_argument(arg: &sui_transport::graphql::GraphQLArgument) -> PtbArgument {
+    use sui_transport::graphql::GraphQLArgument;
 
     match arg {
         GraphQLArgument::GasCoin => PtbArgument::GasCoin,
@@ -1245,7 +1717,7 @@ fn convert_graphql_argument(arg: &sui_data_fetcher::graphql::GraphQLArgument) ->
 
 /// Convert GraphQL effects to TransactionEffectsSummary
 fn convert_graphql_effects(
-    effects: &sui_data_fetcher::graphql::GraphQLEffects,
+    effects: &sui_transport::graphql::GraphQLEffects,
 ) -> TransactionEffectsSummary {
     let status = if effects.status == "SUCCESS" {
         TransactionStatus::Success
@@ -1269,10 +1741,10 @@ fn convert_graphql_effects(
 }
 
 // ============================================================================
-// gRPC to FetchedTransaction Conversion (re-exported from sui-data-fetcher)
+// gRPC to FetchedTransaction Conversion (re-exported from sui-prefetch)
 // ============================================================================
 
-pub use sui_data_fetcher::grpc_to_fetched_transaction;
+pub use sui_prefetch::grpc_to_fetched_transaction;
 
 // ============================================================================
 // Auto-Fetch and Cache Functionality

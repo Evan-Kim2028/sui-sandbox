@@ -71,15 +71,21 @@ impl GrpcClient {
     /// Create a client with a custom endpoint and API key.
     /// The API key is included as an `x-api-key` header on all requests.
     pub async fn with_api_key(endpoint: &str, api_key: Option<String>) -> Result<Self> {
-        // Configure TLS for HTTPS endpoints
+        use std::time::Duration;
+
+        // Configure TLS for HTTPS endpoints with reasonable timeouts
         let channel = if endpoint.starts_with("https://") {
             Channel::from_shared(endpoint.to_string())?
                 .tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots())?
+                .timeout(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
                 .connect()
                 .await
                 .map_err(|e| anyhow!("Failed to connect to gRPC endpoint {}: {}", endpoint, e))?
         } else {
             Channel::from_shared(endpoint.to_string())?
+                .timeout(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
                 .connect()
                 .await
                 .map_err(|e| anyhow!("Failed to connect to gRPC endpoint {}: {}", endpoint, e))?
@@ -203,6 +209,70 @@ impl GrpcClient {
 
         let inner = response.into_inner();
         Ok(inner.object.map(GrpcObject::from_proto))
+    }
+
+    /// Batch fetch multiple objects at specific versions with parallel execution.
+    ///
+    /// This is optimized for ground-truth prefetching where we know exact versions.
+    /// Uses parallel requests with configurable concurrency to maximize throughput.
+    ///
+    /// # Arguments
+    /// * `object_versions` - List of (object_id, version) pairs to fetch
+    /// * `concurrency` - Maximum number of parallel requests (recommended: 10-20)
+    ///
+    /// # Returns
+    /// Vec of (object_id, Result) pairs in the same order as input
+    pub async fn batch_fetch_objects_at_versions(
+        &self,
+        object_versions: &[(String, u64)],
+        concurrency: usize,
+    ) -> Vec<(String, Result<Option<GrpcObject>>)> {
+        use futures::stream::{self, StreamExt};
+
+        let results: Vec<_> = stream::iter(object_versions.iter().cloned())
+            .map(|(obj_id, version)| {
+                let client = self.clone_for_batch();
+                async move {
+                    let result = client.get_object_at_version(&obj_id, Some(version)).await;
+                    (obj_id, result)
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+        results
+    }
+
+    /// Batch fetch multiple objects at specific versions, returning only successful fetches.
+    ///
+    /// This is a convenience wrapper that filters out failures and returns a HashMap.
+    pub async fn batch_fetch_objects_at_versions_ok(
+        &self,
+        object_versions: &[(String, u64)],
+        concurrency: usize,
+    ) -> std::collections::HashMap<String, GrpcObject> {
+        let results = self
+            .batch_fetch_objects_at_versions(object_versions, concurrency)
+            .await;
+
+        results
+            .into_iter()
+            .filter_map(|(id, result)| match result {
+                Ok(Some(obj)) => Some((id, obj)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Create a lightweight clone for parallel batch operations.
+    /// Shares the underlying channel but creates a new client instance.
+    fn clone_for_batch(&self) -> Self {
+        Self {
+            endpoint: self.endpoint.clone(),
+            channel: self.channel.clone(),
+            api_key: self.api_key.clone(),
+        }
     }
 
     /// Batch fetch multiple objects.
@@ -899,6 +969,10 @@ pub struct GrpcObject {
     /// Package linkage table (if this object is a package)
     /// Maps original package IDs to their upgraded storage IDs
     pub package_linkage: Option<Vec<GrpcLinkage>>,
+    /// Package original_id (for upgraded packages)
+    /// This is the storage_id of the first version of this package.
+    /// For the first version, this equals the object_id.
+    pub package_original_id: Option<String>,
 }
 
 impl GrpcObject {
@@ -956,6 +1030,14 @@ impl GrpcObject {
                 .collect()
         });
 
+        // Extract package original_id (the first published version ID)
+        // This is critical for package upgrades - the original_id is stable
+        // across all versions and is used for type address resolution.
+        let package_original_id = proto
+            .package
+            .as_ref()
+            .and_then(|pkg| pkg.original_id.clone());
+
         Self {
             object_id,
             version: proto.version.unwrap_or(0),
@@ -966,6 +1048,7 @@ impl GrpcObject {
             bcs_full,
             package_modules,
             package_linkage,
+            package_original_id,
         }
     }
 }
@@ -1042,11 +1125,6 @@ fn extract_move_struct_from_object_bcs(bcs: &[u8], object_id: &str) -> Option<Ve
     // Fallback: use the first match position and return from UID to end
     // This handles cases where we can't find a valid ULEB128 prefix
     let i = matches[0];
-    eprintln!(
-        "[BCS extract] No valid ULEB128 found, falling back: pos {} returning {} bytes",
-        i,
-        bcs.len() - i
-    );
     Some(bcs[i..].to_vec())
 }
 

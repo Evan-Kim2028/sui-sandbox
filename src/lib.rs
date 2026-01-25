@@ -16,6 +16,10 @@ pub mod args;
 pub mod cache;
 pub mod comparator;
 pub mod corpus;
+#[deprecated(
+    since = "0.9.0",
+    note = "Use sui_state_fetcher::HistoricalStateProvider instead"
+)]
 pub mod data_fetcher;
 pub mod move_stubs;
 pub mod rpc;
@@ -27,6 +31,8 @@ pub use sui_package_extractor::normalization;
 pub use sui_package_extractor::types;
 pub use sui_package_extractor::utils;
 
-// Re-export modules from sui-data-fetcher crate
-pub use sui_data_fetcher::graphql;
-pub use sui_data_fetcher::grpc;
+// Re-export modules from transport/prefetch crates
+pub use sui_prefetch;
+pub use sui_state_fetcher;
+pub use sui_transport::graphql;
+pub use sui_transport::grpc;

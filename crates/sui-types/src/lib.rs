@@ -15,9 +15,9 @@ pub mod transaction;
 // Re-export commonly used transaction types at crate root
 pub use transaction::{
     CachedDynamicField, CachedTransaction, DynamicFieldEntry, EffectsComparison, FetchedObject,
-    FetchedTransaction, GasSummary, ObjectID, PtbArgument, PtbCommand, ReplayResult,
-    TransactionCache, TransactionDigest, TransactionEffectsSummary, TransactionInput,
-    TransactionStatus,
+    FetchedTransaction, GasSummary, LocalVersionInfo, ObjectID, PtbArgument, PtbCommand,
+    ReplayResult, TransactionCache, TransactionDigest, TransactionEffectsSummary, TransactionInput,
+    TransactionStatus, VersionMismatch, VersionMismatchType, VersionSummary,
 };
 
 use std::time::Duration;

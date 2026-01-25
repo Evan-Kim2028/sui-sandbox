@@ -1,14 +1,25 @@
 [package]
 name = "sui_move_interface_extractor"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/sui-types", "crates/sui-data-fetcher", "crates/sui-package-extractor", "crates/sui-sandbox-core"]
+members = [
+    "crates/sui-types",
+    "crates/sui-transport",
+    "crates/sui-resolver",
+    "crates/sui-prefetch",
+    "crates/sui-state-fetcher",
+    "crates/sui-package-extractor",
+    "crates/sui-sandbox-core",
+]
 
 # Centralized dependency versions for the workspace
 # Member crates use: dep = { workspace = true }
 [workspace.dependencies]
+# Logging/tracing
+tracing = "0.1"
+
 # Core utilities
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -31,6 +42,7 @@ better_any = "0.1"
 tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "sync"] }
 tokio-stream = "0.1"
 futures = "0.3"
+async-trait = "0.1"
 
 # HTTP client
 ureq = { version = "2.9", features = ["json"] }
@@ -56,6 +68,7 @@ move-command-line-common = { git = "https://github.com/MystenLabs/sui", tag = "m
 move-model-2 = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-model-2" }
 move-package = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-package" }
 move-stdlib-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-stdlib-natives" }
+move-bytecode-utils = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "move-bytecode-utils" }
 
 # Sui SDK and types
 sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-sdk" }
@@ -72,7 +85,10 @@ fastcrypto-zkp = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0
 
 # Workspace crates
 sui-sandbox-types = { path = "crates/sui-types" }
-sui-data-fetcher = { path = "crates/sui-data-fetcher" }
+sui-transport = { path = "crates/sui-transport" }
+sui-resolver = { path = "crates/sui-resolver" }
+sui-prefetch = { path = "crates/sui-prefetch" }
+sui-state-fetcher = { path = "crates/sui-state-fetcher" }
 sui-package-extractor = { path = "crates/sui-package-extractor" }
 sui-sandbox-core = { path = "crates/sui-sandbox-core" }
 
@@ -111,6 +127,7 @@ parking_lot.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 futures.workspace = true
+async-trait.workspace = true
 
 # gRPC
 tonic.workspace = true
@@ -148,7 +165,10 @@ fastcrypto-zkp.workspace = true
 
 # Workspace crates
 sui-sandbox-types.workspace = true
-sui-data-fetcher.workspace = true
+sui-transport.workspace = true
+sui-resolver.workspace = true
+sui-prefetch.workspace = true
+sui-state-fetcher.workspace = true
 sui-package-extractor.workspace = true
 sui-sandbox-core.workspace = true
 
@@ -179,6 +199,10 @@ name = "deepbook_replay"
 path = "examples/deepbook_replay.rs"
 
 [[example]]
+name = "deepbook_orders"
+path = "examples/deepbook_orders.rs"
+
+[[example]]
 name = "multi_swap_flash_loan"
 path = "examples/multi_swap_flash_loan.rs"
 
@@ -189,6 +213,66 @@ path = "examples/fork_state.rs"
 [[example]]
 name = "batch_ptb"
 path = "examples/batch_ptb/main.rs"
+
+[[example]]
+name = "deepbook_debug_investigate"
+path = "examples/deepbook_debug/investigate_transaction.rs"
+
+[[example]]
+name = "deepbook_debug_commands"
+path = "examples/deepbook_debug/investigate_commands.rs"
+
+[[example]]
+name = "deepbook_debug_parent"
+path = "examples/deepbook_debug/investigate_parent.rs"
+
+[[example]]
+name = "deepbook_debug_bm_content"
+path = "examples/deepbook_debug/investigate_bm_content.rs"
+
+[[example]]
+name = "deepbook_debug_table"
+path = "examples/deepbook_debug/investigate_table_children.rs"
+
+[[example]]
+name = "deepbook_debug_archive"
+path = "examples/deepbook_debug/investigate_archive.rs"
+
+[[example]]
+name = "deepbook_debug_deep"
+path = "examples/deepbook_debug/investigate_deep_balance.rs"
+
+[[example]]
+name = "deepbook_debug_orders"
+path = "examples/deepbook_debug/test_order_txs.rs"
+
+[[example]]
+name = "deepbook_debug_cached"
+path = "examples/deepbook_debug/test_cached_tx.rs"
+
+[[example]]
+name = "deepbook_debug_history_table"
+path = "examples/deepbook_debug/investigate_history_table.rs"
+
+[[example]]
+name = "deepbook_debug_epoch_lookup"
+path = "examples/deepbook_debug/investigate_epoch_lookup.rs"
+
+[[example]]
+name = "deepbook_debug_state_epoch"
+path = "examples/deepbook_debug/investigate_state_epoch.rs"
+
+[[example]]
+name = "deepbook_debug_second_epoch"
+path = "examples/deepbook_debug/investigate_second_epoch.rs"
+
+[[example]]
+name = "deepbook_debug_version_bound"
+path = "examples/deepbook_debug/investigate_version_bound.rs"
+
+[[example]]
+name = "deepbook_debug_object_types"
+path = "examples/deepbook_debug/investigate_object_types.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

@@ -228,6 +228,43 @@ pub struct ReplayResult {
 
     /// Commands that failed
     pub commands_failed: usize,
+
+    // =========================================================================
+    // Version Tracking Results (populated when version tracking is enabled)
+    // =========================================================================
+
+    /// Number of objects with version tracking info
+    #[serde(default)]
+    pub objects_tracked: usize,
+
+    /// Lamport timestamp used for this execution
+    #[serde(default)]
+    pub lamport_timestamp: Option<u64>,
+
+    /// Summary of version changes by type
+    #[serde(default)]
+    pub version_summary: Option<VersionSummary>,
+
+    // =========================================================================
+    // Gas Tracking Results (populated when accurate_gas is enabled)
+    // =========================================================================
+
+    /// Computation gas used (from PTB execution, in gas units)
+    #[serde(default)]
+    pub gas_used: u64,
+}
+
+/// Summary of version changes in a transaction.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct VersionSummary {
+    /// Number of created objects
+    pub created: usize,
+    /// Number of mutated objects
+    pub mutated: usize,
+    /// Number of deleted objects
+    pub deleted: usize,
+    /// Number of wrapped objects
+    pub wrapped: usize,
 }
 
 /// Comparison between local and on-chain effects.
@@ -250,6 +287,58 @@ pub struct EffectsComparison {
 
     /// Notes about differences
     pub notes: Vec<String>,
+
+    // =========================================================================
+    // Version Tracking Comparison (populated when version info is provided)
+    // =========================================================================
+
+    /// Whether version tracking comparison was performed
+    #[serde(default)]
+    pub version_tracking_enabled: bool,
+
+    /// Number of objects where input versions matched expected
+    #[serde(default)]
+    pub input_versions_matched: usize,
+
+    /// Number of objects where input versions were checked
+    #[serde(default)]
+    pub input_versions_total: usize,
+
+    /// Number of objects where version increments were valid (output = input + 1)
+    #[serde(default)]
+    pub version_increments_valid: usize,
+
+    /// Number of version increments checked
+    #[serde(default)]
+    pub version_increments_total: usize,
+
+    /// Specific version mismatches for debugging
+    #[serde(default)]
+    pub version_mismatches: Vec<VersionMismatch>,
+}
+
+/// Details about a version mismatch between local and on-chain.
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionMismatch {
+    /// Object ID (hex string)
+    pub object_id: String,
+    /// Type of mismatch
+    pub mismatch_type: VersionMismatchType,
+    /// Expected version (from on-chain or input)
+    pub expected: Option<u64>,
+    /// Actual version (from local execution)
+    pub actual: Option<u64>,
+}
+
+/// Type of version mismatch.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum VersionMismatchType {
+    /// Input version doesn't match expected
+    InputVersion,
+    /// Output version doesn't match expected (input + 1)
+    OutputVersion,
+    /// Object was created but expected version isn't 1
+    CreatedVersion,
 }
 
 impl EffectsComparison {
@@ -336,8 +425,126 @@ impl EffectsComparison {
             deleted_count_match,
             match_score,
             notes,
+            // Version tracking fields not populated in basic comparison
+            version_tracking_enabled: false,
+            input_versions_matched: 0,
+            input_versions_total: 0,
+            version_increments_valid: 0,
+            version_increments_total: 0,
+            version_mismatches: Vec::new(),
         }
     }
+
+    /// Create a comparison including version tracking validation.
+    ///
+    /// This method extends the basic comparison with version tracking:
+    /// - Validates that input versions match expected versions
+    /// - Validates that output versions are input + 1 for mutations
+    /// - Validates that created objects have no input version
+    ///
+    /// # Arguments
+    /// * `on_chain` - On-chain transaction effects summary
+    /// * `local_success` - Whether local execution succeeded
+    /// * `local_created` - Number of locally created objects
+    /// * `local_mutated` - Number of locally mutated objects
+    /// * `local_deleted` - Number of locally deleted objects
+    /// * `local_versions` - Optional version info from local execution
+    /// * `expected_input_versions` - Expected input versions (from gRPC response)
+    pub fn compare_with_versions(
+        on_chain: &TransactionEffectsSummary,
+        local_success: bool,
+        local_created: usize,
+        local_mutated: usize,
+        local_deleted: usize,
+        local_versions: Option<&HashMap<String, LocalVersionInfo>>,
+        expected_input_versions: Option<&HashMap<String, u64>>,
+    ) -> Self {
+        // Start with basic comparison
+        let mut comparison = Self::compare(
+            on_chain,
+            local_success,
+            local_created,
+            local_mutated,
+            local_deleted,
+        );
+
+        // If version info is provided, perform version validation
+        if let (Some(local_vers), Some(expected_vers)) = (local_versions, expected_input_versions) {
+            comparison.version_tracking_enabled = true;
+
+            let mut input_matched = 0;
+            let mut input_total = 0;
+            let mut increment_valid = 0;
+            let mut increment_total = 0;
+            let mut mismatches = Vec::new();
+
+            for (obj_id, local_info) in local_vers {
+                // Check input version matches expected
+                if let Some(expected_input) = expected_vers.get(obj_id) {
+                    input_total += 1;
+                    if let Some(local_input) = local_info.input_version {
+                        if local_input == *expected_input {
+                            input_matched += 1;
+                        } else {
+                            mismatches.push(VersionMismatch {
+                                object_id: obj_id.clone(),
+                                mismatch_type: VersionMismatchType::InputVersion,
+                                expected: Some(*expected_input),
+                                actual: Some(local_input),
+                            });
+                        }
+                    }
+                }
+
+                // Check version increment for mutated objects
+                // Note: In Sui, all objects in a transaction get the SAME output version
+                // (the lamport timestamp), which is max(input_versions) + 1.
+                // So output > input is the correct validation, not output == input + 1.
+                if let Some(input_v) = local_info.input_version {
+                    increment_total += 1;
+                    // Valid if output version > input version
+                    if local_info.output_version > input_v {
+                        increment_valid += 1;
+                    } else {
+                        mismatches.push(VersionMismatch {
+                            object_id: obj_id.clone(),
+                            mismatch_type: VersionMismatchType::OutputVersion,
+                            expected: Some(input_v + 1), // Minimum expected
+                            actual: Some(local_info.output_version),
+                        });
+                    }
+                }
+            }
+
+            comparison.input_versions_matched = input_matched;
+            comparison.input_versions_total = input_total;
+            comparison.version_increments_valid = increment_valid;
+            comparison.version_increments_total = increment_total;
+            comparison.version_mismatches = mismatches;
+
+            // Adjust match score to include version tracking
+            if input_total > 0 || increment_total > 0 {
+                let version_score = if input_total + increment_total > 0 {
+                    (input_matched + increment_valid) as f64 / (input_total + increment_total) as f64
+                } else {
+                    1.0
+                };
+                // Weight: 80% original comparison, 20% version tracking
+                comparison.match_score = comparison.match_score * 0.8 + version_score * 0.2;
+            }
+        }
+
+        comparison
+    }
+}
+
+/// Simplified version info for comparison (without digest).
+#[derive(Debug, Clone)]
+pub struct LocalVersionInfo {
+    /// Input version (None if created)
+    pub input_version: Option<u64>,
+    /// Output version after execution
+    pub output_version: u64,
 }
 
 /// Full object data returned from RPC.

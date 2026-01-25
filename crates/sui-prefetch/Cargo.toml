@@ -1,0 +1,25 @@
+[package]
+name = "sui-prefetch"
+version = "0.1.0"
+edition = "2021"
+description = "Strategic data prefetching for Sui transaction replay"
+
+[dependencies]
+# Core utilities
+anyhow.workspace = true
+base64.workspace = true
+hex.workspace = true
+
+# Async runtime
+tokio.workspace = true
+
+# Sui types
+move-core-types.workspace = true
+move-binary-format.workspace = true
+bcs.workspace = true
+fastcrypto.workspace = true
+
+# Workspace crates
+sui-transport.workspace = true
+sui-resolver.workspace = true
+sui-sandbox-types.workspace = true
