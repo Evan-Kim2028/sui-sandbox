@@ -25,6 +25,9 @@ __pycache__/
 /specs/
 /plans/
 /docs/plans/
+EXAMPLES_IMPROVEMENT_PLAN.md
+*_PLAN.md
+/examples/deepbook_debug/
 
 # Framework bytecode (regenerated from sui-framework source)
 /framework_bytecode/
