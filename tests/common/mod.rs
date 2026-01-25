@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! Shared test utilities for integration tests.
 //!
 //! This module provides common functionality used across test files to avoid

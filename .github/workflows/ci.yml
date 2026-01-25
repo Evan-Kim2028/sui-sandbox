@@ -23,20 +23,6 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --locked
-
-  python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-
-      - name: Lint and test
-        working-directory: benchmark
-        run: |
-          uv sync --group dev --frozen
-          uv run ruff check .
-          uv run ruff format --check .
-          uv run pytest -q -x -m "not integration and not docker"

@@ -31,7 +31,7 @@ use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sui_sandbox_core::ptb::Command;
 use sui_sandbox_core::simulation::SimulationEnvironment;
@@ -284,7 +284,7 @@ fn get_helper_contract_path() -> PathBuf {
         .join("fork_state_helper")
 }
 
-fn create_helper_contract(path: &PathBuf) -> Result<()> {
+fn create_helper_contract(path: &Path) -> Result<()> {
     use std::fs;
     fs::create_dir_all(path.join("sources"))?;
 

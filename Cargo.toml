@@ -215,64 +215,20 @@ name = "batch_ptb"
 path = "examples/batch_ptb/main.rs"
 
 [[example]]
-name = "deepbook_debug_investigate"
-path = "examples/deepbook_debug/investigate_transaction.rs"
+name = "ptb_basics"
+path = "examples/ptb_basics.rs"
 
 [[example]]
-name = "deepbook_debug_commands"
-path = "examples/deepbook_debug/investigate_commands.rs"
+name = "historical_replay_demo"
+path = "examples/historical_replay_demo.rs"
 
 [[example]]
-name = "deepbook_debug_parent"
-path = "examples/deepbook_debug/investigate_parent.rs"
+name = "version_tracking_test"
+path = "examples/version_tracking_test.rs"
 
 [[example]]
-name = "deepbook_debug_bm_content"
-path = "examples/deepbook_debug/investigate_bm_content.rs"
-
-[[example]]
-name = "deepbook_debug_table"
-path = "examples/deepbook_debug/investigate_table_children.rs"
-
-[[example]]
-name = "deepbook_debug_archive"
-path = "examples/deepbook_debug/investigate_archive.rs"
-
-[[example]]
-name = "deepbook_debug_deep"
-path = "examples/deepbook_debug/investigate_deep_balance.rs"
-
-[[example]]
-name = "deepbook_debug_orders"
-path = "examples/deepbook_debug/test_order_txs.rs"
-
-[[example]]
-name = "deepbook_debug_cached"
-path = "examples/deepbook_debug/test_cached_tx.rs"
-
-[[example]]
-name = "deepbook_debug_history_table"
-path = "examples/deepbook_debug/investigate_history_table.rs"
-
-[[example]]
-name = "deepbook_debug_epoch_lookup"
-path = "examples/deepbook_debug/investigate_epoch_lookup.rs"
-
-[[example]]
-name = "deepbook_debug_state_epoch"
-path = "examples/deepbook_debug/investigate_state_epoch.rs"
-
-[[example]]
-name = "deepbook_debug_second_epoch"
-path = "examples/deepbook_debug/investigate_second_epoch.rs"
-
-[[example]]
-name = "deepbook_debug_version_bound"
-path = "examples/deepbook_debug/investigate_version_bound.rs"
-
-[[example]]
-name = "deepbook_debug_object_types"
-path = "examples/deepbook_debug/investigate_object_types.rs"
+name = "analyze_protocols"
+path = "examples/analyze_protocols.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

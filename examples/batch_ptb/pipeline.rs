@@ -1,3 +1,9 @@
+#![allow(
+    clippy::type_complexity,
+    clippy::field_reassign_with_default,
+    clippy::manual_pattern_char_comparison,
+    clippy::single_match
+)]
 //! Batch processing pipeline for PTB replay from static checkpoint range.
 //!
 //! This module fetches transactions from specific checkpoints and replays them locally.
@@ -335,6 +341,7 @@ impl BatchPipeline {
     ///
     /// If `fetch_mode` is true, will fetch all data and save to cache.
     /// If `fetch_mode` is false, will try to load from cache first.
+    #[allow(dead_code)]
     pub async fn run_checkpoints_with_cache(
         start_checkpoint: u64,
         num_checkpoints: u64,

@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Historical Replay Demo - Using HistoricalPackageResolver
 //!
 //! This example demonstrates the new composable utilities for historical state

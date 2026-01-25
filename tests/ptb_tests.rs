@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{create_mock_coin, framework_resolver, get_coin_balance};
+use common::{create_mock_coin, framework_resolver};
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, PTBExecutor};
 use sui_sandbox_core::vm::VMHarness;
@@ -32,8 +32,6 @@ use sui_sandbox_core::vm::VMHarness;
 // from on-chain behavior. They serve as documentation and regression markers.
 
 mod edge_cases {
-    use super::*;
-
     /// Edge Case 1: SplitCoins with Result argument - mutation may not persist
     ///
     /// When SplitCoins operates on a Result argument (not Input), the mutation

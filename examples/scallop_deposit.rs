@@ -1130,10 +1130,10 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
 
         // Also add any from linkage maps
         for (orig, upgraded) in &linkage_upgrades {
-            if normalize_address(orig) == scallop_original_norm {
-                if !scallop_upgrades.contains(upgraded) {
-                    scallop_upgrades.push(upgraded.clone());
-                }
+            if normalize_address(orig) == scallop_original_norm
+                && !scallop_upgrades.contains(upgraded)
+            {
+                scallop_upgrades.push(upgraded.clone());
             }
         }
 

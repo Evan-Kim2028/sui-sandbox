@@ -1,4 +1,4 @@
-#![allow(unused_imports)]
+#![allow(unused_imports, deprecated)]
 //! gRPC + Sandbox Integration Tests
 //!
 //! These tests validate the full pipeline from gRPC data fetching through sandbox replay.

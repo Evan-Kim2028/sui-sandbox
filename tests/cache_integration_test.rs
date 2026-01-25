@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Integration tests for the unified cache architecture.
 //!
 //! These tests verify:

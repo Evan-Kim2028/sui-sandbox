@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Integration tests for sui-sandbox CLI
 
 use assert_cmd::Command;
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn sandbox_cmd() -> Command {
-    Command::cargo_bin("sui-sandbox").unwrap()
+    Command::cargo_bin("sui-sandbox").expect("binary not found")
 }
 
 fn fixture_dir() -> PathBuf {

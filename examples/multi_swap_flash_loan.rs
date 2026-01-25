@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Multi-DEX Flash Loan Replay Example
 //!
 //! Demonstrates replaying a complex arbitrage transaction that routes through

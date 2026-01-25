@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Version Tracking Test - Verify version tracking functionality
 //!
 //! This example tests the new version tracking feature:
@@ -210,7 +211,7 @@ fn test_synthetic_version_tracking() -> Result<()> {
         let mut valid_increments = 0;
         let mut total_increments = 0;
 
-        for (_obj_id, info) in versions {
+        for info in versions.values() {
             if let Some(input_v) = info.input_version {
                 total_increments += 1;
                 let expected_output = input_v + 1;
