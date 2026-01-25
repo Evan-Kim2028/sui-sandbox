@@ -1,14 +1,14 @@
-//! Simple Coin Transfer Example
+//! PTB Basics - Your First Sui Transaction
 //!
 //! This is the simplest example - no API keys or network access required.
-//! It demonstrates the core concepts of the sandbox:
+//! It demonstrates the core concepts of the Move VM sandbox:
 //!
 //! 1. Create a simulation environment
 //! 2. Create test coins
 //! 3. Build and execute a PTB (Programmable Transaction Block)
 //! 4. Verify the results
 //!
-//! Run with: cargo run --example coin_transfer
+//! Run with: cargo run --example ptb_basics
 
 use anyhow::Result;
 use move_core_types::account_address::AccountAddress;
@@ -20,7 +20,7 @@ use sui_sandbox_core::simulation::SimulationEnvironment;
 
 fn main() -> Result<()> {
     println!("╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║                    Simple Coin Transfer Example                       ║");
+    println!("║                       PTB Basics Example                              ║");
     println!("║                                                                      ║");
     println!("║  No API keys needed - runs entirely locally!                         ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
@@ -92,6 +92,7 @@ fn main() -> Result<()> {
             id: coin_id,
             bytes: coin_obj.bcs_bytes.clone(),
             type_tag: Some(coin_type),
+            version: None,
         }),
         // Input 1: Amount to split off (1 SUI = 1 billion MIST)
         InputValue::Pure(bcs::to_bytes(&1_000_000_000u64)?),
@@ -198,8 +199,8 @@ fn main() -> Result<()> {
     println!("   - Commands: SplitCoins, TransferObjects, MoveCall, etc.");
     println!("   - Arguments: Input(n), Result(n), NestedResult(cmd, idx)");
     println!("\nNext steps:");
-    println!("   - Try the fork_state example to work with real mainnet data");
-    println!("   - See cetus_swap for replaying real DeFi transactions");
+    println!("   - Try fork_state to work with real mainnet data");
+    println!("   - See cetus_swap or deepbook_replay for transaction replay");
 
     println!("\n{}\n", "=".repeat(74));
 

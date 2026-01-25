@@ -9,9 +9,7 @@
 //! Configure gRPC endpoint in your `.env` file:
 //! ```
 //! SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
-//! # Or with API key for premium endpoints:
-//! SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
-//! SUI_GRPC_API_KEY=your-api-key-here
+//! SUI_GRPC_API_KEY=your-api-key-here  # Optional, depending on your provider
 //! ```
 //!
 //! ## Usage
@@ -22,6 +20,12 @@
 //!
 //! # Subsequent runs: use cache for fast iteration
 //! cargo run --example batch_ptb --release
+//!
+//! # Compare ground-truth vs legacy prefetch strategies
+//! cargo run --example batch_ptb --release -- --compare
+//!
+//! # Use legacy GraphQL-first prefetch strategy
+//! cargo run --example batch_ptb --release -- --legacy
 //! ```
 
 mod cache;
@@ -30,7 +34,7 @@ mod pipeline;
 use anyhow::Result;
 use std::time::Instant;
 
-use pipeline::{BatchPipeline, BatchStats};
+use pipeline::{BatchPipeline, BatchStats, PrefetchStrategy};
 
 // =============================================================================
 // STATIC CHECKPOINT RANGE
@@ -42,8 +46,8 @@ use pipeline::{BatchPipeline, BatchStats};
 /// Note: Check x-sui-lowest-available-checkpoint header for available range
 const START_CHECKPOINT: u64 = 237_600_000;
 
-/// Number of checkpoints to process
-const NUM_CHECKPOINTS: u64 = 10;
+/// Number of checkpoints to process (237600000 - 237600004)
+const NUM_CHECKPOINTS: u64 = 5;
 
 fn main() -> Result<()> {
     // Load environment from .env file
@@ -52,6 +56,18 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let fetch_mode = args.iter().any(|a| a == "--fetch" || a == "-f");
     let quiet_mode = args.iter().any(|a| a == "--quiet" || a == "-q");
+    let compare_mode = args.iter().any(|a| a == "--compare" || a == "-c");
+    let legacy_mode = args.iter().any(|a| a == "--legacy" || a == "-l");
+    let mm2_mode = args.iter().any(|a| a == "--mm2" || a == "-m");
+
+    // Determine prefetch strategy
+    let strategy = if legacy_mode {
+        PrefetchStrategy::LegacyGraphQL
+    } else if mm2_mode {
+        PrefetchStrategy::MM2Predictive
+    } else {
+        PrefetchStrategy::GroundTruth
+    };
 
     println!("╔══════════════════════════════════════════════════════════════════════╗");
     println!("║              Batch PTB Replay - Static Checkpoint Range              ║");
@@ -62,10 +78,23 @@ fn main() -> Result<()> {
         START_CHECKPOINT + NUM_CHECKPOINTS - 1
     );
     println!("║  Goal: 100% local/on-chain parity                                    ║");
-    if fetch_mode {
+    if compare_mode {
+        println!("║  Mode: COMPARISON (ground-truth vs legacy prefetch)                 ║");
+    } else if fetch_mode {
         println!("║  Mode: FETCH (will cache data to disk)                              ║");
     } else {
         println!("║  Mode: REPLAY (using cached data if available)                      ║");
+    }
+    match strategy {
+        PrefetchStrategy::GroundTruth => {
+            println!("║  Prefetch: GROUND-TRUTH-FIRST (recommended)                        ║");
+        }
+        PrefetchStrategy::MM2Predictive => {
+            println!("║  Prefetch: MM2 PREDICTIVE (ground-truth + bytecode analysis)       ║");
+        }
+        PrefetchStrategy::LegacyGraphQL => {
+            println!("║  Prefetch: LEGACY GRAPHQL-FIRST                                    ║");
+        }
     }
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
 
@@ -73,12 +102,32 @@ fn main() -> Result<()> {
 
     // Create and run the pipeline
     let rt = tokio::runtime::Runtime::new()?;
+
+    if compare_mode {
+        // Run comparison mode
+        let comparison = rt.block_on(async {
+            BatchPipeline::run_comparison(START_CHECKPOINT, NUM_CHECKPOINTS).await
+        })?;
+
+        comparison.print_summary();
+
+        // Exit with error code if ground-truth is worse than legacy
+        if comparison.ground_truth_stats.match_rate() < comparison.legacy_stats.match_rate() {
+            eprintln!("WARNING: Ground-truth strategy performed worse than legacy!");
+            std::process::exit(1);
+        }
+
+        return Ok(());
+    }
+
+    // Run with specified strategy
     let stats = rt.block_on(async {
-        BatchPipeline::run_checkpoints_with_cache(
+        BatchPipeline::run_with_strategy(
             START_CHECKPOINT,
             NUM_CHECKPOINTS,
             fetch_mode,
             quiet_mode,
+            strategy,
         )
         .await
     })?;
@@ -133,6 +182,28 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
     );
 
     println!("╠══════════════════════════════════════════════════════════════════════╣");
+
+    // Framework vs Complex breakdown
+    let fw_pct = if stats.framework_total > 0 {
+        (stats.framework_matches as f64 / stats.framework_total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let cx_pct = if stats.complex_total > 0 {
+        (stats.complex_matches as f64 / stats.complex_total as f64) * 100.0
+    } else {
+        0.0
+    };
+    println!(
+        "║  Framework-only PTBs: {:>3}/{:<3} ({:>5.1}% match)                       ║",
+        stats.framework_matches, stats.framework_total, fw_pct
+    );
+    println!(
+        "║  Complex PTBs:        {:>3}/{:<3} ({:>5.1}% match)                       ║",
+        stats.complex_matches, stats.complex_total, cx_pct
+    );
+
+    println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!(
         "║  Total objects fetched:   {:>6}                                     ║",
         stats.total_objects_fetched
@@ -145,6 +216,36 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
         "║  Dynamic fields resolved: {:>6}                                     ║",
         stats.dynamic_fields_resolved
     );
+
+    // MM2 analysis stats (if any)
+    if stats.mm2_predictions_made > 0 {
+        println!("╠══════════════════════════════════════════════════════════════════════╣");
+        println!(
+            "║  MM2 packages analyzed:   {:>6}                                     ║",
+            stats.mm2_packages_analyzed
+        );
+        println!(
+            "║  MM2 packages fetched:    {:>6}                                     ║",
+            stats.mm2_packages_fetched_for_analysis
+        );
+        println!(
+            "║  MM2 predictions made:    {:>6}                                     ║",
+            stats.mm2_predictions_made
+        );
+        println!(
+            "║  MM2 predictions matched: {:>6}                                     ║",
+            stats.mm2_predictions_matched
+        );
+        let mm2_precision = if stats.mm2_predictions_made > 0 {
+            (stats.mm2_predictions_matched as f64 / stats.mm2_predictions_made as f64) * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "║  MM2 prediction accuracy: {:>5.1}%                                    ║",
+            mm2_precision
+        );
+    }
 
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!(
@@ -203,12 +304,14 @@ fn print_summary(stats: &BatchStats, total_elapsed: std::time::Duration) {
     // Print mismatch details if any
     if !stats.mismatches.is_empty() {
         println!("\nMismatched Transactions (local != on-chain):");
-        for (digest, local, onchain, error) in stats.mismatches.iter().take(20) {
+        for (digest, local, onchain, error, is_framework) in stats.mismatches.iter().take(20) {
             let local_str = if *local { "SUCCESS" } else { "FAILURE" };
             let onchain_str = if *onchain { "SUCCESS" } else { "FAILURE" };
+            let category = if *is_framework { "framework" } else { "complex" };
             println!(
-                "  {} local={} onchain={}",
+                "  {} [{}] local={} onchain={}",
                 &digest[..16],
+                category,
                 local_str,
                 onchain_str
             );

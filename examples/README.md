@@ -1,85 +1,151 @@
-# Sui Sandbox Examples
+# Examples - Start Here
 
-These examples demonstrate how to use the local Move VM sandbox for testing and simulating Sui transactions.
+This is the best way to learn the sui-sandbox library. Work through these examples in order.
 
-## Quick Start
+## Learning Path
 
-**Start here if you're new!** The examples are ordered from simplest to most advanced.
-
-### 0. CLI Workflow (No API Key, No Compilation)
+### Level 1: CLI Exploration (Minimal Setup)
 
 ```bash
-# Interactive CLI walkthrough - best for quick exploration
+# First, build the test fixture (requires Sui CLI)
+cd tests/fixture && sui move build && cd ../..
+
+# Then run the CLI workflow
 ./examples/cli_workflow.sh
-
-# Or use the CLI directly:
-sui-sandbox view module 0x2::coin
-sui-sandbox run 0x2::coin::zero --type-arg 0x2::sui::SUI
 ```
 
-### 1. Simple (No API Key Required)
+This shell script walks you through the `sui-sandbox` CLI without any compilation. You'll learn:
+- Exploring framework modules (`view modules`, `view module`)
+- Executing simple functions
+- Using JSON output for scripting
+
+**Prerequisites**: Sui CLI (`sui`) for building the fixture
+
+---
+
+### Level 2: Basic PTB Operations
 
 ```bash
-# Coin transfer - basic PTB operations
-cargo run --example coin_transfer
+cargo run --example ptb_basics
 ```
 
-### 2. Intermediate (Requires API Key)
+Your first Rust example. Creates a local simulation environment and executes basic PTB commands:
+- Creating a `SimulationEnvironment`
+- Splitting coins with `SplitCoins`
+- Transferring objects with `TransferObjects`
+
+**Prerequisites**: Rust toolchain
+
+---
+
+### Level 3: Fork Mainnet State + Deploy Custom Contracts
 
 ```bash
-# Fork mainnet state into local sandbox
 cargo run --example fork_state
 ```
 
-### 3. Advanced (Transaction Replay)
+Fork real mainnet state and deploy your own contracts against it:
+- Fetch real packages (DeepBook V3) and objects from mainnet
+- Load them into a local SimulationEnvironment
+- **Deploy your own Move contracts** into the sandbox
+- Call real protocol code (DeepBook) and your custom code together
+
+This is how you develop and test contracts that interact with real DeFi protocols
+without deploying to mainnet or spending gas.
+
+**Prerequisites**: gRPC endpoint, `sui` CLI (optional, for custom contract deployment)
+
+---
+
+### Level 4: Transaction Replay
 
 ```bash
-# Replay real DeFi transactions
 cargo run --example cetus_swap
-cargo run --example deepbook_replay
-cargo run --example multi_swap_flash_loan
-cargo run --example scallop_deposit
 ```
 
-## Available Examples
+The core use case - replay a real mainnet transaction locally:
+- Fetch historical transaction from gRPC
+- Reconstruct exact input state (including dynamic fields)
+- Execute locally and verify 1:1 mainnet parity
+- Handles package upgrades via linkage tables
 
-| Example | Difficulty | API Key | Description |
-|---------|------------|---------|-------------|
-| `cli_workflow.sh` | Beginner | No | Shell script demonstrating CLI usage |
-| `coin_transfer` | Beginner | No | Split and transfer SUI coins locally |
-| `fork_state` | Intermediate | Yes | Fork mainnet state and execute PTBs |
-| `cetus_swap` | Advanced | Yes | Replay Cetus AMM swap transaction |
-| `deepbook_replay` | Advanced | Yes | Replay DeepBook flash loan transactions |
-| `multi_swap_flash_loan` | Advanced | Yes | Flash loan arbitrage across multiple DEXes |
-| `scallop_deposit` | Advanced | Yes | Replay Scallop lending deposit |
+**Prerequisites**: API key
+
+---
+
+### Level 5: BigVector & Dynamic Fields
+
+```bash
+cargo run --example deepbook_orders
+```
+
+Replay DeepBook order transactions that use BigVector internally:
+- **cancel_order** and **place_limit_order** transaction replay
+- Dynamic field prefetching with `prefetch_dynamic_fields`
+- Enhanced child fetcher with gRPC + GraphQL fallback
+- Version validation against max lamport version
+
+BigVector is Sui's scalable vector implementation that uses dynamic field slices.
+These slices may not appear in `unchanged_loaded_runtime_objects`, requiring
+on-demand fetching during execution.
+
+**Prerequisites**: API key, understanding of Levels 1-4
+
+---
+
+### Level 6: Complex DeFi Replay
+
+```bash
+cargo run --example multi_swap_flash_loan
+```
+
+Advanced replay with complex state:
+- Multi-DEX flash loan arbitrage
+- Dynamic field prefetching
+- Version-lock handling with `GenericObjectPatcher`
+
+**Prerequisites**: API key, understanding of Levels 1-5
+
+---
+
+## All Examples
+
+| Example | Level | API Key | Description |
+|---------|-------|---------|-------------|
+| `cli_workflow.sh` | 1 | No | Interactive CLI walkthrough |
+| `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
+| `fork_state` | 3 | Yes | Fork mainnet state locally |
+| `cetus_swap` | 4 | Yes | Cetus AMM swap replay (canonical replay example) |
+| `deepbook_replay` | 4 | Yes | DeepBook flash loan replay |
+| `deepbook_orders` | 5 | Yes | DeepBook order replay (BigVector handling) |
+| `multi_swap_flash_loan` | 6 | Yes | Multi-DEX arbitrage replay |
+
+---
 
 ## Setup
 
-### For Basic Examples (No API Key)
+### For Levels 1-2 (No API Key)
 
-Just run the example:
+Just run the examples:
 
 ```bash
-cargo run --example coin_transfer
+cargo run --example ptb_basics
 ```
 
-### For Advanced Examples (Requires gRPC Endpoint)
+### For Levels 3-6 (Requires gRPC Access)
 
-1. Configure your gRPC endpoint in a `.env` file in the project root:
+1. Configure your gRPC endpoint in a `.env` file:
 
 ```bash
-# Option 1: Generic configuration (recommended)
-SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443
-SUI_GRPC_API_KEY=your_api_key_here
+cp .env.example .env
+# Edit .env with your endpoint and API key (if required by your provider)
+```
 
-# Option 2: Use Sui public endpoints (no API key needed, limited features)
+Example `.env`:
+```
 SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
-
-# Option 3: Legacy Surflux variables (still supported)
-SURFLUX_API_KEY=your_api_key_here
+SUI_GRPC_API_KEY=your-api-key-here  # Optional, depending on provider
 ```
-
-1. For Surflux, get an API key from [Surflux](https://surflux.dev)
 
 2. Run the example:
 
@@ -87,157 +153,112 @@ SURFLUX_API_KEY=your_api_key_here
 cargo run --example fork_state
 ```
 
-## Example Descriptions
-
-### cli_workflow.sh (Beginner)
-
-A shell script that walks through the `sui-sandbox` CLI:
-
-- Exploring framework modules (`view modules`, `view module`)
-- Checking session status
-- Publishing a test package
-- Executing functions
-- Using JSON output for scripting
-- Cleaning up session state
-
-This is the fastest way to explore the sandbox without writing any code. Run it with:
-
-```bash
-./examples/cli_workflow.sh
-```
-
-Or use the CLI interactively:
-
-```bash
-# Build the CLI
-cargo build --release --bin sui-sandbox
-
-# Explore modules
-./target/release/sui-sandbox view module 0x2::coin
-
-# Execute a function
-./target/release/sui-sandbox run 0x2::coin::zero --type-arg 0x2::sui::SUI
-
-# When ready to deploy, generate sui client commands
-./target/release/sui-sandbox bridge publish ./my_package
-
-# See all commands
-./target/release/sui-sandbox --help
-```
-
-### coin_transfer (Beginner)
-
-Demonstrates basic PTB (Programmable Transaction Block) operations:
-
-- Creating a simulation environment
-- Creating test SUI coins
-- Splitting coins using `SplitCoins` command
-- Transferring coins using `TransferObjects` command
-
-No network access required - runs entirely locally.
-
-### fork_state (Intermediate)
-
-Demonstrates "forking" real mainnet state:
-
-- Connect to Surflux gRPC to fetch mainnet data
-- Fetch packages (Move Stdlib, Sui Framework, DeepBook V3)
-- Fetch objects (DeepBook registry and pools)
-- Load state into local sandbox
-- Deploy a custom Move contract
-- Execute PTBs against the forked state
-
-This is useful for:
-
-- Testing transactions before submitting on-chain
-- Debugging failed transactions
-- Exploring "what-if" scenarios
-- Developing against real protocol state
-
-### Transaction Replay Examples (Advanced)
-
-These examples demonstrate replaying real historical transactions:
-
-- Fetch transaction data from mainnet
-- Reconstruct exact historical state
-- Execute locally and compare results
-
-See each example's source code for detailed documentation.
-
-## File Structure
-
-```text
-examples/
-├── README.md                   # This file
-├── cli_workflow.sh            # CLI workflow demonstration (shell script)
-├── coin_transfer.rs           # Simple coin operations (no API key)
-├── fork_state.rs              # Fork mainnet state (requires API key)
-├── fork_state_helper/         # Custom Move contract for fork_state
-│   ├── Move.toml
-│   └── sources/manager.move
-├── cetus_swap.rs              # Cetus AMM replay
-├── deepbook_replay.rs         # DeepBook replay
-├── multi_swap_flash_loan.rs   # Multi-DEX flash loan
-├── scallop_deposit.rs         # Scallop lending replay
-└── common/
-    └── mod.rs                 # Shared utilities
-```
-
-## Example Status
-
-| Example | Status | Notes |
-|---------|--------|-------|
-| `cli_workflow.sh` | ✅ Works | Shell script, no dependencies |
-| `coin_transfer` | ✅ Works | No dependencies |
-| `fork_state` | ✅ Works | Requires API key |
-| `cetus_swap` | ✅ Works | Matches on-chain |
-| `deepbook_replay` | ✅ Works | Both success and failure cases |
-| `multi_swap_flash_loan` | ✅ Works | Uses GenericObjectPatcher for version-lock |
-| `scallop_deposit` | ⚠️ Partial | Version-lock bypassed, BCS issue remains |
+---
 
 ## Key Concepts
-
-### PTB (Programmable Transaction Block)
-
-Sui transactions are expressed as PTBs containing:
-
-- **Inputs**: Objects and pure values
-- **Commands**: Operations like `MoveCall`, `SplitCoins`, `TransferObjects`
-- **Arguments**: References to inputs or previous command results
 
 ### SimulationEnvironment
 
 The local Move VM that executes PTBs:
 
-- Pre-loaded with Sui Framework and Move Stdlib
-- Can load additional packages from mainnet
-- Tracks gas usage and object mutations
+```rust
+let mut env = SimulationEnvironment::new()?;
 
-### State Forking
+// Pre-loaded with Sui Framework (0x1, 0x2, 0x3)
+// Can load additional packages from mainnet
+// Tracks gas usage and object mutations
+```
 
-"Forking" means taking a snapshot of on-chain state at a specific point in time and loading it locally. This allows testing against real protocol state without affecting the chain.
+### PTB (Programmable Transaction Block)
+
+Sui transactions are expressed as PTBs:
+
+```rust
+let commands = vec![
+    Command::MoveCall { package, module, function, type_arguments, arguments },
+    Command::SplitCoins { coin, amounts },
+    Command::TransferObjects { objects, address },
+];
+
+let result = env.execute_ptb(inputs, commands)?;
+```
+
+### Transaction Replay
+
+Fetch a historical transaction and re-execute it:
+
+```rust
+// 1. Fetch transaction and state
+let provider = HistoricalStateProvider::mainnet().await?;
+let state = provider.fetch_replay_state(&digest).await?;
+
+// 2. Get historical versions from transaction effects
+let historical_versions = get_historical_versions(&state);
+
+// 3. Prefetch dynamic fields recursively
+let prefetched = prefetch_dynamic_fields(&graphql, &grpc, &rt, &historical_versions, 3, 200);
+
+// 4. Set up child fetcher for on-demand object loading
+let child_fetcher = create_enhanced_child_fetcher_with_cache(
+    grpc, graphql, historical_versions, prefetched, patcher, cache
+);
+harness.set_child_fetcher(child_fetcher);
+
+// 5. Execute locally and compare
+let result = replay_with_objects_and_aliases(&transaction, &mut harness, &objects, &aliases)?;
+assert!(result.local_success);
+```
+
+### BigVector Handling
+
+Some protocols (like DeepBook) use BigVector internally. BigVector slices may not appear
+in `unchanged_loaded_runtime_objects`. Handle this with:
+
+```rust
+// 1. Prefetch discovers children via GraphQL
+let prefetched = prefetch_dynamic_fields(&graphql, &grpc, &rt, &versions, 3, 200);
+
+// 2. Enhanced child fetcher validates versions
+// If object.version <= max_lamport_version, it's safe to use
+let child_fetcher = create_enhanced_child_fetcher_with_cache(...);
+```
+
+---
 
 ## Troubleshooting
 
-### "API key / endpoint not configured"
+### "API key not configured" or connection errors
 
-Create a `.env` file with your gRPC configuration (see Setup section above). The examples support multiple configuration options:
-
-- `SUI_GRPC_ENDPOINT` + `SUI_GRPC_API_KEY` (recommended)
-- `SURFLUX_API_KEY` (legacy, still supported)
-- No API key for public Sui endpoints (limited functionality)
-
-### "sui CLI not found" (fork_state)
-
-The custom contract deployment requires the `sui` CLI. Install it from https://docs.sui.io/guides/developer/getting-started/sui-install
-
-The example will still work, just without the custom contract.
-
-### Compilation errors
-
-Make sure you're on a recent Rust version:
+Create a `.env` file with your gRPC configuration:
 
 ```bash
-rustup update
-cargo build --examples
+cp .env.example .env
+# Edit .env with your endpoint and API key
 ```
+
+### Build errors
+
+```bash
+# Clean and rebuild
+cargo clean && cargo build --examples
+
+# If protoc errors, install protobuf:
+# Ubuntu: sudo apt-get install protobuf-compiler
+# macOS: brew install protobuf
+```
+
+### "sui CLI not found" (fork_state only)
+
+The custom contract deployment in `fork_state` requires the Sui CLI. Install from https://docs.sui.io/guides/developer/getting-started/sui-install
+
+The example still runs without it - just skips the custom contract part.
+
+---
+
+## Next Steps
+
+After completing these examples:
+
+- **[Transaction Replay Guide](../docs/guides/TRANSACTION_REPLAY.md)** - Deep dive into replay mechanics
+- **[Architecture](../docs/ARCHITECTURE.md)** - Understand system internals
+- **[Limitations](../docs/reference/LIMITATIONS.md)** - Known differences from mainnet

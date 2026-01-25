@@ -234,7 +234,7 @@ impl CheckpointRangeCache {
 }
 
 // Conversion functions from GrpcClient types to cached types
-use sui_data_fetcher::grpc::{
+use sui_transport::grpc::{
     GrpcArgument, GrpcCheckpoint, GrpcCommand, GrpcExecutionError, GrpcInput, GrpcMoveAbort,
     GrpcObject, GrpcTransaction,
 };

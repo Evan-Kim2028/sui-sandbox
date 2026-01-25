@@ -1,13 +1,13 @@
 //! Common utilities for PTB replay examples.
 //!
-//! This module provides glue code for examples that bridges `sui-data-fetcher`
+//! This module provides glue code for examples that bridges `sui-transport and sui-prefetch`
 //! and `sui-sandbox-core`. It re-exports utilities from both crates and provides
 //! example-specific helper functions.
 //!
-//! ## Data Helpers (from `sui_data_fetcher::utilities`)
+//! ## Data Helpers (from `sui_prefetch` and `sui_transport`)
 //!
-//! - [`collect_historical_versions`]: Aggregate object versions from gRPC response
-//! - [`create_grpc_client`]: Initialize Surflux gRPC client
+//! - [`collect_historical_versions`]: Aggregate object versions from gRPC response (sui_prefetch)
+//! - [`create_grpc_client`]: Initialize gRPC client (sui_transport)
 //!
 //! ## Infrastructure Workarounds (from `sui_sandbox_core::utilities`)
 //!
@@ -34,8 +34,9 @@
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::utilities::normalize_address;
 
-// Re-export from sui-data-fetcher::utilities
-pub use sui_data_fetcher::utilities::{collect_historical_versions, create_grpc_client};
+// Re-export from sui-transport and sui-prefetch
+pub use sui_prefetch::collect_historical_versions;
+pub use sui_transport::create_grpc_client;
 
 // Re-export from sui-sandbox-core::utilities (type/bytecode utilities)
 pub use sui_sandbox_core::utilities::{
@@ -49,7 +50,7 @@ pub use parse_type_tag as parse_type_tag_simple;
 // Example-Specific Helpers
 // =============================================================================
 //
-// These functions bridge sui-data-fetcher and sui-sandbox-core for replay examples.
+// These functions bridge sui-transport and sui-prefetch and sui-sandbox-core for replay examples.
 // They depend on types from both crates and are specific to the example use case.
 
 use std::collections::HashMap;
@@ -57,7 +58,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use base64::Engine;
-use sui_data_fetcher::grpc::{GrpcClient, GrpcTransaction};
+use sui_transport::grpc::{GrpcClient, GrpcTransaction};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
@@ -294,8 +295,8 @@ pub fn register_input_objects(
 }
 
 // Re-export prefetch utilities
-pub use sui_data_fetcher::graphql::GraphQLClient;
-pub use sui_data_fetcher::utilities::{prefetch_dynamic_fields, PrefetchedDynamicFields};
+pub use sui_transport::graphql::GraphQLClient;
+pub use sui_prefetch::{prefetch_dynamic_fields, PrefetchedDynamicFields};
 
 use move_core_types::language_storage::TypeTag;
 use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
@@ -343,6 +344,10 @@ pub fn create_enhanced_child_fetcher(
 /// Same as `create_enhanced_child_fetcher` but with a shared cache that gets
 /// populated during execution. This is useful when the transaction accesses
 /// objects that weren't in the original transaction effects.
+///
+/// **NEW**: Computes `max_lamport_version` from historical_versions to validate
+/// objects not in the transaction effects. If an object's current version is
+/// <= max_lamport_version, it's safe to use (hasn't been modified since tx time).
 pub fn create_enhanced_child_fetcher_with_cache(
     grpc: GrpcClient,
     graphql: GraphQLClient,
@@ -351,6 +356,9 @@ pub fn create_enhanced_child_fetcher_with_cache(
     patcher: Option<GenericObjectPatcher>,
     discovery_cache: Option<DynamicDiscoveryCache>,
 ) -> ChildFetcherFn {
+    // Compute max lamport version for validation
+    let max_lamport_version = historical_versions.values().copied().max().unwrap_or(0);
+
     let grpc_arc = Arc::new(grpc);
     let graphql_arc = Arc::new(graphql);
     let historical_arc = Arc::new(historical_versions);
@@ -364,12 +372,7 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
         // Strategy 0: Check prefetched cache first
         if let Some((version, type_str, bcs)) = prefetched_arc.get(&child_id_str) {
-            eprintln!(
-                "[child_fetcher] HIT prefetched cache: {} v{} ({} bytes)",
-                &child_id_str[..22.min(child_id_str.len())],
-                version,
-                bcs.len()
-            );
+            let _ = version; // silence unused warning
             // Apply patching if available
             let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                 if let Some(ref mut p) = *guard {
@@ -388,11 +391,6 @@ pub fn create_enhanced_child_fetcher_with_cache(
         // Strategy 0.5: Check dynamic discovery cache
         if let Ok(cache) = discovery_cache.lock() {
             if let Some((type_str, bcs)) = cache.get(&child_id_str) {
-                eprintln!(
-                    "[child_fetcher] HIT discovery cache: {} ({} bytes)",
-                    &child_id_str[..22.min(child_id_str.len())],
-                    bcs.len()
-                );
                 // Apply patching if available
                 let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                     if let Some(ref mut p) = *guard {
@@ -410,24 +408,21 @@ pub fn create_enhanced_child_fetcher_with_cache(
         }
 
         // Try to fetch at historical version if known
-        let version = historical_arc.get(&child_id_str).copied();
-
-        eprintln!(
-            "[child_fetcher] Fetching {} (parent: {}) at version {:?}",
-            &child_id_str[..22.min(child_id_str.len())],
-            &parent_id_str[..22.min(parent_id_str.len())],
-            version
-        );
-
+        let known_version = historical_arc.get(&child_id_str).copied();
         let rt = tokio::runtime::Runtime::new().ok()?;
 
         // Strategy 1: Try gRPC with historical version (if known) or current
+        // If no historical version is known, we'll fetch current and validate
         let result =
-            rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, version).await });
+            rt.block_on(async { grpc_arc.get_object_at_version(&child_id_str, known_version).await });
 
         if let Ok(Some(obj)) = &result {
-            if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                eprintln!("[child_fetcher] SUCCESS via gRPC: {} bytes", bcs.len());
+            // Validate version if we don't have a known historical version
+            if known_version.is_none() && obj.version > max_lamport_version {
+                // Object has been modified since the transaction - skip!
+                // Continue to try GraphQL or other strategies
+            } else if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+                // Version is valid (either known historical or current <= max_lamport)
                 // Apply patching if available
                 let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                     if let Some(ref mut p) = *guard {
@@ -438,23 +433,23 @@ pub fn create_enhanced_child_fetcher_with_cache(
                 } else {
                     bcs.clone()
                 };
-                if let Some(type_tag) = parse_type_tag(type_str) {
-                    return Some((type_tag, final_bcs));
+                match parse_type_tag(type_str) {
+                    Some(type_tag) => {
+                        return Some((type_tag, final_bcs));
+                    }
+                    None => {
+                        // eprintln!("[child_fetcher] FAILED to parse type_tag for: {}", type_str);
+                    }
                 }
             }
         }
 
         // Strategy 2: Try GraphQL direct object fetch
-        eprintln!("[child_fetcher] Trying GraphQL direct fetch...");
+        // eprintln!("[child_fetcher] Trying GraphQL direct fetch...");
         if let Ok(obj) = graphql_arc.fetch_object(&child_id_str) {
             if let Some(bcs_b64) = &obj.bcs_base64 {
                 if let Some(type_str) = &obj.type_string {
                     if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(bcs_b64) {
-                        eprintln!(
-                            "[child_fetcher] SUCCESS via GraphQL direct: {} bytes (v{})",
-                            bcs.len(),
-                            obj.version
-                        );
                         // Apply patching if available
                         let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                             if let Some(ref mut p) = *guard {
@@ -475,10 +470,6 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
         // Strategy 3: Try enumerating parent's dynamic fields to find the child
         // AND cache all discovered children for future lookups
-        eprintln!(
-            "[child_fetcher] Trying dynamic field enumeration on parent {}...",
-            &parent_id_str[..22.min(parent_id_str.len())]
-        );
         if let Ok(dfs) = graphql_arc.fetch_dynamic_fields(&parent_id_str, 200) {
             let df_count = dfs.len();
             let mut found_result: Option<(TypeTag, Vec<u8>)> = None;
@@ -518,10 +509,6 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
                         // Is this the child we're looking for?
                         if normalize_address(obj_id) == normalize_address(&child_id_str) {
-                            eprintln!(
-                                "[child_fetcher] Found target child in parent's dynamic fields! (cached {} total)",
-                                df_count
-                            );
                             // Apply patching if available
                             let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                                 if let Some(ref mut p) = *guard {
@@ -541,20 +528,12 @@ pub fn create_enhanced_child_fetcher_with_cache(
             }
 
             if let Some(result) = found_result {
-                eprintln!(
-                    "[child_fetcher] SUCCESS via df enumeration: {} bytes",
-                    result.1.len()
-                );
                 return Some(result);
             }
-
-            eprintln!(
-                "[child_fetcher] Child not found in parent's {} dynamic fields",
-                df_count
-            );
+            let _ = df_count; // silence unused warning
         }
 
-        eprintln!("[child_fetcher] FAILED: could not fetch child via any method");
+        // eprintln!("[child_fetcher] FAILED: could not fetch child via any method");
         None
     })
 }
@@ -577,62 +556,15 @@ pub fn create_key_based_child_fetcher(
             let parent_str = parent_id.to_hex_literal();
             let key_type_str = format!("{}", key_type);
 
-            eprintln!(
-                "[key_fetcher] Looking up: parent={}, key_type={}, key_bytes={} bytes",
-                &parent_str[..22.min(parent_str.len())],
-                &key_type_str[..80.min(key_type_str.len())],
-                key_bytes.len()
-            );
-
             // Use fuzzy matching: try exact match first, then fallback to bytes-only match
             if let Some(child) =
                 prefetched_arc.get_by_key_fuzzy(&parent_str, &key_type_str, key_bytes)
             {
-                eprintln!(
-                    "[key_fetcher] HIT: found child {} ({} bytes)",
-                    &child.object_id[..22.min(child.object_id.len())],
-                    child.bcs.len()
-                );
-
                 if let Some(type_tag) = parse_type_tag(&child.type_string) {
                     return Some((type_tag, child.bcs.clone()));
-                } else {
-                    eprintln!(
-                        "[key_fetcher] WARN: Failed to parse type: {}",
-                        child.type_string
-                    );
                 }
             }
 
-            // Debug: show what keys we have for this parent
-            let normalized_parent = normalize_address(&parent_str);
-            let matching_parents: Vec<_> = prefetched_arc
-                .children_by_key
-                .keys()
-                .filter(|k| normalize_address(&k.parent_id) == normalized_parent)
-                .collect();
-            if matching_parents.is_empty() {
-                eprintln!(
-                    "[key_fetcher] DEBUG: No keys found for parent {}",
-                    &normalized_parent[..22.min(normalized_parent.len())]
-                );
-            } else {
-                eprintln!(
-                    "[key_fetcher] DEBUG: Found {} keys for parent {}",
-                    matching_parents.len(),
-                    &normalized_parent[..22.min(normalized_parent.len())]
-                );
-                for key in matching_parents.iter().take(5) {
-                    eprintln!(
-                        "[key_fetcher] DEBUG:   type={}, bytes={} {:02x?}",
-                        &key.name_type,
-                        key.name_bcs.len(),
-                        &key.name_bcs[..20.min(key.name_bcs.len())]
-                    );
-                }
-            }
-
-            eprintln!("[key_fetcher] MISS: no match found");
             None
         },
     )

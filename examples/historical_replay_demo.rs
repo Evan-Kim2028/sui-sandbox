@@ -45,7 +45,7 @@ use base64::Engine;
 use common::{extract_package_ids_from_type, parse_type_tag_simple};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
-use sui_data_fetcher::grpc::{GrpcClient, GrpcInput};
+use sui_transport::grpc::{GrpcClient, GrpcInput};
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
@@ -103,11 +103,8 @@ fn replay_with_composable_utilities(tx_digest: &str) -> Result<bool> {
     println!("Step 1: Connecting to gRPC...");
 
     let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .or_else(|_| std::env::var("SURFLUX_GRPC_ENDPOINT"))
         .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let api_key = std::env::var("SUI_GRPC_API_KEY")
-        .or_else(|_| std::env::var("SURFLUX_API_KEY"))
-        .ok();
+    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
     let grpc = Arc::new(grpc);

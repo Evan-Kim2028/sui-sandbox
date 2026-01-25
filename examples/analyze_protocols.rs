@@ -19,7 +19,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use move_binary_format::file_format::{Bytecode, SignatureToken};
 use move_binary_format::CompiledModule;
-use sui_data_fetcher::grpc::GrpcClient;
+use sui_transport::grpc::GrpcClient;
 
 /// Key mainnet packages to analyze
 const PACKAGES_TO_ANALYZE: &[(&str, &str)] = &[
@@ -60,11 +60,8 @@ fn main() -> Result<()> {
 
     // Connect to gRPC
     let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .or_else(|_| std::env::var("SURFLUX_GRPC_ENDPOINT"))
         .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let api_key = std::env::var("SUI_GRPC_API_KEY")
-        .or_else(|_| std::env::var("SURFLUX_API_KEY"))
-        .ok();
+    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     let grpc = Arc::new(rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?);
     println!("Connected to: {}\n", endpoint);
@@ -218,7 +215,7 @@ fn analyze_module(module: &CompiledModule, module_name: &str, analysis: &mut Pac
             };
 
             let mut offset = 0usize;
-            for (_idx, field_def) in fields.iter().enumerate() {
+            for field_def in fields.iter() {
                 let field_name = module.identifier_at(field_def.name).to_string();
                 let field_type = format_signature_token(&field_def.signature.0, module);
 
