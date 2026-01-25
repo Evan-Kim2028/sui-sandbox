@@ -165,8 +165,7 @@ sui-sandbox/
 The simulation layer differs from mainnet in these ways:
 
 - **Randomness is deterministic** - Reproducible locally, different from mainnet VRF
-- **Function visibility not enforced** - Private functions callable in simulation
-- **Some validations relaxed** - Type constraints and ability checks are partial
+- **Dynamic fields computed at runtime** - Some DeFi protocols traverse data structures unpredictably
 
 Most limitations only matter for edge cases. For typical DeFi transactions, local execution matches mainnet exactly. See [Limitations](docs/reference/LIMITATIONS.md) for the complete list.
 

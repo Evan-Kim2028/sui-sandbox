@@ -8,7 +8,7 @@ This document describes known limitations and differences between the local Move
 
 ## Table of Contents
 
-1. [PTB Execution Edge Cases](#ptb-execution-edge-cases) *(7 issues fixed, 4 fully mitigated, 0 remaining - all verified against Sui source)*
+1. [PTB Execution Edge Cases](#ptb-execution-edge-cases) *(9 issues fixed including visibility and type validation)*
 2. [Gas Model](#gas-model)
 3. [Object Runtime](#object-runtime)
 4. [Cryptographic Operations](#cryptographic-operations)
@@ -212,26 +212,24 @@ The following edge cases were identified through comprehensive analysis of the S
 #### Function Visibility Validation
 
 **Severity:** HIGH (Security)
-**Status:** ⚠️ Not Implemented
+**Status:** ✅ Implemented
 
-**Description:** The sandbox does not validate that called functions are `public` or `entry`. Sui enforces this at execution time.
+**Description:** The sandbox validates that called functions are `public` or `entry` before execution.
 
-**Sui Source:** `execution.rs` validates function visibility before allowing calls.
+**Implementation:** `ptb.rs:2779-2786` calls `check_function_callable()` which validates visibility. The `resolver.rs:check_function_callable()` method returns an error if the function is not public or entry.
 
-**Impact:** Could allow calling private functions in simulation that would fail on-chain.
-
-**Recommendation:** Add visibility check before function execution.
+**Impact:** Private functions cannot be called from PTBs, matching mainnet behavior.
 
 #### Type Argument Validation
 
 **Severity:** MEDIUM
-**Status:** ⚠️ Not Implemented
+**Status:** ✅ Implemented
 
-**Description:** Type arguments passed to generic functions are not validated for arity or constraint satisfaction.
+**Description:** Type arguments passed to generic functions are validated for arity and constraint satisfaction.
 
-**Sui Source:** `context.rs` validates type parameter counts and constraints.
+**Implementation:** `ptb.rs:2788-2796` calls `validate_type_args()` which checks type argument counts and ability constraints via `resolver.rs:validate_type_args()`.
 
-**Impact:** Invalid generic instantiations may succeed locally but fail on-chain.
+**Impact:** Invalid generic instantiations are caught before execution, matching mainnet behavior.
 
 #### Private Generics Verification
 
@@ -362,11 +360,11 @@ The following edge cases were identified through comprehensive analysis of the S
 #### Ability Constraints
 
 **Severity:** MEDIUM
-**Status:** ⚠️ Partial Implementation
+**Status:** ✅ Implemented for Type Arguments
 
-**Description:** Type abilities (copy, drop, store, key) affect what operations are valid. Not all ability checks are enforced.
+**Description:** Type abilities (copy, drop, store, key) are validated for type arguments via `check_type_satisfies_constraints()` in `resolver.rs`. The Move VM also enforces ability constraints during execution.
 
-**Impact:** Some ability-violating operations may succeed locally.
+**Impact:** Type argument ability violations are caught before execution. Runtime ability checks are handled by the Move VM.
 
 #### Reference Semantics
 
