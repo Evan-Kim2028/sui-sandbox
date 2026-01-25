@@ -28,7 +28,3 @@ prost-types.workspace = true
 move-core-types.workspace = true
 sui-types.workspace = true
 bcs.workspace = true
-
-[build-dependencies]
-tonic-build.workspace = true
-prost-build.workspace = true
