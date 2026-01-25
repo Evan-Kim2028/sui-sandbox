@@ -1,10 +1,54 @@
 # Data Fetching Guide
 
-This guide covers how to fetch on-chain data (objects, packages, transactions) from Sui mainnet/testnet using the unified `DataFetcher` API.
+This guide covers how to fetch on-chain data (objects, packages, transactions) from Sui mainnet/testnet.
 
-## Overview
+## Choosing the Right API
 
-The data fetching system provides a unified interface with two backends:
+| Use Case | Recommended API | Why |
+|----------|-----------------|-----|
+| **Historical transaction replay** | `sui_state_fetcher::HistoricalStateProvider` | Versioned cache, fetches objects at exact historical versions |
+| Current state queries | `DataFetcher` | Simple API for latest objects/packages |
+| Real-time streaming | `DataFetcher` with gRPC | Push-based checkpoint streaming |
+
+## Historical Transaction Replay
+
+**For replaying historical transactions, use `sui_state_fetcher::HistoricalStateProvider`.**
+
+This is critical because objects change between transactions - you need the exact version
+of each object as it existed when the transaction was executed.
+
+```rust
+use sui_state_fetcher::HistoricalStateProvider;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Create provider for mainnet
+    let provider = HistoricalStateProvider::mainnet().await?;
+
+    // Fetch everything needed to replay a transaction
+    let state = provider.fetch_replay_state("8JTTa...").await?;
+
+    // state.transaction - PTB commands and inputs
+    // state.objects - objects at their exact historical versions
+    // state.packages - packages with linkage resolved
+
+    Ok(())
+}
+```
+
+The `HistoricalStateProvider`:
+- Uses a **versioned cache** keyed by `(object_id, version)` - essential for historical replay
+- Automatically fetches objects at their **input versions** from `unchanged_loaded_runtime_objects`
+- Resolves package **linkage tables** for upgraded packages
+- Provides an **on-demand fetcher** callback for dynamic field children
+
+See the `sui-state-fetcher` crate documentation for full API details.
+
+---
+
+## DataFetcher API (Current State)
+
+The `DataFetcher` is suitable for querying **current state** (latest versions). It provides a unified interface with two backends:
 
 | Backend | Best For | Tradeoff |
 |---------|----------|----------|

@@ -220,7 +220,7 @@ cargo test --test execute_bluefin_perpetuals test_bluefin_package_loading -- --n
 cargo test --test execute_bluefin_perpetuals test_discover_bluefin_perps -- --nocapture
 
 # Run DeepBook flash loan (uses Bluefin swap)
-SURFLUX_API_KEY=key DEEPBOOK_TX_INDEX=5 cargo test --test execute_deepbook_swap test_deepbook_two_phase_replay -- --ignored --nocapture
+SUI_GRPC_API_KEY=key DEEPBOOK_TX_INDEX=5 cargo test --test execute_deepbook_swap test_deepbook_two_phase_replay -- --ignored --nocapture
 ```text
 
 ---

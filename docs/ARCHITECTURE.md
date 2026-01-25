@@ -1,204 +1,97 @@
 # Architecture
 
-This document is the single source of truth for understanding the sui-sandbox system.
+Technical overview of the sui-sandbox system internals.
 
-## What This Is
+## Core Components
 
-A **Move VM sandbox** that allows:
-
-1. Executing Move code locally without a blockchain
-2. Evaluating LLM-generated transactions in a controlled environment
-3. Replaying mainnet transactions for regression testing
-
-## Workspace Structure
-
-The project is organized as a Cargo workspace:
-
-```text
-sui-sandbox/
-├── Cargo.toml              # Workspace root + main crate
-├── src/                    # Main library (sui_move_interface_extractor)
-│   ├── benchmark/          # Core simulation engine
-│   │   ├── simulation.rs   # SimulationEnvironment
-│   │   ├── ptb.rs          # PTBExecutor
-│   │   ├── vm.rs           # VMHarness
-│   │   └── tx_replay.rs    # Transaction replay
-│   ├── data_fetcher.rs     # Unified fetching API
-│   └── ...
-├── examples/               # Self-contained replay examples
-├── crates/
-│   ├── sui-sandbox-core/   # Re-exports benchmark/cache/data_fetcher
-│   ├── sui-data-fetcher/   # GraphQL + gRPC clients
-│   │   ├── graphql.rs      # GraphQL client (94KB)
-│   │   └── grpc/           # gRPC streaming client
-│   ├── sui-package-extractor/  # Bytecode analysis
-│   │   ├── bytecode.rs     # Interface extraction
-│   │   └── types.rs        # JSON schema types
-│   └── sui-types/          # Shared types (RetryConfig)
-└── tests/                  # Integration tests
 ```
-
-### Crate Dependencies
-
-```text
-sui-sandbox (root)
-    ├── sui-data-fetcher     (GraphQL/gRPC)
-    │   └── sui-sandbox-types
-    ├── sui-sandbox-types    (shared types)
-    └── [benchmark module uses both internally]
-
-sui-sandbox-core (facade)
-    └── sui-sandbox (re-exports benchmark, cache, data_fetcher)
-```
-
-## System Overview
-
-```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         External System                              │
-│                   (LLM Orchestrator / Test Runner)                   │
-└─────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   │ JSON over stdin/stdout
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        sandbox_exec.rs                               │
-│                     (Canonical LLM API)                              │
-│                                                                      │
-│  SandboxRequest → execute_request() → SandboxResponse               │
-│                                                                      │
-│  Tools: execute_ptb, validate_ptb, load_module, create_object,      │
-│         list_functions, get_function_info, deploy_from_mainnet...   │
+│                         Your Application                            │
+│                   (CLI, Scripts, LLM Orchestrator)                  │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      SimulationEnvironment                           │
-│                        (simulation.rs)                               │
-│                                                                      │
-│  - Manages objects, packages, state                                  │
-│  - Tracks events, effects, gas                                       │
-│  - Provides introspection APIs                                       │
+│                      SimulationEnvironment                          │
+│                        (simulation.rs)                              │
+│                                                                     │
+│  - In-memory object store                                           │
+│  - Tracks events, effects, gas                                      │
+│  - Provides introspection APIs                                      │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         PTBExecutor                                  │
-│                           (ptb.rs)                                   │
-│                                                                      │
+│                         PTBExecutor                                 │
+│                           (ptb.rs)                                  │
+│                                                                     │
 │  - Executes Programmable Transaction Blocks                         │
-│  - Chains commands (MoveCall, TransferObjects, SplitCoins, etc.)    │
+│  - Chains commands (MoveCall, TransferObjects, SplitCoins, etc.)   │
 │  - Tracks object mutations and results                              │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          VMHarness                                   │
-│                           (vm.rs)                                    │
-│                                                                      │
-│  - Wraps the Move VM                                                │
-│  - Configures simulation behavior (mocked crypto, clock, etc.)      │
-│  - Executes individual function calls                               │
+│                          VMHarness                                  │
+│                           (vm.rs)                                   │
+│                                                                     │
+│  - Wraps the real Move VM (move-vm-runtime)                        │
+│  - Configures simulation behavior (clock, gas, randomness)         │
+│  - Dispatches native function calls                                 │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          Move VM                                     │
-│                    (move-vm-runtime)                                 │
-│                                                                      │
+│                          Move VM                                    │
+│                    (move-vm-runtime)                                │
+│                                                                     │
 │  - Bytecode execution                                               │
 │  - Native function dispatch                                         │
 │  - Gas metering                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Two Operating Modes
+## Key Modules
 
-### 1. Interactive Sandbox (LLM Integration)
+| Module | File | Purpose |
+|--------|------|---------|
+| `SimulationEnvironment` | `benchmark/simulation.rs` | State management, object store |
+| `PTBExecutor` | `benchmark/ptb.rs` | PTB command execution |
+| `VMHarness` | `benchmark/vm.rs` | Move VM configuration |
+| `ModuleBytecodeResolver` | `benchmark/resolver.rs` | Package loading and address aliasing |
+| `tx_replay` | `benchmark/tx_replay.rs` | Transaction replay orchestration |
 
-For LLM agents to explore and execute Move transactions.
+## Transaction Replay Pipeline
 
-```bash
-sui-move-interface-extractor sandbox-exec --interactive
+```
+1. FETCH                    2. PREFETCH                  3. EXECUTE
+   ─────────────────────       ─────────────────────       ─────────────────────
+   GrpcClient                  GroundTruthPrefetch         PTBExecutor
+   ↓                           ↓                           ↓
+   • Transaction by digest     • Collect object IDs        • Convert to commands
+   • Transaction effects       • Fetch at historical       • Execute in Move VM
+                                 versions                  • Track effects
+
+4. COMPARE
+   ─────────────────────
+   EffectsComparison
+   ↓
+   • Created objects match?
+   • Mutated objects match?
+   • Status matches?
 ```
 
-**Characteristics:**
+**Critical insight**: Objects must be fetched at their *input* versions (before the transaction modified them). The `unchanged_loaded_runtime_objects` field from gRPC provides this.
 
-- Stateful across requests (objects persist)
-- No limits on requests/attempts (orchestrator's responsibility)
-- No automatic dependency fetching (LLM must explicitly request)
-- Errors are detailed and actionable
+## Data Fetching
 
-**Workflow:**
+See [Prefetching Architecture](architecture/PREFETCHING.md) for the three-layer prefetch strategy.
 
-```text
-LLM builds PTB
-    ↓
-execute_ptb()
-    ↓
-Success? → Done
-    ↓ (Error)
-LLM reads error (e.g., MissingPackage)
-    ↓
-LLM calls deploy_package_from_mainnet()
-    ↓
-LLM retries execute_ptb()
-```
-
-See: [LLM Integration Guide](docs/guides/LLM_INTEGRATION.md)
-
-### 2. PTB Evaluation Runner (Regression Testing)
-
-For testing sandbox accuracy against real mainnet transactions.
-
-```bash
-sui-move-interface-extractor ptb-eval --cache-dir .tx-cache/
-```
-
-**Characteristics:**
-
-- Replays cached mainnet transactions
-- Has retry logic with automatic dependency fetching
-- Measures sandbox fidelity (% of transactions that replay correctly)
-- Not for LLM evaluation
-
-**Workflow:**
-
-```text
-Load cached transaction from mainnet
-    ↓
-Execute in sandbox
-    ↓
-Failed due to missing package/object?
-    ↓ (Yes)
-Fetch from mainnet, retry (up to N times)
-    ↓
-Report success/failure
-```
-
-## What the Sandbox Does NOT Do
-
-| Responsibility | Who Handles It |
-|----------------|----------------|
-| Counting attempts/rounds | External orchestrator |
-| Time limits | External orchestrator |
-| Deciding when LLM is "done" | External orchestrator |
-| Fetching missing dependencies | LLM (in interactive mode) |
-| Modifying PTBs to fix errors | LLM |
-| Evaluating LLM performance | External system |
-
-The sandbox is a **passive tool**. It executes what you ask and returns results. All orchestration logic lives outside.
-
-## Key Components
-
-| Component | File | Purpose |
-|-----------|------|---------|
-| `SandboxRequest` | sandbox_exec.rs | All available operations (JSON API) |
-| `SimulationEnvironment` | simulation.rs | State management and execution |
-| `PTBExecutor` | ptb.rs | Transaction block execution |
-| `VMHarness` | vm.rs | Move VM configuration |
-| `SimulationError` | simulation.rs | Structured error types |
-| `TransactionEffects` | ptb.rs | Execution results |
+| Layer | Module | Purpose |
+|-------|--------|---------|
+| Ground Truth | `eager_prefetch.rs` | Fetch objects from transaction effects |
+| Predictive | `predictive_prefetch.rs` | Bytecode analysis for dynamic fields |
+| On-Demand | `object_runtime.rs` | Fallback during execution |
 
 ## Error Handling
 
@@ -206,26 +99,43 @@ Errors are structured for programmatic handling:
 
 ```rust
 enum SimulationError {
-    MissingPackage { address, module },      // Fetch the package
-    MissingObject { id, expected_type },     // Fetch or create the object
+    MissingPackage { address, module },
+    MissingObject { id, expected_type },
     ContractAbort { abort_code, module, function, message },
     TypeMismatch { expected, actual },
     DeserializationFailed { argument_index, expected_type },
     ExecutionError { message },
-    SharedObjectLockConflict { object_id },
 }
 ```
 
-See: [Error Codes Reference](docs/reference/ERROR_CODES.md)
+See [Error Codes Reference](reference/ERROR_CODES.md) for details.
 
-## Where to Go Next
+## Crate Organization
 
-| Goal | Document |
-|------|----------|
-| Get started quickly | [Quickstart](docs/getting-started/QUICKSTART.md) |
-| Integrate with an LLM | [LLM Integration Guide](docs/guides/LLM_INTEGRATION.md) |
-| Run benchmarks | [Running Benchmarks](docs/guides/RUNNING_BENCHMARKS.md) |
-| Replay transactions | [Transaction Replay](docs/guides/TRANSACTION_REPLAY.md) |
-| Understand errors | [Error Codes](docs/reference/ERROR_CODES.md) |
-| CLI reference | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
-| Sandbox API details | [Sandbox API](docs/reference/SANDBOX_API.md) |
+```
+sui-sandbox/
+├── src/                        # Main library
+│   ├── benchmark/              # Core simulation engine
+│   └── data_fetcher.rs         # Unified data fetching API
+├── crates/
+│   ├── sui-sandbox-core/       # Core VM and simulation with utilities
+│   ├── sui-transport/          # Network layer (gRPC + GraphQL clients)
+│   │   ├── graphql.rs          # GraphQL client
+│   │   └── grpc/               # gRPC streaming client
+│   ├── sui-prefetch/           # Strategic data loading
+│   │   ├── eager_prefetch.rs   # Ground truth prefetch
+│   │   ├── conversion.rs       # gRPC to FetchedTransaction
+│   │   └── utilities.rs        # Prefetch utilities
+│   ├── sui-resolver/           # Resolution & normalization
+│   ├── sui-package-extractor/  # Bytecode analysis
+│   └── sui-types/              # Shared types
+└── examples/                   # Self-contained replay examples
+```
+
+## See Also
+
+- **[Examples](../examples/README.md)** - Start here to learn the library
+- [Transaction Replay Guide](guides/TRANSACTION_REPLAY.md) - End-to-end workflow
+- [Prefetching Architecture](architecture/PREFETCHING.md) - Data fetching internals
+- [Sandbox API Reference](reference/SANDBOX_API.md) - API details
+- [Limitations](reference/LIMITATIONS.md) - Known differences from mainnet

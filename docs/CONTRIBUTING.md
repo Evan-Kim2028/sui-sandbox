@@ -76,7 +76,8 @@ cp .env.example .env
 
 Key variables:
 
-- `SURFLUX_API_KEY` - For transaction replay with historical data
+- `SUI_GRPC_ENDPOINT` - gRPC endpoint for mainnet data
+- `SUI_GRPC_API_KEY` - API key for gRPC (if required by your provider)
 - `OPENROUTER_API_KEY` - For LLM-based features (optional)
 - `SMI_SENDER` - Public address for dry-run simulation
 
@@ -143,6 +144,51 @@ Before merging any doc changes:
 - [ ] All links resolve (internal + external)
 - [ ] Placeholders are clearly marked
 - [ ] Commands use correct flag names and defaults
+
+## Test Fixtures
+
+Test fixtures live in `tests/fixture/`:
+
+```
+tests/fixture/
+├── build/
+│   └── fixture/
+│       ├── bytecode_modules/    # Compiled .mv files
+│       └── sources/             # Move source files
+├── Move.toml                    # Package configuration
+└── sources/                     # Additional sources
+```
+
+### Creating New Fixtures
+
+1. **Write Move source** in `tests/fixture/sources/`:
+
+```move
+module fixture::my_module;
+
+public fun my_function(x: u64): u64 {
+    x + 1
+}
+```
+
+2. **Compile** with `sui move build`:
+
+```bash
+cd tests/fixture && sui move build
+```
+
+3. **Verify** the fixture loads:
+
+```bash
+cargo test benchmark_local_can_load_fixture_modules
+```
+
+### Fixture Categories
+
+| Category | Purpose |
+|----------|---------|
+| `build/fixture/` | Success cases - modules that should execute |
+| `build/failure_cases/` | Failure cases - trigger specific error stages |
 
 ## Related Documentation
 
