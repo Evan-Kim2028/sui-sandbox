@@ -35,9 +35,7 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sui_move_interface_extractor::grpc::{
-    GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction,
-};
+use sui_sandbox::grpc::{GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedTransaction {

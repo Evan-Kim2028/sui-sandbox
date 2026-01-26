@@ -283,13 +283,13 @@ sui-sandbox status
 
 ```bash
 # Tier A only (fast)
-sui_move_interface_extractor benchmark-local \
+sui-sandbox benchmark-local \
   --target-corpus /path/to/bytecode \
   --output results.jsonl \
   --tier-a-only
 
 # Full Tier A + B validation via SimulationEnvironment
-sui_move_interface_extractor benchmark-local \
+sui-sandbox benchmark-local \
   --target-corpus /path/to/bytecode \
   --output results.jsonl \
   --use-ptb  # Use PTB execution path
@@ -301,13 +301,13 @@ Fetch and replay real mainnet transactions locally:
 
 ```bash
 # Download recent transactions
-sui_move_interface_extractor tx-replay \
+sui-sandbox tx-replay \
   --recent 100 \
   --cache-dir .tx-cache \
   --download-only
 
 # Replay from cache
-sui_move_interface_extractor tx-replay \
+sui-sandbox tx-replay \
   --cache-dir .tx-cache \
   --from-cache \
   --parallel
@@ -318,7 +318,7 @@ sui_move_interface_extractor tx-replay \
 Evaluate cached transactions with automatic error recovery:
 
 ```bash
-sui_move_interface_extractor ptb-eval \
+sui-sandbox ptb-eval \
   --cache-dir .tx-cache \
   --max-retries 3 \
   --enable-fetching  # Fetch missing packages from mainnet
@@ -330,11 +330,11 @@ JSON-based interface for AI agents:
 
 ```bash
 # Interactive mode
-sui_move_interface_extractor sandbox-exec --interactive
+sui-sandbox sandbox-exec --interactive
 
 # Example request
 echo '{"action": "execute_ptb", "inputs": [...], "commands": [...]}' | \
-  sui_move_interface_extractor sandbox-exec --input - --output -
+  sui-sandbox sandbox-exec --input - --output -
 ```text
 
 ### E2E Pipeline (with LLM)

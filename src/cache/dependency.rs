@@ -604,7 +604,7 @@ impl std::fmt::Display for AggregateStats {
 /// # Usage
 ///
 /// ```
-/// use sui_move_interface_extractor::cache::dependency::{DependencyRecorder, DependencyDiscovery, FetchMethod};
+/// use sui_sandbox::cache::dependency::{DependencyRecorder, DependencyDiscovery, FetchMethod};
 ///
 /// let mut recorder = DependencyRecorder::new("tx_digest_123");
 /// recorder.set_checkpoint(234219761);

@@ -1,4 +1,4 @@
-# Contributing to sui-move-interface-extractor
+# Contributing to sui-sandbox
 
 ## Project Overview
 
@@ -90,7 +90,7 @@ The `sui_sandbox` Python module provides native bindings to the Rust sandbox.
 ### Building the Wheel
 
 ```bash
-cd /path/to/sui-move-interface-extractor
+cd /path/to/sui-sandbox
 
 # Build release wheel
 maturin build --release

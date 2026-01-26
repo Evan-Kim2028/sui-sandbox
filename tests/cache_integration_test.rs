@@ -7,8 +7,8 @@
 //! 3. Address normalization is consistent across all cache operations
 //! 4. Version and type metadata are preserved
 
-use sui_move_interface_extractor::cache::{normalize_address, CacheManager};
-use sui_move_interface_extractor::data_fetcher::{DataFetcher, DataSource};
+use sui_sandbox::cache::{normalize_address, CacheManager};
+use sui_sandbox::data_fetcher::{DataFetcher, DataSource};
 use tempfile::TempDir;
 
 #[test]

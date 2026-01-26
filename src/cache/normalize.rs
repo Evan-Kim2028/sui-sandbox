@@ -17,7 +17,7 @@
 /// # Examples
 ///
 /// ```
-/// use sui_move_interface_extractor::cache::normalize_address;
+/// use sui_sandbox::cache::normalize_address;
 ///
 /// assert_eq!(
 ///     normalize_address("0x2"),

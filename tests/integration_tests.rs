@@ -41,7 +41,7 @@ mod pipeline_tests {
             .expect("validation should succeed");
 
         assert_eq!(
-            sui_move_interface_extractor::bytecode::compiled_module_name(validated),
+            sui_sandbox::bytecode::compiled_module_name(validated),
             "test_module"
         );
 

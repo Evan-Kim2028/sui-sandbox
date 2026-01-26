@@ -10,7 +10,7 @@
 //!
 //! Before (deprecated):
 //! ```ignore
-//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//! use sui_sandbox::data_fetcher::DataFetcher;
 //!
 //! let fetcher = DataFetcher::mainnet();
 //! let obj = fetcher.fetch_object("0x...")?;
@@ -40,7 +40,7 @@
 //! Network fetches are automatically written back to cache (write-through caching).
 //!
 //! ```no_run
-//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//! use sui_sandbox::data_fetcher::DataFetcher;
 //!
 //! // Enable cache with write-through
 //! let fetcher = DataFetcher::mainnet()
@@ -75,7 +75,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use sui_move_interface_extractor::data_fetcher::DataFetcher;
+//! use sui_sandbox::data_fetcher::DataFetcher;
 //!
 //! // Basic queries with cache
 //! let fetcher = DataFetcher::mainnet()
@@ -263,7 +263,7 @@ impl DataFetcher {
     ///
     /// # Example
     /// ```no_run
-    /// use sui_move_interface_extractor::data_fetcher::DataFetcher;
+    /// use sui_sandbox::data_fetcher::DataFetcher;
     ///
     /// let fetcher = DataFetcher::mainnet()
     ///     .with_cache(".tx-cache").unwrap();

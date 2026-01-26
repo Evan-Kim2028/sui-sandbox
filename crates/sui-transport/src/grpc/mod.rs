@@ -19,7 +19,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! use sui_move_interface_extractor::grpc::GrpcClient;
+//! use sui_sandbox::grpc::GrpcClient;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {

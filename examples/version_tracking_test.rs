@@ -342,7 +342,7 @@ fn test_version_tracking(tx_digest: &str, tx_name: &str) -> Result<()> {
     println!("\n   PTB Command Sequence:");
     for (i, cmd) in grpc_tx.commands.iter().enumerate() {
         match cmd {
-            sui_move_interface_extractor::grpc::GrpcCommand::MoveCall {
+            sui_sandbox::grpc::GrpcCommand::MoveCall {
                 package,
                 module,
                 function,
@@ -356,13 +356,13 @@ fn test_version_tracking(tx_digest: &str, tx_name: &str) -> Result<()> {
                     function
                 );
             }
-            sui_move_interface_extractor::grpc::GrpcCommand::TransferObjects { .. } => {
+            sui_sandbox::grpc::GrpcCommand::TransferObjects { .. } => {
                 println!("     {:2}. TransferObjects", i);
             }
-            sui_move_interface_extractor::grpc::GrpcCommand::SplitCoins { .. } => {
+            sui_sandbox::grpc::GrpcCommand::SplitCoins { .. } => {
                 println!("     {:2}. SplitCoins", i);
             }
-            sui_move_interface_extractor::grpc::GrpcCommand::MergeCoins { .. } => {
+            sui_sandbox::grpc::GrpcCommand::MergeCoins { .. } => {
                 println!("     {:2}. MergeCoins", i);
             }
             _ => {
@@ -435,7 +435,7 @@ fn test_version_tracking(tx_digest: &str, tx_name: &str) -> Result<()> {
 
     // Extract package IDs from commands
     for cmd in &grpc_tx.commands {
-        if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
+        if let sui_sandbox::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
             package_ids_to_fetch.push(package.clone());
         }
     }

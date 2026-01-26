@@ -178,7 +178,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let mut package_ids_to_fetch: Vec<String> = Vec::new();
 
     for cmd in &grpc_tx.commands {
-        if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
+        if let sui_sandbox::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
             package_ids_to_fetch.push(package.clone());
         }
     }

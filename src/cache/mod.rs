@@ -36,7 +36,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use sui_move_interface_extractor::cache::CacheManager;
+//! use sui_sandbox::cache::CacheManager;
 //!
 //! // Create cache manager
 //! let mut cache = CacheManager::new(".tx-cache").unwrap();

@@ -21,11 +21,9 @@ mod common;
 
 use std::time::Duration;
 
-use sui_move_interface_extractor::data_fetcher::DataFetcher;
-use sui_move_interface_extractor::graphql::GraphQLClient;
-use sui_move_interface_extractor::grpc::{
-    GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction,
-};
+use sui_sandbox::data_fetcher::DataFetcher;
+use sui_sandbox::graphql::GraphQLClient;
+use sui_sandbox::grpc::{GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction};
 
 // =============================================================================
 // Data Format Consistency Tests

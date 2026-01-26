@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use sui_sdk::SuiClientBuilder;
 
-use sui_move_interface_extractor::args::Args;
-use sui_move_interface_extractor::corpus::{collect_package_ids, run_corpus};
-use sui_move_interface_extractor::runner::{run_batch, run_single, run_single_local_bytecode_dir};
+use sui_sandbox::args::Args;
+use sui_sandbox::corpus::{collect_package_ids, run_corpus};
+use sui_sandbox::runner::{run_batch, run_single, run_single_local_bytecode_dir};
 
 #[tokio::main]
 async fn main() -> Result<()> {

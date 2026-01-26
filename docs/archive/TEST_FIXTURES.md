@@ -1,6 +1,6 @@
 # Test Fixture Structure
 
-This document explains how test fixtures are structured and how to create new fixtures for the `sui-move-interface-extractor` benchmark suite.
+This document explains how test fixtures are structured and how to create new fixtures for the `sui-sandbox` benchmark suite.
 
 ## Directory Layout
 
@@ -113,7 +113,7 @@ fn benchmark_local_test_new_module() {
     let module = resolver
         .iter_modules()
         .find(|m| {
-            let name = sui_move_interface_extractor::bytecode::compiled_module_name(m);
+            let name = sui-sandbox::bytecode::compiled_module_name(m);
             name == "new_module"
         })
         .expect("new_module should exist");

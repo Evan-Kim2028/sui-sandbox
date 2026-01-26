@@ -1,5 +1,5 @@
 [package]
-name = "sui_move_interface_extractor"
+name = "sui-sandbox"
 version = "0.9.0"
 edition = "2021"
 

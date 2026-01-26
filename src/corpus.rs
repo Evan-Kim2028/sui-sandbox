@@ -622,7 +622,7 @@ pub async fn run_corpus(args: &Args, client: Arc<sui_sdk::SuiClient>) -> Result<
             .map(|s| s.to_string());
 
         let summary = SubmissionSummary {
-            tool: "sui-move-interface-extractor".to_string(),
+            tool: "sui-sandbox".to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             started_at_unix_seconds: run_started_at,
             finished_at_unix_seconds: now_unix_seconds(),

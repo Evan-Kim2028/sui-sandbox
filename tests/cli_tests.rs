@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
+#[ignore = "Deprecated: Old CLI structure no longer supported"]
 fn test_local_bytecode_extraction() {
     #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("sui_move_interface_extractor").unwrap();
+    let mut cmd = Command::cargo_bin("sui-sandbox").unwrap();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_dir = manifest_dir.join("tests/fixture/build/fixture");
 

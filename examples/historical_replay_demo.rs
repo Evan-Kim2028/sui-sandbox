@@ -177,7 +177,7 @@ fn replay_with_composable_utilities(tx_digest: &str) -> Result<bool> {
 
     // Extract package IDs from commands
     for cmd in &grpc_tx.commands {
-        if let sui_move_interface_extractor::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
+        if let sui_sandbox::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
             package_ids_to_fetch.push(package.clone());
         }
     }

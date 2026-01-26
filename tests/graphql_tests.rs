@@ -18,12 +18,8 @@
 //! We explicitly mark network-dependent tests as ignored rather than having them
 //! silently succeed with eprintln warnings.
 
-use sui_move_interface_extractor::data_fetcher::{
-    DataFetcher, DataSource, GraphQLArgument, GraphQLCommand,
-};
-use sui_move_interface_extractor::graphql::{
-    GraphQLClient, PageInfo, PaginationDirection, Paginator,
-};
+use sui_sandbox::data_fetcher::{DataFetcher, DataSource, GraphQLArgument, GraphQLCommand};
+use sui_sandbox::graphql::{GraphQLClient, PageInfo, PaginationDirection, Paginator};
 
 // =============================================================================
 // Unit Tests (No Network Required)

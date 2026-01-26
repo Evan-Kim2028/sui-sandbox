@@ -643,13 +643,13 @@ The sandbox supports persistent state via CLI flags, enabling "save game" workfl
 
 ```bash
 # Ephemeral mode (default) - state lost on exit
-sui-move-interface-extractor sandbox-exec --interactive
+sui-sandbox sandbox-exec --interactive
 
 # Persistent mode - auto-loads and auto-saves state
-sui-move-interface-extractor sandbox-exec --interactive --state-file ./my-sim.json
+sui-sandbox sandbox-exec --interactive --state-file ./my-sim.json
 
 # Read-only mode - loads state but doesn't save changes
-sui-move-interface-extractor sandbox-exec --interactive --state-file ./my-sim.json --no-save-state
+sui-sandbox sandbox-exec --interactive --state-file ./my-sim.json --no-save-state
 ```
 
 ### Typical Workflow

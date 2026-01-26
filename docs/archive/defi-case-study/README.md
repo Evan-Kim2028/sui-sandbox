@@ -60,7 +60,7 @@ For accurate replay, a gRPC endpoint that provides `unchanged_loaded_runtime_obj
 | `unchanged_loaded_runtime_objects` | Always empty | Populated |
 | Read-only object versions | Must guess | Exact |
 
-See [GitHub Issue #10](https://github.com/Evan-Kim2028/sui-move-interface-extractor/issues/10) for details.
+See [GitHub Issue #10](https://github.com/Evan-Kim2028/sui-sandbox/issues/10) for details.
 
 ## Test Files
 

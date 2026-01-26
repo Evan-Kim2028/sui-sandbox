@@ -68,7 +68,7 @@ The `DataFetcher` is suitable for querying **current state** (latest versions). 
 ## Quick Start
 
 ```rust
-use sui_move_interface_extractor::data_fetcher::DataFetcher;
+use sui_sandbox::data_fetcher::DataFetcher;
 
 fn main() -> anyhow::Result<()> {
     // Create a fetcher for mainnet
@@ -241,7 +241,7 @@ let coins = fetcher.search_objects_by_type(
 For advanced use cases, you can use the GraphQL client directly:
 
 ```rust
-use sui_move_interface_extractor::graphql::GraphQLClient;
+use sui_sandbox::graphql::GraphQLClient;
 
 let client = GraphQLClient::mainnet();
 
@@ -262,7 +262,7 @@ for module in &pkg.modules {
 For custom paginated queries, use the `Paginator` helper:
 
 ```rust
-use sui_move_interface_extractor::data_fetcher::{
+use sui_sandbox::data_fetcher::{
     Paginator, PaginationDirection, PageInfo
 };
 
@@ -329,7 +329,7 @@ fn fetch_data() -> Result<()> {
 ## Example: Analyzing Recent Transactions
 
 ```rust
-use sui_move_interface_extractor::data_fetcher::{DataFetcher, GraphQLCommand};
+use sui_sandbox::data_fetcher::{DataFetcher, GraphQLCommand};
 
 fn analyze_transactions() -> anyhow::Result<()> {
     let fetcher = DataFetcher::mainnet();
@@ -384,7 +384,7 @@ For real-time transaction monitoring, gRPC streaming is the recommended approach
 ### Setting Up gRPC Streaming
 
 ```rust
-use sui_move_interface_extractor::data_fetcher::DataFetcher;
+use sui_sandbox::data_fetcher::DataFetcher;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -422,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
 gRPC streaming uses slightly different types than GraphQL queries:
 
 ```rust
-use sui_move_interface_extractor::data_fetcher::{
+use sui_sandbox::data_fetcher::{
     StreamingCheckpoint,
     StreamingTransaction,
     StreamingCommand,
@@ -611,7 +611,7 @@ Both tools save to JSONL with compatible formats:
 For transaction simulation (equivalent to `dry_run` or `dev_inspect`), use the gRPC `SimulateTransaction` API:
 
 ```rust
-use sui_move_interface_extractor::grpc::{
+use sui_sandbox::grpc::{
     GrpcClient, ProtoTransaction, ProtoTransactionKind,
     ProtoProgrammableTransaction, ProtoCommand, ProtoMoveCall,
 };

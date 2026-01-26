@@ -57,7 +57,7 @@ These are strong blockers for research/academic workflows. The no-chain approach
 To avoid flag bloat and clearly separate modes, the tool will use `clap` subcommands.
 
 ```bash
-sui-move-interface-extractor benchmark-local \
+sui-sandbox benchmark-local \
   --target-corpus <DIR> \
   --output <FILE> \
   --tier-a-only \

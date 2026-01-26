@@ -2521,13 +2521,13 @@ mod tests {
     }
 
     /// Test the unified DataFetcher fallback behavior
-    // NOTE: This test uses DataFetcher from the main crate (sui_move_interface_extractor),
+    // NOTE: This test uses DataFetcher from the main crate (sui-sandbox),
     // not from sui-transport. Run integration tests via the main crate instead.
     // Run with: cargo test test_data_fetcher_integration -- --ignored --nocapture
     // #[test]
     // #[ignore]
     // fn test_data_fetcher_integration() {
-    //     use sui_move_interface_extractor::data_fetcher::DataFetcher;
+    //     use sui_sandbox::data_fetcher::DataFetcher;
     //
     //     let fetcher = DataFetcher::mainnet();
     //

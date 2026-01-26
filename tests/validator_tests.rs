@@ -66,7 +66,7 @@ mod validate_target_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_sandbox::bytecode::compiled_module_name(module);
 
         let result = validator.validate_target(
             *module.self_id().address(),
@@ -99,7 +99,7 @@ mod validate_target_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_sandbox::bytecode::compiled_module_name(module);
 
         // Empty function name should fail during Identifier creation
         let result = validator.validate_target(
@@ -746,7 +746,7 @@ mod error_message_tests {
         let validator = Validator::new(&resolver);
 
         let module = resolver.iter_modules().next().expect("should have module");
-        let module_name = sui_move_interface_extractor::bytecode::compiled_module_name(module);
+        let module_name = sui_sandbox::bytecode::compiled_module_name(module);
 
         let result = validator.validate_target(
             *module.self_id().address(),

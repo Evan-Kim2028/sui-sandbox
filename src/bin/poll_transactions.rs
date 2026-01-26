@@ -32,7 +32,7 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sui_move_interface_extractor::graphql::{GraphQLClient, GraphQLTransaction};
+use sui_sandbox::graphql::{GraphQLClient, GraphQLTransaction};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedTransaction {

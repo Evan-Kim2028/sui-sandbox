@@ -28,8 +28,8 @@
 mod common;
 
 use std::time::Duration;
-use sui_move_interface_extractor::data_fetcher::DataFetcher;
-use sui_move_interface_extractor::grpc::{GrpcClient, GrpcCommand};
+use sui_sandbox::data_fetcher::DataFetcher;
+use sui_sandbox::grpc::{GrpcClient, GrpcCommand};
 
 // =============================================================================
 // GrpcClient Unit Tests (no network required)

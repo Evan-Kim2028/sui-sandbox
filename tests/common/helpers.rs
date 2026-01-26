@@ -33,7 +33,7 @@ use sui_sandbox_core::resolver::LocalModuleResolver;
 pub fn find_test_module(resolver: &LocalModuleResolver) -> Option<&CompiledModule> {
     resolver
         .iter_modules()
-        .find(|m| sui_move_interface_extractor::bytecode::compiled_module_name(m) == "test_module")
+        .find(|m| sui_sandbox::bytecode::compiled_module_name(m) == "test_module")
 }
 
 /// Find a module by name in a resolver.
@@ -52,7 +52,7 @@ pub fn find_module_by_name<'a>(
 ) -> Option<&'a CompiledModule> {
     resolver
         .iter_modules()
-        .find(|m| sui_move_interface_extractor::bytecode::compiled_module_name(m) == name)
+        .find(|m| sui_sandbox::bytecode::compiled_module_name(m) == name)
 }
 
 /// Format a module path in the standard "0x...::name" format.
