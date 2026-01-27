@@ -25,6 +25,10 @@ __pycache__/
 /specs/
 /plans/
 /docs/plans/
+/repos_clone/
+release_report_*.md
+walrus-cache/
+walrus-cache-*/
 EXAMPLES_IMPROVEMENT_PLAN.md
 *_PLAN.md
 /examples/deepbook_debug/

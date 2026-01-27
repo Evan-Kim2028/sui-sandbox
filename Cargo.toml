@@ -12,6 +12,7 @@ members = [
     "crates/sui-state-fetcher",
     "crates/sui-package-extractor",
     "crates/sui-sandbox-core",
+    "crates/sui-historical-cache",
 ]
 
 # Centralized dependency versions for the workspace
@@ -78,6 +79,7 @@ sui-move-build = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.
 sui-transaction-builder = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-transaction-builder" }
 sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-move-natives-latest" }
 sui-protocol-config = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-protocol-config" }
+sui-storage = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.63.4", package = "sui-storage" }
 
 # Cryptographic primitives
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
@@ -91,6 +93,7 @@ sui-prefetch = { path = "crates/sui-prefetch" }
 sui-state-fetcher = { path = "crates/sui-state-fetcher" }
 sui-package-extractor = { path = "crates/sui-package-extractor" }
 sui-sandbox-core = { path = "crates/sui-sandbox-core" }
+sui-historical-cache = { path = "crates/sui-historical-cache" }
 
 # Dev/test dependencies
 tempfile = "3"
@@ -167,6 +170,7 @@ sui-prefetch.workspace = true
 sui-state-fetcher.workspace = true
 sui-package-extractor.workspace = true
 sui-sandbox-core.workspace = true
+sui-historical-cache.workspace = true
 
 # NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
 # This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION
@@ -225,6 +229,10 @@ path = "examples/analyze_protocols.rs"
 [[example]]
 name = "walrus_checkpoint_replay"
 path = "examples/walrus_checkpoint_replay.rs"
+
+[[example]]
+name = "walrus_cache_build"
+path = "examples/walrus_cache_build.rs"
 
 # sui-sandbox CLI binary
 [[bin]]
