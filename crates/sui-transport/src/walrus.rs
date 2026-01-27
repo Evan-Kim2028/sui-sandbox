@@ -27,6 +27,8 @@ use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress, MoveObjectType
 use sui_types::object::{Object, Owner, MoveObject};
 use sui_types::digests::TransactionDigest;
 use base64::Engine;
+use std::collections::HashMap;
+use sui_storage::blob::Blob;
 
 /// Walrus archival client for fetching historical checkpoint data.
 #[derive(Clone, Debug)]
@@ -163,11 +165,20 @@ impl WalrusClient {
             metadata.length,
         )?;
 
-        // Step 3: Decode BCS
-        let checkpoint_data: CheckpointData = bcs::from_bytes(&bcs_bytes)
+        // Step 3: Decode (Walrus aggregator returns a Sui `Blob` wrapper: [encoding_byte || bcs_payload])
+        let checkpoint_data: CheckpointData = Blob::from_bytes::<CheckpointData>(&bcs_bytes)
             .map_err(|e| anyhow!("Failed to decode checkpoint data: {}", e))?;
 
         Ok(checkpoint_data)
+    }
+
+    /// Fetch checkpoint data via BCS and serialize to JSON locally.
+    ///
+    /// This is typically faster and transfers less data than using `show_content=true`
+    /// because the server-side JSON encoding can be large.
+    pub fn get_checkpoint_json(&self, checkpoint: u64) -> Result<serde_json::Value> {
+        let data = self.get_checkpoint(checkpoint)?;
+        serde_json::to_value(&data).map_err(|e| anyhow!("Failed to serialize checkpoint data: {e}"))
     }
 
     /// Get checkpoint data with full content via the caching server.
@@ -194,6 +205,99 @@ impl WalrusClient {
         response
             .content
             .ok_or_else(|| anyhow!("No content in response"))
+    }
+
+    /// Fetch many checkpoints more efficiently by batching byte-range downloads per blob.
+    ///
+    /// How it works:
+    /// - For each checkpoint, query `/v1/app_checkpoint` to obtain (blob_id, offset, length)
+    /// - Group checkpoints by blob_id
+    /// - Within each blob, merge adjacent ranges into chunks (bounded by `max_chunk_bytes`)
+    /// - Download each merged range once, then slice out each checkpoint's byte segment and BCS-decode it
+    ///
+    /// This reduces the number of aggregator requests dramatically when replaying long sequential ranges.
+    pub fn get_checkpoints_batched(
+        &self,
+        checkpoints: &[u64],
+        max_chunk_bytes: u64,
+    ) -> Result<Vec<(u64, CheckpointData)>> {
+        if checkpoints.is_empty() {
+            return Ok(vec![]);
+        }
+        let max_chunk_bytes = max_chunk_bytes.max(1024 * 1024); // at least 1 MiB
+
+        // Step 1: per-checkpoint metadata (still required by current API surface)
+        let mut by_blob: HashMap<String, Vec<CheckpointSegment>> = HashMap::new();
+        for &cp in checkpoints {
+            let meta = self.get_checkpoint_metadata(cp)?;
+            by_blob
+                .entry(meta.blob_id.clone())
+                .or_default()
+                .push(CheckpointSegment {
+                    checkpoint: cp,
+                    offset: meta.offset,
+                    length: meta.length,
+                });
+        }
+
+        // Step 2: for each blob, merge segments into fetch ranges and slice
+        let mut out: Vec<(u64, CheckpointData)> = Vec::with_capacity(checkpoints.len());
+        for (blob_id, mut segs) in by_blob {
+            segs.sort_by_key(|s| s.offset);
+            let chunks = merge_segments_into_chunks(&segs, max_chunk_bytes);
+            for chunk in chunks {
+                let bytes = self.fetch_checkpoint_bytes(&blob_id, chunk.start, chunk.length)?;
+                for seg in chunk.segments {
+                    let rel = (seg.offset - chunk.start) as usize;
+                    let len = seg.length as usize;
+                    if rel + len > bytes.len() {
+                        return Err(anyhow!(
+                            "batched blob slice out of bounds (blob_id={}, checkpoint={}, rel={}, len={}, bytes={})",
+                            blob_id,
+                            seg.checkpoint,
+                            rel,
+                            len,
+                            bytes.len()
+                        ));
+                    }
+                    let slice = &bytes[rel..rel + len];
+                    let cp_data: CheckpointData = Blob::from_bytes::<CheckpointData>(slice)
+                        .map_err(|e| anyhow!("Failed to decode checkpoint {}: {}", seg.checkpoint, e))?;
+                    out.push((seg.checkpoint, cp_data));
+                }
+            }
+        }
+
+        // Preserve input order if the caller provided ordered checkpoints.
+        let mut by_cp: HashMap<u64, CheckpointData> = HashMap::new();
+        for (cp, data) in out {
+            by_cp.insert(cp, data);
+        }
+        let mut ordered = Vec::with_capacity(checkpoints.len());
+        for &cp in checkpoints {
+            let data = by_cp
+                .remove(&cp)
+                .ok_or_else(|| anyhow!("missing decoded checkpoint {}", cp))?;
+            ordered.push((cp, data));
+        }
+        Ok(ordered)
+    }
+
+    /// Batched variant that returns JSON (serialized locally from BCS).
+    pub fn get_checkpoints_json_batched(
+        &self,
+        checkpoints: &[u64],
+        max_chunk_bytes: u64,
+    ) -> Result<Vec<(u64, serde_json::Value)>> {
+        let decoded = self.get_checkpoints_batched(checkpoints, max_chunk_bytes)?;
+        decoded
+            .into_iter()
+            .map(|(cp, data)| {
+                let v =
+                    serde_json::to_value(&data).map_err(|e| anyhow!("serialize checkpoint {}: {e}", cp))?;
+                Ok((cp, v))
+            })
+            .collect()
     }
 
     /// List available checkpoint blobs.
@@ -481,6 +585,66 @@ impl WalrusClient {
 
         Ok(package_ids)
     }
+}
+
+#[derive(Debug, Clone)]
+struct CheckpointSegment {
+    checkpoint: u64,
+    offset: u64,
+    length: u64,
+}
+
+#[derive(Debug, Clone)]
+struct BlobChunk {
+    start: u64,
+    length: u64,
+    segments: Vec<CheckpointSegment>,
+}
+
+fn merge_segments_into_chunks(segs: &[CheckpointSegment], max_chunk_bytes: u64) -> Vec<BlobChunk> {
+    let mut out: Vec<BlobChunk> = Vec::new();
+    let mut current: Option<BlobChunk> = None;
+
+    for seg in segs {
+        let seg_end = seg.offset.saturating_add(seg.length);
+        match current.as_mut() {
+            None => {
+                current = Some(BlobChunk {
+                    start: seg.offset,
+                    length: seg.length,
+                    segments: vec![seg.clone()],
+                });
+            }
+            Some(ch) => {
+                let ch_end = ch.start.saturating_add(ch.length);
+                let new_start = ch.start.min(seg.offset);
+                let new_end = ch_end.max(seg_end);
+                let new_len = new_end.saturating_sub(new_start);
+
+                // If this segment would blow up the chunk, flush and start a new one.
+                if new_len > max_chunk_bytes {
+                    out.push(ch.clone());
+                    *ch = BlobChunk {
+                        start: seg.offset,
+                        length: seg.length,
+                        segments: vec![seg.clone()],
+                    };
+                    continue;
+                }
+
+                // Extend the chunk to cover this segment.
+                ch.start = new_start;
+                ch.length = new_len;
+                ch.segments.push(seg.clone());
+            }
+        }
+    }
+
+    if let Some(ch) = current {
+        out.push(ch);
+    }
+
+    out
 }
 
 /// Metadata about a checkpoint blob.
