@@ -17,6 +17,7 @@ use sui_sandbox_core::simulation::SimulationEnvironment;
 use sui_transport::graphql::{DynamicFieldInfo, GraphQLClient};
 use sui_transport::grpc::{GrpcClient, GrpcInput};
 use sui_transport::walrus::WalrusClient;
+use sui_historical_cache::{FsObjectStore, FsPackageStore, ObjectVersionStore, PackageStore, CacheMetrics};
 use sui_types::digests::{ObjectDigest, TransactionDigest};
 use sui_types::object::{Data, MoveObject, Object, ObjectInner, Owner};
 use sui_protocol_config::ProtocolConfig;
@@ -153,6 +154,9 @@ pub struct ReplayEngine<'a> {
     pub packages: PackageCache,
     pub objects: Arc<RwLock<ObjectCache>>,
     pub dynamic_fields_cache: Arc<RwLock<HashMap<AccountAddress, Vec<DynamicFieldInfo>>>>,
+    pub disk_object_store: Option<Arc<FsObjectStore>>,
+    pub disk_package_store: Option<Arc<FsPackageStore>>,
+    pub metrics: Arc<CacheMetrics>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +189,8 @@ impl<'a> ReplayEngine<'a> {
         graphql: &'a GraphQLClient,
         rt: &'a tokio::runtime::Runtime,
         state_fetcher: Option<Arc<HistoricalStateProvider>>,
+        disk_object_store: Option<FsObjectStore>,
+        disk_package_store: Option<FsPackageStore>,
     ) -> Self {
         Self {
             walrus,
@@ -195,6 +201,9 @@ impl<'a> ReplayEngine<'a> {
             packages: PackageCache::default(),
             objects: Arc::new(RwLock::new(ObjectCache::default())),
             dynamic_fields_cache: Arc::new(RwLock::new(HashMap::new())),
+            disk_object_store: disk_object_store.map(Arc::new),
+            disk_package_store: disk_package_store.map(Arc::new),
+            metrics: Arc::new(CacheMetrics::default()),
         }
     }
 
@@ -208,10 +217,10 @@ impl<'a> ReplayEngine<'a> {
                 let Some(move_obj) = obj_json.get("data").and_then(|d| d.get("Move")) else {
                     continue;
                 };
-                let contents_b64 = move_obj
-                    .get("contents")
-                    .and_then(|c| c.as_str())
-                    .context("missing Move.contents")?;
+                // Some Walrus objects may omit contents; skip and let gRPC/cache fill it later.
+                let Some(contents_b64) = move_obj.get("contents").and_then(|c| c.as_str()) else {
+                    continue;
+                };
                 let bcs_bytes = base64::engine::general_purpose::STANDARD
                     .decode(contents_b64)
                     .context("base64 decode Move.contents")?;
@@ -239,11 +248,21 @@ impl<'a> ReplayEngine<'a> {
                     id,
                     version,
                     ObjectEntry {
-                        bytes: bcs_bytes,
-                        type_tag,
+                        bytes: bcs_bytes.clone(),
+                        type_tag: type_tag.clone(),
                         version,
                     },
                 );
+
+                // Also persist to disk cache if available (best-effort, ignore errors)
+                if let Some(ref disk_store) = self.disk_object_store {
+                    let meta = sui_historical_cache::ObjectMeta {
+                        type_tag: format!("{}", type_tag),
+                        owner_kind: None,
+                        source_checkpoint: None,
+                    };
+                    let _ = disk_store.put(id, version, &bcs_bytes, &meta);
+                }
             }
         }
         Ok(())
@@ -370,11 +389,14 @@ impl<'a> ReplayEngine<'a> {
 
     pub fn summarize_ptb_commands(&self, tx_json: &serde_json::Value) -> Option<String> {
         let cache = self.objects.read();
+        let disk_cache_ref: Option<&dyn ObjectVersionStore> = self.disk_object_store.as_ref().map(|s| s.as_ref() as &dyn ObjectVersionStore);
         let parsed = parse_ptb_transaction(
             self.walrus,
             tx_json,
             Some((self.grpc.as_ref(), self.rt)),
             Some(&cache),
+            None,
+            disk_cache_ref,
             None,
         )
         .ok()?;
@@ -586,12 +608,15 @@ impl<'a> ReplayEngine<'a> {
         let fallback = Some((self.grpc.as_ref(), self.rt));
         let parsed = {
             let cache = self.objects.read();
+            let disk_cache_ref: Option<&dyn ObjectVersionStore> = self.disk_object_store.as_ref().map(|s| s.as_ref() as &dyn ObjectVersionStore);
             parse_ptb_transaction(
                 self.walrus,
                 tx_json,
                 fallback,
                 Some(&cache),
                 prefetch_versions,
+                disk_cache_ref,
+                Some(self.metrics.as_ref()),
             )
         };
         let parsed = match parsed {
@@ -756,13 +781,15 @@ impl<'a> ReplayEngine<'a> {
                     }
                 }
 
-                // Child fetcher uses cache, then gRPC archive for specific versions when available.
+                // Child fetcher uses cache, then disk cache, then gRPC archive for specific versions when available.
                 let mapping = Arc::clone(&mapping);
                 let objects = Arc::clone(&self.objects);
                 let grpc = Arc::clone(&self.grpc);
                 let rt_handle = self.rt.handle().clone();
                 let deny_filter = Arc::clone(&deny_children);
                 let deny_parent_filter = Arc::clone(&deny_parents);
+                let disk_store = self.disk_object_store.clone();
+                let metrics = Arc::clone(&self.metrics);
                 env.set_versioned_child_fetcher(Box::new(move |parent, child_id| {
                     if deny_parent_filter.read().contains(&parent) {
                         return None;
@@ -772,12 +799,36 @@ impl<'a> ReplayEngine<'a> {
                     }
                     // Prefer exact (child_id, version) if known from mapping
                     if let Some(ver) = mapping.get(&child_id) {
+                        // First check in-memory cache
                         if let Some(entry) = objects.read().get(child_id, *ver) {
+                            metrics.record_memory_hit();
                             return Some((entry.type_tag.clone(), entry.bytes.clone(), *ver));
+                        }
+                        // Then check disk cache
+                        if let Some(ref disk) = disk_store {
+                            if let Ok(Some(cached_obj)) = disk.get(child_id, *ver) {
+                                metrics.record_disk_hit();
+                                let type_tag = match TypeTag::from_str(&cached_obj.meta.type_tag) {
+                                    Ok(tt) => tt,
+                                    Err(_) => return None,
+                                };
+                                // Insert into in-memory cache for next time
+                                objects.write().insert(
+                                    child_id,
+                                    *ver,
+                                    ObjectEntry {
+                                        bytes: cached_obj.bcs_bytes.clone(),
+                                        type_tag: type_tag.clone(),
+                                        version: *ver,
+                                    },
+                                );
+                                return Some((type_tag, cached_obj.bcs_bytes, *ver));
+                            }
                         }
                         // Fall back to gRPC archive fetch at version
                         if use_sui_natives {
                             let id_hex = child_id.to_hex_literal();
+                            metrics.record_grpc_fetch();
                             if let Ok(obj) = rt_handle
                                 .block_on(async { grpc.get_object_at_version(&id_hex, Some(*ver)).await })
                             {
@@ -815,6 +866,8 @@ impl<'a> ReplayEngine<'a> {
         let deny_filter = Arc::clone(&deny_children);
         let deny_parent_filter = Arc::clone(&deny_parents);
         let mapping = Arc::clone(&mapping);
+        let disk_store = self.disk_object_store.clone();
+        let metrics = Arc::clone(&self.metrics);
         env.set_key_based_child_fetcher(Box::new(
             move |parent_id, _child_id, key_type, key_bytes| {
                 if deny_parent_filter.read().contains(&parent_id) {
@@ -837,9 +890,36 @@ impl<'a> ReplayEngine<'a> {
                     return None;
                 }
                 let ver = *mapping.get(&child_id)?;
+                // First check in-memory cache
                 if let Some(entry) = objects.read().get(child_id, ver) {
+                    metrics.record_memory_hit();
                     return Some((entry.type_tag.clone(), entry.bytes.clone()));
                 }
+                // Then check disk cache
+                if let Some(ref disk) = disk_store {
+                    if let Ok(Some(cached_obj)) = disk.get(child_id, ver) {
+                        metrics.record_disk_hit();
+                        metrics.record_dynamic_field_disk_hit();
+                        let type_tag = match TypeTag::from_str(&cached_obj.meta.type_tag) {
+                            Ok(tt) => tt,
+                            Err(_) => return None,
+                        };
+                        // Insert into in-memory cache for next time
+                        objects.write().insert(
+                            child_id,
+                            ver,
+                            ObjectEntry {
+                                bytes: cached_obj.bcs_bytes.clone(),
+                                type_tag: type_tag.clone(),
+                                version: ver,
+                            },
+                        );
+                        return Some((type_tag, cached_obj.bcs_bytes));
+                    }
+                }
+                // Fall back to gRPC
+                metrics.record_grpc_fetch();
+                metrics.record_dynamic_field_grpc_fetch();
                 if let Ok(obj) =
                     rt_handle.block_on(async { grpc.get_object_at_version(&child_hex, Some(ver)).await })
                 {
@@ -1078,26 +1158,118 @@ impl<'a> ReplayEngine<'a> {
                     self.try_fetch_package_at_checkpoint(pkg, cp)?
                 {
                     storage_addr = resolved_addr;
-                self.packages
-                    .runtime_to_storage
-                    .insert(pkg, resolved_addr);
-                self.packages
-                    .modules_by_package
-                    .insert(resolved_addr, modules.clone());
-                self.packages.versions_by_package.insert(resolved_addr, version);
+                    self.packages
+                        .runtime_to_storage
+                        .insert(pkg, resolved_addr);
+                    self.packages
+                        .modules_by_package
+                        .insert(resolved_addr, modules.clone());
+                    self.packages.versions_by_package.insert(resolved_addr, version);
 
-                // Use gRPC metadata to populate linkage/aliases for dependency resolution.
-                let resolved_hex = resolved_addr.to_hex_literal();
-                if let Ok(Some(obj)) = self.rt.block_on(async { self.grpc.get_object(&resolved_hex).await }) {
-                    if let Some(orig) = obj.package_original_id.as_ref() {
-                        if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
-                            if original_addr != resolved_addr {
-                                self.packages
-                                    .runtime_to_storage
-                                    .insert(original_addr, resolved_addr);
+                    // Use gRPC metadata to populate linkage/aliases for dependency resolution.
+                    let resolved_hex = resolved_addr.to_hex_literal();
+                    if let Ok(Some(obj)) =
+                        self.rt
+                            .block_on(async { self.grpc.get_object(&resolved_hex).await })
+                    {
+                        if let Some(orig) = obj.package_original_id.as_ref() {
+                            if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
+                                if original_addr != resolved_addr {
+                                    self.packages
+                                        .runtime_to_storage
+                                        .insert(original_addr, resolved_addr);
+                                }
+                            }
+                        }
+                        if let Some(linkage) = obj.package_linkage.as_ref() {
+                            for entry in linkage {
+                                if let (Ok(orig), Ok(upgraded)) = (
+                                    AccountAddress::from_hex_literal(&entry.original_id),
+                                    AccountAddress::from_hex_literal(&entry.upgraded_id),
+                                ) {
+                                    if orig != upgraded {
+                                        self.packages.runtime_to_storage.insert(orig, upgraded);
+                                    }
+                                    self.packages
+                                        .versions_by_package
+                                        .entry(upgraded)
+                                        .or_insert(entry.upgraded_version);
+                                }
                             }
                         }
                     }
+                }
+            }
+        }
+
+        let modules: Vec<(String, Vec<u8>)> =
+            if let Some(m) = self.packages.modules_by_package.get(&storage_addr) {
+                m.clone()
+            } else if let Some(ref disk_pkg_store) = self.disk_package_store {
+                // Try disk cache first
+                if let Ok(Some(cached_pkg)) = disk_pkg_store.get(storage_addr) {
+                    self.metrics.record_package_disk_hit();
+                    let decoded = cached_pkg
+                        .decode_modules()
+                        .map_err(|e| anyhow!("Failed to decode cached package modules: {}", e))?;
+                    // Store in memory cache
+                    self.packages
+                        .modules_by_package
+                        .insert(storage_addr, decoded.clone());
+                    self.packages
+                        .versions_by_package
+                        .insert(storage_addr, cached_pkg.version);
+                    // Handle linkage/aliases if present
+                    if let Some(original_id) = cached_pkg.original_id {
+                        if let Ok(orig_addr) = AccountAddress::from_hex_literal(&original_id) {
+                            if orig_addr != storage_addr {
+                                self.packages.runtime_to_storage.insert(orig_addr, storage_addr);
+                            }
+                        }
+                    }
+                    if let Some(linkage) = cached_pkg.linkage {
+                        for entry in linkage {
+                            if let (Ok(orig), Ok(upgraded)) = (
+                                AccountAddress::from_hex_literal(&entry.original_id),
+                                AccountAddress::from_hex_literal(&entry.upgraded_id),
+                            ) {
+                                if orig != upgraded {
+                                    self.packages.runtime_to_storage.insert(orig, upgraded);
+                                }
+                                self.packages
+                                    .versions_by_package
+                                    .entry(upgraded)
+                                    .or_insert(entry.upgraded_version);
+                            }
+                        }
+                    }
+                    decoded
+                } else {
+                    // Not in disk cache, fetch from gRPC
+                    self.metrics.record_package_grpc_fetch();
+                    let pkg_hex = storage_addr.to_hex_literal();
+                    let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
+                        self.rt
+                            .block_on(async {
+                                self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await
+                            })?
+                            .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                    } else {
+                        self.rt
+                            .block_on(async { self.grpc.get_object(&pkg_hex).await })?
+                            .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                    };
+
+                    if let Some(orig) = obj.package_original_id.as_ref() {
+                        if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
+                            if original_addr != storage_addr {
+                                self.packages
+                                    .runtime_to_storage
+                                    .insert(original_addr, storage_addr);
+                            }
+                        }
+                    }
+
                     if let Some(linkage) = obj.package_linkage.as_ref() {
                         for entry in linkage {
                             if let (Ok(orig), Ok(upgraded)) = (
@@ -1111,75 +1283,85 @@ impl<'a> ReplayEngine<'a> {
                                     .versions_by_package
                                     .entry(upgraded)
                                     .or_insert(entry.upgraded_version);
+                            }
                         }
                     }
-                }
-            }
-        }
-            }
-        }
 
-        let modules = if let Some(m) = self.packages.modules_by_package.get(&storage_addr) {
-            m.clone()
-        } else {
-            let pkg_hex = storage_addr.to_hex_literal();
-            let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
-                self.rt
-                    .block_on(async { self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await })?
-                    .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                    let mods = obj
+                        .package_modules
+                        .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
+                    let decoded = mods.clone();
+                    self.packages
+                        .modules_by_package
+                        .insert(storage_addr, decoded.clone());
+                    self.packages.versions_by_package.insert(storage_addr, obj.version);
+
+                    // Store in disk cache if available (best-effort, ignore errors)
+                    if let Some(ref disk_pkg_store) = self.disk_package_store {
+                        let linkage_entries: Option<Vec<sui_historical_cache::LinkageEntry>> =
+                            obj.package_linkage.as_ref().map(|linkage| {
+                                linkage
+                                    .iter()
+                                    .map(|e| sui_historical_cache::LinkageEntry {
+                                        original_id: e.original_id.clone(),
+                                        upgraded_id: e.upgraded_id.clone(),
+                                        upgraded_version: e.upgraded_version,
+                                    })
+                                    .collect()
+                            });
+                        let cached_pkg = sui_historical_cache::CachedPackage {
+                            version: obj.version,
+                            modules: decoded
+                                .iter()
+                                .map(|(name, bytes)| {
+                                    use base64::Engine;
+                                    (
+                                        name.clone(),
+                                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    )
+                                })
+                                .collect(),
+                            original_id: obj.package_original_id.clone(),
+                            linkage: linkage_entries,
+                        };
+                        let _ = disk_pkg_store.put(storage_addr, &cached_pkg);
+                    }
+
+                    // Ensure linkage dependencies are loaded before deploying this package.
+                    if let Some(linkage) = obj.package_linkage.as_ref() {
+                        for entry in linkage {
+                            let upgraded_addr = parse_address(&entry.upgraded_id)?;
+                            if upgraded_addr != storage_addr {
+                                self.load_package_if_needed(env, upgraded_addr, checkpoint, false)?;
+                            }
+                        }
+                    }
+
+                    decoded
+                }
             } else {
-                self.rt
-                    .block_on(async { self.grpc.get_object(&pkg_hex).await })?
-                    .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                // No disk cache configured; fetch from gRPC and keep only in-memory.
+                self.metrics.record_package_grpc_fetch();
+                let pkg_hex = storage_addr.to_hex_literal();
+                let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
+                    self.rt
+                        .block_on(async { self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await })?
+                        .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                } else {
+                    self.rt
+                        .block_on(async { self.grpc.get_object(&pkg_hex).await })?
+                        .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+                };
+                let mods = obj
+                    .package_modules
+                    .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
+                let decoded = mods.clone();
+                self.packages
+                    .modules_by_package
+                    .insert(storage_addr, decoded.clone());
+                self.packages.versions_by_package.insert(storage_addr, obj.version);
+                decoded
             };
-
-            if let Some(orig) = obj.package_original_id.as_ref() {
-                if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
-                    if original_addr != storage_addr {
-                        self.packages
-                            .runtime_to_storage
-                            .insert(original_addr, storage_addr);
-                    }
-                }
-            }
-
-            if let Some(linkage) = obj.package_linkage.as_ref() {
-                for entry in linkage {
-                    if let (Ok(orig), Ok(upgraded)) = (
-                        AccountAddress::from_hex_literal(&entry.original_id),
-                        AccountAddress::from_hex_literal(&entry.upgraded_id),
-                    ) {
-                        if orig != upgraded {
-                            self.packages.runtime_to_storage.insert(orig, upgraded);
-                        }
-                        self.packages
-                            .versions_by_package
-                            .entry(upgraded)
-                            .or_insert(entry.upgraded_version);
-                    }
-                }
-            }
-
-            let mods = obj
-                .package_modules
-                .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
-            let decoded = mods.clone();
-            self.packages
-                .modules_by_package
-                .insert(storage_addr, decoded.clone());
-            self.packages.versions_by_package.insert(storage_addr, obj.version);
-
-            // Ensure linkage dependencies are loaded before deploying this package.
-            if let Some(linkage) = obj.package_linkage.as_ref() {
-                for entry in linkage {
-                    let upgraded_addr = parse_address(&entry.upgraded_id)?;
-                    if upgraded_addr != storage_addr {
-                        self.load_package_if_needed(env, upgraded_addr, checkpoint, false)?;
-                    }
-                }
-            }
-            decoded
-        };
 
         // Also load dependencies discovered from bytecode (covers missing linkage entries).
         let mut deps: HashSet<AccountAddress> = HashSet::new();
@@ -1199,7 +1381,7 @@ impl<'a> ReplayEngine<'a> {
             }
         }
         for dep in deps {
-                self.load_package_if_needed(env, dep, checkpoint, false)?;
+            self.load_package_if_needed(env, dep, checkpoint, false)?;
         }
 
         env.deploy_package_at_address(&storage_addr.to_hex_literal(), modules)?;
@@ -1875,13 +2057,8 @@ fn index_walrus_move_objects(
             continue;
         };
 
-        let contents_b64 = move_obj
-            .get("contents")
-            .and_then(|c| c.as_str())
+        let contents = decode_bytes_or_base64(move_obj.get("contents"))
             .context("missing Move.contents")?;
-        let contents = base64::engine::general_purpose::STANDARD
-            .decode(contents_b64)
-            .context("base64 decode Move.contents")?;
         if contents.len() < 32 {
             continue;
         }
@@ -1935,6 +2112,25 @@ fn index_walrus_move_objects(
         );
     }
     Ok(out)
+}
+
+fn decode_bytes_or_base64(v: Option<&serde_json::Value>) -> Option<Vec<u8>> {
+    let v = v?;
+    if let Some(s) = v.as_str() {
+        return base64::engine::general_purpose::STANDARD.decode(s).ok();
+    }
+    if let Some(arr) = v.as_array() {
+        let mut out = Vec::with_capacity(arr.len());
+        for x in arr {
+            let n = x.as_u64()?;
+            if n > 255 {
+                return None;
+            }
+            out.push(n as u8);
+        }
+        return Some(out);
+    }
+    None
 }
 
 fn parse_owner(owner_json: &serde_json::Value) -> Result<Owner> {

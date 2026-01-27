@@ -31,6 +31,7 @@ use sui_transport::grpc::GrpcClient;
 use sui_transport::walrus::WalrusClient;
 
 use walrus_checkpoint::replay_engine::{ReasonCode, ReplayEngine, ReplayStats};
+use sui_historical_cache::{FsObjectStore, FsPackageStore};
 
 /// Replay PTBs from a Walrus checkpoint range.
 #[derive(Parser, Debug)]
@@ -58,6 +59,18 @@ struct Args {
     /// Load framework packages (0x1/0x2/0x3) from GraphQL instead of bundled bytecode.
     #[arg(long, default_value_t = false)]
     framework_from_graphql: bool,
+
+    /// Fetch checkpoints in batched blob byte-ranges (fewer downloads, faster).
+    #[arg(long, default_value_t = true)]
+    batch_by_blob: bool,
+
+    /// Max bytes per merged blob download (only used with --batch-by-blob).
+    #[arg(long, default_value_t = 128 * 1024 * 1024)]
+    max_blob_chunk_bytes: u64,
+
+    /// Optional cache directory for L2 object/package lookups.
+    #[arg(long)]
+    cache_dir: Option<String>,
 }
 
 /// Default range chosen to match the existing benchmark docs.
@@ -145,12 +158,31 @@ fn main() -> Result<()> {
         }
     };
 
+    // Initialize disk cache if provided
+    let object_store = args.cache_dir.as_ref().and_then(|dir| {
+        FsObjectStore::new(dir).map_err(|e| {
+            eprintln!("Warning: Failed to initialize object cache: {}", e);
+        }).ok()
+    });
+    let package_store = args.cache_dir.as_ref().and_then(|dir| {
+        FsPackageStore::new(dir).map_err(|e| {
+            eprintln!("Warning: Failed to initialize package cache: {}", e);
+        }).ok()
+    });
+
+    if args.cache_dir.is_some() {
+        println!("✓ Disk cache enabled: {}", args.cache_dir.as_ref().unwrap());
+        println!();
+    }
+
     let mut engine = ReplayEngine::new(
         &walrus,
         Arc::clone(&grpc),
         &graphql,
         &rt,
         state_fetcher,
+        object_store,
+        package_store,
     );
 
     // Keep one environment alive and reuse the resolver; reset state per transaction.
@@ -172,43 +204,82 @@ fn main() -> Result<()> {
     let mut checkpoints_data: Vec<(u64, Vec<serde_json::Value>)> = Vec::new();
     let mut ptb_target = args.max_ptbs.unwrap_or(usize::MAX);
 
-    for checkpoint in start..end {
-        if ptb_target == 0 {
-            break;
-        }
-
+    let checkpoints: Vec<u64> = (start..end).collect();
+    if args.batch_by_blob {
         let checkpoint_fetch_start = Instant::now();
-        let checkpoint_json = walrus.get_checkpoint_with_content(checkpoint)?;
+        let decoded = walrus.get_checkpoints_json_batched(&checkpoints, args.max_blob_chunk_bytes)?;
         let checkpoint_fetch_s = checkpoint_fetch_start.elapsed().as_secs_f64();
-
-        let transactions = checkpoint_json
-            .get("transactions")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| anyhow!("Walrus checkpoint missing transactions array"))?;
-
-        let mut ptbs: Vec<serde_json::Value> = Vec::new();
-        for tx_json in transactions {
-            let is_ptb = tx_json
-                .pointer("/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction")
-                .is_some();
-            if !is_ptb {
-                continue;
-            }
+        println!(
+            "Fetched {} checkpoints via batched blob download (total {:.2}s, avg {:.2}ms/checkpoint)",
+            decoded.len(),
+            checkpoint_fetch_s,
+            (checkpoint_fetch_s * 1000.0) / (decoded.len().max(1) as f64)
+        );
+        for (checkpoint, checkpoint_json) in decoded {
             if ptb_target == 0 {
                 break;
             }
-            ptbs.push(tx_json.clone());
-            ptb_target = ptb_target.saturating_sub(1);
+            let transactions = checkpoint_json
+                .get("transactions")
+                .and_then(|t| t.as_array())
+                .ok_or_else(|| anyhow!("Walrus checkpoint missing transactions array"))?;
+            let mut ptbs: Vec<serde_json::Value> = Vec::new();
+            for tx_json in transactions {
+                let is_ptb = tx_json
+                    .pointer("/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction")
+                    .is_some();
+                if !is_ptb {
+                    continue;
+                }
+                if ptb_target == 0 {
+                    break;
+                }
+                ptbs.push(tx_json.clone());
+                ptb_target = ptb_target.saturating_sub(1);
+            }
+            println!("Checkpoint {}: {} PTBs", checkpoint, ptbs.len());
+            checkpoints_data.push((checkpoint, ptbs));
         }
+    } else {
+        for checkpoint in start..end {
+            if ptb_target == 0 {
+                break;
+            }
 
-        println!(
-            "Checkpoint {}: {} PTBs (fetch: {:.2}s)",
-            checkpoint,
-            ptbs.len(),
-            checkpoint_fetch_s
-        );
+            let checkpoint_fetch_start = Instant::now();
+            // Prefer BCS -> local JSON; still single-checkpoint path.
+            let checkpoint_json = walrus.get_checkpoint_json(checkpoint)?;
+            let checkpoint_fetch_s = checkpoint_fetch_start.elapsed().as_secs_f64();
 
-        checkpoints_data.push((checkpoint, ptbs));
+            let transactions = checkpoint_json
+                .get("transactions")
+                .and_then(|t| t.as_array())
+                .ok_or_else(|| anyhow!("Walrus checkpoint missing transactions array"))?;
+
+            let mut ptbs: Vec<serde_json::Value> = Vec::new();
+            for tx_json in transactions {
+                let is_ptb = tx_json
+                    .pointer("/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction")
+                    .is_some();
+                if !is_ptb {
+                    continue;
+                }
+                if ptb_target == 0 {
+                    break;
+                }
+                ptbs.push(tx_json.clone());
+                ptb_target = ptb_target.saturating_sub(1);
+            }
+
+            println!(
+                "Checkpoint {}: {} PTBs (fetch: {:.2}s)",
+                checkpoint,
+                ptbs.len(),
+                checkpoint_fetch_s
+            );
+
+            checkpoints_data.push((checkpoint, ptbs));
+        }
     }
 
     let all_tx_refs: Vec<&serde_json::Value> = checkpoints_data
@@ -352,6 +423,16 @@ fn main() -> Result<()> {
         }
     }
     println!("Elapsed: {:.2}s", elapsed);
+
+    // Print cache metrics if disk cache was enabled
+    if args.cache_dir.is_some() {
+        println!();
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("Cache Metrics");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        let metrics_snapshot = engine.metrics.snapshot();
+        println!("{}", metrics_snapshot.format_report());
+    }
 
     Ok(())
 }

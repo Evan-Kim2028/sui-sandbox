@@ -11,6 +11,7 @@ use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectID, ObjectInput
 use sui_transport::grpc::{GrpcClient, GrpcOwner};
 use super::replay_engine::ObjectCache;
 use sui_transport::walrus::WalrusClient;
+use sui_historical_cache::{CacheMetrics, ObjectVersionStore};
 
 pub struct ParsedWalrusPtb {
     pub sender: AccountAddress,
@@ -27,6 +28,8 @@ pub fn parse_ptb_transaction(
     grpc_fallback: Option<(&GrpcClient, &tokio::runtime::Runtime)>,
     object_cache: Option<&ObjectCache>,
     object_versions: Option<&HashMap<String, u64>>,
+    disk_cache: Option<&dyn ObjectVersionStore>,
+    metrics: Option<&CacheMetrics>,
 ) -> Result<ParsedWalrusPtb> {
     let v1 = tx_json
         .pointer("/transaction/data/0/intent_message/value/V1")
@@ -58,7 +61,17 @@ pub fn parse_ptb_transaction(
         .ok_or_else(|| anyhow!("not a ProgrammableTransaction"))?;
 
     let (inputs, gas_coin_arg_map) =
-        parse_inputs(walrus, v1, ptb, tx_json, grpc_fallback, object_cache, object_versions)?;
+        parse_inputs(
+            walrus,
+            v1,
+            ptb,
+            tx_json,
+            grpc_fallback,
+            object_cache,
+            object_versions,
+            disk_cache,
+            metrics,
+        )?;
     let (commands, package_ids) = parse_commands(walrus, ptb, &gas_coin_arg_map)?;
 
     Ok(ParsedWalrusPtb {
@@ -79,6 +92,8 @@ fn parse_inputs(
     grpc_fallback: Option<(&GrpcClient, &tokio::runtime::Runtime)>,
     object_cache: Option<&ObjectCache>,
     object_versions: Option<&HashMap<String, u64>>,
+    disk_cache: Option<&dyn ObjectVersionStore>,
+    metrics: Option<&CacheMetrics>,
 ) -> Result<(Vec<InputValue>, GasCoinArgMap)> {
     let input_objects = tx_json
         .get("input_objects")
@@ -91,10 +106,11 @@ fn parse_inputs(
             continue;
         };
 
-        let contents_b64 = move_obj
-            .get("contents")
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| anyhow!("missing Move.contents"))?;
+        // Some Walrus entries may include a `Move` wrapper but omit `contents` (e.g. redacted or
+        // non-materialized). Skip these and let the later fallback paths (cache/gRPC) fill them in.
+        let Some(contents_b64) = move_obj.get("contents").and_then(|c| c.as_str()) else {
+            continue;
+        };
         let bcs_bytes = base64::engine::general_purpose::STANDARD
             .decode(contents_b64)
             .context("base64 decode Move.contents")?;
@@ -108,17 +124,16 @@ fn parse_inputs(
             bytes
         });
 
-        let version = move_obj
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow!("missing Move.version"))?;
+        let Some(version) = move_obj.get("version").and_then(|v| v.as_u64()) else {
+            continue;
+        };
 
         let owner_json = obj_json.get("owner").unwrap_or(&Value::Null);
         let is_immutable = owner_json.get("Immutable").is_some();
 
-        let type_json = move_obj
-            .get("type_")
-            .ok_or_else(|| anyhow!("missing Move.type_"))?;
+        let Some(type_json) = move_obj.get("type_") else {
+            continue;
+        };
         let type_tag = walrus_type_tag(walrus, type_json)?;
 
         object_data_by_id.insert(
@@ -140,15 +155,15 @@ fn parse_inputs(
 
     // Gas coin is referenced via Argument::GasCoin in Sui transaction format; our sandbox
     // representation doesn't have that variant, so we materialize it as an extra input.
-    let gas_coin_id = v1
+    let gas_payment_ref = v1
         .get("gas_data")
         .and_then(|g| g.get("payment"))
         .and_then(|p| p.as_array())
         .and_then(|p| p.first())
-        .and_then(|r| r.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|id| id.as_str())
-        .and_then(|s| AccountAddress::from_hex_literal(s).ok());
+        .and_then(extract_object_ref_id_version);
+    let gas_coin_id = gas_payment_ref
+        .as_ref()
+        .and_then(|(id, _)| AccountAddress::from_hex_literal(id).ok());
 
     let timestamp_ms = tx_json
         .get("timestamp_ms")
@@ -158,12 +173,7 @@ fn parse_inputs(
     let mut inputs: Vec<InputValue> = Vec::with_capacity(ptb_inputs.len() + 1);
     for inp in ptb_inputs {
         if let Some(pure) = inp.get("Pure") {
-            let data_b64 = pure
-                .as_str()
-                .ok_or_else(|| anyhow!("Pure input is not a string"))?;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data_b64)
-                .context("base64 decode Pure")?;
+            let bytes = decode_pure_bytes(pure)?;
             inputs.push(InputValue::Pure(bytes));
             continue;
         }
@@ -171,6 +181,9 @@ fn parse_inputs(
         if let Some(obj) = inp.get("Object") {
             let (id, mode, version_hint) = parse_object_ref(obj)?;
             let data = if let Some(d) = object_data_by_id.get(&id) {
+                if let Some(m) = metrics {
+                    m.record_walrus_hit();
+                }
                 d.clone()
             } else if let Some(cache) = object_cache {
                 let cached = if let Some(ver) = version_hint.or_else(|| {
@@ -193,13 +206,141 @@ fn parse_inputs(
                     })
                 };
                 if let Some(cached) = cached {
+                    if let Some(m) = metrics {
+                        m.record_memory_hit();
+                    }
                     cached
+                } else if let Some(disk) = disk_cache {
+                    // Try disk cache before gRPC
+                    let version = version_hint.or_else(|| {
+                        object_versions
+                            .and_then(|m| m.get(&normalize_addr(&id.to_hex_literal())))
+                            .copied()
+                    });
+                    if let Some(ver) = version {
+                        if let Ok(Some(cached_obj)) = disk.get(id, ver) {
+                            if let Some(m) = metrics {
+                                m.record_disk_hit();
+                            }
+                            let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
+                                .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                            let data = WalrusObjectData {
+                                bcs_bytes: cached_obj.bcs_bytes,
+                                type_tag,
+                                version: ver,
+                                is_immutable: false,
+                            };
+                            object_data_by_id.insert(id, data.clone());
+                            data
+                        } else if let Some(sys) =
+                            synthesize_system_object(id, timestamp_ms, version_hint, object_versions)
+                        {
+                            object_data_by_id.insert(id, sys.clone());
+                            sys
+                        } else if let Some((grpc, rt)) = grpc_fallback {
+                            if let Some(m) = metrics {
+                                m.record_grpc_fetch();
+                            }
+                            let fetched = fetch_missing_object_data(
+                                grpc,
+                                rt,
+                                tx_json,
+                                id,
+                                version_hint,
+                                object_versions,
+                            )?;
+                            object_data_by_id.insert(id, fetched.clone());
+                            fetched
+                        } else {
+                            return Err(anyhow!("missing object data for {}", id.to_hex_literal()));
+                        }
+                    } else if let Some(sys) =
+                        synthesize_system_object(id, timestamp_ms, version_hint, object_versions)
+                    {
+                        object_data_by_id.insert(id, sys.clone());
+                        sys
+                    } else if let Some((grpc, rt)) = grpc_fallback {
+                        if let Some(m) = metrics {
+                            m.record_grpc_fetch();
+                        }
+                        let fetched = fetch_missing_object_data(
+                            grpc,
+                            rt,
+                            tx_json,
+                            id,
+                            version_hint,
+                            object_versions,
+                        )?;
+                        object_data_by_id.insert(id, fetched.clone());
+                        fetched
+                    } else {
+                        return Err(anyhow!("missing object data for {}", id.to_hex_literal()));
+                    }
                 } else if let Some(sys) =
                     synthesize_system_object(id, timestamp_ms, version_hint, object_versions)
                 {
                     object_data_by_id.insert(id, sys.clone());
                     sys
                 } else if let Some((grpc, rt)) = grpc_fallback {
+                    if let Some(m) = metrics {
+                        m.record_grpc_fetch();
+                    }
+                    let fetched = fetch_missing_object_data(
+                        grpc,
+                        rt,
+                        tx_json,
+                        id,
+                        version_hint,
+                        object_versions,
+                    )?;
+                    object_data_by_id.insert(id, fetched.clone());
+                    fetched
+                } else {
+                    return Err(anyhow!("missing object data for {}", id.to_hex_literal()));
+                }
+            } else if let Some(disk) = disk_cache {
+                // Try disk cache before gRPC
+                let version = version_hint.or_else(|| {
+                    object_versions
+                        .and_then(|m| m.get(&normalize_addr(&id.to_hex_literal())))
+                        .copied()
+                });
+                if let Some(ver) = version {
+                    if let Ok(Some(cached_obj)) = disk.get(id, ver) {
+                        if let Some(m) = metrics {
+                            m.record_disk_hit();
+                        }
+                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
+                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        let data = WalrusObjectData {
+                            bcs_bytes: cached_obj.bcs_bytes,
+                            type_tag,
+                            version: ver,
+                            is_immutable: false,
+                        };
+                        object_data_by_id.insert(id, data.clone());
+                        data
+                    } else if let Some((grpc, rt)) = grpc_fallback {
+                        if let Some(m) = metrics {
+                            m.record_grpc_fetch();
+                        }
+                        let fetched = fetch_missing_object_data(
+                            grpc,
+                            rt,
+                            tx_json,
+                            id,
+                            version_hint,
+                            object_versions,
+                        )?;
+                        object_data_by_id.insert(id, fetched.clone());
+                        fetched
+                    } else {
+                        return Err(anyhow!("missing object data for {}", id.to_hex_literal()));
+                    }
+                } else if let Some((grpc, rt)) = grpc_fallback {
+                    if let Some(m) = metrics {
+                        m.record_grpc_fetch();
+                    }
                     let fetched = fetch_missing_object_data(
                         grpc,
                         rt,
@@ -214,6 +355,9 @@ fn parse_inputs(
                     return Err(anyhow!("missing object data for {}", id.to_hex_literal()));
                 }
             } else if let Some((grpc, rt)) = grpc_fallback {
+                if let Some(m) = metrics {
+                    m.record_grpc_fetch();
+                }
                 let fetched = fetch_missing_object_data(
                     grpc,
                     rt,
@@ -273,7 +417,132 @@ fn parse_inputs(
     // Append gas coin input if we can resolve it from input_objects.
     let gas_coin_input_idx = if let Some(gas_id) = gas_coin_id {
         if !inputs.iter().any(|iv| matches!(iv, InputValue::Object(oi) if oi.id() == &gas_id)) {
-            if let Some(data) = object_data_by_id.get(&gas_id) {
+            // Try to resolve gas coin bytes from Walrus content, cache, or gRPC.
+            let version_hint = gas_payment_ref.as_ref().and_then(|(_, v)| *v);
+            let data = if let Some(d) = object_data_by_id.get(&gas_id) {
+                if let Some(m) = metrics {
+                    m.record_walrus_hit();
+                }
+                Some(d.clone())
+            } else if let Some(cache) = object_cache {
+                cache.get_any(gas_id).map(|entry| {
+                    if let Some(m) = metrics {
+                        m.record_memory_hit();
+                    }
+                    WalrusObjectData {
+                    bcs_bytes: entry.bytes.clone(),
+                    type_tag: entry.type_tag.clone(),
+                    version: entry.version,
+                    is_immutable: false,
+                    }
+                })
+            } else if let Some(disk) = disk_cache {
+                // Try disk cache for gas coin
+                let version = version_hint.or_else(|| {
+                    object_versions
+                        .and_then(|m| m.get(&normalize_addr(&gas_id.to_hex_literal())))
+                        .copied()
+                });
+                if let Some(ver) = version {
+                    if let Ok(Some(cached_obj)) = disk.get(gas_id, ver) {
+                        if let Some(m) = metrics {
+                            m.record_disk_hit();
+                        }
+                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
+                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        Some(WalrusObjectData {
+                            bcs_bytes: cached_obj.bcs_bytes,
+                            type_tag,
+                            version: ver,
+                            is_immutable: false,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let data = if let Some(d) = data {
+                d
+            } else if let Some(disk) = disk_cache {
+                // Try disk cache with version hint
+                let version = version_hint.or_else(|| {
+                    object_versions
+                        .and_then(|m| m.get(&normalize_addr(&gas_id.to_hex_literal())))
+                        .copied()
+                });
+                if let Some(ver) = version {
+                    if let Ok(Some(cached_obj)) = disk.get(gas_id, ver) {
+                        if let Some(m) = metrics {
+                            m.record_disk_hit();
+                        }
+                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
+                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        let data = WalrusObjectData {
+                            bcs_bytes: cached_obj.bcs_bytes,
+                            type_tag,
+                            version: ver,
+                            is_immutable: false,
+                        };
+                        object_data_by_id.insert(gas_id, data.clone());
+                        data
+                    } else if let Some((grpc, rt)) = grpc_fallback {
+                        if let Some(m) = metrics {
+                            m.record_grpc_fetch();
+                        }
+                        let fetched = fetch_missing_object_data(
+                            grpc,
+                            rt,
+                            tx_json,
+                            gas_id,
+                            version_hint,
+                            object_versions,
+                        )?;
+                        object_data_by_id.insert(gas_id, fetched.clone());
+                        fetched
+                    } else {
+                        return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+                    }
+                } else if let Some((grpc, rt)) = grpc_fallback {
+                    if let Some(m) = metrics {
+                        m.record_grpc_fetch();
+                    }
+                    let fetched = fetch_missing_object_data(
+                        grpc,
+                        rt,
+                        tx_json,
+                        gas_id,
+                        version_hint,
+                        object_versions,
+                    )?;
+                    object_data_by_id.insert(gas_id, fetched.clone());
+                    fetched
+                } else {
+                    return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+                }
+            } else if let Some((grpc, rt)) = grpc_fallback {
+                if let Some(m) = metrics {
+                    m.record_grpc_fetch();
+                }
+                let fetched = fetch_missing_object_data(
+                    grpc,
+                    rt,
+                    tx_json,
+                    gas_id,
+                    version_hint,
+                    object_versions,
+                )?;
+                object_data_by_id.insert(gas_id, fetched.clone());
+                fetched
+            } else {
+                // We know the tx references GasCoin, but we can't materialize it.
+                return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+            };
+
                 inputs.push(InputValue::Object(ObjectInput::Owned {
                     id: gas_id,
                     bytes: data.bcs_bytes.clone(),
@@ -281,9 +550,6 @@ fn parse_inputs(
                     version: Some(data.version),
                 }));
                 Some((gas_id, (inputs.len() - 1) as u16))
-            } else {
-                None
-            }
         } else {
             // gas coin already included as a normal PTB input
             None
@@ -293,6 +559,92 @@ fn parse_inputs(
     };
 
     Ok((inputs, GasCoinArgMap { gas_coin_input_idx }))
+}
+
+fn extract_object_ref_id(v: &Value) -> Option<String> {
+    // Common shape: [ "<id>", <version>, "<digest>" ]
+    if let Some(arr) = v.as_array() {
+        if let Some(id) = arr.first().and_then(|x| x.as_str()) {
+            return Some(id.to_string());
+        }
+    }
+    // Alternative shapes: { "ObjectRef": [ ... ] } or { "id": "..."} or { "object_id": "..." }
+    if let Some(obj) = v.as_object() {
+        if let Some(or) = obj.get("ObjectRef") {
+            return extract_object_ref_id(or);
+        }
+        if let Some(id) = obj.get("id").and_then(|x| x.as_str()) {
+            return Some(id.to_string());
+        }
+        if let Some(id) = obj.get("object_id").and_then(|x| x.as_str()) {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn extract_object_ref_id_version(v: &Value) -> Option<(String, Option<u64>)> {
+    // Common shape: [ "<id>", <version>, "<digest>" ]
+    if let Some(arr) = v.as_array() {
+        if let Some(id) = arr.first().and_then(|x| x.as_str()) {
+            let ver = arr
+                .get(1)
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+            return Some((id.to_string(), ver));
+        }
+    }
+    if let Some(obj) = v.as_object() {
+        if let Some(or) = obj.get("ObjectRef") {
+            return extract_object_ref_id_version(or);
+        }
+        if let Some(id) = obj.get("id").and_then(|x| x.as_str()) {
+            let ver = obj.get("version").and_then(|v| v.as_u64());
+            return Some((id.to_string(), ver));
+        }
+        if let Some(id) = obj.get("object_id").and_then(|x| x.as_str()) {
+            let ver = obj.get("version").and_then(|v| v.as_u64());
+            return Some((id.to_string(), ver));
+        }
+    }
+    None
+}
+
+fn decode_pure_bytes(pure: &Value) -> Result<Vec<u8>> {
+    // Shape 1: base64 string (common in walrus-sui-archival `show_content=true` JSON)
+    if let Some(data_b64) = pure.as_str() {
+        return base64::engine::general_purpose::STANDARD
+            .decode(data_b64)
+            .context("base64 decode Pure");
+    }
+
+    // Shape 2: list of byte values (can happen when serializing CheckpointData via `serde_json::to_value`)
+    if let Some(arr) = pure.as_array() {
+        let mut out = Vec::with_capacity(arr.len());
+        for v in arr {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| anyhow!("Pure byte array contains non-u64 element: {v}"))?;
+            if n > 255 {
+                return Err(anyhow!("Pure byte value out of range: {n}"));
+            }
+            out.push(n as u8);
+        }
+        return Ok(out);
+    }
+
+    // Shape 3: object wrapper with `bytes: [...]` or `bytes: "..."`.
+    if let Some(obj) = pure.as_object() {
+        if let Some(bytes) = obj.get("bytes") {
+            return decode_pure_bytes(bytes);
+        }
+        if let Some(b64) = obj.get("b64").and_then(|v| v.as_str()) {
+            return base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .context("base64 decode Pure.b64");
+        }
+    }
+
+    Err(anyhow!("Pure input has unsupported shape: {}", pure))
 }
 
 fn parse_commands(
