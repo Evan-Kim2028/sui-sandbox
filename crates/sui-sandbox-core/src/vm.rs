@@ -1869,6 +1869,32 @@ impl<'a> VMHarness<'a> {
             None
         };
 
+        // If using Sui natives, eagerly initialize Sui native extensions so native calls that
+        // depend on extensions (e.g. tx_context, object_runtime) don't fail even before a child
+        // fetcher is installed.
+        //
+        // We start with a no-op child fetcher; callers can later override it via
+        // `set_child_fetcher` / `set_versioned_child_fetcher`.
+        let sui_extensions = if config.use_sui_natives {
+            let noop_fetcher: sui_object_runtime::ChildFetchFn =
+                std::sync::Arc::new(|_child_id: sui_types::base_types::ObjectID| None);
+            let sui_config = sui_object_runtime::SuiRuntimeConfig {
+                sender: AccountAddress::new(config.sender_address),
+                epoch: config.epoch,
+                epoch_timestamp_ms: config.tx_timestamp_ms.unwrap_or(config.clock_base_ms),
+                gas_price: config.gas_price,
+                gas_budget: config.gas_budget.unwrap_or(DEFAULT_GAS_BUDGET),
+                sponsor: None,
+                is_metered: config.accurate_gas,
+            };
+            Some(sui_object_runtime::SuiNativeExtensions::new(
+                noop_fetcher,
+                sui_config,
+            ))
+        } else {
+            None
+        };
+
         Ok(Self {
             vm,
             storage: InMemoryStorage::with_trace(resolver, restricted, trace.clone()),
@@ -1882,7 +1908,7 @@ impl<'a> VMHarness<'a> {
             address_aliases: std::collections::HashMap::new(),
             package_versions: std::collections::HashMap::new(),
             protocol_config,
-            sui_extensions: None,
+            sui_extensions,
             storage_tracker,
         })
     }
