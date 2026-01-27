@@ -1,16 +1,18 @@
 //! Sui Transport Layer
 //!
-//! Network transport for Sui data fetching via gRPC and GraphQL.
+//! Network transport for Sui data fetching via gRPC, GraphQL, and Walrus.
 //!
 //! This crate provides:
 //! - [`grpc`]: gRPC client for real-time streaming and batch fetching
 //! - [`graphql`]: GraphQL client for querying packages, objects, and transactions
+//! - [`walrus`]: Walrus client for historical checkpoint archival data
 //!
 //! # Example
 //!
 //! ```ignore
 //! use sui_transport::graphql::GraphQLClient;
 //! use sui_transport::grpc::GrpcClient;
+//! use sui_transport::walrus::WalrusClient;
 //!
 //! // GraphQL queries
 //! let client = GraphQLClient::mainnet();
@@ -18,14 +20,20 @@
 //!
 //! // gRPC streaming (async)
 //! let grpc = GrpcClient::mainnet().await?;
+//!
+//! // Walrus checkpoint archival
+//! let walrus = WalrusClient::mainnet();
+//! let checkpoint = walrus.get_checkpoint(12345)?;
 //! ```
 
 pub mod graphql;
 pub mod grpc;
+pub mod walrus;
 
 // Re-export main types for convenience
 pub use graphql::GraphQLClient;
 pub use grpc::GrpcClient;
+pub use walrus::WalrusClient;
 
 /// Create a Tokio runtime and connect to a gRPC endpoint.
 ///

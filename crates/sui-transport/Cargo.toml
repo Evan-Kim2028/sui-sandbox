@@ -27,4 +27,5 @@ prost-types.workspace = true
 # Sui types
 move-core-types.workspace = true
 sui-types.workspace = true
+sui-protocol-config.workspace = true
 bcs.workspace = true

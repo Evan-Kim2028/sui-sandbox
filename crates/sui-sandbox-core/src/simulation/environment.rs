@@ -11,12 +11,12 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::resolver::ModuleResolver;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::fetcher::{FetchedObjectData, Fetcher};
 use crate::natives::EmittedEvent;
-use crate::object_runtime::ChildFetcherFn;
+use crate::object_runtime::{ChildFetcherFn, KeyBasedChildFetcherFn, VersionedChildFetcherFn};
 use crate::ptb::{Command, InputValue, ObjectInput};
 use crate::resolver::LocalModuleResolver;
 use crate::vm::VMHarness;
@@ -105,6 +105,21 @@ pub struct SimulationEnvironment {
     /// Optional callback for on-demand child object fetching during execution.
     /// This is called when a dynamic field child is requested but not found in preloaded state.
     child_fetcher: Option<std::sync::Arc<ChildFetcherFn>>,
+
+    /// Optional callback for versioned child object fetching during execution.
+    /// Preferred for replay when using Sui natives.
+    versioned_child_fetcher: Option<std::sync::Arc<VersionedChildFetcherFn>>,
+
+    /// Optional callback for key-based child fetching during execution.
+    /// This is called when ID-based lookup fails and the runtime can compute
+    /// a dynamic field key to query external sources.
+    key_based_child_fetcher: Option<std::sync::Arc<KeyBasedChildFetcherFn>>,
+
+    /// Address aliases for package upgrades (storage_id -> original_id).
+    address_aliases: HashMap<AccountAddress, AccountAddress>,
+
+    /// Package versions used for alias resolution.
+    package_versions: HashMap<AccountAddress, u64>,
 }
 
 impl SimulationEnvironment {
@@ -152,6 +167,10 @@ impl SimulationEnvironment {
             all_events: Vec::new(),
             last_tx_events: Vec::new(),
             child_fetcher: None,
+            versioned_child_fetcher: None,
+            key_based_child_fetcher: None,
+            address_aliases: HashMap::new(),
+            package_versions: HashMap::new(),
         };
 
         // Initialize the Clock object (0x6)
@@ -387,9 +406,42 @@ impl SimulationEnvironment {
         self.child_fetcher = Some(std::sync::Arc::new(fetcher));
     }
 
+    /// Set a versioned child fetcher for replay (preferred with Sui natives).
+    pub fn set_versioned_child_fetcher(&mut self, fetcher: VersionedChildFetcherFn) {
+        self.versioned_child_fetcher = Some(std::sync::Arc::new(fetcher));
+    }
+
     /// Clear the child fetcher callback.
     pub fn clear_child_fetcher(&mut self) {
         self.child_fetcher = None;
+    }
+
+    /// Set a callback for key-based child object fetching during execution.
+    /// This callback is called when ID-based lookup fails and the runtime
+    /// can compute a dynamic field key for lookup.
+    pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
+        self.key_based_child_fetcher = Some(std::sync::Arc::new(fetcher));
+    }
+
+    /// Clear the key-based child fetcher callback.
+    pub fn clear_key_based_child_fetcher(&mut self) {
+        self.key_based_child_fetcher = None;
+    }
+
+    /// Set address aliases with version hints for upgraded packages.
+    pub fn set_address_aliases_with_versions(
+        &mut self,
+        aliases: HashMap<AccountAddress, AccountAddress>,
+        package_versions: HashMap<AccountAddress, u64>,
+    ) {
+        self.address_aliases = aliases;
+        self.package_versions = package_versions;
+    }
+
+    /// Clear address aliases.
+    pub fn clear_address_aliases(&mut self) {
+        self.address_aliases.clear();
+        self.package_versions.clear();
     }
 
     /// Set the transaction timestamp for TxContext.
@@ -1211,11 +1263,9 @@ impl SimulationEnvironment {
         }
 
         // Build VM config with correct sender and timestamp
-        let mut config = crate::vm::SimulationConfig {
-            sender_address: self.sender.into(),
-            tx_timestamp_ms: self.timestamp_ms,
-            ..Default::default()
-        };
+        let mut config = self.config.clone();
+        config.sender_address = self.sender.into();
+        config.tx_timestamp_ms = self.timestamp_ms;
         // Use the timestamp for clock as well
         if let Some(ts) = self.timestamp_ms {
             config.clock_base_ms = ts;
@@ -1242,12 +1292,38 @@ impl SimulationEnvironment {
             }
         };
 
-        // Set up on-demand child fetcher if configured
-        if let Some(ref fetcher_arc) = self.child_fetcher {
+        // Set up on-demand child fetcher if configured (prefer versioned)
+        if let Some(ref fetcher_arc) = self.versioned_child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            harness.set_versioned_child_fetcher(Box::new(move |parent_id, child_id| {
+                fetcher_clone(parent_id, child_id)
+            }));
+        } else if let Some(ref fetcher_arc) = self.child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
             harness.set_child_fetcher(Box::new(move |parent_id, child_id| {
                 fetcher_clone(parent_id, child_id)
             }));
+        }
+
+        // Set up key-based child fetcher if configured
+        if let Some(ref fetcher_arc) = self.key_based_child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            harness.set_key_based_child_fetcher(Box::new(
+                move |parent_id, child_id, key_type, key_bytes| {
+                    fetcher_clone(parent_id, child_id, key_type, key_bytes)
+                },
+            ));
+        }
+
+        if !self.address_aliases.is_empty() {
+            let mut versions = HashMap::new();
+            for (addr, ver) in &self.package_versions {
+                versions.insert(addr.to_hex_literal(), *ver);
+            }
+            harness.set_address_aliases_with_versions(
+                self.address_aliases.clone(),
+                versions,
+            );
         }
 
         // Preload dynamic field state from the environment.
@@ -1801,6 +1877,15 @@ impl SimulationEnvironment {
     pub fn advance_lamport_clock(&mut self) -> u64 {
         self.lamport_clock += 1;
         self.lamport_clock
+    }
+
+    /// Set the lamport clock to an explicit value.
+    ///
+    /// This is useful for deterministic transaction replay where you want the
+    /// executor's lamport timestamp to match on-chain semantics (typically
+    /// `max_input_version + 1`).
+    pub fn set_lamport_clock(&mut self, value: u64) {
+        self.lamport_clock = value;
     }
 
     /// Advance the epoch by a given amount.

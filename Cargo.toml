@@ -222,6 +222,10 @@ path = "examples/version_tracking_test.rs"
 name = "analyze_protocols"
 path = "examples/analyze_protocols.rs"
 
+[[example]]
+name = "walrus_checkpoint_replay"
+path = "examples/walrus_checkpoint_replay.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"

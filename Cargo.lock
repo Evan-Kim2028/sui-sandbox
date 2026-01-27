@@ -8085,6 +8085,7 @@ dependencies = [
  "prost-types 0.13.5",
  "serde",
  "serde_json",
+ "sui-protocol-config",
  "sui-types",
  "tokio",
  "tokio-stream",
