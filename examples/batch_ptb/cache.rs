@@ -441,6 +441,7 @@ impl CachedGrpcTransaction {
             inputs: self.inputs.iter().map(|i| i.to_grpc()).collect(),
             commands: self.commands.iter().map(|c| c.to_grpc()).collect(),
             status: self.status.clone(),
+            objects: vec![],
             execution_error: self.execution_error.as_ref().map(|e| e.to_grpc()),
             unchanged_loaded_runtime_objects: self.unchanged_loaded_runtime_objects.clone(),
             changed_objects: self.changed_objects.clone(),

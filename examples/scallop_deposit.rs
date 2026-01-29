@@ -44,8 +44,9 @@ mod common;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use common::{
-    create_dynamic_discovery_cache, create_enhanced_child_fetcher_with_cache,
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, prefetch_dynamic_fields,
+    build_replay_config_from_grpc, create_dynamic_discovery_cache,
+    create_enhanced_child_fetcher_with_cache, extract_dependencies_from_bytecode,
+    extract_package_ids_from_type, prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint,
 };
 use move_core_types::account_address::AccountAddress;
 use std::collections::HashMap;
@@ -58,7 +59,7 @@ use sui_sandbox_core::utilities::{
     normalize_address, GenericObjectPatcher, HistoricalVersionFinder, PackageModuleFetcher,
     SearchStrategy, VersionFinderConfig,
 };
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::VMHarness;
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcInput};
 
@@ -336,14 +337,26 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 3b: Prefetching dynamic fields recursively...");
 
-    let prefetched = prefetch_dynamic_fields(
-        &graphql,
-        &grpc,
-        &rt,
-        &historical_versions.clone().into_iter().collect(),
-        3,   // max_depth
-        200, // max_fields_per_object
-    );
+    let prefetched = if let Some(cp) = grpc_tx.checkpoint {
+        prefetch_dynamic_fields_at_checkpoint(
+            &graphql,
+            &grpc,
+            &rt,
+            &historical_versions.clone().into_iter().collect(),
+            3,   // max_depth
+            200, // max_fields_per_object
+            cp,
+        )
+    } else {
+        prefetch_dynamic_fields(
+            &graphql,
+            &grpc,
+            &rt,
+            &historical_versions.clone().into_iter().collect(),
+            3,   // max_depth
+            200, // max_fields_per_object
+        )
+    };
 
     println!(
         "   ✓ Discovered {} dynamic fields, fetched {} child objects",
@@ -1452,9 +1465,8 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
     let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
     println!("   Sender: 0x{}", hex::encode(sender_address.as_ref()));
 
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let mut config = build_replay_config_from_grpc(&rt, &grpc, &grpc_tx)?;
+    config = config.with_sender_address(sender_address);
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
     println!("   ✓ VM harness created");
@@ -1479,6 +1491,7 @@ fn replay_via_grpc_no_cache(tx_digest: &str) -> Result<bool> {
         historical_hashmap,
         prefetched,
         None, // Patcher not needed - fresh state is fetched
+        grpc_tx.checkpoint,
         Some(discovery_cache),
     );
 

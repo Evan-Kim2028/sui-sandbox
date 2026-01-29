@@ -28,7 +28,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use common::{extract_package_ids_from_type, parse_type_tag_simple};
+use common::{
+    build_replay_config_from_grpc, extract_package_ids_from_type, parse_type_tag_simple,
+};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
@@ -39,7 +41,7 @@ use sui_sandbox_core::utilities::{
     grpc_object_to_package_data, CallbackPackageFetcher, HistoricalPackageResolver,
     HistoricalStateReconstructor,
 };
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::VMHarness;
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcInput};
 
@@ -343,9 +345,8 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
     let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
 
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let mut config = build_replay_config_from_grpc(&rt, &grpc, &grpc_tx)?;
+    config = config.with_sender_address(sender_address);
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 

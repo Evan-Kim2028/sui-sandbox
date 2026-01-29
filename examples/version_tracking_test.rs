@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use common::extract_package_ids_from_type;
+use common::{build_replay_config_from_grpc, extract_package_ids_from_type};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
@@ -639,9 +639,8 @@ fn test_version_tracking(tx_digest: &str, tx_name: &str) -> Result<()> {
     let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
     println!("   Sender: 0x{}", hex::encode(sender_address.as_ref()));
 
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let mut config = build_replay_config_from_grpc(&rt, &grpc, &grpc_tx)?;
+    config = config.with_sender_address(sender_address);
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
     println!("   ✓ VM harness created");

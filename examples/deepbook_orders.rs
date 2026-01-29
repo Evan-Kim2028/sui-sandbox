@@ -55,18 +55,20 @@ mod common;
 use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
+use std::sync::Arc;
 
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::VMHarness;
 use sui_state_fetcher::{
     get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
 };
 
 use common::{
-    create_dynamic_discovery_cache, create_enhanced_child_fetcher_with_cache,
-    create_key_based_child_fetcher, prefetch_dynamic_fields, GraphQLClient,
+    build_cached_object_index, build_replay_config, create_dynamic_discovery_cache,
+    create_enhanced_child_fetcher_with_cache, create_key_based_child_fetcher,
+    prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint, GraphQLClient,
 };
 
 /// DeepBook cancel_order - uses main DeepBook package
@@ -139,8 +141,7 @@ fn main() -> Result<()> {
         );
         println!("  Match:        {}", if matches { "✓ YES" } else { "✗ NO" });
         if let Some(err) = &error_msg {
-            let truncated = if err.len() > 60 { &err[..60] } else { err };
-            println!("  Error:        {}...", truncated);
+            println!("  Error:        {}", err);
         }
         println!("  ══════════════════════════════════════════════════════════════");
 
@@ -251,14 +252,47 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let grpc_for_prefetch =
         rt.block_on(async { sui_transport::grpc::GrpcClient::mainnet().await })?;
 
-    let prefetched = prefetch_dynamic_fields(
+    let mut prefetched = if let Some(cp) = state.checkpoint {
+        prefetch_dynamic_fields_at_checkpoint(
+            &graphql,
+            &grpc_for_prefetch,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+            cp,
+        )
+    } else {
+        prefetch_dynamic_fields(
+            &graphql,
+            &grpc_for_prefetch,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+        )
+    };
+
+    // Prefetch epoch-keyed dynamic fields for DeepBook's historical data
+    let tx_epoch = state.epoch;
+    let epoch_fields_fetched = sui_prefetch::prefetch_epoch_keyed_fields(
         &graphql,
         &grpc_for_prefetch,
         &rt,
-        &historical_versions,
-        3,
-        200,
+        &mut prefetched,
+        tx_epoch,
+        10, // look back a few epochs for fee history
     );
+    if epoch_fields_fetched > 0 {
+        println!("   ✓ Prefetched {} epoch-keyed fields", epoch_fields_fetched);
+    }
+
+    if !prefetched.failed.is_empty() {
+        println!("   ! {} objects failed to fetch", prefetched.failed.len());
+        for (id, msg) in prefetched.failed.iter().take(3) {
+            println!("     - {}: {}", id, msg);
+        }
+    }
 
     println!(
         "   ✓ Discovered {} fields, fetched {} children",
@@ -270,11 +304,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 4: Creating VM harness...");
 
-    let sender_address = state.transaction.sender;
-
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let config = build_replay_config(&state)?;
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 
@@ -302,16 +332,24 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let child_fetcher = create_enhanced_child_fetcher_with_cache(
         grpc_for_fetcher,
-        graphql_for_fetcher,
+        graphql_for_fetcher.clone(),
         historical_versions.clone(),
         prefetched.clone(),
         Some(patcher),
-        Some(discovery_cache),
+        state.checkpoint,
+        Some(discovery_cache.clone()),
     );
     harness.set_child_fetcher(child_fetcher);
 
     // Also set up key-based child fetcher for package upgrade handling
-    let key_fetcher = create_key_based_child_fetcher(prefetched.clone());
+    let cached_index =
+        Arc::new(build_cached_object_index(&replay_data.objects, &replay_data.object_types));
+    let key_fetcher = create_key_based_child_fetcher(
+        prefetched.clone(),
+        Some(discovery_cache),
+        Some(graphql_for_fetcher.clone()),
+        Some(cached_index),
+    );
     harness.set_key_based_child_fetcher(key_fetcher);
     println!("   ✓ Child fetcher configured");
 
@@ -363,7 +401,14 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
             .or_insert(*version);
     }
 
-    let address_aliases = sui_sandbox_core::tx_replay::build_address_aliases_for_test(&cached);
+    let address_aliases = if replay_data.linkage_upgrades.is_empty() {
+        sui_sandbox_core::tx_replay::build_address_aliases_for_test(&cached)
+    } else {
+        sui_sandbox_core::tx_replay::build_comprehensive_address_aliases(
+            &cached,
+            &replay_data.linkage_upgrades,
+        )
+    };
     harness.set_address_aliases(address_aliases.clone());
 
     let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(
@@ -383,13 +428,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     );
     if !result.local_success {
         if let Some(err) = &result.local_error {
-            let err_str = err.to_string();
-            let display = if err_str.len() > 80 {
-                &err_str[..80]
-            } else {
-                &err_str
-            };
-            println!("  Error: {}...", display);
+            println!("  Error: {}", err);
         }
     }
 

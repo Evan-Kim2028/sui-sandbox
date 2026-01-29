@@ -25,25 +25,28 @@
 mod common;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
+use std::sync::Arc;
 
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
-use sui_sandbox_core::utilities::HistoricalStateReconstructor;
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::utilities::{GenericObjectPatcher, HistoricalStateReconstructor};
+use sui_sandbox_core::vm::VMHarness;
 use sui_state_fetcher::{
     get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
 
-use common::parse_type_tag;
+use common::{
+    build_cached_object_index, build_replay_config, create_dynamic_discovery_cache,
+    create_enhanced_child_fetcher_with_cache, create_key_based_child_fetcher,
+    prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint,
+};
 
 /// Transaction digest for a Cetus LEIA/SUI swap - succeeded on-chain
 const TX_DIGEST: &str = "7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp";
@@ -91,7 +94,11 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let provider: HistoricalStateProvider =
         rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
-    let state: ReplayState = rt.block_on(async { provider.fetch_replay_state(tx_digest).await })?;
+    let state: ReplayState = rt.block_on(async {
+        provider
+            .fetch_replay_state_with_config(tx_digest, false, 0, 0)
+            .await
+    })?;
 
     println!(
         "   ✓ Transaction: {} commands",
@@ -142,6 +149,35 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
         stats.high_confidence_predictions,
         stats.medium_confidence_predictions,
         stats.low_confidence_predictions
+    );
+
+    // =========================================================================
+    // Step 2b: Prefetch dynamic fields (checkpoint snapshot when available)
+    // =========================================================================
+    println!("\nStep 2b: Prefetching dynamic fields...");
+    let prefetched = if let Some(cp) = state.checkpoint {
+        prefetch_dynamic_fields_at_checkpoint(
+            &graphql_for_mm2,
+            &grpc_for_mm2,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+            cp,
+        )
+    } else {
+        prefetch_dynamic_fields(
+            &graphql_for_mm2,
+            &grpc_for_mm2,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+        )
+    };
+    println!(
+        "   ✓ Discovered {} fields, fetched {} children",
+        prefetched.total_discovered, prefetched.fetched_count
     );
 
     // =========================================================================
@@ -225,16 +261,18 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     println!("   ✓ Patched {} objects", patched_objects_b64.len());
 
+    // Build patcher for on-demand child objects
+    let mut patcher = GenericObjectPatcher::new();
+    patcher.add_modules(resolver.compiled_modules());
+    patcher.set_timestamp(tx_timestamp_ms);
+    patcher.add_default_rules();
+
     // =========================================================================
     // Step 5: Create VM harness
     // =========================================================================
     println!("\nStep 5: Creating VM harness...");
 
-    let sender_address = state.transaction.sender;
-
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let config = build_replay_config(&state)?;
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 
@@ -243,49 +281,31 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 6: Setting up child fetcher...");
 
-    let historical_arc = Arc::new(historical_versions.clone());
-    let patched_arc = Arc::new(patched_objects_b64.clone());
-    let types_arc = Arc::new(replay_data.object_types.clone());
+    let discovery_cache = create_dynamic_discovery_cache();
+    let grpc_for_fetcher = rt.block_on(async { GrpcClient::mainnet().await })?;
+    let graphql_for_fetcher = GraphQLClient::mainnet();
 
-    // Create child fetcher that uses patched objects and falls back to gRPC
-    let child_fetcher: ChildFetcherFn = Box::new({
-        let historical = historical_arc.clone();
-        let patched = patched_arc.clone();
-        let types = types_arc.clone();
-        move |_parent_id: AccountAddress, child_id: AccountAddress| {
-            let child_id_str = format!("0x{}", hex::encode(child_id.as_ref()));
-
-            // Try patched objects first
-            if let Some(b64) = patched.get(&child_id_str) {
-                if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                    if let Some(type_str) = types.get(&child_id_str) {
-                        if let Some(type_tag) = parse_type_tag(type_str) {
-                            return Some((type_tag, bcs));
-                        }
-                    }
-                }
-            }
-
-            // Fall back to gRPC
-            let version = historical.get(&child_id_str).copied();
-            let rt = tokio::runtime::Runtime::new().ok()?;
-            let grpc = rt.block_on(async { GrpcClient::mainnet().await }).ok()?;
-            let result =
-                rt.block_on(async { grpc.get_object_at_version(&child_id_str, version).await });
-
-            if let Ok(Some(obj)) = result {
-                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                    if let Some(type_tag) = parse_type_tag(type_str) {
-                        return Some((type_tag, bcs.clone()));
-                    }
-                }
-            }
-
-            None
-        }
-    });
+    let child_fetcher = create_enhanced_child_fetcher_with_cache(
+        grpc_for_fetcher,
+        graphql_for_fetcher.clone(),
+        historical_versions.clone(),
+        prefetched.clone(),
+        Some(patcher),
+        state.checkpoint,
+        Some(discovery_cache.clone()),
+    );
 
     harness.set_child_fetcher(child_fetcher);
+
+    let cached_index =
+        Arc::new(build_cached_object_index(&replay_data.objects, &replay_data.object_types));
+    let key_fetcher = create_key_based_child_fetcher(
+        prefetched.clone(),
+        Some(discovery_cache),
+        Some(graphql_for_fetcher.clone()),
+        Some(cached_index),
+    );
+    harness.set_key_based_child_fetcher(key_fetcher);
     println!("   ✓ Child fetcher configured");
 
     // =========================================================================
@@ -340,13 +360,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     );
     if !result.local_success {
         if let Some(err) = &result.local_error {
-            let err_str = err.to_string();
-            let display = if err_str.len() > 80 {
-                &err_str[..80]
-            } else {
-                &err_str
-            };
-            println!("  Error: {}...", display);
+            println!("  Error: {}", err);
         }
     }
 

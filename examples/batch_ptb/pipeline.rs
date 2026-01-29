@@ -22,6 +22,7 @@
 //! Use the `--compare` flag to run both strategies side-by-side and compare results.
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,9 +42,10 @@ use sui_sandbox_core::utilities::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type, is_framework_package,
     normalize_address, parse_type_tag, rewrite_type_tag,
 };
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
+use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
 /// Prefetch strategy for data fetching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +75,80 @@ fn extract_missing_package_from_error(error: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Build a replay-accurate SimulationConfig for a gRPC transaction.
+fn build_replay_config_for_tx(
+    rt: &tokio::runtime::Runtime,
+    grpc: &GrpcClient,
+    grpc_tx: &GrpcTransaction,
+    tx_timestamp_ms: u64,
+) -> Result<SimulationConfig> {
+    let tx_hash = SuiTransactionDigest::from_str(&grpc_tx.digest)
+        .map_err(|e| anyhow::anyhow!("Invalid transaction digest {}: {}", grpc_tx.digest, e))?
+        .into_inner();
+
+    let mut epoch = grpc_tx.epoch.unwrap_or(0);
+    if epoch == 0 {
+        if let Some(checkpoint) = grpc_tx.checkpoint {
+            let cp_result = rt.block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), grpc.get_checkpoint(checkpoint))
+                    .await
+            });
+            if let Ok(Ok(Some(cp))) = cp_result {
+                epoch = cp.epoch;
+            }
+        }
+    }
+
+    let mut protocol_version = 0u64;
+    let mut reference_gas_price: Option<u64> = None;
+    if epoch > 0 {
+        let ep_result = rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), grpc.get_epoch(Some(epoch))).await
+        });
+        if let Ok(Ok(Some(ep))) = ep_result {
+            if let Some(pv) = ep.protocol_version {
+                protocol_version = pv;
+            }
+            reference_gas_price = ep.reference_gas_price;
+        }
+    }
+
+    let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
+    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
+
+    let protocol_version = if protocol_version > 0 {
+        protocol_version
+    } else {
+        DEFAULT_PROTOCOL_VERSION
+    }
+    .min(DEFAULT_PROTOCOL_VERSION);
+
+    let mut config = SimulationConfig::default()
+        .with_sender_address(sender_address)
+        .with_epoch(epoch)
+        .with_protocol_version(protocol_version)
+        .with_tx_hash(tx_hash)
+        .with_tx_timestamp(tx_timestamp_ms);
+
+    if let Some(budget) = grpc_tx.gas_budget {
+        if budget > 0 {
+            config = config.with_gas_budget(Some(budget));
+        }
+    }
+
+    if let Some(price) = grpc_tx.gas_price {
+        if price > 0 {
+            config = config.with_gas_price(price);
+        }
+    }
+
+    if let Some(rgp) = reference_gas_price.or_else(|| grpc_tx.gas_price.filter(|p| *p > 0)) {
+        config = config.with_reference_gas_price(rgp);
+    }
+
+    Ok(config)
 }
 
 /// Statistics collected during batch processing.
@@ -1154,14 +1230,26 @@ fn process_with_legacy_prefetch(
     // =========================================================================
     // Prefetch dynamic fields
     // =========================================================================
-    let mut prefetched = sui_prefetch::prefetch_dynamic_fields(
-        graphql,
-        grpc,
-        rt,
-        &historical_versions,
-        6,   // max_depth (increased for deeply nested structures like DeepBook history)
-        200, // max_fields_per_object (increased for larger tables)
-    );
+    let mut prefetched = if let Some(cp) = grpc_tx.checkpoint {
+        sui_prefetch::prefetch_dynamic_fields_at_checkpoint(
+            graphql,
+            grpc,
+            rt,
+            &historical_versions,
+            6,   // max_depth (increased for deeply nested structures like DeepBook history)
+            200, // max_fields_per_object (increased for larger tables)
+            cp,
+        )
+    } else {
+        sui_prefetch::prefetch_dynamic_fields(
+            graphql,
+            grpc,
+            rt,
+            &historical_versions,
+            6,   // max_depth (increased for deeply nested structures like DeepBook history)
+            200, // max_fields_per_object (increased for larger tables)
+        )
+    };
 
     // Also prefetch epoch-keyed dynamic fields for DeepBook's historical data
     // This is essential for functions like `history::historic_maker_fee`
@@ -1533,13 +1621,8 @@ fn process_with_legacy_prefetch(
     let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
     let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
 
-    // Use with_tx_timestamp for frozen clock behavior (required for replay)
-    // and set the epoch from the transaction metadata
-    let tx_epoch = grpc_tx.epoch.unwrap_or(0);
-    let config = SimulationConfig::default()
-        .with_tx_timestamp(tx_timestamp_ms)
-        .with_epoch(tx_epoch)
-        .with_sender_address(sender_address);
+    let mut config = build_replay_config_for_tx(rt, grpc, grpc_tx, tx_timestamp_ms)?;
+    config = config.with_sender_address(sender_address);
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 
@@ -1853,7 +1936,7 @@ fn execute_replay(
 /// Inner execute replay function (without retry logic).
 #[allow(clippy::too_many_arguments)]
 fn execute_replay_inner(
-    _rt: &tokio::runtime::Runtime,
+    rt: &tokio::runtime::Runtime,
     grpc: &Arc<GrpcClient>,
     grpc_tx: &GrpcTransaction,
     objects: HashMap<String, String>,
@@ -1964,11 +2047,8 @@ fn execute_replay_inner(
     let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
     let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
 
-    let tx_epoch = grpc_tx.epoch.unwrap_or(0);
-    let config = SimulationConfig::default()
-        .with_tx_timestamp(tx_timestamp_ms)
-        .with_epoch(tx_epoch)
-        .with_sender_address(sender_address);
+    let mut config = build_replay_config_for_tx(rt, grpc, grpc_tx, tx_timestamp_ms)?;
+    config = config.with_sender_address(sender_address);
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 

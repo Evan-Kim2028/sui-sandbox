@@ -20,18 +20,20 @@ mod common;
 use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
+use std::sync::Arc;
 
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
-use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::VMHarness;
 use sui_state_fetcher::{
     get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
 };
 
 use common::{
-    create_dynamic_discovery_cache, create_enhanced_child_fetcher_with_cache,
-    create_key_based_child_fetcher, prefetch_dynamic_fields, GraphQLClient,
+    build_cached_object_index, build_replay_config, create_dynamic_discovery_cache,
+    create_enhanced_child_fetcher_with_cache, create_key_based_child_fetcher,
+    prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint, GraphQLClient,
 };
 
 /// DeepBook flash loan arbitrage - failed on-chain (insufficient output)
@@ -82,7 +84,11 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let provider: HistoricalStateProvider =
         rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
-    let state: ReplayState = rt.block_on(async { provider.fetch_replay_state(tx_digest).await })?;
+    let state: ReplayState = rt.block_on(async {
+        provider
+            .fetch_replay_state_with_config(tx_digest, false, 0, 0)
+            .await
+    })?;
 
     println!(
         "   ✓ Transaction: {} commands",
@@ -137,11 +143,7 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     // =========================================================================
     println!("\nStep 3: Creating VM harness...");
 
-    let sender_address = state.transaction.sender;
-
-    let config = SimulationConfig::default()
-        .with_clock_base(tx_timestamp_ms)
-        .with_sender_address(sender_address);
+    let config = build_replay_config(&state)?;
 
     let mut harness = VMHarness::with_config(&resolver, false, config)?;
 
@@ -154,14 +156,26 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     let grpc_for_prefetch =
         rt.block_on(async { sui_transport::grpc::GrpcClient::mainnet().await })?;
 
-    let prefetched = prefetch_dynamic_fields(
-        &graphql,
-        &grpc_for_prefetch,
-        &rt,
-        &historical_versions,
-        3,
-        200,
-    );
+    let prefetched = if let Some(cp) = state.checkpoint {
+        prefetch_dynamic_fields_at_checkpoint(
+            &graphql,
+            &grpc_for_prefetch,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+            cp,
+        )
+    } else {
+        prefetch_dynamic_fields(
+            &graphql,
+            &grpc_for_prefetch,
+            &rt,
+            &historical_versions,
+            3,
+            200,
+        )
+    };
 
     println!(
         "   ✓ Discovered {} fields, fetched {} children",
@@ -187,16 +201,24 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let child_fetcher = create_enhanced_child_fetcher_with_cache(
         grpc_for_fetcher,
-        graphql_for_fetcher,
+        graphql_for_fetcher.clone(),
         historical_versions.clone(),
         prefetched.clone(),
         Some(patcher),
-        Some(discovery_cache),
+        state.checkpoint,
+        Some(discovery_cache.clone()),
     );
     harness.set_child_fetcher(child_fetcher);
 
     // Also set up key-based child fetcher for package upgrade handling
-    let key_fetcher = create_key_based_child_fetcher(prefetched.clone());
+    let cached_index =
+        Arc::new(build_cached_object_index(&replay_data.objects, &replay_data.object_types));
+    let key_fetcher = create_key_based_child_fetcher(
+        prefetched.clone(),
+        Some(discovery_cache),
+        Some(graphql_for_fetcher.clone()),
+        Some(cached_index),
+    );
     harness.set_key_based_child_fetcher(key_fetcher);
     println!("   ✓ Child fetcher configured with enhanced fallbacks");
 
