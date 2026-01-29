@@ -19,6 +19,7 @@
 pub mod cache;
 pub mod provider;
 pub mod replay;
+pub mod sparse_replay;
 pub mod types;
 pub mod vm_integration;
 
@@ -27,5 +28,10 @@ pub use cache::VersionedCache;
 pub use provider::HistoricalStateProvider;
 pub use replay::{
     build_address_aliases, get_historical_versions, to_raw_objects, to_replay_data, ReplayData,
+};
+pub use sparse_replay::{
+    DynamicFieldFailure, ObjectFetchOutcome, ObjectFetchRecord, OnDemandFetchSummary,
+    PackageFetchOutcome, PackageFetchRecord, SparseReplayOutcome, SparseReplayPolicy,
+    SparseReplayReport, SparseReplaySummary,
 };
 pub use types::{FetchStats, ObjectID, PackageData, ReplayState, VersionedObject};
