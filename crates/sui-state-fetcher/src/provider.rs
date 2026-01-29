@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
+use tracing::debug;
 
 use sui_prefetch::grpc_to_fetched_transaction;
 use sui_resolver::address::normalize_address;
@@ -173,11 +174,178 @@ impl HistoricalStateProvider {
         let start = std::time::Instant::now();
 
         // 1. Fetch transaction via gRPC (has unchanged_loaded_runtime_objects)
+        let tx_start = std::time::Instant::now();
         let grpc_tx = self
             .grpc
             .get_transaction(digest)
             .await?
             .ok_or_else(|| anyhow!("Transaction not found: {}", digest))?;
+        debug!(
+            digest = digest,
+            elapsed_ms = tx_start.elapsed().as_millis(),
+            "fetched transaction via gRPC"
+        );
+        if std::env::var("SUI_DUMP_TX_OBJECTS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "[tx_objects] digest={} objects_len={}",
+                digest,
+                grpc_tx.objects.len()
+            );
+        }
+
+        // Try to hydrate unchanged_* objects from the checkpoint payload (which includes
+        // full transaction data). Merge these with whatever we got from gRPC.
+        let mut unchanged_loaded_runtime_objects = grpc_tx.unchanged_loaded_runtime_objects.clone();
+        let mut unchanged_consensus_objects = grpc_tx.unchanged_consensus_objects.clone();
+
+        let checkpoint_data = if let Some(seq) = grpc_tx.checkpoint {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.grpc.get_checkpoint(seq),
+            )
+            .await
+            {
+                Ok(Ok(Some(cp))) => {
+                    if std::env::var("SUI_DUMP_TX_OBJECTS")
+                        .ok()
+                        .as_deref()
+                        == Some("1")
+                    {
+                        eprintln!(
+                            "[checkpoint_objects] digest={} checkpoint={} objects_len={}",
+                            digest,
+                            seq,
+                            cp.objects.len()
+                        );
+                    }
+                    if let Ok(target_id) = std::env::var("SUI_CHECK_OBJECT_ID") {
+                        let target_norm = normalize_address(&target_id);
+                        if let Some(found) = cp.objects.iter().find(|o| {
+                            !o.object_id.is_empty()
+                                && normalize_address(&o.object_id) == target_norm
+                        }) {
+                            eprintln!(
+                                "[checkpoint_objects] digest={} target={} version={}",
+                                digest, target_norm, found.version
+                            );
+                        }
+                    }
+                    Some(cp)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(cp) = checkpoint_data.as_ref() {
+            if let Some(tx) = cp
+                .transactions
+                .iter()
+                .find(|tx| tx.digest == grpc_tx.digest)
+            {
+                if !tx.unchanged_loaded_runtime_objects.is_empty() {
+                    unchanged_loaded_runtime_objects
+                        .extend(tx.unchanged_loaded_runtime_objects.clone());
+                }
+                if !tx.unchanged_consensus_objects.is_empty() {
+                    unchanged_consensus_objects.extend(tx.unchanged_consensus_objects.clone());
+                }
+            }
+        }
+
+        if std::env::var("SUI_DUMP_RUNTIME_OBJECTS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "[runtime_objects] digest={} unchanged_loaded_runtime_objects={} unchanged_consensus_objects={}",
+                digest,
+                unchanged_loaded_runtime_objects.len(),
+                unchanged_consensus_objects.len()
+            );
+        }
+
+        if let Ok(target_id) = std::env::var("SUI_CHECK_OBJECT_ID") {
+            let target_norm = normalize_address(&target_id);
+            let found_unchanged = unchanged_loaded_runtime_objects
+                .iter()
+                .find(|(id, _)| normalize_address(id) == target_norm)
+                .map(|(_, v)| *v);
+            let found_changed = grpc_tx
+                .changed_objects
+                .iter()
+                .find(|(id, _)| normalize_address(id) == target_norm)
+                .map(|(_, v)| *v);
+            let found_consensus = unchanged_consensus_objects
+                .iter()
+                .find(|(id, _)| normalize_address(id) == target_norm)
+                .map(|(_, v)| *v);
+            let found_input = grpc_tx
+                .inputs
+                .iter()
+                .filter_map(|input| extract_object_id_and_version(input))
+                .find(|(id, _)| normalize_address(&format!("0x{}", hex::encode(id.as_ref()))) == target_norm)
+                .map(|(_, v)| v);
+            if found_unchanged.is_some() || found_changed.is_some() {
+                eprintln!(
+                    "[runtime_objects] digest={} target={} unchanged_version={:?} changed_input_version={:?} consensus_version={:?} input_version={:?}",
+                    digest,
+                    target_norm,
+                    found_unchanged,
+                    found_changed,
+                    found_consensus,
+                    found_input
+                );
+            } else if std::env::var("SUI_DUMP_RUNTIME_OBJECTS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "[runtime_objects] digest={} target={} not found in unchanged/changed/consensus/input objects",
+                    digest, target_norm
+                );
+            }
+        }
+
+        // 1b. Resolve epoch/protocol metadata via checkpoint if available
+        let mut epoch = grpc_tx.epoch.unwrap_or(0);
+        let mut protocol_version = 0u64;
+        let mut reference_gas_price: Option<u64> = None;
+
+        if epoch == 0 {
+            if let Some(cp) = checkpoint_data.as_ref() {
+                epoch = cp.epoch;
+            }
+        }
+
+        if epoch > 0 {
+            if let Ok(Ok(Some(ep))) = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.grpc.get_epoch(Some(epoch)),
+            )
+            .await
+            {
+                if let Some(pv) = ep.protocol_version {
+                    protocol_version = pv;
+                }
+                reference_gas_price = ep.reference_gas_price;
+            }
+        }
+
+        debug!(
+            digest = digest,
+            epoch = epoch,
+            protocol_version = protocol_version,
+            reference_gas_price = reference_gas_price.unwrap_or(0),
+            "resolved epoch metadata"
+        );
 
         // 2. Collect all object IDs and versions we need
         let mut historical_versions: HashMap<String, u64> = HashMap::new();
@@ -191,7 +359,7 @@ impl HistoricalStateProvider {
         }
 
         // From unchanged_loaded_runtime_objects (critical for replay!)
-        for (id_str, version) in &grpc_tx.unchanged_loaded_runtime_objects {
+        for (id_str, version) in &unchanged_loaded_runtime_objects {
             let normalized = normalize_address(id_str);
             historical_versions.insert(normalized, *version);
         }
@@ -202,12 +370,30 @@ impl HistoricalStateProvider {
             historical_versions.insert(normalized, *version);
         }
 
+        // From unchanged_consensus_objects (shared objects read at their actual versions)
+        for (id_str, version) in &unchanged_consensus_objects {
+            let normalized = normalize_address(id_str);
+            historical_versions.insert(normalized, *version);
+        }
+
         // 3. Prefetch dynamic field children if enabled
         let mut prefetched_children: HashMap<ObjectID, VersionedObject> = HashMap::new();
         if prefetch_dynamic_fields {
+            let df_start = std::time::Instant::now();
             let prefetched = self
-                .prefetch_dynamic_fields_internal(&historical_versions, df_depth, df_limit)
+                .prefetch_dynamic_fields_internal(
+                    &historical_versions,
+                    df_depth,
+                    df_limit,
+                    grpc_tx.checkpoint,
+                )
                 .await;
+            debug!(
+                digest = digest,
+                elapsed_ms = df_start.elapsed().as_millis(),
+                children = prefetched.len(),
+                "prefetched dynamic field children"
+            );
 
             // Add prefetched children to our collection
             for (id_str, version, type_str, bcs) in prefetched {
@@ -239,7 +425,54 @@ impl HistoricalStateProvider {
             .collect();
 
         // 5. Fetch objects (cache-first, then gRPC), skipping those we already prefetched
+        let obj_start = std::time::Instant::now();
         let mut objects = self.fetch_objects_versioned(&object_requests).await?;
+        debug!(
+            digest = digest,
+            elapsed_ms = obj_start.elapsed().as_millis(),
+            requested = object_requests.len(),
+            fetched = objects.len(),
+            "fetched versioned objects"
+        );
+
+        // Merge objects bundled with the transaction payload (if any).
+        if !grpc_tx.objects.is_empty() {
+            let mut added = 0usize;
+            for grpc_obj in &grpc_tx.objects {
+                let id = match parse_object_id(&grpc_obj.object_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                if objects.contains_key(&id) || grpc_obj.bcs.is_none() {
+                    continue;
+                }
+                if let Ok(obj) = grpc_object_to_versioned(grpc_obj, id, grpc_obj.version) {
+                    objects.insert(id, obj);
+                    added += 1;
+                }
+            }
+            debug!(digest = digest, added = added, "added transaction objects");
+        }
+
+        // Merge in dynamic field objects included in the checkpoint payload.
+        // These are historical and help fill gaps when GraphQL snapshots are unavailable.
+        if let Some(cp) = checkpoint_data.as_ref() {
+            let mut added = 0usize;
+            for grpc_obj in &cp.objects {
+                let id = match parse_object_id(&grpc_obj.object_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                if objects.contains_key(&id) || grpc_obj.bcs.is_none() {
+                    continue;
+                }
+                if let Ok(obj) = grpc_object_to_versioned(grpc_obj, id, grpc_obj.version) {
+                    objects.insert(id, obj);
+                    added += 1;
+                }
+            }
+            debug!(digest = digest, added = added, "added checkpoint dynamic field objects");
+        }
 
         // Merge prefetched children (they take precedence since they have BCS data)
         for (id, obj) in prefetched_children {
@@ -263,19 +496,62 @@ impl HistoricalStateProvider {
 
         // 7. Fetch packages (cache-first, then GraphQL with linkage resolution)
         let package_ids_vec: Vec<_> = package_ids.into_iter().collect();
-        let packages = self.fetch_packages_with_deps(&package_ids_vec).await?;
+
+        // Build package version hints from historical versions (if present)
+        let mut package_versions: HashMap<AccountAddress, u64> = HashMap::new();
+        for pkg_id in &package_ids_vec {
+            let pkg_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
+            if let Some(ver) = historical_versions.get(&normalize_address(&pkg_str)) {
+                package_versions.insert(*pkg_id, *ver);
+            }
+        }
+
+        // If any object fetch fell back to a different version than requested,
+        // avoid version-pinning packages to reduce layout mismatches.
+        let used_non_historical = object_requests.iter().any(|(id, ver)| {
+            objects
+                .get(id)
+                .map(|obj| obj.version != *ver)
+                .unwrap_or(true)
+        });
+        let package_versions_opt = if used_non_historical {
+            None
+        } else {
+            Some(&package_versions)
+        };
+
+        let pkg_start = std::time::Instant::now();
+        let packages = self
+            .fetch_packages_with_deps(
+                &package_ids_vec,
+                package_versions_opt,
+                grpc_tx.checkpoint,
+            )
+            .await?;
+        debug!(
+            digest = digest,
+            elapsed_ms = pkg_start.elapsed().as_millis(),
+            requested = package_ids_vec.len(),
+            fetched = packages.len(),
+            "fetched packages"
+        );
 
         // 8. Convert to FetchedTransaction format
         let transaction = grpc_to_fetched_transaction(&grpc_tx)?;
 
-        let _fetch_time_ms = start.elapsed().as_millis() as u64;
+        debug!(
+            digest = digest,
+            elapsed_ms = start.elapsed().as_millis(),
+            "completed replay state fetch"
+        );
 
         Ok(ReplayState {
             transaction,
             objects,
             packages,
-            protocol_version: 0, // TODO: get from checkpoint/epoch info
-            epoch: 0,            // TODO: get from checkpoint/epoch info
+            protocol_version,
+            epoch,
+            reference_gas_price,
             checkpoint: grpc_tx.checkpoint,
         })
     }
@@ -288,6 +564,7 @@ impl HistoricalStateProvider {
         historical_versions: &HashMap<String, u64>,
         max_depth: usize,
         limit_per_parent: usize,
+        checkpoint: Option<u64>,
     ) -> Vec<(String, u64, String, Vec<u8>)> {
         use base64::Engine;
 
@@ -295,29 +572,81 @@ impl HistoricalStateProvider {
         let mut visited: HashSet<String> = HashSet::new();
         let mut to_process: Vec<(String, usize)> =
             historical_versions.keys().map(|k| (k.clone(), 0)).collect();
+        let max_lamport_version = historical_versions.values().copied().max().unwrap_or(0);
+        let max_secs = std::env::var("SUI_STATE_DF_PREFETCH_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30);
+        let start = std::time::Instant::now();
 
         while let Some((parent_id, depth)) = to_process.pop() {
+            if start.elapsed().as_secs() > max_secs {
+                eprintln!(
+                    "[state_prefetch_df] Timeout after {}s (fetched={})",
+                    max_secs,
+                    result.len()
+                );
+                break;
+            }
             if depth >= max_depth || visited.contains(&parent_id) {
                 continue;
             }
             visited.insert(parent_id.clone());
 
-            // Fetch dynamic fields for this parent
-            if let Ok(fields) = self
-                .graphql
-                .fetch_dynamic_fields(&parent_id, limit_per_parent)
-            {
+            // Fetch dynamic fields for this parent (checkpoint snapshot if available)
+            let (fields, snapshot_used) = match checkpoint {
+                Some(cp) => match self
+                    .graphql
+                    .fetch_dynamic_fields_at_checkpoint(&parent_id, limit_per_parent, cp)
+                {
+                    Ok(fields) => (fields, true),
+                    Err(_) => match self.graphql.fetch_dynamic_fields(&parent_id, limit_per_parent)
+                    {
+                        Ok(fields) => (fields, false),
+                        Err(_) => continue,
+                    },
+                },
+                None => match self.graphql.fetch_dynamic_fields(&parent_id, limit_per_parent) {
+                    Ok(fields) => (fields, false),
+                    Err(_) => continue,
+                },
+            };
+            if !fields.is_empty() {
                 for df in fields {
+                    if start.elapsed().as_secs() > max_secs {
+                        eprintln!(
+                            "[state_prefetch_df] Timeout after {}s (fetched={})",
+                            max_secs,
+                            result.len()
+                        );
+                        return result;
+                    }
                     if let Some(child_id) = &df.object_id {
                         let child_normalized = normalize_address(child_id);
 
-                        // Get version - try gRPC first
-                        let version = if let Some(v) = historical_versions.get(&child_normalized) {
-                            *v
-                        } else if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await
+                        // Get version - prefer historical versions, then GraphQL, then gRPC latest
+                        let version_opt = if let Some(v) = historical_versions.get(&child_normalized)
                         {
-                            obj.version
+                            Some(*v)
+                        } else if let Some(v) = df.version {
+                            if snapshot_used || v <= max_lamport_version {
+                                Some(v)
+                            } else {
+                                continue;
+                            }
+                        } else if let Ok(Some(obj)) =
+                            self.grpc.get_object(&child_normalized).await
+                        {
+                            if snapshot_used || obj.version <= max_lamport_version {
+                                Some(obj.version)
+                            } else {
+                                continue;
+                            }
                         } else {
+                            None
+                        };
+
+                        let Some(version) = version_opt else {
                             continue;
                         };
 
@@ -331,7 +660,47 @@ impl HistoricalStateProvider {
                                 } else {
                                     continue;
                                 }
+                            } else if let Ok(obj) =
+                                self.graphql.fetch_object_at_version(&child_normalized, version)
+                            {
+                                if let (Some(ts), Some(b64)) = (obj.type_string, obj.bcs_base64) {
+                                    if let Ok(decoded) =
+                                        base64::engine::general_purpose::STANDARD.decode(&b64)
+                                    {
+                                        (ts, decoded)
+                                    } else {
+                                        continue;
+                                    }
+                                } else {
+                                    continue;
+                                }
+                            } else if let Some(cp) = checkpoint {
+                                if let Ok(obj) =
+                                    self.graphql.fetch_object_at_checkpoint(&child_normalized, cp)
+                                {
+                                    if obj.version != version {
+                                        continue;
+                                    }
+                                    if let (Some(ts), Some(b64)) =
+                                        (obj.type_string, obj.bcs_base64)
+                                    {
+                                        if let Ok(decoded) =
+                                            base64::engine::general_purpose::STANDARD.decode(&b64)
+                                        {
+                                            (ts, decoded)
+                                        } else {
+                                            continue;
+                                        }
+                                    } else {
+                                        continue;
+                                    }
+                                } else {
+                                    continue;
+                                }
                             } else if let Ok(obj) = self.graphql.fetch_object(&child_normalized) {
+                                if obj.version != version {
+                                    continue;
+                                }
                                 if let (Some(ts), Some(b64)) = (obj.type_string, obj.bcs_base64) {
                                     if let Ok(decoded) =
                                         base64::engine::general_purpose::STANDARD.decode(&b64)
@@ -406,7 +775,11 @@ impl HistoricalStateProvider {
                 Ok(None) | Err(_) => {
                     // gRPC failed - try GraphQL for current version as fallback
                     // This is necessary when historical versions are pruned from the archive
-                    if let Ok(gql_obj) = self.graphql.fetch_object(&id_str) {
+                    let gql_obj = self
+                        .graphql
+                        .fetch_object_at_version(&id_str, *version)
+                        .or_else(|_| self.graphql.fetch_object(&id_str));
+                    if let Ok(gql_obj) = gql_obj {
                         if let (Some(type_str), Some(bcs_b64)) =
                             (gql_obj.type_string, gql_obj.bcs_base64)
                         {
@@ -443,7 +816,10 @@ impl HistoricalStateProvider {
     pub async fn fetch_packages_with_deps(
         &self,
         package_ids: &[AccountAddress],
+        package_versions: Option<&HashMap<AccountAddress, u64>>,
+        checkpoint: Option<u64>,
     ) -> Result<HashMap<AccountAddress, PackageData>> {
+        use base64::Engine;
         let mut result = HashMap::new();
         let mut to_process: Vec<AccountAddress> = package_ids.to_vec();
         let mut processed: HashSet<AccountAddress> = HashSet::new();
@@ -454,8 +830,21 @@ impl HistoricalStateProvider {
             }
             processed.insert(pkg_id);
 
-            // Check cache first (latest version)
-            if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
+            let version_hint = package_versions.and_then(|m| m.get(&pkg_id).copied());
+
+            // Check cache first (version-aware if possible)
+            if let Some(ver) = version_hint {
+                if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
+                    // Add dependencies to process queue
+                    for dep_id in pkg.linkage.values() {
+                        if !processed.contains(dep_id) {
+                            to_process.push(*dep_id);
+                        }
+                    }
+                    result.insert(pkg_id, pkg);
+                    continue;
+                }
+            } else if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
                 // Add dependencies to process queue
                 for dep_id in pkg.linkage.values() {
                     if !processed.contains(dep_id) {
@@ -468,7 +857,13 @@ impl HistoricalStateProvider {
 
             // Fetch via gRPC (has linkage table, unlike GraphQL)
             let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
-            match self.grpc.get_object(&pkg_id_str).await {
+            let grpc_result = if let Some(ver) = version_hint {
+                self.grpc.get_object_at_version(&pkg_id_str, Some(ver)).await
+            } else {
+                self.grpc.get_object(&pkg_id_str).await
+            };
+
+            match grpc_result {
                 Ok(Some(grpc_obj)) => {
                     let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
 
@@ -483,9 +878,65 @@ impl HistoricalStateProvider {
                     result.insert(pkg_id, pkg);
                 }
                 Ok(None) => {
+                    // If versioned fetch failed, fall back to latest
+                    if version_hint.is_some() {
+                        if let Ok(Some(grpc_obj)) = self.grpc.get_object(&pkg_id_str).await {
+                            let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
+                            for dep_id in pkg.linkage.values() {
+                                if !processed.contains(dep_id) {
+                                    to_process.push(*dep_id);
+                                }
+                            }
+                            self.cache.put_package(pkg.clone());
+                            result.insert(pkg_id, pkg);
+                            continue;
+                        }
+                    }
                     eprintln!("Warning: Package not found: {}", pkg_id_str);
                 }
                 Err(e) => {
+                    // If versioned fetch failed, fall back to latest
+                    if version_hint.is_some() {
+                        if let Ok(Some(grpc_obj)) = self.grpc.get_object(&pkg_id_str).await {
+                            let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
+                            for dep_id in pkg.linkage.values() {
+                                if !processed.contains(dep_id) {
+                                    to_process.push(*dep_id);
+                                }
+                            }
+                            self.cache.put_package(pkg.clone());
+                            result.insert(pkg_id, pkg);
+                            continue;
+                        }
+                    }
+                    // Try GraphQL checkpoint snapshot as fallback
+                    if let Some(cp) = checkpoint {
+                        if let Ok(pkg) =
+                            self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp)
+                        {
+                            let pkg_data = PackageData {
+                                address: pkg_id,
+                                version: pkg.version,
+                                modules: pkg
+                                    .modules
+                                    .iter()
+                                    .filter_map(|m| {
+                                        m.bytecode_base64.as_ref().and_then(|b64| {
+                                            base64::engine::general_purpose::STANDARD
+                                                .decode(b64)
+                                                .ok()
+                                                .map(|bytes| (m.name.clone(), bytes))
+                                        })
+                                    })
+                                    .collect(),
+                                linkage: HashMap::new(),
+                                original_id: None,
+                            };
+                            self.cache.put_package(pkg_data.clone());
+                            result.insert(pkg_id, pkg_data);
+                            continue;
+                        }
+                    }
                     eprintln!("Warning: Failed to fetch package {}: {}", pkg_id_str, e);
                 }
             }

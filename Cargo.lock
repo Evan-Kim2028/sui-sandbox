@@ -8571,6 +8571,7 @@ dependencies = [
  "sui-transport",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

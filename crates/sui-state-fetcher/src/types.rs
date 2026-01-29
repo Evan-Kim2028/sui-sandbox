@@ -33,6 +33,9 @@ pub struct ReplayState {
     /// Epoch number.
     pub epoch: u64,
 
+    /// Reference gas price for the epoch (if available).
+    pub reference_gas_price: Option<u64>,
+
     /// Checkpoint that included this transaction.
     pub checkpoint: Option<u64>,
 }

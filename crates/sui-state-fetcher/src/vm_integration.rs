@@ -178,6 +178,7 @@ mod tests {
             packages,
             protocol_version: 0,
             epoch: 0,
+            reference_gas_price: None,
             checkpoint: None,
         };
 
