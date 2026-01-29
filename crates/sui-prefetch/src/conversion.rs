@@ -365,6 +365,7 @@ mod tests {
                 arguments: vec![GrpcArgument::Input(0)],
             }],
             status: Some("success".to_string()),
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![],
             changed_objects: vec![],
@@ -396,6 +397,7 @@ mod tests {
             inputs: vec![],
             commands: vec![],
             status: Some("failure".to_string()),
+            objects: vec![],
             execution_error: Some(sui_transport::grpc::GrpcExecutionError {
                 description: Some("Out of gas".to_string()),
                 command: Some(0),

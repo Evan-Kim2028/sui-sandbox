@@ -400,6 +400,29 @@ pub fn prefetch_dynamic_fields(
     )
 }
 
+/// Prefetch dynamic fields using a checkpoint snapshot when available.
+pub fn prefetch_dynamic_fields_at_checkpoint(
+    graphql: &sui_transport::graphql::GraphQLClient,
+    grpc: &GrpcClient,
+    rt: &tokio::runtime::Runtime,
+    historical_versions: &HashMap<String, u64>,
+    max_depth: usize,
+    max_fields_per_object: usize,
+    checkpoint: u64,
+) -> PrefetchedDynamicFields {
+    let max_lamport_version = historical_versions.values().copied().max().unwrap_or(0);
+    prefetch_dynamic_fields_with_version_bound_internal(
+        graphql,
+        grpc,
+        rt,
+        historical_versions,
+        max_depth,
+        max_fields_per_object,
+        max_lamport_version,
+        Some(checkpoint),
+    )
+}
+
 /// Prefetch dynamic fields with an explicit version bound.
 ///
 /// For children NOT in `historical_versions`, checks if their current version
@@ -415,7 +438,30 @@ pub fn prefetch_dynamic_fields_with_version_bound(
     max_fields_per_object: usize,
     max_lamport_version: u64,
 ) -> PrefetchedDynamicFields {
+    prefetch_dynamic_fields_with_version_bound_internal(
+        graphql,
+        grpc,
+        rt,
+        historical_versions,
+        max_depth,
+        max_fields_per_object,
+        max_lamport_version,
+        None,
+    )
+}
+
+fn prefetch_dynamic_fields_with_version_bound_internal(
+    graphql: &sui_transport::graphql::GraphQLClient,
+    grpc: &GrpcClient,
+    rt: &tokio::runtime::Runtime,
+    historical_versions: &HashMap<String, u64>,
+    max_depth: usize,
+    max_fields_per_object: usize,
+    max_lamport_version: u64,
+    checkpoint: Option<u64>,
+) -> PrefetchedDynamicFields {
     use base64::Engine;
+    use std::time::{Duration, Instant};
 
     let mut result = PrefetchedDynamicFields::default();
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -424,6 +470,12 @@ pub fn prefetch_dynamic_fields_with_version_bound(
         .map(|id| (id.clone(), 0))
         .collect();
 
+    let max_secs = std::env::var("SUI_DF_PREFETCH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+    let start = Instant::now();
+
     // Helper to normalize address for consistent lookups
     fn normalize_addr(addr: &str) -> String {
         let hex = addr.strip_prefix("0x").unwrap_or(addr);
@@ -431,16 +483,37 @@ pub fn prefetch_dynamic_fields_with_version_bound(
     }
 
     while let Some((parent_id, depth)) = to_visit.pop() {
+        if start.elapsed() > Duration::from_secs(max_secs) {
+            eprintln!(
+                "[prefetch_df] Timeout after {}s (discovered={}, fetched={})",
+                max_secs, result.total_discovered, result.fetched_count
+            );
+            break;
+        }
+
         // Skip if already visited or too deep
         if visited.contains(&parent_id) || depth > max_depth {
             continue;
         }
         visited.insert(parent_id.clone());
 
-        // Fetch dynamic fields for this object
-        let dfs = match graphql.fetch_dynamic_fields(&parent_id, max_fields_per_object) {
-            Ok(fields) => fields,
-            Err(_) => continue, // Object might not have dynamic fields
+        // Fetch dynamic fields for this object (checkpoint snapshot if available)
+        let (dfs, snapshot_used) = match checkpoint {
+            Some(cp) => match graphql.fetch_dynamic_fields_at_checkpoint(
+                &parent_id,
+                max_fields_per_object,
+                cp,
+            ) {
+                Ok(fields) => (fields, true),
+                Err(_) => match graphql.fetch_dynamic_fields(&parent_id, max_fields_per_object) {
+                    Ok(fields) => (fields, false),
+                    Err(_) => continue,
+                },
+            },
+            None => match graphql.fetch_dynamic_fields(&parent_id, max_fields_per_object) {
+                Ok(fields) => (fields, false),
+                Err(_) => continue,
+            },
         };
 
         let normalized_parent = normalize_addr(&parent_id);
@@ -454,6 +527,13 @@ pub fn prefetch_dynamic_fields_with_version_bound(
             );
         }
         for df in dfs {
+            if start.elapsed() > Duration::from_secs(max_secs) {
+                eprintln!(
+                    "[prefetch_df] Timeout after {}s (discovered={}, fetched={})",
+                    max_secs, result.total_discovered, result.fetched_count
+                );
+                return result;
+            }
             result.total_discovered += 1;
 
             // Get the child object ID (the dynamic field wrapper object).
@@ -491,11 +571,11 @@ pub fn prefetch_dynamic_fields_with_version_bound(
             }
 
             // Get version - prefer historical if known, otherwise try to validate current version
-            let version = if let Some(hist_ver) = historical_versions.get(&child_id).copied() {
-                hist_ver
+            let version_opt = if let Some(hist_ver) = historical_versions.get(&child_id).copied() {
+                Some(hist_ver)
             } else if let Some(current_ver) = df.version {
                 // Child is NOT in historical_versions - check if current version is valid
-                if current_ver <= max_lamport_version {
+                if snapshot_used || current_ver <= max_lamport_version {
                     // Object hasn't been modified since the transaction, safe to use
                     eprintln!(
                         "[prefetch_df] Child {} not in effects, using current version {} (valid: <= {})",
@@ -503,7 +583,7 @@ pub fn prefetch_dynamic_fields_with_version_bound(
                         current_ver,
                         max_lamport_version
                     );
-                    current_ver
+                    Some(current_ver)
                 } else {
                     // Object was modified after the transaction - we can't use current version!
                     // For now, skip this object with a warning
@@ -516,13 +596,16 @@ pub fn prefetch_dynamic_fields_with_version_bound(
                     continue;
                 }
             } else {
-                // No version info at all, use 0 (will likely fail)
-                0
+                None
             };
 
-            // Try to fetch the full object BCS
-            let fetch_result =
-                rt.block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await });
+            // Try to fetch the full object BCS from gRPC only when we have a known version
+            let fetch_result = match version_opt {
+                Some(version) => {
+                    rt.block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await })
+                }
+                None => Ok(None),
+            };
 
             // Helper closure to store the child data
             let store_child = |result: &mut PrefetchedDynamicFields,
@@ -579,8 +662,33 @@ pub fn prefetch_dynamic_fields_with_version_bound(
                     }
                 }
                 Ok(None) | Err(_) => {
-                    // Try GraphQL fallback for current version
-                    if let Ok(gql_obj) = graphql.fetch_object(&child_id) {
+                    let mut gql_obj_opt = None;
+                    let mut gql_snapshot_used = false;
+
+                    if let Some(expected_version) = version_opt {
+                        gql_obj_opt =
+                            graphql.fetch_object_at_version(&child_id, expected_version).ok();
+                    } else if let Some(cp) = checkpoint {
+                        if let Ok(obj) = graphql.fetch_object_at_checkpoint(&child_id, cp) {
+                            gql_obj_opt = Some(obj);
+                            gql_snapshot_used = true;
+                        }
+                    }
+
+                    if gql_obj_opt.is_none() {
+                        gql_obj_opt = graphql.fetch_object(&child_id).ok();
+                    }
+
+                    if let Some(gql_obj) = gql_obj_opt {
+                        // Validate version if we didn't have a known historical version
+                        if let Some(expected_version) = version_opt {
+                            if gql_obj.version != expected_version {
+                                continue;
+                            }
+                        } else if !gql_snapshot_used && gql_obj.version > max_lamport_version {
+                            continue;
+                        }
+
                         if let (Some(type_str), Some(bcs_b64)) =
                             (gql_obj.type_string, gql_obj.bcs_base64)
                         {
@@ -928,6 +1036,7 @@ mod tests {
             inputs: vec![],
             commands: vec![],
             status: None,
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![],
             unchanged_consensus_objects: vec![],
@@ -956,6 +1065,7 @@ mod tests {
             }],
             commands: vec![],
             status: None,
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![("0xbbb".to_string(), 20)],
             unchanged_consensus_objects: vec![("0xccc".to_string(), 30)],

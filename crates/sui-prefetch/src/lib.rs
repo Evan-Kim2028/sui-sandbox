@@ -44,7 +44,7 @@ pub use eager_prefetch::{
 // Re-export utilities
 pub use utilities::{
     collect_historical_versions, compute_dynamic_field_id, prefetch_dynamic_fields,
-    prefetch_dynamic_fields_default, prefetch_dynamic_fields_with_version_bound,
-    prefetch_epoch_keyed_fields, type_string_to_bcs, DynamicFieldKey, PrefetchedChild,
-    PrefetchedDynamicFields,
+    prefetch_dynamic_fields_at_checkpoint, prefetch_dynamic_fields_default,
+    prefetch_dynamic_fields_with_version_bound, prefetch_epoch_keyed_fields, type_string_to_bcs,
+    DynamicFieldKey, PrefetchedChild, PrefetchedDynamicFields,
 };
