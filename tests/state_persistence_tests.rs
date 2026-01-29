@@ -408,15 +408,16 @@ fn test_load_v3_state_without_fetcher_config() {
 }
 
 #[test]
-fn test_version_4_in_state_file() {
+fn test_version_in_state_file() {
     let session = SimulationSession::new()
         .expect("create session")
         .with_mainnet_fetching();
 
     let state = session.export_state();
     assert_eq!(
-        state.version, 4,
-        "State version should be 4 with fetcher config"
+        state.version,
+        PersistentState::CURRENT_VERSION,
+        "State version should match CURRENT_VERSION with fetcher config"
     );
 }
 
@@ -469,11 +470,11 @@ fn test_load_v2_state() {
 }
 
 #[test]
-fn test_current_version_is_4() {
+fn test_current_version_is_5() {
     assert_eq!(
         PersistentState::CURRENT_VERSION,
-        4,
-        "Current version should be 4"
+        5,
+        "Current version should be 5"
     );
 }
 
