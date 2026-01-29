@@ -60,6 +60,23 @@ without deploying to mainnet or spending gas.
 
 ---
 
+### Level 3.5: Synthetic Object Introspection (Cetus)
+
+```bash
+CETUS_AUTO_DISCOVER=1 CETUS_WRITE_SYNTHETIC_TEMPLATE=1 \
+  cargo run --example cetus_position_fees
+```
+
+Inspect Cetus position fees inside the sandbox using the same on-chain bytecode
+the SDK calls via `devInspect`. This example supports **synthetic object BCS**:
+
+1) Auto-discover a live position and print a `.env` template
+2) Re-run with `CETUS_USE_SYNTHETIC=1` to execute locally from that snapshot
+
+**Prerequisites**: gRPC endpoint (packages), GraphQL (auto-discovery)
+
+---
+
 ### Level 4: Transaction Replay
 
 ```bash
@@ -121,6 +138,7 @@ Advanced replay with complex state:
 | `cli_workflow.sh` | 1 | No | Interactive CLI walkthrough |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 | `fork_state` | 3 | Yes | Fork mainnet state locally |
+| `cetus_position_fees` | 3.5 | Yes | Cetus position fee fetch (live + synthetic objects) |
 | `cetus_swap` | 4 | Yes | Cetus AMM swap replay (canonical replay example) |
 | `deepbook_replay` | 4 | Yes | DeepBook flash loan replay |
 | `deepbook_orders` | 5 | Yes | DeepBook order replay (BigVector handling) |

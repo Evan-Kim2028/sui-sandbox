@@ -89,11 +89,13 @@ impl ProgressTracker {
 
     /// Record that a checkpoint has been processed.
     pub fn record_checkpoint(&self, blob_id: &str, checkpoint: u64) -> Result<()> {
-        let mut state = self.state.write();
-        state.checkpoints_processed += 1;
-        state
-            .last_checkpoint_per_blob
-            .insert(blob_id.to_string(), checkpoint);
+        {
+            let mut state = self.state.write();
+            state.checkpoints_processed += 1;
+            state
+                .last_checkpoint_per_blob
+                .insert(blob_id.to_string(), checkpoint);
+        }
 
         self.log_event(ProgressEvent {
             timestamp: current_timestamp(),
@@ -117,8 +119,10 @@ impl ProgressTracker {
 
     /// Mark a blob as fully ingested.
     pub fn mark_blob_complete(&self, blob_id: &str) -> Result<()> {
-        let mut state = self.state.write();
-        state.ingested_blobs.insert(blob_id.to_string());
+        {
+            let mut state = self.state.write();
+            state.ingested_blobs.insert(blob_id.to_string());
+        }
 
         self.log_event(ProgressEvent {
             timestamp: current_timestamp(),

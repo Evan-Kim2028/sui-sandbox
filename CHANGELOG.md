@@ -2,6 +2,20 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.10.1] - 2026-01-29
+
+### Added
+
+- **Cetus synthetic example**: New `cetus_position_fees` example demonstrating SDK-style position fee inspection with optional synthetic object BCS templates.
+
+### Changed
+
+- **Examples guide**: Added a guided synthetic flow and documentation for the Cetus position fee example.
+
+### Fixed
+
+- **Progress tracker**: Release state lock before persisting progress to avoid deadlocks in `mark_blob_complete`.
+
 ## [0.10.0] - 2026-01-29
 
 ### Added
