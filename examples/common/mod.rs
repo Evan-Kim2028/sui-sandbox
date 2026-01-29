@@ -60,7 +60,6 @@ use tokio::runtime::Runtime;
 
 use anyhow::Result;
 use base64::Engine;
-use fastcrypto::encoding::Encoding;
 use std::str::FromStr;
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
@@ -461,8 +460,6 @@ use sui_prefetch::{DynamicFieldKey, PrefetchedChild};
 use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
 
 type CachedObjectIndex = Arc<HashMap<String, (String, Vec<u8>)>>;
-type StructFieldsCache = Arc<std::sync::Mutex<HashMap<String, Vec<(String, String)>>>>;
-
 /// Dynamic discovery cache for child objects discovered during execution.
 /// This is populated when we enumerate parent's dynamic fields and caches
 /// all children for that parent, not just the one we're looking for.
@@ -888,10 +885,6 @@ pub fn create_key_based_child_fetcher(
     let prefetched_arc = Arc::new(prefetched);
     let discovery_cache = discovery_cache;
     let graphql = graphql.map(Arc::new);
-    let jsonrpc_endpoint = std::env::var("SUI_JSON_RPC_ENDPOINT")
-        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let jsonrpc_agent = ureq::Agent::new();
-    let struct_fields_cache: StructFieldsCache = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     Box::new(
         move |parent_id: AccountAddress,
@@ -1003,58 +996,6 @@ pub fn create_key_based_child_fetcher(
                 }
             }
 
-            let name_value = key_bytes_to_json_value(key_type, key_bytes).or_else(|| {
-                struct_key_bytes_to_json_value(
-                    &jsonrpc_agent,
-                    &jsonrpc_endpoint,
-                    key_type,
-                    key_bytes,
-                    &struct_fields_cache,
-                )
-            });
-
-            if let Some(name_value) = name_value {
-                if let Some((type_str, bcs)) = fetch_dynamic_field_via_jsonrpc(
-                    &jsonrpc_agent,
-                    &jsonrpc_endpoint,
-                    &parent_str,
-                    &key_type_str,
-                    name_value,
-                ) {
-                    if let Some(type_tag) = parse_type_tag(&type_str) {
-                        if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
-                            eprintln!(
-                                "[key_fetcher] HIT jsonrpc_name parent={} key_type={} key_len={}",
-                                parent_str,
-                                key_type_str,
-                                key_bytes.len()
-                            );
-                        }
-                        return Some((type_tag, bcs));
-                    }
-                }
-            }
-
-            if let Some((type_str, bcs)) = fetch_dynamic_field_via_jsonrpc_by_bcs(
-                &jsonrpc_agent,
-                &jsonrpc_endpoint,
-                &parent_str,
-                key_type,
-                key_bytes,
-            ) {
-                if let Some(type_tag) = parse_type_tag(&type_str) {
-                    if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
-                        eprintln!(
-                            "[key_fetcher] HIT jsonrpc_bcs parent={} key_type={} key_len={}",
-                            parent_str,
-                            key_type_str,
-                            key_bytes.len()
-                        );
-                    }
-                    return Some((type_tag, bcs));
-                }
-            }
-
             if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                 let key_hex = key_bytes
                     .iter()
@@ -1073,164 +1014,6 @@ pub fn create_key_based_child_fetcher(
             None
         },
     )
-}
-
-fn key_bytes_to_json_value(key_type: &TypeTag, key_bytes: &[u8]) -> Option<serde_json::Value> {
-    match key_type {
-        TypeTag::Bool => bcs::from_bytes::<bool>(key_bytes)
-            .ok()
-            .map(serde_json::Value::from),
-        TypeTag::U8 => bcs::from_bytes::<u8>(key_bytes)
-            .ok()
-            .map(serde_json::Value::from),
-        TypeTag::U16 => bcs::from_bytes::<u16>(key_bytes)
-            .ok()
-            .map(serde_json::Value::from),
-        TypeTag::U32 => bcs::from_bytes::<u32>(key_bytes)
-            .ok()
-            .map(serde_json::Value::from),
-        TypeTag::U64 => bcs::from_bytes::<u64>(key_bytes)
-            .ok()
-            .map(serde_json::Value::from),
-        TypeTag::U128 => bcs::from_bytes::<u128>(key_bytes)
-            .ok()
-            .map(|v| serde_json::Value::String(v.to_string())),
-        TypeTag::U256 => bcs::from_bytes::<move_core_types::u256::U256>(key_bytes)
-            .ok()
-            .map(|v| serde_json::Value::String(v.to_string())),
-        TypeTag::Address => bcs::from_bytes::<AccountAddress>(key_bytes)
-            .ok()
-            .map(|a| serde_json::Value::String(a.to_hex_literal())),
-        TypeTag::Vector(inner) => match inner.as_ref() {
-            TypeTag::U8 => bcs::from_bytes::<Vec<u8>>(key_bytes).ok().map(|v| {
-                serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())
-            }),
-            TypeTag::U64 => bcs::from_bytes::<Vec<u64>>(key_bytes).ok().map(|v| {
-                serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())
-            }),
-            TypeTag::Address => bcs::from_bytes::<Vec<AccountAddress>>(key_bytes)
-                .ok()
-                .map(|v| {
-                    serde_json::Value::Array(
-                        v.into_iter()
-                            .map(|a| serde_json::Value::String(a.to_hex_literal()))
-                            .collect(),
-                    )
-                }),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn struct_key_bytes_to_json_value(
-    agent: &ureq::Agent,
-    endpoint: &str,
-    key_type: &TypeTag,
-    key_bytes: &[u8],
-    cache: &StructFieldsCache,
-) -> Option<serde_json::Value> {
-    let struct_tag = match key_type {
-        TypeTag::Struct(tag) => tag.as_ref(),
-        _ => return None,
-    };
-
-    let package = struct_tag.address.to_hex_literal();
-    let module = struct_tag.module.to_string();
-    let name = struct_tag.name.to_string();
-    let cache_key = format!("{}::{}::{}", package, module, name);
-
-    let fields = if let Ok(cache_guard) = cache.lock() {
-        cache_guard.get(&cache_key).cloned()
-    } else {
-        None
-    };
-
-    let fields = match fields {
-        Some(fields) => fields,
-        None => {
-            let fetched =
-                fetch_normalized_struct_fields(agent, endpoint, &package, &module, &name)?;
-            if let Ok(mut cache_guard) = cache.lock() {
-                cache_guard.insert(cache_key, fetched.clone());
-            }
-            fetched
-        }
-    };
-
-    if fields.is_empty() {
-        return Some(serde_json::Value::Object(serde_json::Map::new()));
-    }
-
-    if fields.len() == 1 {
-        let (field_name, field_type) = &fields[0];
-        let field_tag = normalized_type_to_type_tag(field_type)?;
-        let field_value = key_bytes_to_json_value(&field_tag, key_bytes)?;
-        let mut map = serde_json::Map::new();
-        map.insert(field_name.clone(), field_value);
-        return Some(serde_json::Value::Object(map));
-    }
-
-    None
-}
-
-fn fetch_normalized_struct_fields(
-    agent: &ureq::Agent,
-    endpoint: &str,
-    package: &str,
-    module: &str,
-    name: &str,
-) -> Option<Vec<(String, String)>> {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "sui_getNormalizedMoveStruct",
-        "params": [package, module, name]
-    });
-
-    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
-
-    let fields = resp
-        .get("result")
-        .and_then(|r| r.get("fields"))
-        .and_then(|v| v.as_array())?;
-
-    let mut result = Vec::new();
-    for field in fields {
-        let name = field.get("name").and_then(|v| v.as_str())?;
-        let ty = field.get("type").and_then(|v| v.as_str())?;
-        result.push((name.to_string(), ty.to_string()));
-    }
-    Some(result)
-}
-
-fn normalized_type_to_type_tag(type_str: &str) -> Option<TypeTag> {
-    match type_str {
-        "Bool" => return Some(TypeTag::Bool),
-        "U8" => return Some(TypeTag::U8),
-        "U16" => return Some(TypeTag::U16),
-        "U32" => return Some(TypeTag::U32),
-        "U64" => return Some(TypeTag::U64),
-        "U128" => return Some(TypeTag::U128),
-        "U256" => return Some(TypeTag::U256),
-        "Address" => return Some(TypeTag::Address),
-        _ => {}
-    }
-
-    if let Some(inner) = type_str.strip_prefix("Vector<") {
-        if let Some(inner) = inner.strip_suffix('>') {
-            let inner_tag = normalized_type_to_type_tag(inner)?;
-            return Some(TypeTag::Vector(Box::new(inner_tag)));
-        }
-    }
-
-    if let Some(inner) = type_str.strip_prefix("Struct<") {
-        if let Some(inner) = inner.strip_suffix('>') {
-            return parse_type_tag(inner);
-        }
-    }
-
-    None
 }
 
 fn lookup_cached_dynamic_field(
@@ -1271,149 +1054,6 @@ fn extract_dynamic_field_name_type(type_str: &str) -> Option<String> {
     let inner = &type_str[start + 1..end];
     let params = sui_sandbox_core::utilities::split_type_params(inner);
     params.first().map(|s| s.trim().to_string())
-}
-
-fn fetch_dynamic_field_via_jsonrpc(
-    agent: &ureq::Agent,
-    endpoint: &str,
-    parent_id: &str,
-    name_type: &str,
-    name_value: serde_json::Value,
-) -> Option<(String, Vec<u8>)> {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "suix_getDynamicFieldObject",
-        "params": [
-            parent_id,
-            {
-                "type": name_type,
-                "value": name_value
-            }
-        ]
-    });
-
-    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
-
-    let object_id = resp
-        .get("result")
-        .and_then(|r| r.get("data"))
-        .and_then(|d| d.get("objectId"))
-        .and_then(|v| v.as_str())?;
-
-    fetch_object_bcs_via_jsonrpc(agent, endpoint, object_id)
-}
-
-fn fetch_dynamic_field_via_jsonrpc_by_bcs(
-    agent: &ureq::Agent,
-    endpoint: &str,
-    parent_id: &str,
-    key_type: &TypeTag,
-    key_bytes: &[u8],
-) -> Option<(String, Vec<u8>)> {
-    let mut cursor: Option<String> = None;
-    for _ in 0..10 {
-        let req = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "suix_getDynamicFields",
-            "params": [parent_id, cursor, 200]
-        });
-
-        let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
-
-        let result = resp.get("result")?;
-        let data = match result.get("data").and_then(|v| v.as_array()) {
-            Some(data) => data,
-            None => {
-                break;
-            }
-        };
-
-        for entry in data {
-            let encoding = entry
-                .get("bcsEncoding")
-                .and_then(|v| v.as_str())
-                .unwrap_or("base64");
-            let bcs_name = entry.get("bcsName").and_then(|v| v.as_str())?;
-            let name_bytes = decode_bcs_name(encoding, bcs_name)?;
-            if name_bytes != key_bytes {
-                continue;
-            }
-
-            let name_type = entry
-                .get("name")
-                .and_then(|n| n.get("type"))
-                .and_then(|v| v.as_str())?;
-
-            if !type_tag_matches_outer_address_agnostic(key_type, name_type) {
-                continue;
-            }
-
-            let object_id = entry.get("objectId").and_then(|v| v.as_str())?;
-            if let Some(obj) = fetch_object_bcs_via_jsonrpc(agent, endpoint, object_id) {
-                return Some(obj);
-            }
-        }
-
-        let has_next = result
-            .get("hasNextPage")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !has_next {
-            break;
-        }
-        cursor = result
-            .get("nextCursor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        if cursor.is_none() {
-            break;
-        }
-    }
-
-    None
-}
-
-fn fetch_object_bcs_via_jsonrpc(
-    agent: &ureq::Agent,
-    endpoint: &str,
-    object_id: &str,
-) -> Option<(String, Vec<u8>)> {
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "sui_getObject",
-        "params": [
-            object_id,
-            { "showBcs": true }
-        ]
-    });
-
-    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
-
-    let bcs = resp
-        .get("result")
-        .and_then(|r| r.get("data"))
-        .and_then(|d| d.get("bcs"))?;
-
-    let type_str = bcs.get("type").and_then(|t| t.as_str())?.to_string();
-    let bcs_b64 = bcs.get("bcsBytes").and_then(|t| t.as_str())?;
-
-    let bcs_bytes = base64::engine::general_purpose::STANDARD
-        .decode(bcs_b64)
-        .ok()?;
-
-    Some((type_str, bcs_bytes))
-}
-
-fn decode_bcs_name(encoding: &str, bcs_name: &str) -> Option<Vec<u8>> {
-    match encoding {
-        "base58" => fastcrypto::encoding::Base58::decode(bcs_name).ok(),
-        _ => base64::engine::general_purpose::STANDARD
-            .decode(bcs_name)
-            .ok(),
-    }
 }
 
 fn type_tag_matches_outer_address_agnostic(key_type: &TypeTag, other_type: &str) -> bool {
