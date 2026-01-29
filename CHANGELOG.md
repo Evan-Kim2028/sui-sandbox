@@ -2,7 +2,26 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.10.0] - 2026-01-29
+
+### Added
+
+- **Historical cache crate**: New `sui-historical-cache` library with object/package cache stores, paths, progress reporting, and metrics.
+- **Sparse replay reporting**: Structured sparse replay diagnostics for clearer missing-data analysis.
+- **Walrus integration**: Walrus gRPC transport module, checkpoint replay engine, cache builder, and example workflows.
+
+### Changed
+
+- **Sandbox execution pipeline**: Updated session/environment plumbing and replay flow to support newer execution paths and better state persistence.
+- **Fetching path defaults**: gRPC-backed fetcher and on-demand child fetches in replay flows for higher fidelity.
+- **Docs consolidation**: Walrus docs reorganized into a focused, single entry point.
+
+### Fixed
+
+- **Simulation reliability**: Improved execution path stability and state persistence coverage.
+
 ## [0.9.0] - 2026-01-25
+
 
 ### Breaking Changes
 
