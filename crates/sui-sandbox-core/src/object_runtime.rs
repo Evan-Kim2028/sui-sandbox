@@ -1036,6 +1036,18 @@ pub struct ObjectRuntimeState {
     /// Set of children that have been removed during this PTB execution.
     /// This prevents on-demand fetching from re-creating them.
     pub removed_children: HashSet<(AccountAddress, AccountAddress)>,
+    /// Objects created during execution (via transfer, share_object, freeze_object natives).
+    /// These are objects that were created within a MoveCall and immediately transferred/shared/frozen,
+    /// rather than being returned from the function.
+    /// Map from object_id -> (type_tag, serialized_bytes, owner)
+    pub created_objects: HashMap<AccountAddress, (TypeTag, Vec<u8>, Owner)>,
+    /// Set of newly created object IDs (from object::record_new_uid calls).
+    /// This mirrors Sui's ObjectRuntime.state.new_ids.
+    /// Used to distinguish new objects from existing ones in transfer natives.
+    pub new_ids: HashSet<AccountAddress>,
+    /// Set of deleted object IDs (from object::delete_impl calls).
+    /// This mirrors Sui's ObjectRuntime tracking of deleted objects.
+    pub deleted_ids: HashSet<AccountAddress>,
 }
 
 impl ObjectRuntimeState {
@@ -1111,6 +1123,92 @@ impl ObjectRuntimeState {
         self.preloaded_children.clear();
         self.pending_receives.clear();
         self.removed_children.clear();
+        self.created_objects.clear();
+        self.new_ids.clear();
+        self.deleted_ids.clear();
+    }
+
+    // ========== New ID Tracking (mirrors Sui's ObjectRuntime) ==========
+
+    /// Record a new object ID (from object::record_new_uid).
+    /// This mirrors Sui's ObjectRuntime.new_id() method.
+    pub fn record_new_id(&mut self, id: AccountAddress) {
+        self.new_ids.insert(id);
+    }
+
+    /// Check if an ID is new (created in this execution).
+    pub fn is_new_id(&self, id: AccountAddress) -> bool {
+        self.new_ids.contains(&id)
+    }
+
+    /// Record a deleted object ID (from object::delete_impl).
+    /// This mirrors Sui's ObjectRuntime.delete_id() method.
+    pub fn record_deleted_id(&mut self, id: AccountAddress) {
+        self.deleted_ids.insert(id);
+        // If it was also created in this execution, remove from new_ids
+        // (mirrors Sui behavior where deleting a new object removes it from tracking)
+        self.new_ids.remove(&id);
+    }
+
+    /// Check if an ID was deleted in this execution.
+    pub fn is_deleted_id(&self, id: AccountAddress) -> bool {
+        self.deleted_ids.contains(&id)
+    }
+
+    /// Get all new IDs created during this execution.
+    pub fn get_new_ids(&self) -> Vec<AccountAddress> {
+        self.new_ids.iter().copied().collect()
+    }
+
+    /// Get all deleted IDs during this execution.
+    pub fn get_deleted_ids(&self) -> Vec<AccountAddress> {
+        self.deleted_ids.iter().copied().collect()
+    }
+
+    // ========== Created Objects ==========
+
+    /// Add a created object to the shared state.
+    /// Called when an object is created and transferred/shared/frozen within a MoveCall.
+    pub fn add_created_object(
+        &mut self,
+        object_id: AccountAddress,
+        type_tag: TypeTag,
+        bytes: Vec<u8>,
+        owner: Owner,
+    ) {
+        self.created_objects
+            .insert(object_id, (type_tag, bytes, owner));
+    }
+
+    /// Check if an object was created during this execution.
+    pub fn has_created_object(&self, object_id: AccountAddress) -> bool {
+        self.created_objects.contains_key(&object_id)
+    }
+
+    /// Get a created object's data.
+    pub fn get_created_object(
+        &self,
+        object_id: AccountAddress,
+    ) -> Option<&(TypeTag, Vec<u8>, Owner)> {
+        self.created_objects.get(&object_id)
+    }
+
+    /// Get all created objects and clear the map.
+    /// Returns Vec<(object_id, type_tag, bytes, owner)>.
+    /// This is used to sync created objects to the PTB executor after each MoveCall.
+    pub fn drain_created_objects(&mut self) -> Vec<(AccountAddress, TypeTag, Vec<u8>, Owner)> {
+        self.created_objects
+            .drain()
+            .map(|(id, (tt, bytes, owner))| (id, tt, bytes, owner))
+            .collect()
+    }
+
+    /// Get all created objects without clearing.
+    pub fn all_created_objects(&self) -> Vec<(AccountAddress, TypeTag, Vec<u8>, Owner)> {
+        self.created_objects
+            .iter()
+            .map(|(id, (tt, bytes, owner))| (*id, tt.clone(), bytes.clone(), *owner))
+            .collect()
     }
 
     // ========== Pending Receives ==========
@@ -1494,6 +1592,55 @@ impl SharedObjectRuntime {
     /// Get the computed child info for a child_id if available.
     pub fn get_computed_child_info(&self, child_id: &AccountAddress) -> Option<ComputedChildInfo> {
         self.computed_child_keys.lock().get(child_id).cloned()
+    }
+
+    // ========== New ID Tracking (mirrors Sui's ObjectRuntime) ==========
+
+    /// Record a new object ID (from object::record_new_uid).
+    /// This mirrors Sui's ObjectRuntime.new_id() method.
+    pub fn record_new_id(&self, id: AccountAddress) {
+        self.shared_state.lock().record_new_id(id);
+    }
+
+    /// Check if an ID is new (created in this execution).
+    pub fn is_new_id(&self, id: AccountAddress) -> bool {
+        self.shared_state.lock().is_new_id(id)
+    }
+
+    /// Record a deleted object ID (from object::delete_impl).
+    pub fn record_deleted_id(&self, id: AccountAddress) {
+        self.shared_state.lock().record_deleted_id(id);
+    }
+
+    /// Check if an ID was deleted in this execution.
+    pub fn is_deleted_id(&self, id: AccountAddress) -> bool {
+        self.shared_state.lock().is_deleted_id(id)
+    }
+
+    // ========== Created Object Tracking ==========
+
+    /// Record a newly created object in the shared state.
+    /// This is called by native transfer functions when an object is created
+    /// and immediately transferred/shared/frozen within a MoveCall.
+    /// Only records if the object ID is known to be new (from record_new_uid).
+    pub fn record_created_object(
+        &self,
+        object_id: AccountAddress,
+        type_tag: TypeTag,
+        bytes: Vec<u8>,
+        owner: Owner,
+    ) {
+        let mut state = self.shared_state.lock();
+        // Only record if this is a new ID (created via object::new in this execution)
+        // This mirrors Sui's behavior where transfer on a non-new object is not "Created"
+        if state.is_new_id(object_id) {
+            state.add_created_object(object_id, type_tag, bytes, owner);
+        }
+    }
+
+    /// Check if an object was already created during this execution.
+    pub fn has_created_object(&self, object_id: AccountAddress) -> bool {
+        self.shared_state.lock().has_created_object(object_id)
     }
 
     /// Try to fetch a child object on-demand if a fetcher is configured.

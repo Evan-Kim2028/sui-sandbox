@@ -906,9 +906,20 @@ fn build_sui_natives(
     natives.push((
         "object",
         "delete_impl",
-        make_native(move |_ctx, _ty_args, _args| {
+        make_native(move |ctx, _ty_args, mut args| {
+            use crate::object_runtime::SharedObjectRuntime;
+
             let cost = state_clone.get_native_cost(|c| c.object_delete_impl_base);
-            // No-op: we don't track object lifecycle
+
+            // Extract the ID from args - delete_impl(id: address)
+            let uid_bytes = pop_arg!(args, AccountAddress);
+
+            // Record this deleted ID in the shared state
+            // This mirrors Sui's ObjectRuntime.delete_id() behavior
+            if let Ok(runtime) = ctx.extensions().get::<SharedObjectRuntime>() {
+                runtime.record_deleted_id(uid_bytes);
+            }
+
             Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
@@ -917,14 +928,25 @@ fn build_sui_natives(
     natives.push((
         "object",
         "record_new_uid",
-        make_native(move |_ctx, _ty_args, _args| {
+        make_native(move |ctx, _ty_args, mut args| {
+            use crate::object_runtime::SharedObjectRuntime;
+
             let cost = state_clone.get_native_cost(|c| c.object_record_new_id_base);
-            // No-op: we don't track UIDs
+
+            // Extract the ID from args - record_new_uid(id: address)
+            let uid_bytes = pop_arg!(args, AccountAddress);
+
+            // Record this new ID in the shared state
+            // This mirrors Sui's ObjectRuntime.new_id() behavior
+            if let Ok(runtime) = ctx.extensions().get::<SharedObjectRuntime>() {
+                runtime.record_new_id(uid_bytes);
+            }
+
             Ok(NativeResult::ok(InternalGas::new(cost), smallvec![]))
         }),
     ));
 
-    // transfer natives - track ownership changes via ObjectRuntime
+    // transfer natives - track ownership changes via SharedObjectRuntime
     // Native names must match the bytecode: freeze_object_impl, share_object_impl, etc.
 
     // transfer_impl<T>(obj: T, recipient: address)
@@ -934,7 +956,7 @@ fn build_sui_natives(
         "transfer",
         "transfer_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::{ObjectRuntime, Owner};
+            use crate::object_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_internal_base);
 
@@ -951,10 +973,11 @@ fn build_sui_natives(
             // In Sui, objects have an `id: UID` field where UID = { id: ID { bytes: address } }
             // The first 32 bytes of a serialized object are typically the ID
 
-            // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args
-                .pop()
-                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
+            // Get type tag and layout first (before borrowing extensions mutably)
+            let obj_type = ty_args.pop();
+            let layout = obj_type
+                .as_ref()
+                .and_then(|obj_ty| ctx.type_to_type_layout(obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 // Try to serialize the object to get its bytes and ID
@@ -964,12 +987,20 @@ fn build_sui_natives(
                         id_bytes.copy_from_slice(&bytes[0..32]);
                         let object_id = AccountAddress::new(id_bytes);
 
-                        // Now we can borrow extensions mutably
-                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
-                            // Transfer ownership - ignore errors for objects we haven't tracked
-                            let _ = runtime
-                                .object_store_mut()
-                                .transfer(&object_id, Owner::Address(recipient));
+                        // Record this created object in the shared state
+                        // This persists even after the session ends
+                        if let Some(ref obj_ty) = obj_type {
+                            // Convert Type to TypeTag for storage
+                            if let Ok(type_tag) = ctx.type_to_type_tag(obj_ty) {
+                                if let Ok(runtime) = ctx.extensions().get::<SharedObjectRuntime>() {
+                                    runtime.record_created_object(
+                                        object_id,
+                                        type_tag,
+                                        bytes.clone(),
+                                        Owner::Address(recipient),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -986,7 +1017,7 @@ fn build_sui_natives(
         "transfer",
         "freeze_object_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::ObjectRuntime;
+            use crate::object_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_freeze_object_base);
 
@@ -997,10 +1028,11 @@ fn build_sui_natives(
                 )
             })?;
 
-            // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args
-                .pop()
-                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
+            // Get type tag and layout first (before borrowing extensions mutably)
+            let obj_type = ty_args.pop();
+            let layout = obj_type
+                .as_ref()
+                .and_then(|obj_ty| ctx.type_to_type_layout(obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 if let Some(bytes) = obj_value.typed_serialize(&layout) {
@@ -1009,10 +1041,19 @@ fn build_sui_natives(
                         id_bytes.copy_from_slice(&bytes[0..32]);
                         let object_id = AccountAddress::new(id_bytes);
 
-                        // Now we can borrow extensions mutably
-                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
-                            // Mark as immutable - ignore errors for objects we haven't tracked
-                            let _ = runtime.object_store_mut().mark_immutable(object_id);
+                        // Record this created object in the shared state
+                        if let Some(ref obj_ty) = obj_type {
+                            // Convert Type to TypeTag for storage
+                            if let Ok(type_tag) = ctx.type_to_type_tag(obj_ty) {
+                                if let Ok(runtime) = ctx.extensions().get::<SharedObjectRuntime>() {
+                                    runtime.record_created_object(
+                                        object_id,
+                                        type_tag,
+                                        bytes.clone(),
+                                        Owner::Immutable,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1029,7 +1070,7 @@ fn build_sui_natives(
         "transfer",
         "share_object_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::ObjectRuntime;
+            use crate::object_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_share_object_base);
 
@@ -1040,10 +1081,11 @@ fn build_sui_natives(
                 )
             })?;
 
-            // Get type layout first (before borrowing extensions mutably)
-            let layout = ty_args
-                .pop()
-                .and_then(|obj_ty| ctx.type_to_type_layout(&obj_ty).ok().flatten());
+            // Get type tag and layout first (before borrowing extensions mutably)
+            let obj_type = ty_args.pop();
+            let layout = obj_type
+                .as_ref()
+                .and_then(|obj_ty| ctx.type_to_type_layout(obj_ty).ok().flatten());
 
             if let Some(layout) = layout {
                 if let Some(bytes) = obj_value.typed_serialize(&layout) {
@@ -1052,10 +1094,19 @@ fn build_sui_natives(
                         id_bytes.copy_from_slice(&bytes[0..32]);
                         let object_id = AccountAddress::new(id_bytes);
 
-                        // Now we can borrow extensions mutably
-                        if let Ok(runtime) = ctx.extensions_mut().get_mut::<ObjectRuntime>() {
-                            // Mark as shared - ignore errors for objects we haven't tracked
-                            let _ = runtime.object_store_mut().mark_shared(object_id);
+                        // Record this created object in the shared state
+                        if let Some(ref obj_ty) = obj_type {
+                            // Convert Type to TypeTag for storage
+                            if let Ok(type_tag) = ctx.type_to_type_tag(obj_ty) {
+                                if let Ok(runtime) = ctx.extensions().get::<SharedObjectRuntime>() {
+                                    runtime.record_created_object(
+                                        object_id,
+                                        type_tag,
+                                        bytes.clone(),
+                                        Owner::Shared,
+                                    );
+                                }
+                            }
                         }
                     }
                 }

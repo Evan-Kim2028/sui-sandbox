@@ -26,8 +26,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use sui_sandbox_core::gas::{
-    apply_gas_rounding, calculate_min_tx_cost, finalize_computation_cost, load_protocol_config,
-    GasParameters,
+    calculate_min_tx_cost, finalize_computation_cost, load_protocol_config, GasParameters,
 };
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
@@ -39,7 +38,7 @@ use sui_sandbox_core::utilities::{
     grpc_object_to_package_data, CallbackPackageFetcher, FetchedPackageData,
     HistoricalPackageResolver, HistoricalStateReconstructor,
 };
-use sui_sandbox_core::vm::{GasMeterImpl, SimulationConfig, VMHarness};
+use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 
 // ============================================================================
@@ -95,7 +94,6 @@ struct GasUsed {
 
 #[derive(Debug)]
 struct GasComparison {
-    digest: String,
     #[allow(dead_code)]
     onchain_status: String,
     local_success: bool,
@@ -193,7 +191,6 @@ fn main() -> Result<()> {
             Err(e) => {
                 println!("  Error processing transaction: {}\n", e);
                 comparisons.push(GasComparison {
-                    digest: digest.clone(),
                     onchain_status: onchain_gas.status.clone(),
                     local_success: false,
                     onchain_computation: onchain_gas.computation.parse().unwrap_or(0),
@@ -511,7 +508,6 @@ fn process_transaction(
     };
 
     Ok(GasComparison {
-        digest: digest.to_string(),
         onchain_status: onchain_gas.status.clone(),
         local_success: result.local_success,
         onchain_computation: onchain_gas.computation.parse().unwrap_or(0),

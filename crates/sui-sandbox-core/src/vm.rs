@@ -2242,6 +2242,34 @@ impl<'a> VMHarness<'a> {
         self.accessed_children.lock().clear();
     }
 
+    /// Get all objects created during MoveCall execution (via transfer/share/freeze natives).
+    /// Returns Vec<(object_id, type_tag, bytes, owner)>.
+    /// This is used to sync created objects to the PTB executor after each MoveCall.
+    pub fn get_created_objects(
+        &self,
+    ) -> Vec<(
+        AccountAddress,
+        move_core_types::language_storage::TypeTag,
+        Vec<u8>,
+        crate::object_runtime::Owner,
+    )> {
+        self.shared_df_state.lock().all_created_objects()
+    }
+
+    /// Get and drain all objects created during MoveCall execution.
+    /// Returns Vec<(object_id, type_tag, bytes, owner)> and clears the created objects map.
+    /// Use this after each MoveCall to sync created objects to the PTB executor.
+    pub fn drain_created_objects(
+        &self,
+    ) -> Vec<(
+        AccountAddress,
+        move_core_types::language_storage::TypeTag,
+        Vec<u8>,
+        crate::object_runtime::Owner,
+    )> {
+        self.shared_df_state.lock().drain_created_objects()
+    }
+
     /// Get the current simulation configuration.
     pub fn config(&self) -> &SimulationConfig {
         &self.config

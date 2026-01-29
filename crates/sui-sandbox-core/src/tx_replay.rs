@@ -1348,6 +1348,7 @@ pub fn replay_with_version_tracking(
                 VersionChangeType::Mutated => summary.mutated += 1,
                 VersionChangeType::Deleted => summary.deleted += 1,
                 VersionChangeType::Wrapped => summary.wrapped += 1,
+                VersionChangeType::Unwrapped => summary.wrapped += 1,
             }
         }
         summary

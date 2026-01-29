@@ -24,6 +24,9 @@ pub struct SerializedObject {
     pub is_immutable: bool,
     /// Version number.
     pub version: u64,
+    /// Optional owner hint ("shared", "immutable", "address:0x...", "object:0x...").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Serializable module for persistence.
@@ -33,6 +36,44 @@ pub struct SerializedModule {
     pub id: String,
     /// Module bytecode (base64 encoded).
     pub bytecode_b64: String,
+}
+
+/// Serializable package module entry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedPackageModule {
+    /// Module name.
+    pub name: String,
+    /// Module bytecode (base64 encoded).
+    pub bytecode_b64: String,
+}
+
+/// Serializable linkage entry for packages.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedPackageLinkage {
+    /// Original package ID.
+    pub original_id: String,
+    /// Upgraded package ID.
+    pub upgraded_id: String,
+    /// Upgraded package version.
+    pub upgraded_version: u64,
+}
+
+/// Serializable package metadata.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SerializedPackage {
+    /// Storage address for this package.
+    pub address: String,
+    /// Package version.
+    pub version: u64,
+    /// Optional original (runtime) package ID for upgrades.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_id: Option<String>,
+    /// Module bytecode for this package.
+    #[serde(default)]
+    pub modules: Vec<SerializedPackageModule>,
+    /// Linkage table entries.
+    #[serde(default)]
+    pub linkage: Vec<SerializedPackageLinkage>,
 }
 
 /// Serializable dynamic field for persistence.
@@ -71,8 +112,14 @@ pub struct PersistentState {
     pub version: u32,
     /// Objects in the environment.
     pub objects: Vec<SerializedObject>,
+    /// Historical object versions (optional).
+    #[serde(default)]
+    pub object_history: Vec<SerializedObject>,
     /// Non-framework modules (user-deployed packages).
     pub modules: Vec<SerializedModule>,
+    /// Package metadata (modules + linkage tables).
+    #[serde(default)]
+    pub packages: Vec<SerializedPackage>,
     /// Coin registry.
     pub coin_registry: std::collections::HashMap<String, CoinMetadata>,
     /// Sender address.
@@ -105,7 +152,8 @@ impl PersistentState {
     /// v2: Added dynamic_fields and pending_receives for Table/Bag persistence
     /// v3: Added config (SimulationConfig) and metadata (description, timestamps, tags)
     /// v4: Added fetcher_config for persistent mainnet fetching configuration
-    pub const CURRENT_VERSION: u32 = 4;
+    /// v5: Added object_history and packages
+    pub const CURRENT_VERSION: u32 = 5;
 }
 
 /// Metadata for state files - helps organize multiple simulation scenarios.

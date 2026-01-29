@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_cost_table_for_version() {
         // Test different gas model versions get different tables
-        let v1 = cost_table_for_version(1);
+        let _v1 = cost_table_for_version(1);
         let v8 = cost_table_for_version(8);
 
         // v8 should have the 10M instruction tier that v1 doesn't
