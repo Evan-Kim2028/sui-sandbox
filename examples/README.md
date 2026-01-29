@@ -220,12 +220,16 @@ let state = provider.fetch_replay_state(&digest).await?;
 // 2. Get historical versions from transaction effects
 let historical_versions = get_historical_versions(&state);
 
-// 3. Prefetch dynamic fields recursively
-let prefetched = prefetch_dynamic_fields(&graphql, &grpc, &rt, &historical_versions, 3, 200);
+// 3. Prefetch dynamic fields recursively (checkpoint snapshot when available)
+let prefetched = if let Some(cp) = state.checkpoint {
+    prefetch_dynamic_fields_at_checkpoint(&graphql, &grpc, &rt, &historical_versions, 3, 200, cp)
+} else {
+    prefetch_dynamic_fields(&graphql, &grpc, &rt, &historical_versions, 3, 200)
+};
 
 // 4. Set up child fetcher for on-demand object loading
 let child_fetcher = create_enhanced_child_fetcher_with_cache(
-    grpc, graphql, historical_versions, prefetched, patcher, cache
+    grpc, graphql, historical_versions, prefetched, patcher, state.checkpoint, cache
 );
 harness.set_child_fetcher(child_fetcher);
 
@@ -240,8 +244,12 @@ Some protocols (like DeepBook) use BigVector internally. BigVector slices may no
 in `unchanged_loaded_runtime_objects`. Handle this with:
 
 ```rust
-// 1. Prefetch discovers children via GraphQL
-let prefetched = prefetch_dynamic_fields(&graphql, &grpc, &rt, &versions, 3, 200);
+// 1. Prefetch discovers children via GraphQL (checkpoint snapshot when available)
+let prefetched = if let Some(cp) = state.checkpoint {
+    prefetch_dynamic_fields_at_checkpoint(&graphql, &grpc, &rt, &versions, 3, 200, cp)
+} else {
+    prefetch_dynamic_fields(&graphql, &grpc, &rt, &versions, 3, 200)
+};
 
 // 2. Enhanced child fetcher validates versions
 // If object.version <= max_lamport_version, it's safe to use

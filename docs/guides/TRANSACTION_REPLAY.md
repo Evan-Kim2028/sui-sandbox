@@ -177,15 +177,24 @@ may not appear in `unchanged_loaded_runtime_objects`. This causes standard repla
 **The Solution**: Use prefetching with version validation:
 
 ```rust
-use sui_prefetch::prefetch_dynamic_fields;
+use sui_prefetch::{prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint};
 use common::create_enhanced_child_fetcher_with_cache;
 
-// 1. Prefetch dynamic fields (discovers BigVector slices via GraphQL)
-let prefetched = prefetch_dynamic_fields(
-    &graphql, &grpc, &rt, &historical_versions,
-    3,   // depth: recurse into children
-    200  // max fields per object
-);
+// 1. Prefetch dynamic fields (checkpoint snapshot when available)
+let prefetched = if let Some(cp) = state.checkpoint {
+    prefetch_dynamic_fields_at_checkpoint(
+        &graphql, &grpc, &rt, &historical_versions,
+        3,   // depth: recurse into children
+        200, // max fields per object
+        cp
+    )
+} else {
+    prefetch_dynamic_fields(
+        &graphql, &grpc, &rt, &historical_versions,
+        3,   // depth: recurse into children
+        200  // max fields per object
+    )
+};
 
 // 2. Create child fetcher with version validation
 // Objects not in effects are validated: if version <= max_lamport_version, safe to use
@@ -195,6 +204,7 @@ let child_fetcher = create_enhanced_child_fetcher_with_cache(
     historical_versions.clone(),
     prefetched.clone(),
     Some(patcher),
+    state.checkpoint,
     Some(discovery_cache),
 );
 harness.set_child_fetcher(child_fetcher);
