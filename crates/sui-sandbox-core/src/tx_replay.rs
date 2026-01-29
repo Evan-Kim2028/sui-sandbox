@@ -1315,9 +1315,54 @@ pub fn replay_with_version_tracking(
                 .collect()
         });
 
+    // Build local effects summary for object-level comparison
+    let local_summary = TransactionEffectsSummary {
+        status: if effects.success {
+            TransactionStatus::Success
+        } else {
+            TransactionStatus::Failure {
+                error: effects
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "execution failed".to_string()),
+            }
+        },
+        created: effects
+            .created
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        mutated: effects
+            .mutated
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        deleted: effects
+            .deleted
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        wrapped: effects
+            .wrapped
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        unwrapped: effects
+            .unwrapped
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        gas_used: GasSummary {
+            computation_cost: effects.gas_used,
+            ..GasSummary::default()
+        },
+        events_count: effects.events.len(),
+        shared_object_versions: HashMap::new(),
+    };
+
     // Compare with on-chain effects using version-aware comparison if versions provided
     let comparison = tx.effects.as_ref().map(|on_chain| {
-        if object_versions.is_some() && local_versions.is_some() {
+        let mut cmp = if object_versions.is_some() && local_versions.is_some() {
             EffectsComparison::compare_with_versions(
                 on_chain,
                 effects.success,
@@ -1335,7 +1380,9 @@ pub fn replay_with_version_tracking(
                 effects.mutated.len(),
                 effects.deleted.len(),
             )
-        }
+        };
+        cmp.apply_object_id_comparison(on_chain, &local_summary);
+        cmp
     });
 
     // Build version summary

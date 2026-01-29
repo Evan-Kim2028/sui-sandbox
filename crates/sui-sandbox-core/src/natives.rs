@@ -651,6 +651,11 @@ impl MockNativeState {
         self.ids_created.load(Ordering::SeqCst)
     }
 
+    /// Set the ids_created counter (used for deterministic replay).
+    pub fn set_ids_created(&self, value: u64) {
+        self.ids_created.store(value, Ordering::SeqCst);
+    }
+
     /// Get the current clock timestamp (advances the clock).
     pub fn clock_timestamp_ms(&self) -> u64 {
         self.clock.timestamp_ms()

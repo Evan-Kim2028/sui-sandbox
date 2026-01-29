@@ -239,7 +239,7 @@ pub struct SimulationConfig {
     /// (via `ObjectInput` variants with `version: Some(v)`).
     pub track_versions: bool,
 
-    /// Use accurate gas metering (default: false).
+    /// Use accurate gas metering (default: true).
     ///
     /// When true, uses Sui's actual gas cost tables with:
     /// - Tiered instruction costs that increase with execution size
@@ -294,7 +294,7 @@ impl Default for SimulationConfig {
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             storage_price: DEFAULT_STORAGE_PRICE,
             track_versions: false, // Opt-in for backwards compatibility
-            accurate_gas: false,   // Opt-in for backwards compatibility
+            accurate_gas: true,    // Default to accurate gas for improved fidelity
         }
     }
 }
@@ -1921,6 +1921,23 @@ impl<'a> VMHarness<'a> {
         aliases: std::collections::HashMap<AccountAddress, AccountAddress>,
     ) {
         self.address_aliases = aliases;
+    }
+
+    /// Generate a fresh object ID using Sui's tx_context derivation.
+    /// This uses hash(tx_hash || ids_created) via the MockNativeState.
+    pub fn fresh_object_id(&self) -> AccountAddress {
+        self.native_state.fresh_id()
+    }
+
+    /// Set the ids_created counter used for object ID derivation.
+    /// Useful for deterministic replay/testing.
+    pub fn set_ids_created(&self, value: u64) {
+        self.native_state.set_ids_created(value);
+    }
+
+    /// Get the current ids_created counter.
+    pub fn ids_created(&self) -> u64 {
+        self.native_state.ids_created()
     }
 
     // ========== Storage Tracking Methods ==========

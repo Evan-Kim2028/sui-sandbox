@@ -1863,8 +1863,6 @@ pub struct PTBExecutor<'a, 'b> {
     /// Stores the updated BCS bytes after mutation for syncing back to environment
     mutated_objects: HashMap<ObjectID, (Vec<u8>, Option<TypeTag>)>,
 
-    /// Counter for generating unique object IDs
-    id_counter: u64,
 
     /// Pre-published packages: (package_id, upgrade_cap_id) pairs
     /// These are populated by SimulationEnvironment before execution
@@ -1988,7 +1986,6 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             created_objects: HashMap::new(),
             deleted_objects: HashMap::new(),
             mutated_objects: HashMap::new(),
-            id_counter: 0,
             pre_published: Vec::new(),
             publish_index: 0,
             pre_upgraded: Vec::new(),
@@ -2053,7 +2050,6 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             created_objects: HashMap::new(),
             deleted_objects: HashMap::new(),
             mutated_objects: HashMap::new(),
-            id_counter: 0,
             pre_published,
             publish_index: 0,
             pre_upgraded,
@@ -2633,17 +2629,11 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         self.execute(commands.to_vec())
     }
 
-    /// Generate a fresh object ID.
+    /// Generate a fresh object ID using Sui's tx_context derivation.
     ///
-    /// IDs are deterministic based on the internal counter, making tests reproducible.
-    /// Use `set_id_seed` to set a custom starting counter for different test scenarios.
+    /// IDs are derived from `hash(tx_hash || ids_created)` to match on-chain behavior.
     fn fresh_id(&mut self) -> ObjectID {
-        let id = self.id_counter;
-        self.id_counter += 1;
-        // Create a deterministic ID based on counter
-        let mut bytes = [0u8; 32];
-        bytes[24..32].copy_from_slice(&id.to_le_bytes());
-        AccountAddress::new(bytes)
+        self.vm.fresh_object_id()
     }
 
     /// Set the ID counter seed for deterministic object ID generation.
@@ -2652,12 +2642,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// making tests fully reproducible. Different seeds can be used to test
     /// different scenarios without ID collisions.
     pub fn set_id_seed(&mut self, seed: u64) {
-        self.id_counter = seed;
+        self.vm.set_ids_created(seed);
     }
 
     /// Get the current ID counter value.
     pub fn id_seed(&self) -> u64 {
-        self.id_counter
+        self.vm.ids_created()
     }
 
     /// Resolve an argument to its BCS bytes.
