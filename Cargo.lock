@@ -8376,7 +8376,7 @@ dependencies = [
 
 [[package]]
 name = "sui-sandbox"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -8481,6 +8481,7 @@ dependencies = [
  "sui-sandbox-types",
  "sui-transport",
  "sui-types",
+ "tempfile",
  "tokio",
  "tracing",
  "ureq",

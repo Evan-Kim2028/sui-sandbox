@@ -67,3 +67,4 @@ sui-prefetch.workspace = true
 
 [dev-dependencies]
 ureq = { version = "2", features = ["json"] }
+tempfile.workspace = true
