@@ -214,7 +214,7 @@ fn main() -> Result<()> {
                         {
                             for obj_json in inputs {
                                 if let Err(e) = extract_and_store_object(
-                                    &*object_store,
+                                    &object_store,
                                     obj_json,
                                     Some(checkpoint),
                                     &mut objects_written_this_blob,
@@ -231,7 +231,7 @@ fn main() -> Result<()> {
                         {
                             for obj_json in outputs {
                                 if let Err(e) = extract_and_store_object(
-                                    &*object_store,
+                                    &object_store,
                                     obj_json,
                                     Some(checkpoint),
                                     &mut objects_written_this_blob,
@@ -248,7 +248,7 @@ fn main() -> Result<()> {
                     checkpoints_this_blob += 1;
 
                     let global = total_checkpoints.fetch_add(1, Ordering::Relaxed) + 1;
-                    if global % 1000 == 0 {
+                    if global.is_multiple_of(1000) {
                         let elapsed = blob_start.elapsed().as_secs_f64().max(0.0001);
                         let rate = checkpoints_this_blob as f64 / elapsed;
                         println!(

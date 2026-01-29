@@ -83,6 +83,7 @@ pub fn parse_ptb_transaction(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_inputs(
     walrus: &WalrusClient,
     v1: &Value,
@@ -593,6 +594,7 @@ fn parse_inputs(
     Ok((inputs, GasCoinArgMap { gas_coin_input_idx }))
 }
 
+#[allow(dead_code)]
 fn extract_object_ref_id(v: &Value) -> Option<String> {
     // Common shape: [ "<id>", <version>, "<digest>" ]
     if let Some(arr) = v.as_array() {
@@ -746,7 +748,7 @@ fn parse_commands(
         if let Some(split) = cmd.get("SplitCoins") {
             let (coin, amounts_val) = if let Some(arr) = split.as_array() {
                 let coin = arr
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("SplitCoins[0] missing coin"))?;
                 let amounts = arr
                     .get(1)
@@ -786,7 +788,7 @@ fn parse_commands(
         if let Some(merge) = cmd.get("MergeCoins") {
             let (destination, sources_val) = if let Some(arr) = merge.as_array() {
                 let destination = arr
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("MergeCoins[0] missing destination"))?;
                 let sources = arr
                     .get(1)
@@ -818,7 +820,7 @@ fn parse_commands(
         if let Some(xfer) = cmd.get("TransferObjects") {
             let (objects_val, address) = if let Some(arr) = xfer.as_array() {
                 let objects = arr
-                    .get(0)
+                    .first()
                     .ok_or_else(|| anyhow!("TransferObjects[0] missing objects"))?;
                 let address = arr
                     .get(1)
@@ -903,7 +905,7 @@ fn parse_argument(arg: &Value, gas_coin: &GasCoinArgMap) -> Result<Argument> {
     if let Some(nr_val) = arg.get("NestedResult") {
         if let Some(nr) = nr_val.as_array() {
             let a = nr
-                .get(0)
+                .first()
                 .and_then(|v| v.as_u64())
                 .context("NestedResult[0]")?;
             let b = nr
@@ -1163,7 +1165,7 @@ fn fetch_missing_object_data(
     if let Some(err) = last_err {
         return Err(anyhow!("gRPC error fetching object {}: {err}", id_hex));
     }
-    return Err(anyhow!("gRPC missing object {}", id_hex));
+    Err(anyhow!("gRPC missing object {}", id_hex))
 }
 
 fn find_historical_version(tx_json: &Value, id: ObjectID) -> Option<u64> {
@@ -1175,15 +1177,15 @@ fn find_historical_version(tx_json: &Value, id: ObjectID) -> Option<u64> {
     {
         for entry in changed {
             let arr = entry.as_array()?;
-            let id_s = arr.get(0)?.as_str()?;
+            let id_s = arr.first()?.as_str()?;
             if id_s.eq_ignore_ascii_case(&id_str) {
                 let meta = arr.get(1)?;
                 if let Some(exist) = meta.pointer("/input_state/Exist") {
                     let ver = exist
                         .as_array()
-                        .and_then(|v| v.get(0))
+                        .and_then(|v| v.first())
                         .and_then(|v| v.as_array())
-                        .and_then(|v| v.get(0))
+                        .and_then(|v| v.first())
                         .and_then(|v| v.as_u64());
                     if ver.is_some() {
                         return ver;
@@ -1199,13 +1201,13 @@ fn find_historical_version(tx_json: &Value, id: ObjectID) -> Option<u64> {
     {
         for entry in unchanged {
             let arr = entry.as_array()?;
-            let id_s = arr.get(0)?.as_str()?;
+            let id_s = arr.first()?.as_str()?;
             if id_s.eq_ignore_ascii_case(&id_str) {
                 let meta = arr.get(1)?;
                 if let Some(readonly) = meta.get("ReadOnlyRoot") {
                     let ver = readonly
                         .as_array()
-                        .and_then(|v| v.get(0))
+                        .and_then(|v| v.first())
                         .and_then(|v| v.as_u64());
                     if ver.is_some() {
                         return ver;
@@ -1214,7 +1216,7 @@ fn find_historical_version(tx_json: &Value, id: ObjectID) -> Option<u64> {
                 if let Some(mutable) = meta.get("MutableRoot") {
                     let ver = mutable
                         .as_array()
-                        .and_then(|v| v.get(0))
+                        .and_then(|v| v.first())
                         .and_then(|v| v.as_u64());
                     if ver.is_some() {
                         return ver;

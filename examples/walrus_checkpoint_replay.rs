@@ -178,8 +178,8 @@ fn main() -> Result<()> {
             .ok()
     });
 
-    if args.cache_dir.is_some() {
-        println!("✓ Disk cache enabled: {}", args.cache_dir.as_ref().unwrap());
+    if let Some(cache_dir) = &args.cache_dir {
+        println!("✓ Disk cache enabled: {}", cache_dir);
         println!();
     }
 

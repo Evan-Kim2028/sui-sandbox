@@ -1,3 +1,14 @@
+#![allow(
+    dead_code,
+    clippy::clone_on_copy,
+    clippy::collapsible_match,
+    clippy::format_in_format_args,
+    clippy::manual_flatten,
+    clippy::manual_pattern_char_comparison,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
@@ -2040,7 +2051,7 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
             .as_array()
             .ok_or_else(|| anyhow!("changed_objects entry not array"))?;
         let id_str = arr
-            .get(0)
+            .first()
             .and_then(|v| v.as_str())
             .context("changed_objects[0] id")?;
         let id = AccountAddress::from_hex_literal(id_str).context("parse object id")?;
@@ -2051,9 +2062,9 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
         {
             let exist_arr = exist.as_array().context("input_state.Exist is not array")?;
             let ver = exist_arr
-                .get(0)
+                .first()
                 .and_then(|v| v.as_array())
-                .and_then(|v| v.get(0))
+                .and_then(|v| v.first())
                 .and_then(|v| v.as_u64())
                 .context("input_state.Exist version")?;
             (Some(ver), true)
@@ -2074,7 +2085,7 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
                 .as_array()
                 .context("output_state.ObjectWrite is not array")?;
             let dig = ow_arr
-                .get(0)
+                .first()
                 .and_then(|v| v.as_str())
                 .context("output_state.ObjectWrite digest")?;
             output_digest = dig.to_string();
@@ -2084,7 +2095,7 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
                 .as_array()
                 .context("output_state.PackageWrite is not array")?;
             let dig = pw_arr
-                .get(0)
+                .first()
                 .and_then(|v| v.as_str())
                 .context("output_state.PackageWrite digest")?;
             output_digest = dig.to_string();
@@ -2315,7 +2326,7 @@ fn is_likely_gas_object(tx_json: &serde_json::Value, id: AccountAddress) -> bool
     };
     for p in payments {
         if let Some(arr) = p.as_array() {
-            if let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) {
+            if let Some(id_str) = arr.first().and_then(|v| v.as_str()) {
                 if let Ok(pid) = AccountAddress::from_hex_literal(id_str) {
                     if pid == id {
                         return true;
@@ -2340,7 +2351,7 @@ fn build_object_version_map_from_effects(
             let Some(arr) = entry.as_array() else {
                 continue;
             };
-            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+            let Some(id_str) = arr.first().and_then(|v| v.as_str()) else {
                 continue;
             };
             let Ok(id) = AccountAddress::from_hex_literal(id_str) else {
@@ -2350,9 +2361,9 @@ fn build_object_version_map_from_effects(
             if let Some(exist) = meta.pointer("/input_state/Exist") {
                 if let Some(ver) = exist
                     .as_array()
-                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.first())
                     .and_then(|v| v.as_array())
-                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.first())
                     .and_then(|v| v.as_u64())
                 {
                     m.insert(id, ver);
@@ -2392,7 +2403,7 @@ fn created_objects_from_effects(tx_json: &serde_json::Value) -> HashSet<AccountA
             let Some(arr) = entry.as_array() else {
                 continue;
             };
-            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+            let Some(id_str) = arr.first().and_then(|v| v.as_str()) else {
                 continue;
             };
             let meta = arr.get(1).unwrap_or(&serde_json::Value::Null);
@@ -2447,7 +2458,7 @@ fn build_package_version_map_from_effects(
         let Some(arr) = entry.as_array() else {
             continue;
         };
-        let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+        let Some(id_str) = arr.first().and_then(|v| v.as_str()) else {
             continue;
         };
         let Ok(id) = AccountAddress::from_hex_literal(id_str) else {
@@ -2458,7 +2469,7 @@ fn build_package_version_map_from_effects(
         if let Some(pkg) = meta.pointer("/output_state/PackageWrite") {
             if let Some(ver) = pkg
                 .as_array()
-                .and_then(|v| v.get(0))
+                .and_then(|v| v.first())
                 .and_then(|v| v.as_u64())
             {
                 m.insert(id, ver);
@@ -2482,7 +2493,7 @@ fn build_historical_versions_for_prefetch(
     {
         for entry in changed {
             let arr = entry.as_array()?;
-            let id_str = arr.get(0)?.as_str()?;
+            let id_str = arr.first()?.as_str()?;
             let meta = arr.get(1)?;
             if meta.pointer("/input_state/NotExist").is_some() {
                 created.insert(normalize_addr(id_str));
@@ -2520,14 +2531,14 @@ fn build_historical_versions_for_prefetch(
     {
         for entry in changed {
             let arr = entry.as_array()?;
-            let id_str = arr.get(0)?.as_str()?;
+            let id_str = arr.first()?.as_str()?;
             let meta = arr.get(1)?;
             if let Some(exist) = meta.pointer("/input_state/Exist") {
                 let ver = exist
                     .as_array()
-                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.first())
                     .and_then(|v| v.as_array())
-                    .and_then(|v| v.get(0))
+                    .and_then(|v| v.first())
                     .and_then(|v| v.as_u64())?;
                 let normalized = normalize_addr(id_str);
                 if created.contains(&normalized) {
@@ -2575,7 +2586,7 @@ fn extract_ptb_input_object_versions(tx_json: &serde_json::Value) -> Vec<(String
         }
 
         if let Some(arr) = obj.get("ImmOrOwnedObject").and_then(|v| v.as_array()) {
-            let id = arr.get(0).and_then(|v| v.as_str());
+            let id = arr.first().and_then(|v| v.as_str());
             let ver = arr.get(1).and_then(|v| {
                 v.as_str()
                     .and_then(|s| s.parse().ok())
@@ -2588,7 +2599,7 @@ fn extract_ptb_input_object_versions(tx_json: &serde_json::Value) -> Vec<(String
         }
 
         if let Some(arr) = obj.get("Receiving").and_then(|v| v.as_array()) {
-            let id = arr.get(0).and_then(|v| v.as_str());
+            let id = arr.first().and_then(|v| v.as_str());
             let ver = arr.get(1).and_then(|v| {
                 v.as_str()
                     .and_then(|s| s.parse().ok())
@@ -2753,7 +2764,7 @@ fn parse_gas_object_ref(tx_json: &serde_json::Value) -> Result<(AccountAddress, 
         .as_array()
         .ok_or_else(|| anyhow!("gas_data.payment entry not array"))?;
     let id_str = arr
-        .get(0)
+        .first()
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("gas_data.payment[0] id"))?;
     let version = match arr.get(1) {
