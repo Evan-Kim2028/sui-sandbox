@@ -34,6 +34,8 @@
 //! ```
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -41,8 +43,10 @@ use serde_json::Value;
 const MAX_PAGE_SIZE: usize = 50;
 
 /// GraphQL client for Sui network queries.
+#[derive(Clone)]
 pub struct GraphQLClient {
     endpoint: String,
+    agent: ureq::Agent,
 }
 
 /// Relay-style pagination info from GraphQL responses.
@@ -264,6 +268,76 @@ pub struct DynamicFieldInfo {
     pub value_bcs: Option<String>,
 }
 
+fn parse_dynamic_field_info(node: &Value) -> Option<DynamicFieldInfo> {
+    let name = node.get("name")?;
+    let value = node.get("value")?;
+
+    // Parse the key/name
+    let name_type = name
+        .get("type")
+        .and_then(|t| t.get("repr"))
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name_bcs = name
+        .get("bcs")
+        .and_then(|b| b.as_str())
+        .map(|s| s.to_string());
+    let name_json = name.get("json").cloned();
+
+    // Parse the value (either MoveObject or MoveValue)
+    let value_typename = value.get("__typename").and_then(|t| t.as_str());
+
+    let (object_id, version, digest, value_type, value_bcs) = match value_typename {
+        Some("MoveObject") => {
+            let addr = value
+                .get("address")
+                .and_then(|a| a.as_str())
+                .map(|s| s.to_string());
+            let ver = value.get("version").and_then(|v| v.as_u64());
+            let dig = value
+                .get("digest")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string());
+            let contents = value.get("contents");
+            let vtype = contents
+                .and_then(|c| c.get("type"))
+                .and_then(|t| t.get("repr"))
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+            let vbcs = contents
+                .and_then(|c| c.get("bcs"))
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string());
+            (addr, ver, dig, vtype, vbcs)
+        }
+        Some("MoveValue") => {
+            let vtype = value
+                .get("type")
+                .and_then(|t| t.get("repr"))
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+            let vbcs = value
+                .get("bcs")
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string());
+            (None, None, None, vtype, vbcs)
+        }
+        _ => (None, None, None, None, None),
+    };
+
+    Some(DynamicFieldInfo {
+        name_type,
+        name_bcs,
+        name_json,
+        object_id,
+        version,
+        digest,
+        value_type,
+        value_bcs,
+    })
+}
+
 impl DynamicFieldInfo {
     /// Decode the BCS value bytes (from base64).
     pub fn decode_value_bcs(&self) -> Option<Vec<u8>> {
@@ -391,24 +465,51 @@ pub struct GraphQLObjectChange {
 }
 
 impl GraphQLClient {
+    /// Default request timeout in seconds (can be overridden by env).
+    const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// Default connect timeout in seconds (can be overridden by env).
+    const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+    fn default_timeouts() -> (Duration, Duration) {
+        let timeout_secs = std::env::var("SUI_GRAPHQL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(Self::DEFAULT_TIMEOUT_SECS);
+        let connect_secs = std::env::var("SUI_GRAPHQL_CONNECT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(Self::DEFAULT_CONNECT_TIMEOUT_SECS);
+        (Duration::from_secs(timeout_secs), Duration::from_secs(connect_secs))
+    }
+
+    fn build_agent(timeout: Duration, connect_timeout: Duration) -> ureq::Agent {
+        ureq::AgentBuilder::new()
+            .timeout(timeout)
+            .timeout_connect(connect_timeout)
+            .build()
+    }
+
     /// Create a client for mainnet.
     pub fn mainnet() -> Self {
-        Self {
-            endpoint: "https://graphql.mainnet.sui.io/graphql".to_string(),
-        }
+        Self::new("https://graphql.mainnet.sui.io/graphql")
     }
 
     /// Create a client for testnet.
     pub fn testnet() -> Self {
-        Self {
-            endpoint: "https://graphql.testnet.sui.io/graphql".to_string(),
-        }
+        Self::new("https://graphql.testnet.sui.io/graphql")
     }
 
     /// Create a client with a custom endpoint.
     pub fn new(endpoint: &str) -> Self {
+        let (timeout, connect_timeout) = Self::default_timeouts();
+        Self::with_timeouts(endpoint, timeout, connect_timeout)
+    }
+
+    /// Create a client with explicit timeouts.
+    pub fn with_timeouts(endpoint: &str, timeout: Duration, connect_timeout: Duration) -> Self {
         Self {
             endpoint: endpoint.to_string(),
+            agent: Self::build_agent(timeout, connect_timeout),
         }
     }
 
@@ -419,7 +520,9 @@ impl GraphQLClient {
             "variables": variables.unwrap_or(Value::Null)
         });
 
-        let response: Value = ureq::post(&self.endpoint)
+        let response: Value = self
+            .agent
+            .post(&self.endpoint)
             .set("Content-Type", "application/json")
             .send_json(&body)
             .map_err(|e| anyhow!("GraphQL request failed: {}", e))?
@@ -615,41 +718,9 @@ impl GraphQLClient {
         address: &str,
         checkpoint: u64,
     ) -> Result<GraphQLObject> {
-        // The Sui GraphQL API supports querying objects at a specific checkpoint
-        // using the checkpoint context
-        let _query = r#"
+        let snapshot_query = r#"
             query GetObjectAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
-                checkpoint(sequenceNumber: $checkpoint) {
-                    transactionBlocks {
-                        nodes {
-                            effects {
-                                objectChanges {
-                                    nodes {
-                                        address
-                                        outputState {
-                                            version
-                                            digest
-                                            asMoveObject {
-                                                contents {
-                                                    type { repr }
-                                                    bcs
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        "#;
-
-        // This query is expensive, so let's try a simpler approach first:
-        // Query the object directly with a checkpoint hint
-        let simple_query = r#"
-            query GetObject($address: SuiAddress!) {
-                object(address: $address) {
+                object(address: $address, version: null) @snapshot(at: $checkpoint) {
                     address
                     version
                     digest
@@ -676,14 +747,12 @@ impl GraphQLClient {
             }
         "#;
 
-        let _variables = serde_json::json!({
+        let variables = serde_json::json!({
             "address": address,
             "checkpoint": checkpoint
         });
 
-        // For now, just use the simple query (current version)
-        // Full checkpoint-based historical queries require more complex indexer support
-        let data = self.query(simple_query, Some(serde_json::json!({"address": address})))?;
+        let data = self.query(snapshot_query, Some(variables))?;
 
         let obj = data
             .get("object")
@@ -2255,6 +2324,85 @@ impl GraphQLClient {
         paginator.collect_all()
     }
 
+    /// Fetch dynamic fields (children) of an object at a specific checkpoint.
+    ///
+    /// Falls back to current state if snapshot queries are not supported.
+    pub fn fetch_dynamic_fields_at_checkpoint(
+        &self,
+        parent_address: &str,
+        limit: usize,
+        checkpoint: u64,
+    ) -> Result<Vec<DynamicFieldInfo>> {
+        let paginator = Paginator::new(PaginationDirection::Forward, limit, |cursor, page_size| {
+            self.fetch_dynamic_fields_page_at_checkpoint(parent_address, cursor, page_size, checkpoint)
+        });
+
+        paginator.collect_all()
+    }
+
+    /// Fetch a single dynamic field by name (type + BCS key).
+    ///
+    /// This is useful when the computed child ID doesn't match on-chain (e.g. upgrades),
+    /// or when enumerating all fields is too expensive.
+    pub fn fetch_dynamic_field_by_name(
+        &self,
+        parent_address: &str,
+        name_type: &str,
+        name_bcs: &[u8],
+    ) -> Result<Option<DynamicFieldInfo>> {
+        let name_bcs_b64 = base64::engine::general_purpose::STANDARD.encode(name_bcs);
+
+        let query = r#"
+            query GetDynamicFieldByName(
+                $address: SuiAddress!,
+                $nameType: String!,
+                $nameBcs: Base64!
+            ) {
+                object(address: $address) {
+                    dynamicField(name: { type: $nameType, bcs: $nameBcs }) {
+                        name {
+                            type { repr }
+                            bcs
+                            json
+                        }
+                        value {
+                            __typename
+                            ... on MoveObject {
+                                address
+                                version
+                                digest
+                                contents {
+                                    type { repr }
+                                    bcs
+                                    json
+                                }
+                            }
+                            ... on MoveValue {
+                                type { repr }
+                                bcs
+                                json
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": parent_address,
+            "nameType": name_type,
+            "nameBcs": name_bcs_b64,
+        });
+
+        let data = self.query(query, Some(variables))?;
+        let node = data
+            .get("object")
+            .and_then(|o| o.get("dynamicField"))
+            .and_then(|df| if df.is_null() { None } else { Some(df) });
+
+        Ok(node.and_then(parse_dynamic_field_info))
+    }
+
     /// Fetch a single page of dynamic fields (internal helper).
     fn fetch_dynamic_fields_page(
         &self,
@@ -2318,78 +2466,86 @@ impl GraphQLClient {
             .map(|arr| arr.to_vec())
             .unwrap_or_default();
 
-        let fields: Vec<DynamicFieldInfo> = nodes
-            .iter()
-            .filter_map(|node| {
-                let name = node.get("name")?;
-                let value = node.get("value")?;
+        let fields: Vec<DynamicFieldInfo> =
+            nodes.iter().filter_map(parse_dynamic_field_info).collect();
 
-                // Parse the key/name
-                let name_type = name
-                    .get("type")
-                    .and_then(|t| t.get("repr"))
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let name_bcs = name
-                    .get("bcs")
-                    .and_then(|b| b.as_str())
-                    .map(|s| s.to_string());
-                let name_json = name.get("json").cloned();
+        let page_info = PageInfo::from_value(df_connection.and_then(|df| df.get("pageInfo")));
 
-                // Parse the value (either MoveObject or MoveValue)
-                let value_typename = value.get("__typename").and_then(|t| t.as_str());
+        Ok((fields, page_info))
+    }
 
-                let (object_id, version, digest, value_type, value_bcs) = match value_typename {
-                    Some("MoveObject") => {
-                        let addr = value
-                            .get("address")
-                            .and_then(|a| a.as_str())
-                            .map(|s| s.to_string());
-                        let ver = value.get("version").and_then(|v| v.as_u64());
-                        let dig = value
-                            .get("digest")
-                            .and_then(|d| d.as_str())
-                            .map(|s| s.to_string());
-                        let contents = value.get("contents");
-                        let vtype = contents
-                            .and_then(|c| c.get("type"))
-                            .and_then(|t| t.get("repr"))
-                            .and_then(|r| r.as_str())
-                            .map(|s| s.to_string());
-                        let vbcs = contents
-                            .and_then(|c| c.get("bcs"))
-                            .and_then(|b| b.as_str())
-                            .map(|s| s.to_string());
-                        (addr, ver, dig, vtype, vbcs)
+    /// Fetch a single page of dynamic fields at a specific checkpoint (internal helper).
+    fn fetch_dynamic_fields_page_at_checkpoint(
+        &self,
+        parent_address: &str,
+        cursor: Option<&str>,
+        limit: usize,
+        checkpoint: u64,
+    ) -> Result<(Vec<DynamicFieldInfo>, PageInfo)> {
+        let query = r#"
+            query GetDynamicFieldsAtCheckpoint(
+                $address: SuiAddress!,
+                $limit: Int!,
+                $after: String,
+                $checkpoint: UInt53!
+            ) {
+                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                    dynamicFields(first: $limit, after: $after) {
+                        pageInfo {
+                            hasNextPage
+                            hasPreviousPage
+                            startCursor
+                            endCursor
+                        }
+                        nodes {
+                            name {
+                                type { repr }
+                                bcs
+                                json
+                            }
+                            value {
+                                __typename
+                                ... on MoveObject {
+                                    address
+                                    version
+                                    digest
+                                    contents {
+                                        type { repr }
+                                        bcs
+                                        json
+                                    }
+                                }
+                                ... on MoveValue {
+                                    type { repr }
+                                    bcs
+                                    json
+                                }
+                            }
+                        }
                     }
-                    Some("MoveValue") => {
-                        let vtype = value
-                            .get("type")
-                            .and_then(|t| t.get("repr"))
-                            .and_then(|r| r.as_str())
-                            .map(|s| s.to_string());
-                        let vbcs = value
-                            .get("bcs")
-                            .and_then(|b| b.as_str())
-                            .map(|s| s.to_string());
-                        (None, None, None, vtype, vbcs)
-                    }
-                    _ => (None, None, None, None, None),
-                };
+                }
+            }
+        "#;
 
-                Some(DynamicFieldInfo {
-                    name_type,
-                    name_bcs,
-                    name_json,
-                    object_id,
-                    version,
-                    digest,
-                    value_type,
-                    value_bcs,
-                })
-            })
-            .collect();
+        let variables = serde_json::json!({
+            "address": parent_address,
+            "limit": limit,
+            "after": cursor,
+            "checkpoint": checkpoint
+        });
+
+        let data = self.query(query, Some(variables))?;
+
+        let df_connection = data.get("object").and_then(|o| o.get("dynamicFields"));
+
+        let nodes = df_connection
+            .and_then(|df| df.get("nodes"))
+            .and_then(|n| n.as_array())
+            .map(|arr| arr.to_vec())
+            .unwrap_or_default();
+
+        let fields: Vec<DynamicFieldInfo> =
+            nodes.iter().filter_map(parse_dynamic_field_info).collect();
 
         let page_info = PageInfo::from_value(df_connection.and_then(|df| df.get("pageInfo")));
 

@@ -434,6 +434,35 @@ impl GrpcClient {
         Ok(inner.checkpoint.map(GrpcCheckpoint::from_proto))
     }
 
+    /// Fetch epoch information (protocol version, reference gas price, etc.).
+    ///
+    /// If `epoch` is None, returns the current epoch.
+    pub async fn get_epoch(&self, epoch: Option<u64>) -> Result<Option<GrpcEpoch>> {
+        let mut client = LedgerServiceClient::new(self.channel.clone());
+
+        let request = proto::GetEpochRequest {
+            epoch,
+            read_mask: Some(prost_types::FieldMask {
+                paths: vec![
+                    "epoch".to_string(),
+                    "system_state".to_string(),
+                    "reference_gas_price".to_string(),
+                    "protocol_config".to_string(),
+                    "first_checkpoint".to_string(),
+                    "last_checkpoint".to_string(),
+                ],
+            }),
+        };
+
+        let response = client
+            .get_epoch(self.wrap_request(request))
+            .await
+            .map_err(|e| anyhow!("gRPC error fetching epoch: {}", e))?;
+
+        let inner = response.into_inner();
+        Ok(inner.epoch.map(GrpcEpoch::from_proto))
+    }
+
     /// Fetch a package's modules at a specific version.
     ///
     /// This is useful for historical transaction replay where you need the exact
@@ -520,6 +549,18 @@ pub struct GrpcCheckpoint {
     /// The epoch this checkpoint belongs to.
     pub epoch: u64,
     pub transactions: Vec<GrpcTransaction>,
+    /// Objects referenced as inputs or outputs in this checkpoint.
+    pub objects: Vec<GrpcObject>,
+}
+
+/// Epoch metadata (protocol version, gas price, checkpoints).
+#[derive(Debug, Clone)]
+pub struct GrpcEpoch {
+    pub epoch: u64,
+    pub protocol_version: Option<u64>,
+    pub reference_gas_price: Option<u64>,
+    pub first_checkpoint: Option<u64>,
+    pub last_checkpoint: Option<u64>,
 }
 
 impl GrpcCheckpoint {
@@ -529,6 +570,15 @@ impl GrpcCheckpoint {
             .and_then(|s| s.timestamp.as_ref())
             .map(|t| (t.seconds as u64) * 1000 + (t.nanos as u64) / 1_000_000);
         let epoch = summary.and_then(|s| s.epoch).unwrap_or(0);
+        let objects = proto
+            .objects
+            .map(|set| {
+                set.objects
+                    .into_iter()
+                    .map(GrpcObject::from_proto)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Self {
             sequence_number: proto.sequence_number.unwrap_or(0),
@@ -540,6 +590,25 @@ impl GrpcCheckpoint {
                 .into_iter()
                 .map(|tx| GrpcTransaction::from_proto(tx).with_epoch(epoch))
                 .collect(),
+            objects,
+        }
+    }
+}
+
+impl GrpcEpoch {
+    fn from_proto(proto: proto::Epoch) -> Self {
+        let protocol_version = proto
+            .system_state
+            .as_ref()
+            .and_then(|s| s.protocol_version)
+            .or_else(|| proto.protocol_config.as_ref().and_then(|c| c.protocol_version));
+
+        Self {
+            epoch: proto.epoch.unwrap_or(0),
+            protocol_version,
+            reference_gas_price: proto.reference_gas_price,
+            first_checkpoint: proto.first_checkpoint,
+            last_checkpoint: proto.last_checkpoint,
         }
     }
 }
@@ -559,6 +628,8 @@ pub struct GrpcTransaction {
     pub inputs: Vec<GrpcInput>,
     pub commands: Vec<GrpcCommand>,
     pub status: Option<String>,
+    /// Objects referenced as inputs or outputs by this transaction.
+    pub objects: Vec<GrpcObject>,
     /// Detailed execution error information if the transaction failed.
     pub execution_error: Option<GrpcExecutionError>,
     /// Dynamic field children loaded but not modified during execution.
@@ -628,6 +699,17 @@ impl GrpcTransaction {
             .unwrap_or((vec![], vec![]));
 
         let gas_payment = tx.and_then(|t| t.gas_payment.as_ref());
+        let objects = proto
+            .objects
+            .as_ref()
+            .map(|set| {
+                set.objects
+                    .iter()
+                    .cloned()
+                    .map(GrpcObject::from_proto)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let timestamp_ms = proto
             .timestamp
@@ -774,6 +856,7 @@ impl GrpcTransaction {
             inputs,
             commands,
             status,
+            objects,
             execution_error,
             unchanged_loaded_runtime_objects,
             changed_objects,
@@ -1339,6 +1422,7 @@ mod tests {
                 arguments: vec![],
             }],
             status: None,
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![],
             changed_objects: vec![],
@@ -1363,6 +1447,7 @@ mod tests {
             execution_error: None,
             commands: vec![],
             status: None,
+            objects: vec![],
             unchanged_loaded_runtime_objects: vec![],
             changed_objects: vec![],
             created_objects: vec![],
@@ -1385,6 +1470,7 @@ mod tests {
             inputs: vec![],
             commands: vec![],
             status: None,
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![],
             changed_objects: vec![],
@@ -1408,6 +1494,7 @@ mod tests {
             inputs: vec![],
             commands: vec![],
             status: None,
+            objects: vec![],
             execution_error: None,
             unchanged_loaded_runtime_objects: vec![],
             changed_objects: vec![],

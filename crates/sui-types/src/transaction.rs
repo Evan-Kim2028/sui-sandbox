@@ -287,6 +287,38 @@ pub struct EffectsComparison {
     pub notes: Vec<String>,
 
     // =========================================================================
+    // Object-Level ID Comparison (optional)
+    // =========================================================================
+    /// Whether created object IDs matched exactly
+    #[serde(default)]
+    pub created_ids_match: bool,
+    /// Whether mutated object IDs matched (allows extra gas objects)
+    #[serde(default)]
+    pub mutated_ids_match: bool,
+    /// Whether deleted object IDs matched exactly
+    #[serde(default)]
+    pub deleted_ids_match: bool,
+
+    /// Created IDs missing from local execution
+    #[serde(default)]
+    pub created_ids_missing: Vec<String>,
+    /// Created IDs extra in local execution
+    #[serde(default)]
+    pub created_ids_extra: Vec<String>,
+    /// Mutated IDs missing from local execution
+    #[serde(default)]
+    pub mutated_ids_missing: Vec<String>,
+    /// Mutated IDs extra in local execution
+    #[serde(default)]
+    pub mutated_ids_extra: Vec<String>,
+    /// Deleted IDs missing from local execution
+    #[serde(default)]
+    pub deleted_ids_missing: Vec<String>,
+    /// Deleted IDs extra in local execution
+    #[serde(default)]
+    pub deleted_ids_extra: Vec<String>,
+
+    // =========================================================================
     // Version Tracking Comparison (populated when version info is provided)
     // =========================================================================
     /// Whether version tracking comparison was performed
@@ -422,6 +454,15 @@ impl EffectsComparison {
             deleted_count_match,
             match_score,
             notes,
+            created_ids_match: true,
+            mutated_ids_match: true,
+            deleted_ids_match: true,
+            created_ids_missing: Vec::new(),
+            created_ids_extra: Vec::new(),
+            mutated_ids_missing: Vec::new(),
+            mutated_ids_extra: Vec::new(),
+            deleted_ids_missing: Vec::new(),
+            deleted_ids_extra: Vec::new(),
             // Version tracking fields not populated in basic comparison
             version_tracking_enabled: false,
             input_versions_matched: 0,
@@ -429,6 +470,84 @@ impl EffectsComparison {
             version_increments_valid: 0,
             version_increments_total: 0,
             version_mismatches: Vec::new(),
+        }
+    }
+
+    /// Apply object-level ID comparison between on-chain and local effects.
+    ///
+    /// This supplements count-based comparison with ID-level checks.
+    /// For mutated objects, extra on-chain IDs are tolerated (gas object mutations).
+    pub fn apply_object_id_comparison(
+        &mut self,
+        on_chain: &TransactionEffectsSummary,
+        local: &TransactionEffectsSummary,
+    ) {
+        use std::collections::HashSet;
+
+        // Created
+        let on_chain_created: HashSet<_> = on_chain.created.iter().cloned().collect();
+        let local_created: HashSet<_> = local.created.iter().cloned().collect();
+        let created_missing: Vec<String> = on_chain_created
+            .difference(&local_created)
+            .cloned()
+            .collect();
+        let created_extra: Vec<String> = local_created
+            .difference(&on_chain_created)
+            .cloned()
+            .collect();
+        self.created_ids_match = created_missing.is_empty() && created_extra.is_empty();
+        self.created_ids_missing = created_missing;
+        self.created_ids_extra = created_extra;
+        if !self.created_ids_match {
+            self.notes.push(format!(
+                "Created ID mismatch: missing={}, extra={}",
+                self.created_ids_missing.len(),
+                self.created_ids_extra.len()
+            ));
+        }
+
+        // Mutated (allow extra on-chain mutations for gas)
+        let on_chain_mutated: HashSet<_> = on_chain.mutated.iter().cloned().collect();
+        let local_mutated: HashSet<_> = local.mutated.iter().cloned().collect();
+        let mutated_missing: Vec<String> = local_mutated
+            .difference(&on_chain_mutated)
+            .cloned()
+            .collect();
+        let mutated_extra: Vec<String> = on_chain_mutated
+            .difference(&local_mutated)
+            .cloned()
+            .collect();
+        self.mutated_ids_match = mutated_missing.is_empty() && mutated_extra.len() <= 2;
+        self.mutated_ids_missing = mutated_missing;
+        self.mutated_ids_extra = mutated_extra;
+        if !self.mutated_ids_match {
+            self.notes.push(format!(
+                "Mutated ID mismatch: missing={}, extra={}",
+                self.mutated_ids_missing.len(),
+                self.mutated_ids_extra.len()
+            ));
+        }
+
+        // Deleted
+        let on_chain_deleted: HashSet<_> = on_chain.deleted.iter().cloned().collect();
+        let local_deleted: HashSet<_> = local.deleted.iter().cloned().collect();
+        let deleted_missing: Vec<String> = on_chain_deleted
+            .difference(&local_deleted)
+            .cloned()
+            .collect();
+        let deleted_extra: Vec<String> = local_deleted
+            .difference(&on_chain_deleted)
+            .cloned()
+            .collect();
+        self.deleted_ids_match = deleted_missing.is_empty() && deleted_extra.is_empty();
+        self.deleted_ids_missing = deleted_missing;
+        self.deleted_ids_extra = deleted_extra;
+        if !self.deleted_ids_match {
+            self.notes.push(format!(
+                "Deleted ID mismatch: missing={}, extra={}",
+                self.deleted_ids_missing.len(),
+                self.deleted_ids_extra.len()
+            ));
         }
     }
 
