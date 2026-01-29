@@ -53,7 +53,10 @@ pub fn package_shard_path(id: &AccountAddress) -> String {
 pub fn package_path(cache_root: &Path, id: &AccountAddress) -> PathBuf {
     let aa = package_shard_path(id);
     let normalized_id = normalize_object_id(id);
-    cache_root.join("packages").join(&aa).join(format!("{}.json", normalized_id))
+    cache_root
+        .join("packages")
+        .join(&aa)
+        .join(format!("{}.json", normalized_id))
 }
 
 /// Get the progress state file path.
@@ -80,21 +83,24 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     ensure_parent_dirs(path)?;
     let tmp_path = path.with_extension(format!(
         "{}.tmp",
-        path.extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tmp")
+        path.extension().and_then(|s| s.to_str()).unwrap_or("tmp")
     ));
     std::fs::write(&tmp_path, contents)
         .map_err(|e| anyhow!("Failed to write temp file {}: {}", tmp_path.display(), e))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| anyhow!("Failed to rename {} to {}: {}", tmp_path.display(), path.display(), e))?;
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        anyhow!(
+            "Failed to rename {} to {}: {}",
+            tmp_path.display(),
+            path.display(),
+            e
+        )
+    })?;
     Ok(())
 }
 
 /// Write a JSON file atomically (compact format, no pretty printing).
 pub fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let json = serde_json::to_vec(value)
-        .map_err(|e| anyhow!("Failed to serialize JSON: {}", e))?;
+    let json = serde_json::to_vec(value).map_err(|e| anyhow!("Failed to serialize JSON: {}", e))?;
     atomic_write(path, &json)
 }
 

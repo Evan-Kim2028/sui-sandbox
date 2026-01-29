@@ -19,16 +19,16 @@
 //! ```
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Read;
 use std::str::FromStr;
-use sui_types::full_checkpoint_content::CheckpointData;
-use sui_types::base_types::{ObjectID, SequenceNumber, SuiAddress, MoveObjectType};
-use sui_types::object::{Object, Owner, MoveObject};
-use sui_types::digests::TransactionDigest;
-use base64::Engine;
-use std::collections::HashMap;
 use sui_storage::blob::Blob;
+use sui_types::base_types::{MoveObjectType, ObjectID, SequenceNumber, SuiAddress};
+use sui_types::digests::TransactionDigest;
+use sui_types::full_checkpoint_content::CheckpointData;
+use sui_types::object::{MoveObject, Object, Owner};
 
 /// Walrus archival client for fetching historical checkpoint data.
 #[derive(Clone, Debug)]
@@ -127,7 +127,12 @@ impl WalrusClient {
     /// Fetch raw checkpoint bytes from Walrus aggregator.
     ///
     /// Uses byte-range request to efficiently fetch only the checkpoint data.
-    pub fn fetch_checkpoint_bytes(&self, blob_id: &str, offset: u64, length: u64) -> Result<Vec<u8>> {
+    pub fn fetch_checkpoint_bytes(
+        &self,
+        blob_id: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>> {
         let url = format!(
             "{}/v1/blobs/{}/byte-range?start={}&length={}",
             self.aggregator_url, blob_id, offset, length
@@ -159,11 +164,8 @@ impl WalrusClient {
         let metadata = self.get_checkpoint_metadata(checkpoint)?;
 
         // Step 2: Fetch raw bytes
-        let bcs_bytes = self.fetch_checkpoint_bytes(
-            &metadata.blob_id,
-            metadata.offset,
-            metadata.length,
-        )?;
+        let bcs_bytes =
+            self.fetch_checkpoint_bytes(&metadata.blob_id, metadata.offset, metadata.length)?;
 
         // Step 3: Decode (Walrus aggregator returns a Sui `Blob` wrapper: [encoding_byte || bcs_payload])
         let checkpoint_data: CheckpointData = Blob::from_bytes::<CheckpointData>(&bcs_bytes)
@@ -262,7 +264,9 @@ impl WalrusClient {
                     }
                     let slice = &bytes[rel..rel + len];
                     let cp_data: CheckpointData = Blob::from_bytes::<CheckpointData>(slice)
-                        .map_err(|e| anyhow!("Failed to decode checkpoint {}: {}", seg.checkpoint, e))?;
+                        .map_err(|e| {
+                            anyhow!("Failed to decode checkpoint {}: {}", seg.checkpoint, e)
+                        })?;
                     out.push((seg.checkpoint, cp_data));
                 }
             }
@@ -293,8 +297,8 @@ impl WalrusClient {
         decoded
             .into_iter()
             .map(|(cp, data)| {
-                let v =
-                    serde_json::to_value(&data).map_err(|e| anyhow!("serialize checkpoint {}: {e}", cp))?;
+                let v = serde_json::to_value(&data)
+                    .map_err(|e| anyhow!("serialize checkpoint {}: {e}", cp))?;
                 Ok((cp, v))
             })
             .collect()
@@ -375,7 +379,9 @@ impl WalrusClient {
 
                 // Extract owner
                 let owner = self.parse_owner(
-                    obj_json.get("owner").ok_or_else(|| anyhow!("Missing owner"))?
+                    obj_json
+                        .get("owner")
+                        .ok_or_else(|| anyhow!("Missing owner"))?,
                 )?;
 
                 // Extract type
@@ -490,7 +496,8 @@ impl WalrusClient {
         if let Some(coin_json) = type_json.get("Coin") {
             if let Some(struct_json) = coin_json.get("struct") {
                 // Parse the inner coin type
-                let inner_type = self.parse_type_tag(&serde_json::json!({ "struct": struct_json }))?;
+                let inner_type =
+                    self.parse_type_tag(&serde_json::json!({ "struct": struct_json }))?;
 
                 // Return 0x2::coin::Coin<InnerType>
                 return Ok(TypeTag::Struct(Box::new(StructTag {
@@ -526,14 +533,15 @@ impl WalrusClient {
             .ok_or_else(|| anyhow!("Missing name in type"))?;
 
         // Parse type_args recursively if present
-        let type_params = if let Some(type_args) = struct_json.get("type_args").and_then(|t| t.as_array()) {
-            type_args
-                .iter()
-                .map(|arg| self.parse_type_tag(arg))
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            vec![]
-        };
+        let type_params =
+            if let Some(type_args) = struct_json.get("type_args").and_then(|t| t.as_array()) {
+                type_args
+                    .iter()
+                    .map(|arg| self.parse_type_tag(arg))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                vec![]
+            };
 
         // Add 0x prefix if missing for AccountAddress parsing
         let address_with_prefix = if address.starts_with("0x") {
@@ -710,7 +718,10 @@ mod tests {
 
         println!("Checkpoint {} data:", latest);
         println!("  Transactions: {}", checkpoint.transactions.len());
-        println!("  Checkpoint sequence: {}", checkpoint.checkpoint_summary.sequence_number);
+        println!(
+            "  Checkpoint sequence: {}",
+            checkpoint.checkpoint_summary.sequence_number
+        );
 
         assert_eq!(checkpoint.checkpoint_summary.sequence_number, latest);
     }

@@ -11,13 +11,13 @@
 //! ```
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use clap::Parser;
 use move_core_types::account_address::AccountAddress;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
-use base64::Engine;
 
 use sui_historical_cache::{FsObjectStore, ObjectMeta, ObjectVersionStore, ProgressTracker};
 use sui_transport::walrus::WalrusClient;
@@ -137,7 +137,8 @@ fn main() -> Result<()> {
     let worker_count = args.workers.max(1).min(tasks.len().max(1));
     let (tx, rx) = std::sync::mpsc::channel::<(String, u64, u64)>();
     for t in tasks {
-        tx.send(t).map_err(|e| anyhow!("failed to enqueue task: {e}"))?;
+        tx.send(t)
+            .map_err(|e| anyhow!("failed to enqueue task: {e}"))?;
     }
     drop(tx);
 
@@ -157,7 +158,9 @@ fn main() -> Result<()> {
         let handle = std::thread::spawn(move || -> Result<()> {
             loop {
                 let task = {
-                    let guard = rx.lock().map_err(|_| anyhow!("task queue mutex poisoned"))?;
+                    let guard = rx
+                        .lock()
+                        .map_err(|_| anyhow!("task queue mutex poisoned"))?;
                     guard.recv()
                 };
                 let Ok((blob_id, range_start, range_end)) = task else {
@@ -175,7 +178,10 @@ fn main() -> Result<()> {
                     println!("Resuming blob {} from checkpoint {}", blob_id, resume_from);
                 }
 
-                println!("Processing blob {}: checkpoints {}..{}", blob_id, resume_from, range_end);
+                println!(
+                    "Processing blob {}: checkpoints {}..{}",
+                    blob_id, resume_from, range_end
+                );
                 let blob_start = Instant::now();
 
                 // Build checkpoint list
@@ -185,7 +191,8 @@ fn main() -> Result<()> {
                 }
 
                 // Fetch checkpoints in batches
-                let decoded = walrus.get_checkpoints_json_batched(&checkpoints, max_blob_chunk_bytes)?;
+                let decoded =
+                    walrus.get_checkpoints_json_batched(&checkpoints, max_blob_chunk_bytes)?;
                 println!("  Blob {}: fetched {} checkpoints", blob_id, decoded.len());
 
                 // Extract objects from each checkpoint
@@ -202,7 +209,9 @@ fn main() -> Result<()> {
 
                     for tx_json in transactions {
                         // Process input_objects
-                        if let Some(inputs) = tx_json.get("input_objects").and_then(|v| v.as_array()) {
+                        if let Some(inputs) =
+                            tx_json.get("input_objects").and_then(|v| v.as_array())
+                        {
                             for obj_json in inputs {
                                 if let Err(e) = extract_and_store_object(
                                     &*object_store,
@@ -217,7 +226,9 @@ fn main() -> Result<()> {
                         }
 
                         // Process output_objects (prefer these as they're more complete)
-                        if let Some(outputs) = tx_json.get("output_objects").and_then(|v| v.as_array()) {
+                        if let Some(outputs) =
+                            tx_json.get("output_objects").and_then(|v| v.as_array())
+                        {
                             for obj_json in outputs {
                                 if let Err(e) = extract_and_store_object(
                                     &*object_store,
@@ -273,8 +284,7 @@ fn main() -> Result<()> {
 
     // Wait for all workers
     for h in handles {
-        h.join()
-            .map_err(|_| anyhow!("worker thread panicked"))??;
+        h.join().map_err(|_| anyhow!("worker thread panicked"))??;
     }
 
     let elapsed = start_time.elapsed().as_secs_f64();
@@ -289,10 +299,16 @@ fn main() -> Result<()> {
     println!("Duplicates skipped:   {}", total_duplicates);
     println!("Elapsed:              {:.1}s", elapsed);
     if total_checkpoints > 0 {
-        println!("Checkpoints/sec:      {:.1}", total_checkpoints as f64 / elapsed);
+        println!(
+            "Checkpoints/sec:      {:.1}",
+            total_checkpoints as f64 / elapsed
+        );
     }
     if total_objects > 0 {
-        println!("Objects/sec:          {:.1}", total_objects as f64 / elapsed);
+        println!(
+            "Objects/sec:          {:.1}",
+            total_objects as f64 / elapsed
+        );
     }
 
     // Calculate disk usage
@@ -346,7 +362,9 @@ fn extract_and_store_object(
     }
 
     // Parse type tag
-    let type_json = move_obj.get("type_").ok_or_else(|| anyhow!("Missing type_"))?;
+    let type_json = move_obj
+        .get("type_")
+        .ok_or_else(|| anyhow!("Missing type_"))?;
     let type_tag_str = parse_type_tag_string(type_json)?;
 
     // Extract owner kind (best-effort)

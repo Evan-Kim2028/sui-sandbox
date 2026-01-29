@@ -92,7 +92,11 @@ impl ProgressTracker {
 
     /// Get the last checkpoint ingested for a blob.
     pub fn last_checkpoint(&self, blob_id: &str) -> Option<u64> {
-        self.state.read().last_checkpoint_per_blob.get(blob_id).copied()
+        self.state
+            .read()
+            .last_checkpoint_per_blob
+            .get(blob_id)
+            .copied()
     }
 
     /// Record that a checkpoint has been processed.
@@ -160,8 +164,7 @@ impl ProgressTracker {
             .append(true)
             .open(&*self.events_file)
             .map_err(|e| anyhow!("Failed to open events file: {}", e))?;
-        writeln!(file, "{}", json)
-            .map_err(|e| anyhow!("Failed to write event: {}", e))?;
+        writeln!(file, "{}", json).map_err(|e| anyhow!("Failed to write event: {}", e))?;
         Ok(())
     }
 

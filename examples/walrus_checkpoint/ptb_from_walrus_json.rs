@@ -7,11 +7,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use super::replay_engine::ObjectCache;
+use sui_historical_cache::{CacheMetrics, ObjectVersionStore};
 use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectID, ObjectInput};
 use sui_transport::grpc::{GrpcClient, GrpcOwner};
-use super::replay_engine::ObjectCache;
 use sui_transport::walrus::WalrusClient;
-use sui_historical_cache::{CacheMetrics, ObjectVersionStore};
 
 pub struct ParsedWalrusPtb {
     pub sender: AccountAddress,
@@ -60,18 +60,17 @@ pub fn parse_ptb_transaction(
         .pointer("/kind/ProgrammableTransaction")
         .ok_or_else(|| anyhow!("not a ProgrammableTransaction"))?;
 
-    let (inputs, gas_coin_arg_map) =
-        parse_inputs(
-            walrus,
-            v1,
-            ptb,
-            tx_json,
-            grpc_fallback,
-            object_cache,
-            object_versions,
-            disk_cache,
-            metrics,
-        )?;
+    let (inputs, gas_coin_arg_map) = parse_inputs(
+        walrus,
+        v1,
+        ptb,
+        tx_json,
+        grpc_fallback,
+        object_cache,
+        object_versions,
+        disk_cache,
+        metrics,
+    )?;
     let (commands, package_ids) = parse_commands(walrus, ptb, &gas_coin_arg_map)?;
 
     Ok(ParsedWalrusPtb {
@@ -168,7 +167,11 @@ fn parse_inputs(
     let timestamp_ms = tx_json
         .get("timestamp_ms")
         .and_then(|v| v.as_u64())
-        .or_else(|| tx_json.pointer("/checkpoint_summary/timestamp_ms").and_then(|v| v.as_u64()));
+        .or_else(|| {
+            tx_json
+                .pointer("/checkpoint_summary/timestamp_ms")
+                .and_then(|v| v.as_u64())
+        });
 
     let mut inputs: Vec<InputValue> = Vec::with_capacity(ptb_inputs.len() + 1);
     for inp in ptb_inputs {
@@ -222,8 +225,10 @@ fn parse_inputs(
                             if let Some(m) = metrics {
                                 m.record_disk_hit();
                             }
-                            let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
-                                .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                            let type_tag =
+                                TypeTag::from_str(&cached_obj.meta.type_tag).map_err(|e| {
+                                    anyhow!("Failed to parse type tag from disk cache: {}", e)
+                                })?;
                             let data = WalrusObjectData {
                                 bcs_bytes: cached_obj.bcs_bytes,
                                 type_tag,
@@ -232,9 +237,12 @@ fn parse_inputs(
                             };
                             object_data_by_id.insert(id, data.clone());
                             data
-                        } else if let Some(sys) =
-                            synthesize_system_object(id, timestamp_ms, version_hint, object_versions)
-                        {
+                        } else if let Some(sys) = synthesize_system_object(
+                            id,
+                            timestamp_ms,
+                            version_hint,
+                            object_versions,
+                        ) {
                             object_data_by_id.insert(id, sys.clone());
                             sys
                         } else if let Some((grpc, rt)) = grpc_fallback {
@@ -310,8 +318,10 @@ fn parse_inputs(
                         if let Some(m) = metrics {
                             m.record_disk_hit();
                         }
-                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
-                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        let type_tag =
+                            TypeTag::from_str(&cached_obj.meta.type_tag).map_err(|e| {
+                                anyhow!("Failed to parse type tag from disk cache: {}", e)
+                            })?;
                         let data = WalrusObjectData {
                             bcs_bytes: cached_obj.bcs_bytes,
                             type_tag,
@@ -416,7 +426,10 @@ fn parse_inputs(
 
     // Append gas coin input if we can resolve it from input_objects.
     let gas_coin_input_idx = if let Some(gas_id) = gas_coin_id {
-        if !inputs.iter().any(|iv| matches!(iv, InputValue::Object(oi) if oi.id() == &gas_id)) {
+        if !inputs
+            .iter()
+            .any(|iv| matches!(iv, InputValue::Object(oi) if oi.id() == &gas_id))
+        {
             // Try to resolve gas coin bytes from Walrus content, cache, or gRPC.
             let version_hint = gas_payment_ref.as_ref().and_then(|(_, v)| *v);
             let data = if let Some(d) = object_data_by_id.get(&gas_id) {
@@ -430,10 +443,10 @@ fn parse_inputs(
                         m.record_memory_hit();
                     }
                     WalrusObjectData {
-                    bcs_bytes: entry.bytes.clone(),
-                    type_tag: entry.type_tag.clone(),
-                    version: entry.version,
-                    is_immutable: false,
+                        bcs_bytes: entry.bytes.clone(),
+                        type_tag: entry.type_tag.clone(),
+                        version: entry.version,
+                        is_immutable: false,
                     }
                 })
             } else if let Some(disk) = disk_cache {
@@ -448,8 +461,10 @@ fn parse_inputs(
                         if let Some(m) = metrics {
                             m.record_disk_hit();
                         }
-                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
-                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        let type_tag =
+                            TypeTag::from_str(&cached_obj.meta.type_tag).map_err(|e| {
+                                anyhow!("Failed to parse type tag from disk cache: {}", e)
+                            })?;
                         Some(WalrusObjectData {
                             bcs_bytes: cached_obj.bcs_bytes,
                             type_tag,
@@ -480,8 +495,10 @@ fn parse_inputs(
                         if let Some(m) = metrics {
                             m.record_disk_hit();
                         }
-                        let type_tag = TypeTag::from_str(&cached_obj.meta.type_tag)
-                            .map_err(|e| anyhow!("Failed to parse type tag from disk cache: {}", e))?;
+                        let type_tag =
+                            TypeTag::from_str(&cached_obj.meta.type_tag).map_err(|e| {
+                                anyhow!("Failed to parse type tag from disk cache: {}", e)
+                            })?;
                         let data = WalrusObjectData {
                             bcs_bytes: cached_obj.bcs_bytes,
                             type_tag,
@@ -505,7 +522,12 @@ fn parse_inputs(
                         object_data_by_id.insert(gas_id, fetched.clone());
                         fetched
                     } else {
-                        return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+                        return Ok((
+                            inputs,
+                            GasCoinArgMap {
+                                gas_coin_input_idx: None,
+                            },
+                        ));
                     }
                 } else if let Some((grpc, rt)) = grpc_fallback {
                     if let Some(m) = metrics {
@@ -522,7 +544,12 @@ fn parse_inputs(
                     object_data_by_id.insert(gas_id, fetched.clone());
                     fetched
                 } else {
-                    return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+                    return Ok((
+                        inputs,
+                        GasCoinArgMap {
+                            gas_coin_input_idx: None,
+                        },
+                    ));
                 }
             } else if let Some((grpc, rt)) = grpc_fallback {
                 if let Some(m) = metrics {
@@ -540,16 +567,21 @@ fn parse_inputs(
                 fetched
             } else {
                 // We know the tx references GasCoin, but we can't materialize it.
-                return Ok((inputs, GasCoinArgMap { gas_coin_input_idx: None }));
+                return Ok((
+                    inputs,
+                    GasCoinArgMap {
+                        gas_coin_input_idx: None,
+                    },
+                ));
             };
 
-                inputs.push(InputValue::Object(ObjectInput::Owned {
-                    id: gas_id,
-                    bytes: data.bcs_bytes.clone(),
-                    type_tag: Some(data.type_tag.clone()),
-                    version: Some(data.version),
-                }));
-                Some((gas_id, (inputs.len() - 1) as u16))
+            inputs.push(InputValue::Object(ObjectInput::Owned {
+                id: gas_id,
+                bytes: data.bcs_bytes.clone(),
+                type_tag: Some(data.type_tag.clone()),
+                version: Some(data.version),
+            }));
+            Some((gas_id, (inputs.len() - 1) as u16))
         } else {
             // gas coin already included as a normal PTB input
             None
@@ -587,9 +619,10 @@ fn extract_object_ref_id_version(v: &Value) -> Option<(String, Option<u64>)> {
     // Common shape: [ "<id>", <version>, "<digest>" ]
     if let Some(arr) = v.as_array() {
         if let Some(id) = arr.first().and_then(|x| x.as_str()) {
-            let ver = arr
-                .get(1)
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+            let ver = arr.get(1).and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            });
             return Some((id.to_string(), ver));
         }
     }
@@ -694,8 +727,8 @@ fn parse_commands(
                 .map(|a| parse_argument(a, gas_coin))
                 .collect::<Result<Vec<Argument>>>()?;
 
-            let pkg_id = AccountAddress::from_hex_literal(package_str)
-                .context("parse MoveCall.package")?;
+            let pkg_id =
+                AccountAddress::from_hex_literal(package_str).context("parse MoveCall.package")?;
             if !package_ids.contains(&pkg_id) {
                 package_ids.push(pkg_id);
             }
@@ -722,7 +755,12 @@ fn parse_commands(
             } else {
                 let coin = split
                     .get("coin")
-                    .or_else(|| split.get("coins").and_then(|v| v.as_array()).and_then(|v| v.first()))
+                    .or_else(|| {
+                        split
+                            .get("coins")
+                            .and_then(|v| v.as_array())
+                            .and_then(|v| v.first())
+                    })
                     .ok_or_else(|| anyhow!("SplitCoins.coin missing"))?;
                 let amounts = split
                     .get("amounts")
@@ -851,7 +889,9 @@ fn parse_argument(arg: &Value, gas_coin: &GasCoinArgMap) -> Result<Argument> {
             if let Some((_, idx)) = gas_coin.gas_coin_input_idx {
                 return Ok(Argument::Input(idx));
             }
-            return Err(anyhow!("transaction references GasCoin but gas coin input not found"));
+            return Err(anyhow!(
+                "transaction references GasCoin but gas coin input not found"
+            ));
         }
     }
     if let Some(i) = arg.get("Input").and_then(|v| v.as_u64()) {
@@ -862,8 +902,14 @@ fn parse_argument(arg: &Value, gas_coin: &GasCoinArgMap) -> Result<Argument> {
     }
     if let Some(nr_val) = arg.get("NestedResult") {
         if let Some(nr) = nr_val.as_array() {
-            let a = nr.get(0).and_then(|v| v.as_u64()).context("NestedResult[0]")?;
-            let b = nr.get(1).and_then(|v| v.as_u64()).context("NestedResult[1]")?;
+            let a = nr
+                .get(0)
+                .and_then(|v| v.as_u64())
+                .context("NestedResult[0]")?;
+            let b = nr
+                .get(1)
+                .and_then(|v| v.as_u64())
+                .context("NestedResult[1]")?;
             return Ok(Argument::NestedResult(a as u16, b as u16));
         }
         if let Some(s) = nr_val.as_str() {
@@ -877,7 +923,12 @@ fn parse_argument(arg: &Value, gas_coin: &GasCoinArgMap) -> Result<Argument> {
                     let b = u16::from_le_bytes([bytes[2], bytes[3]]);
                     (a, b)
                 }
-                _ => return Err(anyhow!("NestedResult base64 has unexpected length {}", bytes.len())),
+                _ => {
+                    return Err(anyhow!(
+                        "NestedResult base64 has unexpected length {}",
+                        bytes.len()
+                    ))
+                }
             };
             return Ok(Argument::NestedResult(a, b));
         }
@@ -887,7 +938,9 @@ fn parse_argument(arg: &Value, gas_coin: &GasCoinArgMap) -> Result<Argument> {
         if let Some((_, idx)) = gas_coin.gas_coin_input_idx {
             return Ok(Argument::Input(idx));
         }
-        return Err(anyhow!("transaction references GasCoin but gas coin input not found"));
+        return Err(anyhow!(
+            "transaction references GasCoin but gas coin input not found"
+        ));
     }
     Err(anyhow!("unsupported PTB argument: {}", arg))
 }
@@ -898,9 +951,11 @@ fn parse_object_ref(obj: &Value) -> Result<(ObjectID, WalrusObjectMode, Option<u
             .get("id")
             .and_then(|v| v.as_str())
             .context("SharedObject.id missing")?;
-        let version = shared
-            .get("initial_shared_version")
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+        let version = shared.get("initial_shared_version").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v.as_u64())
+        });
         return Ok((
             AccountAddress::from_hex_literal(id)?,
             WalrusObjectMode::Shared,
@@ -912,9 +967,11 @@ fn parse_object_ref(obj: &Value) -> Result<(ObjectID, WalrusObjectMode, Option<u
             .first()
             .and_then(|v| v.as_str())
             .context("ImmOrOwnedObject[0] missing")?;
-        let version = imm_or_owned
-            .get(1)
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+        let version = imm_or_owned.get(1).and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v.as_u64())
+        });
         return Ok((
             AccountAddress::from_hex_literal(id)?,
             WalrusObjectMode::ImmOrOwned,
@@ -926,9 +983,11 @@ fn parse_object_ref(obj: &Value) -> Result<(ObjectID, WalrusObjectMode, Option<u
             .first()
             .and_then(|v| v.as_str())
             .context("Receiving[0] missing")?;
-        let version = receiving
-            .get(1)
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+        let version = receiving.get(1).and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v.as_u64())
+        });
         return Ok((
             AccountAddress::from_hex_literal(id)?,
             WalrusObjectMode::Receiving,
@@ -1070,8 +1129,8 @@ fn fetch_missing_object_data(
                 let type_str = obj
                     .type_string
                     .ok_or_else(|| anyhow!("gRPC object missing type_string for {}", id_hex))?;
-                let type_tag =
-                    TypeTag::from_str(&type_str).map_err(|e| anyhow!("parse type {type_str}: {e}"))?;
+                let type_tag = TypeTag::from_str(&type_str)
+                    .map_err(|e| anyhow!("parse type {type_str}: {e}"))?;
                 let is_immutable = matches!(obj.owner, GrpcOwner::Immutable);
                 return Ok(WalrusObjectData {
                     bcs_bytes,

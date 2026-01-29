@@ -78,7 +78,8 @@ impl CacheMetrics {
 
     /// Record a dynamic field gRPC fetch.
     pub fn record_dynamic_field_grpc_fetch(&self) {
-        self.dynamic_field_grpc_fetches.fetch_add(1, Ordering::Relaxed);
+        self.dynamic_field_grpc_fetches
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get a snapshot of current metrics.
@@ -169,17 +170,32 @@ impl MetricsSnapshot {
         lines.push(format!("  Memory Cache:    {}", self.memory_hits));
         lines.push(format!("  Disk Cache:      {}", self.disk_hits));
         lines.push(format!("  gRPC (miss):     {}", self.grpc_fetches));
-        lines.push(format!("  Cache Hit Rate:  {:.1}%", self.object_cache_hit_rate() * 100.0));
-        lines.push(format!("  Disk Hit Rate:   {:.1}%", self.object_disk_hit_rate() * 100.0));
+        lines.push(format!(
+            "  Cache Hit Rate:  {:.1}%",
+            self.object_cache_hit_rate() * 100.0
+        ));
+        lines.push(format!(
+            "  Disk Hit Rate:   {:.1}%",
+            self.object_disk_hit_rate() * 100.0
+        ));
         lines.push(format!(""));
         lines.push(format!("Package Lookups:"));
         lines.push(format!("  Disk Cache:      {}", self.package_disk_hits));
         lines.push(format!("  gRPC (miss):     {}", self.package_grpc_fetches));
-        lines.push(format!("  Hit Rate:        {:.1}%", self.package_hit_rate() * 100.0));
+        lines.push(format!(
+            "  Hit Rate:        {:.1}%",
+            self.package_hit_rate() * 100.0
+        ));
         lines.push(format!(""));
         lines.push(format!("Dynamic Fields:"));
-        lines.push(format!("  Disk Cache:      {}", self.dynamic_field_disk_hits));
-        lines.push(format!("  gRPC (miss):     {}", self.dynamic_field_grpc_fetches));
+        lines.push(format!(
+            "  Disk Cache:      {}",
+            self.dynamic_field_disk_hits
+        ));
+        lines.push(format!(
+            "  gRPC (miss):     {}",
+            self.dynamic_field_grpc_fetches
+        ));
         lines.join("\n")
     }
 }

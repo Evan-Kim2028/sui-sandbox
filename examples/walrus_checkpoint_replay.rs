@@ -30,8 +30,8 @@ use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
 use sui_transport::walrus::WalrusClient;
 
-use walrus_checkpoint::replay_engine::{ReasonCode, ReplayEngine, ReplayStats};
 use sui_historical_cache::{FsObjectStore, FsPackageStore};
+use walrus_checkpoint::replay_engine::{ReasonCode, ReplayEngine, ReplayStats};
 
 /// Replay PTBs from a Walrus checkpoint range.
 #[derive(Parser, Debug)]
@@ -85,9 +85,8 @@ fn build_state_fetcher(
     let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     let graphql = GraphQLClient::mainnet();
-    let archive_client = rt.block_on(async {
-        GrpcClient::with_api_key(&archive_endpoint, api_key.clone()).await
-    });
+    let archive_client =
+        rt.block_on(async { GrpcClient::with_api_key(&archive_endpoint, api_key.clone()).await });
     if let Ok(grpc) = archive_client {
         return Some((
             Arc::new(HistoricalStateProvider::with_clients(grpc, graphql)),
@@ -124,7 +123,12 @@ fn main() -> Result<()> {
     println!("║   Walrus Checkpoint PTB Replay (Walrus + gRPC Archive)        ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
-    println!("Checkpoint range: {}..{} ({} checkpoints)", start, end, end - start);
+    println!(
+        "Checkpoint range: {}..{} ({} checkpoints)",
+        start,
+        end,
+        end - start
+    );
     if let Some(n) = args.max_ptbs {
         println!("Max PTBs: {}", n);
     }
@@ -160,14 +164,18 @@ fn main() -> Result<()> {
 
     // Initialize disk cache if provided
     let object_store = args.cache_dir.as_ref().and_then(|dir| {
-        FsObjectStore::new(dir).map_err(|e| {
-            eprintln!("Warning: Failed to initialize object cache: {}", e);
-        }).ok()
+        FsObjectStore::new(dir)
+            .map_err(|e| {
+                eprintln!("Warning: Failed to initialize object cache: {}", e);
+            })
+            .ok()
     });
     let package_store = args.cache_dir.as_ref().and_then(|dir| {
-        FsPackageStore::new(dir).map_err(|e| {
-            eprintln!("Warning: Failed to initialize package cache: {}", e);
-        }).ok()
+        FsPackageStore::new(dir)
+            .map_err(|e| {
+                eprintln!("Warning: Failed to initialize package cache: {}", e);
+            })
+            .ok()
     });
 
     if args.cache_dir.is_some() {
@@ -207,7 +215,8 @@ fn main() -> Result<()> {
     let checkpoints: Vec<u64> = (start..end).collect();
     if args.batch_by_blob {
         let checkpoint_fetch_start = Instant::now();
-        let decoded = walrus.get_checkpoints_json_batched(&checkpoints, args.max_blob_chunk_bytes)?;
+        let decoded =
+            walrus.get_checkpoints_json_batched(&checkpoints, args.max_blob_chunk_bytes)?;
         let checkpoint_fetch_s = checkpoint_fetch_start.elapsed().as_secs_f64();
         println!(
             "Fetched {} checkpoints via batched blob download (total {:.2}s, avg {:.2}ms/checkpoint)",
@@ -226,7 +235,9 @@ fn main() -> Result<()> {
             let mut ptbs: Vec<serde_json::Value> = Vec::new();
             for tx_json in transactions {
                 let is_ptb = tx_json
-                    .pointer("/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction")
+                    .pointer(
+                        "/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction",
+                    )
                     .is_some();
                 if !is_ptb {
                     continue;
@@ -259,7 +270,9 @@ fn main() -> Result<()> {
             let mut ptbs: Vec<serde_json::Value> = Vec::new();
             for tx_json in transactions {
                 let is_ptb = tx_json
-                    .pointer("/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction")
+                    .pointer(
+                        "/transaction/data/0/intent_message/value/V1/kind/ProgrammableTransaction",
+                    )
                     .is_some();
                 if !is_ptb {
                     continue;
@@ -319,8 +332,7 @@ fn main() -> Result<()> {
             let digest = tx_json
                 .pointer("/effects/V2/transaction_digest")
                 .and_then(|v| v.as_str());
-            let prefetch_versions = digest
-                .and_then(|d| batch_prefetch.tx_versions.get(d));
+            let prefetch_versions = digest.and_then(|d| batch_prefetch.tx_versions.get(d));
 
             let outcome = engine.replay_one_ptb_best_effort_with_prefetch(
                 &mut env,
@@ -402,7 +414,10 @@ fn main() -> Result<()> {
         println!("Strict parity rate: {:.2}%", pct);
     }
     if !stats.strict_match_digests.is_empty() {
-        println!("Strict match digests ({}):", stats.strict_match_digests.len());
+        println!(
+            "Strict match digests ({}):",
+            stats.strict_match_digests.len()
+        );
         for digest in &stats.strict_match_digests {
             println!("  - {}", digest);
         }

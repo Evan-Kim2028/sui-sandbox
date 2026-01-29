@@ -38,7 +38,9 @@ pub trait ObjectVersionStore: Send + Sync {
 
     /// Check if an object at a specific version exists (without loading bytes).
     fn has(&self, id: AccountAddress, version: u64) -> bool {
-        self.get(id, version).map(|opt| opt.is_some()).unwrap_or(false)
+        self.get(id, version)
+            .map(|opt| opt.is_some())
+            .unwrap_or(false)
     }
 }
 
@@ -51,8 +53,13 @@ impl FsObjectStore {
     /// Create a new filesystem object store.
     pub fn new<P: AsRef<Path>>(cache_root: P) -> Result<Self> {
         let cache_root = cache_root.as_ref().to_path_buf();
-        std::fs::create_dir_all(&cache_root)
-            .map_err(|e| anyhow!("Failed to create cache root {}: {}", cache_root.display(), e))?;
+        std::fs::create_dir_all(&cache_root).map_err(|e| {
+            anyhow!(
+                "Failed to create cache root {}: {}",
+                cache_root.display(),
+                e
+            )
+        })?;
         Ok(Self {
             cache_root: Arc::from(cache_root),
         })
@@ -79,8 +86,13 @@ impl ObjectVersionStore for FsObjectStore {
             .map_err(|e| anyhow!("Failed to read BCS file {}: {}", bcs_path.display(), e))?;
 
         // Load metadata
-        let meta_json = std::fs::read_to_string(&meta_path)
-            .map_err(|e| anyhow!("Failed to read metadata file {}: {}", meta_path.display(), e))?;
+        let meta_json = std::fs::read_to_string(&meta_path).map_err(|e| {
+            anyhow!(
+                "Failed to read metadata file {}: {}",
+                meta_path.display(),
+                e
+            )
+        })?;
         let meta: ObjectMeta = serde_json::from_str(&meta_json)
             .map_err(|e| anyhow!("Failed to parse metadata JSON: {}", e))?;
 

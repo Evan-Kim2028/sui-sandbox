@@ -54,8 +54,13 @@ impl FsPackageStore {
     /// Create a new filesystem package store.
     pub fn new<P: AsRef<Path>>(cache_root: P) -> Result<Self> {
         let cache_root = cache_root.as_ref().to_path_buf();
-        std::fs::create_dir_all(&cache_root)
-            .map_err(|e| anyhow!("Failed to create cache root {}: {}", cache_root.display(), e))?;
+        std::fs::create_dir_all(&cache_root).map_err(|e| {
+            anyhow!(
+                "Failed to create cache root {}: {}",
+                cache_root.display(),
+                e
+            )
+        })?;
         Ok(Self {
             cache_root: Arc::from(cache_root),
         })

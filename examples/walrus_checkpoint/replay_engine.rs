@@ -1,28 +1,30 @@
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
-use base64::Engine;
 use parking_lot::RwLock;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sui_historical_cache::{
+    CacheMetrics, FsObjectStore, FsPackageStore, ObjectVersionStore, PackageStore,
+};
 use sui_prefetch::compute_dynamic_field_id;
+use sui_protocol_config::ProtocolConfig;
+use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
+use sui_sandbox_core::ptb::{Command, InputValue, ObjectID, ObjectVersionInfo, VersionChangeType};
+use sui_sandbox_core::simulation::SimulationEnvironment;
 use sui_sandbox_core::utilities::extract_dependencies_from_bytecode;
 use sui_state_fetcher::replay::build_address_aliases;
 use sui_state_fetcher::HistoricalStateProvider;
-use sui_sandbox_core::ptb::{Command, InputValue, ObjectID, ObjectVersionInfo, VersionChangeType};
-use sui_sandbox_core::simulation::SimulationEnvironment;
 use sui_transport::graphql::{DynamicFieldInfo, GraphQLClient};
 use sui_transport::grpc::{GrpcClient, GrpcInput};
 use sui_transport::walrus::WalrusClient;
-use sui_historical_cache::{FsObjectStore, FsPackageStore, ObjectVersionStore, PackageStore, CacheMetrics};
+use sui_types::base_types::{MoveObjectType, ObjectID as SuiObjectID, SequenceNumber, SuiAddress};
 use sui_types::digests::{ObjectDigest, TransactionDigest};
 use sui_types::object::{Data, MoveObject, Object, ObjectInner, Owner};
-use sui_protocol_config::ProtocolConfig;
-use sui_types::base_types::{MoveObjectType, ObjectID as SuiObjectID, SequenceNumber, SuiAddress};
-use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 
 use super::ptb_from_walrus_json::{parse_ptb_transaction, ParsedWalrusPtb};
 
@@ -338,7 +340,9 @@ impl<'a> ReplayEngine<'a> {
 
         // Merge PTB input object versions from Walrus JSON when present.
         for tx in txs {
-            let Some(digest) = on_chain_tx_digest(tx) else { continue };
+            let Some(digest) = on_chain_tx_digest(tx) else {
+                continue;
+            };
             let mut entry = tx_versions.remove(&digest).unwrap_or_default();
             for (id, ver) in extract_ptb_input_object_versions(tx) {
                 entry.entry(id).or_insert(ver);
@@ -365,9 +369,15 @@ impl<'a> ReplayEngine<'a> {
             let mut inserted = 0usize;
             for (_id, obj_result) in fetched {
                 let Ok(Some(obj)) = obj_result else { continue };
-                let (Some(bcs), Some(type_str)) = (obj.bcs, obj.type_string) else { continue };
-                let Ok(tt) = TypeTag::from_str(&type_str) else { continue };
-                let Ok(id) = AccountAddress::from_hex_literal(&obj.object_id) else { continue };
+                let (Some(bcs), Some(type_str)) = (obj.bcs, obj.type_string) else {
+                    continue;
+                };
+                let Ok(tt) = TypeTag::from_str(&type_str) else {
+                    continue;
+                };
+                let Ok(id) = AccountAddress::from_hex_literal(&obj.object_id) else {
+                    continue;
+                };
 
                 self.objects.write().insert(
                     id,
@@ -389,7 +399,10 @@ impl<'a> ReplayEngine<'a> {
 
     pub fn summarize_ptb_commands(&self, tx_json: &serde_json::Value) -> Option<String> {
         let cache = self.objects.read();
-        let disk_cache_ref: Option<&dyn ObjectVersionStore> = self.disk_object_store.as_ref().map(|s| s.as_ref() as &dyn ObjectVersionStore);
+        let disk_cache_ref: Option<&dyn ObjectVersionStore> = self
+            .disk_object_store
+            .as_ref()
+            .map(|s| s.as_ref() as &dyn ObjectVersionStore);
         let parsed = parse_ptb_transaction(
             self.walrus,
             tx_json,
@@ -608,7 +621,10 @@ impl<'a> ReplayEngine<'a> {
         let fallback = Some((self.grpc.as_ref(), self.rt));
         let parsed = {
             let cache = self.objects.read();
-            let disk_cache_ref: Option<&dyn ObjectVersionStore> = self.disk_object_store.as_ref().map(|s| s.as_ref() as &dyn ObjectVersionStore);
+            let disk_cache_ref: Option<&dyn ObjectVersionStore> = self
+                .disk_object_store
+                .as_ref()
+                .map(|s| s.as_ref() as &dyn ObjectVersionStore);
             parse_ptb_transaction(
                 self.walrus,
                 tx_json,
@@ -727,8 +743,13 @@ impl<'a> ReplayEngine<'a> {
             AttemptKind::WalrusOnly => {
                 env.clear_child_fetcher();
             }
-            AttemptKind::RetryWithChildFetcher | AttemptKind::RetryWithPrefetch | AttemptKind::RetryWithMM2 => {
-                if matches!(attempt_kind, AttemptKind::RetryWithPrefetch | AttemptKind::RetryWithMM2) {
+            AttemptKind::RetryWithChildFetcher
+            | AttemptKind::RetryWithPrefetch
+            | AttemptKind::RetryWithMM2 => {
+                if matches!(
+                    attempt_kind,
+                    AttemptKind::RetryWithPrefetch | AttemptKind::RetryWithMM2
+                ) {
                     // MM2 predictive prefetch using gRPC transaction.
                     if let Some(digest) = on_chain_tx_digest(tx_json) {
                         let grpc_tx = self
@@ -829,9 +850,9 @@ impl<'a> ReplayEngine<'a> {
                         if use_sui_natives {
                             let id_hex = child_id.to_hex_literal();
                             metrics.record_grpc_fetch();
-                            if let Ok(obj) = rt_handle
-                                .block_on(async { grpc.get_object_at_version(&id_hex, Some(*ver)).await })
-                            {
+                            if let Ok(obj) = rt_handle.block_on(async {
+                                grpc.get_object_at_version(&id_hex, Some(*ver)).await
+                            }) {
                                 if let Some(o) = obj {
                                     if let (Some(bcs), Some(type_str)) = (o.bcs, o.type_string) {
                                         if let Ok(tt) = TypeTag::from_str(&type_str) {
@@ -853,7 +874,6 @@ impl<'a> ReplayEngine<'a> {
                     }
                     None
                 }));
-
             }
         }
 
@@ -920,8 +940,8 @@ impl<'a> ReplayEngine<'a> {
                 // Fall back to gRPC
                 metrics.record_grpc_fetch();
                 metrics.record_dynamic_field_grpc_fetch();
-                if let Ok(obj) =
-                    rt_handle.block_on(async { grpc.get_object_at_version(&child_hex, Some(ver)).await })
+                if let Ok(obj) = rt_handle
+                    .block_on(async { grpc.get_object_at_version(&child_hex, Some(ver)).await })
                 {
                     if let Some(obj) = obj {
                         if let (Some(bcs), Some(type_str)) = (obj.bcs, obj.type_string) {
@@ -945,8 +965,11 @@ impl<'a> ReplayEngine<'a> {
         ));
 
         // Execute
-        let mut exec =
-            env.execute_ptb_with_gas_budget(parsed.inputs.clone(), parsed.commands.clone(), parsed.gas_budget);
+        let mut exec = env.execute_ptb_with_gas_budget(
+            parsed.inputs.clone(),
+            parsed.commands.clone(),
+            parsed.gas_budget,
+        );
 
         // Patch gas coin mutation into local effects so strict diff can include it.
         if let Some(effects) = exec.effects.as_mut() {
@@ -959,15 +982,20 @@ impl<'a> ReplayEngine<'a> {
 
         if !exec.success {
             // If missing package, try to load it and retry once for this attempt.
-            if let Some(sui_sandbox_core::simulation::SimulationError::MissingPackage { address, .. }) =
-                &exec.error
+            if let Some(sui_sandbox_core::simulation::SimulationError::MissingPackage {
+                address,
+                ..
+            }) = &exec.error
             {
                 if !matches!(attempt_kind, AttemptKind::WalrusOnly) {
                     if let Ok(pkg) = parse_address(address) {
                         if let Ok(()) =
                             self.load_package_if_needed(env, pkg, Some(checkpoint), true)
                         {
-                            notes.push(format!("loaded missing package {} and retried", pkg.to_hex_literal()));
+                            notes.push(format!(
+                                "loaded missing package {} and retried",
+                                pkg.to_hex_literal()
+                            ));
                             exec = env.execute_ptb_with_gas_budget(
                                 parsed.inputs.clone(),
                                 parsed.commands.clone(),
@@ -984,7 +1012,9 @@ impl<'a> ReplayEngine<'a> {
                                 // Continue to strict compare
                             } else {
                                 if let Some(raw) = &exec.raw_error {
-                                    if let Some((parent, child)) = parse_new_parent_child_conflict(raw) {
+                                    if let Some((parent, child)) =
+                                        parse_new_parent_child_conflict(raw)
+                                    {
                                         deny_children.write().insert(child);
                                         deny_parents.write().insert(parent);
                                         self.objects.write().remove_all(child);
@@ -1130,7 +1160,8 @@ fn is_system_package(id: AccountAddress) -> bool {
 fn parse_address(addr: &str) -> Result<AccountAddress> {
     let trimmed = addr.trim_start_matches("0x");
     let normalized = format!("0x{}", trimmed);
-    AccountAddress::from_hex_literal(&normalized).map_err(|e| anyhow!("invalid address {addr}: {e}"))
+    AccountAddress::from_hex_literal(&normalized)
+        .map_err(|e| anyhow!("invalid address {addr}: {e}"))
 }
 
 impl<'a> ReplayEngine<'a> {
@@ -1147,7 +1178,8 @@ impl<'a> ReplayEngine<'a> {
             .get(&pkg)
             .copied()
             .unwrap_or(pkg);
-        if is_system_package(storage_addr) || self.packages.loaded_packages.contains(&storage_addr) {
+        if is_system_package(storage_addr) || self.packages.loaded_packages.contains(&storage_addr)
+        {
             return Ok(());
         }
 
@@ -1158,19 +1190,19 @@ impl<'a> ReplayEngine<'a> {
                     self.try_fetch_package_at_checkpoint(pkg, cp)?
                 {
                     storage_addr = resolved_addr;
-                    self.packages
-                        .runtime_to_storage
-                        .insert(pkg, resolved_addr);
+                    self.packages.runtime_to_storage.insert(pkg, resolved_addr);
                     self.packages
                         .modules_by_package
                         .insert(resolved_addr, modules.clone());
-                    self.packages.versions_by_package.insert(resolved_addr, version);
+                    self.packages
+                        .versions_by_package
+                        .insert(resolved_addr, version);
 
                     // Use gRPC metadata to populate linkage/aliases for dependency resolution.
                     let resolved_hex = resolved_addr.to_hex_literal();
-                    if let Ok(Some(obj)) =
-                        self.rt
-                            .block_on(async { self.grpc.get_object(&resolved_hex).await })
+                    if let Ok(Some(obj)) = self
+                        .rt
+                        .block_on(async { self.grpc.get_object(&resolved_hex).await })
                     {
                         if let Some(orig) = obj.package_original_id.as_ref() {
                             if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
@@ -1202,156 +1234,94 @@ impl<'a> ReplayEngine<'a> {
             }
         }
 
-        let modules: Vec<(String, Vec<u8>)> =
-            if let Some(m) = self.packages.modules_by_package.get(&storage_addr) {
-                m.clone()
-            } else if let Some(ref disk_pkg_store) = self.disk_package_store {
-                // Try disk cache first
-                if let Ok(Some(cached_pkg)) = disk_pkg_store.get(storage_addr) {
-                    self.metrics.record_package_disk_hit();
-                    let decoded = cached_pkg
-                        .decode_modules()
-                        .map_err(|e| anyhow!("Failed to decode cached package modules: {}", e))?;
-                    // Store in memory cache
-                    self.packages
-                        .modules_by_package
-                        .insert(storage_addr, decoded.clone());
-                    self.packages
-                        .versions_by_package
-                        .insert(storage_addr, cached_pkg.version);
-                    // Handle linkage/aliases if present
-                    if let Some(original_id) = cached_pkg.original_id {
-                        if let Ok(orig_addr) = AccountAddress::from_hex_literal(&original_id) {
-                            if orig_addr != storage_addr {
-                                self.packages.runtime_to_storage.insert(orig_addr, storage_addr);
-                            }
+        let modules: Vec<(String, Vec<u8>)> = if let Some(m) =
+            self.packages.modules_by_package.get(&storage_addr)
+        {
+            m.clone()
+        } else if let Some(ref disk_pkg_store) = self.disk_package_store {
+            // Try disk cache first
+            if let Ok(Some(cached_pkg)) = disk_pkg_store.get(storage_addr) {
+                self.metrics.record_package_disk_hit();
+                let decoded = cached_pkg
+                    .decode_modules()
+                    .map_err(|e| anyhow!("Failed to decode cached package modules: {}", e))?;
+                // Store in memory cache
+                self.packages
+                    .modules_by_package
+                    .insert(storage_addr, decoded.clone());
+                self.packages
+                    .versions_by_package
+                    .insert(storage_addr, cached_pkg.version);
+                // Handle linkage/aliases if present
+                if let Some(original_id) = cached_pkg.original_id {
+                    if let Ok(orig_addr) = AccountAddress::from_hex_literal(&original_id) {
+                        if orig_addr != storage_addr {
+                            self.packages
+                                .runtime_to_storage
+                                .insert(orig_addr, storage_addr);
                         }
                     }
-                    if let Some(linkage) = cached_pkg.linkage {
-                        for entry in linkage {
-                            if let (Ok(orig), Ok(upgraded)) = (
-                                AccountAddress::from_hex_literal(&entry.original_id),
-                                AccountAddress::from_hex_literal(&entry.upgraded_id),
-                            ) {
-                                if orig != upgraded {
-                                    self.packages.runtime_to_storage.insert(orig, upgraded);
-                                }
-                                self.packages
-                                    .versions_by_package
-                                    .entry(upgraded)
-                                    .or_insert(entry.upgraded_version);
-                            }
-                        }
-                    }
-                    decoded
-                } else {
-                    // Not in disk cache, fetch from gRPC
-                    self.metrics.record_package_grpc_fetch();
-                    let pkg_hex = storage_addr.to_hex_literal();
-                    let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
-                        self.rt
-                            .block_on(async {
-                                self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await
-                            })?
-                            .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
-                    } else {
-                        self.rt
-                            .block_on(async { self.grpc.get_object(&pkg_hex).await })?
-                            .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
-                    };
-
-                    if let Some(orig) = obj.package_original_id.as_ref() {
-                        if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
-                            if original_addr != storage_addr {
-                                self.packages
-                                    .runtime_to_storage
-                                    .insert(original_addr, storage_addr);
-                            }
-                        }
-                    }
-
-                    if let Some(linkage) = obj.package_linkage.as_ref() {
-                        for entry in linkage {
-                            if let (Ok(orig), Ok(upgraded)) = (
-                                AccountAddress::from_hex_literal(&entry.original_id),
-                                AccountAddress::from_hex_literal(&entry.upgraded_id),
-                            ) {
-                                if orig != upgraded {
-                                    self.packages.runtime_to_storage.insert(orig, upgraded);
-                                }
-                                self.packages
-                                    .versions_by_package
-                                    .entry(upgraded)
-                                    .or_insert(entry.upgraded_version);
-                            }
-                        }
-                    }
-
-                    let mods = obj
-                        .package_modules
-                        .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
-                    let decoded = mods.clone();
-                    self.packages
-                        .modules_by_package
-                        .insert(storage_addr, decoded.clone());
-                    self.packages.versions_by_package.insert(storage_addr, obj.version);
-
-                    // Store in disk cache if available (best-effort, ignore errors)
-                    if let Some(ref disk_pkg_store) = self.disk_package_store {
-                        let linkage_entries: Option<Vec<sui_historical_cache::LinkageEntry>> =
-                            obj.package_linkage.as_ref().map(|linkage| {
-                                linkage
-                                    .iter()
-                                    .map(|e| sui_historical_cache::LinkageEntry {
-                                        original_id: e.original_id.clone(),
-                                        upgraded_id: e.upgraded_id.clone(),
-                                        upgraded_version: e.upgraded_version,
-                                    })
-                                    .collect()
-                            });
-                        let cached_pkg = sui_historical_cache::CachedPackage {
-                            version: obj.version,
-                            modules: decoded
-                                .iter()
-                                .map(|(name, bytes)| {
-                                    use base64::Engine;
-                                    (
-                                        name.clone(),
-                                        base64::engine::general_purpose::STANDARD.encode(bytes),
-                                    )
-                                })
-                                .collect(),
-                            original_id: obj.package_original_id.clone(),
-                            linkage: linkage_entries,
-                        };
-                        let _ = disk_pkg_store.put(storage_addr, &cached_pkg);
-                    }
-
-                    // Ensure linkage dependencies are loaded before deploying this package.
-                    if let Some(linkage) = obj.package_linkage.as_ref() {
-                        for entry in linkage {
-                            let upgraded_addr = parse_address(&entry.upgraded_id)?;
-                            if upgraded_addr != storage_addr {
-                                self.load_package_if_needed(env, upgraded_addr, checkpoint, false)?;
-                            }
-                        }
-                    }
-
-                    decoded
                 }
+                if let Some(linkage) = cached_pkg.linkage {
+                    for entry in linkage {
+                        if let (Ok(orig), Ok(upgraded)) = (
+                            AccountAddress::from_hex_literal(&entry.original_id),
+                            AccountAddress::from_hex_literal(&entry.upgraded_id),
+                        ) {
+                            if orig != upgraded {
+                                self.packages.runtime_to_storage.insert(orig, upgraded);
+                            }
+                            self.packages
+                                .versions_by_package
+                                .entry(upgraded)
+                                .or_insert(entry.upgraded_version);
+                        }
+                    }
+                }
+                decoded
             } else {
-                // No disk cache configured; fetch from gRPC and keep only in-memory.
+                // Not in disk cache, fetch from gRPC
                 self.metrics.record_package_grpc_fetch();
                 let pkg_hex = storage_addr.to_hex_literal();
                 let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
                     self.rt
-                        .block_on(async { self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await })?
+                        .block_on(async {
+                            self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await
+                        })?
                         .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
                 } else {
                     self.rt
                         .block_on(async { self.grpc.get_object(&pkg_hex).await })?
                         .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
                 };
+
+                if let Some(orig) = obj.package_original_id.as_ref() {
+                    if let Ok(original_addr) = AccountAddress::from_hex_literal(orig) {
+                        if original_addr != storage_addr {
+                            self.packages
+                                .runtime_to_storage
+                                .insert(original_addr, storage_addr);
+                        }
+                    }
+                }
+
+                if let Some(linkage) = obj.package_linkage.as_ref() {
+                    for entry in linkage {
+                        if let (Ok(orig), Ok(upgraded)) = (
+                            AccountAddress::from_hex_literal(&entry.original_id),
+                            AccountAddress::from_hex_literal(&entry.upgraded_id),
+                        ) {
+                            if orig != upgraded {
+                                self.packages.runtime_to_storage.insert(orig, upgraded);
+                            }
+                            self.packages
+                                .versions_by_package
+                                .entry(upgraded)
+                                .or_insert(entry.upgraded_version);
+                        }
+                    }
+                }
+
                 let mods = obj
                     .package_modules
                     .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
@@ -1359,9 +1329,80 @@ impl<'a> ReplayEngine<'a> {
                 self.packages
                     .modules_by_package
                     .insert(storage_addr, decoded.clone());
-                self.packages.versions_by_package.insert(storage_addr, obj.version);
+                self.packages
+                    .versions_by_package
+                    .insert(storage_addr, obj.version);
+
+                // Store in disk cache if available (best-effort, ignore errors)
+                if let Some(ref disk_pkg_store) = self.disk_package_store {
+                    let linkage_entries: Option<Vec<sui_historical_cache::LinkageEntry>> =
+                        obj.package_linkage.as_ref().map(|linkage| {
+                            linkage
+                                .iter()
+                                .map(|e| sui_historical_cache::LinkageEntry {
+                                    original_id: e.original_id.clone(),
+                                    upgraded_id: e.upgraded_id.clone(),
+                                    upgraded_version: e.upgraded_version,
+                                })
+                                .collect()
+                        });
+                    let cached_pkg = sui_historical_cache::CachedPackage {
+                        version: obj.version,
+                        modules: decoded
+                            .iter()
+                            .map(|(name, bytes)| {
+                                use base64::Engine;
+                                (
+                                    name.clone(),
+                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                )
+                            })
+                            .collect(),
+                        original_id: obj.package_original_id.clone(),
+                        linkage: linkage_entries,
+                    };
+                    let _ = disk_pkg_store.put(storage_addr, &cached_pkg);
+                }
+
+                // Ensure linkage dependencies are loaded before deploying this package.
+                if let Some(linkage) = obj.package_linkage.as_ref() {
+                    for entry in linkage {
+                        let upgraded_addr = parse_address(&entry.upgraded_id)?;
+                        if upgraded_addr != storage_addr {
+                            self.load_package_if_needed(env, upgraded_addr, checkpoint, false)?;
+                        }
+                    }
+                }
+
                 decoded
+            }
+        } else {
+            // No disk cache configured; fetch from gRPC and keep only in-memory.
+            self.metrics.record_package_grpc_fetch();
+            let pkg_hex = storage_addr.to_hex_literal();
+            let obj = if let Some(ver) = self.packages.versions_by_package.get(&storage_addr) {
+                self.rt
+                    .block_on(async {
+                        self.grpc.get_object_at_version(&pkg_hex, Some(*ver)).await
+                    })?
+                    .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
+            } else {
+                self.rt
+                    .block_on(async { self.grpc.get_object(&pkg_hex).await })?
+                    .ok_or_else(|| anyhow!("package not found: {}", pkg_hex))?
             };
+            let mods = obj
+                .package_modules
+                .ok_or_else(|| anyhow!("no package modules for {}", pkg_hex))?;
+            let decoded = mods.clone();
+            self.packages
+                .modules_by_package
+                .insert(storage_addr, decoded.clone());
+            self.packages
+                .versions_by_package
+                .insert(storage_addr, obj.version);
+            decoded
+        };
 
         // Also load dependencies discovered from bytecode (covers missing linkage entries).
         let mut deps: HashSet<AccountAddress> = HashSet::new();
@@ -1453,10 +1494,7 @@ impl<'a> ReplayEngine<'a> {
         }
     }
 
-    fn ingest_replay_state(
-        &mut self,
-        state: &sui_state_fetcher::ReplayState,
-    ) -> (usize, usize) {
+    fn ingest_replay_state(&mut self, state: &sui_state_fetcher::ReplayState) -> (usize, usize) {
         let mut obj_count = 0usize;
         let mut pkg_count = 0usize;
 
@@ -1481,9 +1519,7 @@ impl<'a> ReplayEngine<'a> {
             self.packages
                 .modules_by_package
                 .insert(*addr, pkg.modules.clone());
-            self.packages
-                .versions_by_package
-                .insert(*addr, pkg.version);
+            self.packages.versions_by_package.insert(*addr, pkg.version);
             let runtime_id = pkg.runtime_id();
             let replace = match self.packages.runtime_to_storage.get(&runtime_id) {
                 Some(existing) => {
@@ -1522,10 +1558,11 @@ impl<'a> ReplayEngine<'a> {
         };
 
         let fetcher = Arc::clone(fetcher);
-        match self
-            .rt
-            .block_on(async { fetcher.fetch_replay_state_with_config(&digest, false, 5, 500).await })
-        {
+        match self.rt.block_on(async {
+            fetcher
+                .fetch_replay_state_with_config(&digest, false, 5, 500)
+                .await
+        }) {
             Ok(state) => {
                 let (obj_count, pkg_count) = self.ingest_replay_state(&state);
                 let aliases = build_address_aliases(&state);
@@ -1642,17 +1679,48 @@ fn parse_type_tag_json(type_json: &serde_json::Value) -> Result<TypeTag> {
     TypeTag::from_str(&s).map_err(|e| anyhow!("parse TypeTag from {s:?}: {e}"))
 }
 
-fn preload_objects_from_inputs(env: &mut SimulationEnvironment, inputs: &[InputValue]) -> Result<()> {
+fn preload_objects_from_inputs(
+    env: &mut SimulationEnvironment,
+    inputs: &[InputValue],
+) -> Result<()> {
     use sui_sandbox_core::ptb::ObjectInput;
 
     for input in inputs {
-        let InputValue::Object(obj) = input else { continue };
+        let InputValue::Object(obj) = input else {
+            continue;
+        };
         let (id, bytes, type_tag, version, is_shared, is_immutable) = match obj {
-            ObjectInput::ImmRef { id, bytes, type_tag, version } => (*id, bytes.clone(), type_tag.clone(), *version, false, true),
-            ObjectInput::MutRef { id, bytes, type_tag, version } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
-            ObjectInput::Owned { id, bytes, type_tag, version } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
-            ObjectInput::Shared { id, bytes, type_tag, version } => (*id, bytes.clone(), type_tag.clone(), *version, true, false),
-            ObjectInput::Receiving { id, bytes, type_tag, version, .. } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
+            ObjectInput::ImmRef {
+                id,
+                bytes,
+                type_tag,
+                version,
+            } => (*id, bytes.clone(), type_tag.clone(), *version, false, true),
+            ObjectInput::MutRef {
+                id,
+                bytes,
+                type_tag,
+                version,
+            } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
+            ObjectInput::Owned {
+                id,
+                bytes,
+                type_tag,
+                version,
+            } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
+            ObjectInput::Shared {
+                id,
+                bytes,
+                type_tag,
+                version,
+            } => (*id, bytes.clone(), type_tag.clone(), *version, true, false),
+            ObjectInput::Receiving {
+                id,
+                bytes,
+                type_tag,
+                version,
+                ..
+            } => (*id, bytes.clone(), type_tag.clone(), *version, false, false),
         };
         env.add_object_with_version_and_status(
             id,
@@ -1734,9 +1802,9 @@ fn strict_compare(
     local: &sui_sandbox_core::ptb::TransactionEffects,
 ) -> std::result::Result<(), StrictDiffError> {
     // Status
-    let status = tx_json
-        .pointer("/effects/V2/status")
-        .ok_or_else(|| StrictDiffError::new(ReasonCode::WalrusInconsistent, "missing effects.V2.status"))?;
+    let status = tx_json.pointer("/effects/V2/status").ok_or_else(|| {
+        StrictDiffError::new(ReasonCode::WalrusInconsistent, "missing effects.V2.status")
+    })?;
     let on_chain_success = match status {
         serde_json::Value::String(s) => s == "Success",
         serde_json::Value::Object(o) => o.contains_key("Success"),
@@ -1753,11 +1821,15 @@ fn strict_compare(
     }
 
     // Lamport version
-    let lamport = on_chain_lamport_version(tx_json)
-        .ok_or_else(|| StrictDiffError::new(ReasonCode::WalrusInconsistent, "missing lamport_version"))?;
-    let local_lamport = local
-        .lamport_timestamp
-        .ok_or_else(|| StrictDiffError::new(ReasonCode::NotModeled, "local missing lamport_timestamp (enable version tracking)"))?;
+    let lamport = on_chain_lamport_version(tx_json).ok_or_else(|| {
+        StrictDiffError::new(ReasonCode::WalrusInconsistent, "missing lamport_version")
+    })?;
+    let local_lamport = local.lamport_timestamp.ok_or_else(|| {
+        StrictDiffError::new(
+            ReasonCode::NotModeled,
+            "local missing lamport_timestamp (enable version tracking)",
+        )
+    })?;
     if lamport != local_lamport {
         return Err(StrictDiffError::new(
             ReasonCode::LamportMismatch,
@@ -1769,14 +1841,25 @@ fn strict_compare(
     }
 
     // Object changes
-    let expected = parse_changed_objects(tx_json)
-        .map_err(|e| StrictDiffError::new(ReasonCode::WalrusInconsistent, format!("parse changed_objects: {e:#}")))?;
-    let output_objects = index_walrus_move_objects(tx_json, "output_objects")
-        .map_err(|e| StrictDiffError::new(ReasonCode::WalrusInconsistent, format!("parse output_objects: {e:#}")))?;
+    let expected = parse_changed_objects(tx_json).map_err(|e| {
+        StrictDiffError::new(
+            ReasonCode::WalrusInconsistent,
+            format!("parse changed_objects: {e:#}"),
+        )
+    })?;
+    let output_objects = index_walrus_move_objects(tx_json, "output_objects").map_err(|e| {
+        StrictDiffError::new(
+            ReasonCode::WalrusInconsistent,
+            format!("parse output_objects: {e:#}"),
+        )
+    })?;
 
     // Ensure Walrus output_objects digests are self-consistent with effects digests (when available).
     for (id, exp) in &expected {
-        if matches!(exp.change_type, VersionChangeType::Deleted | VersionChangeType::Wrapped) {
+        if matches!(
+            exp.change_type,
+            VersionChangeType::Deleted | VersionChangeType::Wrapped
+        ) {
             continue;
         }
         let Some(out_obj) = output_objects.get(id) else {
@@ -1785,8 +1868,12 @@ fn strict_compare(
                 format!("missing output_object for {}", id.to_hex_literal()),
             ));
         };
-        let computed = compute_sui_object_digest_from_walrus(out_obj)
-            .map_err(|e| StrictDiffError::new(ReasonCode::WalrusInconsistent, format!("compute output digest: {e:#}")))?;
+        let computed = compute_sui_object_digest_from_walrus(out_obj).map_err(|e| {
+            StrictDiffError::new(
+                ReasonCode::WalrusInconsistent,
+                format!("compute output digest: {e:#}"),
+            )
+        })?;
         if exp.output_digest != computed.to_string() {
             return Err(StrictDiffError::new(
                 ReasonCode::WalrusInconsistent,
@@ -1800,10 +1887,12 @@ fn strict_compare(
         }
     }
 
-    let local_versions = local
-        .object_versions
-        .as_ref()
-        .ok_or_else(|| StrictDiffError::new(ReasonCode::NotModeled, "local missing object_versions (enable version tracking)"))?;
+    let local_versions = local.object_versions.as_ref().ok_or_else(|| {
+        StrictDiffError::new(
+            ReasonCode::NotModeled,
+            "local missing object_versions (enable version tracking)",
+        )
+    })?;
 
     for (id, exp) in &expected {
         let Some(info) = local_versions.get(id) else {
@@ -1956,7 +2045,8 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
 
         let meta = arr.get(1).context("changed_objects[1] meta")?;
 
-        let (input_version, input_exists) = if let Some(exist) = meta.pointer("/input_state/Exist") {
+        let (input_version, input_exists) = if let Some(exist) = meta.pointer("/input_state/Exist")
+        {
             let exist_arr = exist.as_array().context("input_state.Exist is not array")?;
             let ver = exist_arr
                 .get(0)
@@ -1978,7 +2068,9 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
         let mut output_deleted = false;
 
         if let Some(ow) = output_state.get("ObjectWrite") {
-            let ow_arr = ow.as_array().context("output_state.ObjectWrite is not array")?;
+            let ow_arr = ow
+                .as_array()
+                .context("output_state.ObjectWrite is not array")?;
             let dig = ow_arr
                 .get(0)
                 .and_then(|v| v.as_str())
@@ -1986,7 +2078,9 @@ fn parse_changed_objects(tx_json: &serde_json::Value) -> Result<HashMap<ObjectID
             output_digest = dig.to_string();
             output_exists = true;
         } else if let Some(pw) = output_state.get("PackageWrite") {
-            let pw_arr = pw.as_array().context("output_state.PackageWrite is not array")?;
+            let pw_arr = pw
+                .as_array()
+                .context("output_state.PackageWrite is not array")?;
             let dig = pw_arr
                 .get(0)
                 .and_then(|v| v.as_str())
@@ -2057,8 +2151,8 @@ fn index_walrus_move_objects(
             continue;
         };
 
-        let contents = decode_bytes_or_base64(move_obj.get("contents"))
-            .context("missing Move.contents")?;
+        let contents =
+            decode_bytes_or_base64(move_obj.get("contents")).context("missing Move.contents")?;
         if contents.len() < 32 {
             continue;
         }
@@ -2138,7 +2232,8 @@ fn parse_owner(owner_json: &serde_json::Value) -> Result<Owner> {
         return Ok(Owner::Immutable);
     }
     if let Some(addr) = owner_json.get("AddressOwner").and_then(|v| v.as_str()) {
-        let a = SuiAddress::from_str(addr).map_err(|e| anyhow!("parse AddressOwner {addr}: {e}"))?;
+        let a =
+            SuiAddress::from_str(addr).map_err(|e| anyhow!("parse AddressOwner {addr}: {e}"))?;
         return Ok(Owner::AddressOwner(a));
     }
     if let Some(obj) = owner_json.get("ObjectOwner").and_then(|v| v.as_str()) {
@@ -2164,7 +2259,8 @@ fn parse_owner(owner_json: &serde_json::Value) -> Result<Owner> {
             .get("owner")
             .and_then(|v| v.as_str())
             .context("ConsensusAddressOwner.owner")?;
-        let a = SuiAddress::from_str(owner).map_err(|e| anyhow!("parse ConsensusAddressOwner.owner {owner}: {e}"))?;
+        let a = SuiAddress::from_str(owner)
+            .map_err(|e| anyhow!("parse ConsensusAddressOwner.owner {owner}: {e}"))?;
         return Ok(Owner::ConsensusAddressOwner {
             start_version: SequenceNumber::from_u64(start_version),
             owner: a,
@@ -2178,7 +2274,12 @@ fn compute_sui_object_digest_from_walrus(obj: &WalrusMoveObject) -> Result<Objec
 
     let struct_tag = match &obj.type_tag {
         TypeTag::Struct(s) => (**s).clone(),
-        other => return Err(anyhow!("expected Struct type for object {}, got {other:?}", obj.id.to_hex_literal())),
+        other => {
+            return Err(anyhow!(
+                "expected Struct type for object {}, got {other:?}",
+                obj.id.to_hex_literal()
+            ))
+        }
     };
     let move_ty = MoveObjectType::from(struct_tag);
     let move_obj = unsafe {
@@ -2224,8 +2325,9 @@ fn is_likely_gas_object(tx_json: &serde_json::Value, id: AccountAddress) -> bool
     false
 }
 
-
-fn build_object_version_map_from_effects(tx_json: &serde_json::Value) -> HashMap<AccountAddress, u64> {
+fn build_object_version_map_from_effects(
+    tx_json: &serde_json::Value,
+) -> HashMap<AccountAddress, u64> {
     // Best-effort map from changed_objects input_state versions (only objects in effects).
     let mut m = HashMap::new();
     if let Some(changed) = tx_json
@@ -2233,9 +2335,15 @@ fn build_object_version_map_from_effects(tx_json: &serde_json::Value) -> HashMap
         .and_then(|v| v.as_array())
     {
         for entry in changed {
-            let Some(arr) = entry.as_array() else { continue };
-            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else { continue };
-            let Ok(id) = AccountAddress::from_hex_literal(id_str) else { continue };
+            let Some(arr) = entry.as_array() else {
+                continue;
+            };
+            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(id) = AccountAddress::from_hex_literal(id_str) else {
+                continue;
+            };
             let meta = arr.get(1).unwrap_or(&serde_json::Value::Null);
             if let Some(exist) = meta.pointer("/input_state/Exist") {
                 if let Some(ver) = exist
@@ -2279,8 +2387,12 @@ fn created_objects_from_effects(tx_json: &serde_json::Value) -> HashSet<AccountA
         .and_then(|v| v.as_array())
     {
         for entry in changed {
-            let Some(arr) = entry.as_array() else { continue };
-            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else { continue };
+            let Some(arr) = entry.as_array() else {
+                continue;
+            };
+            let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+                continue;
+            };
             let meta = arr.get(1).unwrap_or(&serde_json::Value::Null);
             if meta.pointer("/input_state/NotExist").is_some() {
                 if let Ok(id) = AccountAddress::from_hex_literal(id_str) {
@@ -2318,18 +2430,27 @@ fn output_object_ids_from_walrus(tx_json: &serde_json::Value) -> HashSet<Account
     output
 }
 
-fn build_package_version_map_from_effects(tx_json: &serde_json::Value) -> HashMap<AccountAddress, u64> {
+fn build_package_version_map_from_effects(
+    tx_json: &serde_json::Value,
+) -> HashMap<AccountAddress, u64> {
     let mut m = HashMap::new();
     let Some(changed) = tx_json
         .pointer("/effects/V2/changed_objects")
-        .and_then(|v| v.as_array()) else {
+        .and_then(|v| v.as_array())
+    else {
         return m;
     };
 
     for entry in changed {
-        let Some(arr) = entry.as_array() else { continue };
-        let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else { continue };
-        let Ok(id) = AccountAddress::from_hex_literal(id_str) else { continue };
+        let Some(arr) = entry.as_array() else {
+            continue;
+        };
+        let Some(id_str) = arr.get(0).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(id) = AccountAddress::from_hex_literal(id_str) else {
+            continue;
+        };
         let meta = arr.get(1).unwrap_or(&serde_json::Value::Null);
 
         if let Some(pkg) = meta.pointer("/output_state/PackageWrite") {
@@ -2414,7 +2535,11 @@ fn build_historical_versions_for_prefetch(
             }
         }
     }
-    if m.is_empty() { None } else { Some(m) }
+    if m.is_empty() {
+        None
+    } else {
+        Some(m)
+    }
 }
 
 fn normalize_addr(addr: &str) -> String {
@@ -2430,13 +2555,17 @@ fn extract_ptb_input_object_versions(tx_json: &serde_json::Value) -> Vec<(String
     let Some(inputs) = inputs else { return out };
 
     for inp in inputs {
-        let Some(obj) = inp.get("Object") else { continue };
+        let Some(obj) = inp.get("Object") else {
+            continue;
+        };
 
         if let Some(shared) = obj.get("SharedObject") {
             let id = shared.get("id").and_then(|v| v.as_str());
-            let ver = shared
-                .get("initial_shared_version")
-                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+            let ver = shared.get("initial_shared_version").and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64())
+            });
             if let (Some(id), Some(ver)) = (id, ver) {
                 out.push((normalize_addr(id), ver));
             }
@@ -2445,9 +2574,11 @@ fn extract_ptb_input_object_versions(tx_json: &serde_json::Value) -> Vec<(String
 
         if let Some(arr) = obj.get("ImmOrOwnedObject").and_then(|v| v.as_array()) {
             let id = arr.get(0).and_then(|v| v.as_str());
-            let ver = arr
-                .get(1)
-                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+            let ver = arr.get(1).and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64())
+            });
             if let (Some(id), Some(ver)) = (id, ver) {
                 out.push((normalize_addr(id), ver));
             }
@@ -2456,9 +2587,11 @@ fn extract_ptb_input_object_versions(tx_json: &serde_json::Value) -> Vec<(String
 
         if let Some(arr) = obj.get("Receiving").and_then(|v| v.as_array()) {
             let id = arr.get(0).and_then(|v| v.as_str());
-            let ver = arr
-                .get(1)
-                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()));
+            let ver = arr.get(1).and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64())
+            });
             if let (Some(id), Some(ver)) = (id, ver) {
                 out.push((normalize_addr(id), ver));
             }
@@ -2481,19 +2614,26 @@ fn build_aliases_from_runtime_to_storage(
     aliases
 }
 
-fn build_versions_from_grpc_tx(
-    tx: &sui_transport::grpc::GrpcTransaction,
-) -> HashMap<String, u64> {
+fn build_versions_from_grpc_tx(tx: &sui_transport::grpc::GrpcTransaction) -> HashMap<String, u64> {
     let mut m = HashMap::new();
 
     for input in &tx.inputs {
         match input {
-            GrpcInput::Object { object_id, version, .. }
-            | GrpcInput::Receiving { object_id, version, .. } => {
+            GrpcInput::Object {
+                object_id, version, ..
+            }
+            | GrpcInput::Receiving {
+                object_id, version, ..
+            } => {
                 m.insert(normalize_addr(object_id), *version);
             }
-            GrpcInput::SharedObject { object_id, initial_version, .. } => {
-                m.entry(normalize_addr(object_id)).or_insert(*initial_version);
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                ..
+            } => {
+                m.entry(normalize_addr(object_id))
+                    .or_insert(*initial_version);
             }
             GrpcInput::Pure { .. } => {}
         }
@@ -2522,7 +2662,11 @@ fn patch_gas_coin_mutation(
     // Locate gas coin bytes from PTB inputs.
     let (input_bytes, input_ver) = find_object_input_by_id(&parsed.inputs, gas_id)
         .ok_or_else(|| anyhow!("gas coin not found in PTB inputs"))?;
-    let gas_ver = if gas_ver == 0 { input_ver.unwrap_or(0) } else { gas_ver };
+    let gas_ver = if gas_ver == 0 {
+        input_ver.unwrap_or(0)
+    } else {
+        gas_ver
+    };
 
     let gas_used = tx_json
         .pointer("/effects/V2/gas_used")
@@ -2561,16 +2705,16 @@ fn patch_gas_coin_mutation(
 
     // If already mutated by the PTB, keep existing and just ensure digest/bytes match.
     effects.mutated.push(gas_id);
-    effects.mutated_object_bytes.insert(gas_id, new_bytes.clone());
+    effects
+        .mutated_object_bytes
+        .insert(gas_id, new_bytes.clone());
 
     // Update version tracking entry.
     let lamport = on_chain_lamport_version(tx_json).context("missing lamport_version")?;
     let input_digest = blake2b256(&input_bytes);
     let output_digest = blake2b256(&new_bytes);
 
-    let versions = effects
-        .object_versions
-        .get_or_insert_with(HashMap::new);
+    let versions = effects.object_versions.get_or_insert_with(HashMap::new);
     versions.insert(
         gas_id,
         ObjectVersionInfo {
@@ -2599,11 +2743,17 @@ fn parse_gas_object_ref(tx_json: &serde_json::Value) -> Result<(AccountAddress, 
         .pointer("/effects/V2/gas_object_index")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
-    let entry = payments.get(idx).or_else(|| payments.first()).ok_or_else(|| anyhow!("gas_data.payment empty"))?;
+    let entry = payments
+        .get(idx)
+        .or_else(|| payments.first())
+        .ok_or_else(|| anyhow!("gas_data.payment empty"))?;
     let arr = entry
         .as_array()
         .ok_or_else(|| anyhow!("gas_data.payment entry not array"))?;
-    let id_str = arr.get(0).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("gas_data.payment[0] id"))?;
+    let id_str = arr
+        .get(0)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("gas_data.payment[0] id"))?;
     let version = match arr.get(1) {
         Some(serde_json::Value::String(s)) => s.parse::<u64>().unwrap_or(0),
         Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
@@ -2620,29 +2770,41 @@ fn find_object_input_by_id(
 ) -> Option<(Vec<u8>, Option<u64>)> {
     use sui_sandbox_core::ptb::ObjectInput;
     for input in inputs {
-        let InputValue::Object(obj) = input else { continue };
+        let InputValue::Object(obj) = input else {
+            continue;
+        };
         match obj {
-            ObjectInput::Owned { id, bytes, version, .. } => {
+            ObjectInput::Owned {
+                id, bytes, version, ..
+            } => {
                 if *id == target {
                     return Some((bytes.clone(), *version));
                 }
             }
-            ObjectInput::ImmRef { id, bytes, version, .. } => {
+            ObjectInput::ImmRef {
+                id, bytes, version, ..
+            } => {
                 if *id == target {
                     return Some((bytes.clone(), *version));
                 }
             }
-            ObjectInput::MutRef { id, bytes, version, .. } => {
+            ObjectInput::MutRef {
+                id, bytes, version, ..
+            } => {
                 if *id == target {
                     return Some((bytes.clone(), *version));
                 }
             }
-            ObjectInput::Shared { id, bytes, version, .. } => {
+            ObjectInput::Shared {
+                id, bytes, version, ..
+            } => {
                 if *id == target {
                     return Some((bytes.clone(), *version));
                 }
             }
-            ObjectInput::Receiving { id, bytes, version, .. } => {
+            ObjectInput::Receiving {
+                id, bytes, version, ..
+            } => {
                 if *id == target {
                     return Some((bytes.clone(), *version));
                 }
