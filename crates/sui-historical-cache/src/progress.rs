@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::paths::{atomic_write_json, progress_events_path, progress_state_path};
 
 /// Progress state (snapshot for resumption).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProgressState {
     /// Blob IDs that have been fully processed
     pub ingested_blobs: HashSet<String>,
@@ -23,18 +23,6 @@ pub struct ProgressState {
     pub objects_written: u64,
     /// Total duplicates skipped
     pub duplicates_skipped: u64,
-}
-
-impl Default for ProgressState {
-    fn default() -> Self {
-        Self {
-            ingested_blobs: HashSet::new(),
-            last_checkpoint_per_blob: HashMap::new(),
-            checkpoints_processed: 0,
-            objects_written: 0,
-            duplicates_skipped: 0,
-        }
-    }
 }
 
 /// Progress event (append-only log entry).

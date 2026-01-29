@@ -165,7 +165,7 @@ impl MetricsSnapshot {
         let mut lines = Vec::new();
         lines.push("Cache Metrics Report".to_string());
         lines.push("=".repeat(50));
-        lines.push(format!("Object Lookups:"));
+        lines.push("Object Lookups:".to_string());
         lines.push(format!("  Walrus JSON:     {}", self.walrus_hits));
         lines.push(format!("  Memory Cache:    {}", self.memory_hits));
         lines.push(format!("  Disk Cache:      {}", self.disk_hits));
@@ -178,16 +178,16 @@ impl MetricsSnapshot {
             "  Disk Hit Rate:   {:.1}%",
             self.object_disk_hit_rate() * 100.0
         ));
-        lines.push(format!(""));
-        lines.push(format!("Package Lookups:"));
+        lines.push(String::new());
+        lines.push("Package Lookups:".to_string());
         lines.push(format!("  Disk Cache:      {}", self.package_disk_hits));
         lines.push(format!("  gRPC (miss):     {}", self.package_grpc_fetches));
         lines.push(format!(
             "  Hit Rate:        {:.1}%",
             self.package_hit_rate() * 100.0
         ));
-        lines.push(format!(""));
-        lines.push(format!("Dynamic Fields:"));
+        lines.push(String::new());
+        lines.push("Dynamic Fields:".to_string());
         lines.push(format!(
             "  Disk Cache:      {}",
             self.dynamic_field_disk_hits
