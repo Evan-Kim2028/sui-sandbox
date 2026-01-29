@@ -2,6 +2,18 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.11.0] - 2026-01-29
+
+### Added
+
+- **Replay fidelity helpers**: Dynamic-field key resolution from cached objects and JSON-RPC fallbacks for struct keys.
+- **Checkpoint hydration**: gRPC/GraphQL transport now exposes checkpoint/transaction object sets for replay.
+
+### Changed
+
+- **State fetcher**: Improved historical object hydration and metadata handling to reduce missing-child gaps.
+- **Examples**: Updated replay examples with enhanced child fetchers and cache integration.
+
 ## [0.10.1] - 2026-01-29
 
 ### Added
