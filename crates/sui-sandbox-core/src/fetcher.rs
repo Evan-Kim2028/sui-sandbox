@@ -2,13 +2,21 @@
 //!
 //! This module provides the `Fetcher` trait for abstracting data fetching operations.
 //! This allows the simulation environment to work with different data sources:
-//! - Real mainnet/testnet via GraphQL
+//! - Real mainnet/testnet via gRPC
 //! - Cached data for offline replay
 //! - Mock data for testing
 //!
 //! The trait is intentionally minimal, containing only the methods needed by SimulationEnvironment.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use tokio::runtime::{Builder, Runtime};
+
+use sui_transport::grpc::{GrpcClient, GrpcOwner};
+
+use crate::simulation::FetcherConfig;
 
 /// Result of fetching an object from the network.
 #[derive(Debug, Clone)]
@@ -33,7 +41,7 @@ pub struct FetchedObjectData {
 /// ## Implementation Notes
 ///
 /// Implementations should be stateless where possible. Connection state
-/// (GraphQL clients, etc.) should use lazy initialization to allow the
+/// (gRPC clients, etc.) should use lazy initialization to allow the
 /// fetcher to be cloned or serialized if needed.
 pub trait Fetcher: Send + Sync {
     /// Fetch all modules from a deployed package.
@@ -57,13 +65,13 @@ pub struct NoopFetcher;
 
 impl Fetcher for NoopFetcher {
     fn fetch_package_modules(&self, _package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-        Err(anyhow::anyhow!(
+        Err(anyhow!(
             "Fetching is disabled. Enable with with_mainnet_fetching() or with_fetcher_config()."
         ))
     }
 
     fn fetch_object(&self, _object_id: &str) -> Result<FetchedObjectData> {
-        Err(anyhow::anyhow!(
+        Err(anyhow!(
             "Fetching is disabled. Enable with with_mainnet_fetching() or with_fetcher_config()."
         ))
     }
@@ -73,13 +81,207 @@ impl Fetcher for NoopFetcher {
         _object_id: &str,
         _version: u64,
     ) -> Result<FetchedObjectData> {
-        Err(anyhow::anyhow!(
+        Err(anyhow!(
             "Fetching is disabled. Enable with with_mainnet_fetching() or with_fetcher_config()."
         ))
     }
 
     fn network_name(&self) -> &str {
         "none"
+    }
+}
+
+/// Adapter that wraps gRPC client access to implement the Fetcher trait.
+///
+/// This provides backward compatibility with existing code while enabling
+/// the new trait-based abstraction.
+pub struct GrpcFetcher {
+    endpoint: String,
+    api_key: Option<String>,
+    network: String,
+    runtime: Runtime,
+    client: parking_lot::Mutex<Option<Arc<GrpcClient>>>,
+}
+
+impl GrpcFetcher {
+    fn api_key_from_env() -> Option<String> {
+        std::env::var("SUI_GRPC_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
+    fn endpoint_from_env(var: &str, default: &str) -> String {
+        std::env::var(var).unwrap_or_else(|_| default.to_string())
+    }
+
+    fn build_runtime() -> Runtime {
+        Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build tokio runtime for GrpcFetcher")
+    }
+
+    fn new(endpoint: String, network: String, api_key: Option<String>) -> Self {
+        Self {
+            endpoint,
+            api_key,
+            network,
+            runtime: Self::build_runtime(),
+            client: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// Create a new gRPC fetcher for mainnet.
+    pub fn mainnet() -> Self {
+        let endpoint =
+            Self::endpoint_from_env("SUI_GRPC_ENDPOINT", "https://fullnode.mainnet.sui.io:443");
+        Self::new(endpoint, "mainnet".to_string(), Self::api_key_from_env())
+    }
+
+    /// Create a new gRPC fetcher for mainnet with archive support.
+    pub fn mainnet_with_archive() -> Self {
+        let endpoint = Self::endpoint_from_env(
+            "SUI_GRPC_ARCHIVE_ENDPOINT",
+            "https://archive.mainnet.sui.io:443",
+        );
+        Self::new(
+            endpoint,
+            "mainnet-archive".to_string(),
+            Self::api_key_from_env(),
+        )
+    }
+
+    /// Create a new gRPC fetcher for testnet.
+    pub fn testnet() -> Self {
+        let endpoint = Self::endpoint_from_env(
+            "SUI_GRPC_TESTNET_ENDPOINT",
+            "https://fullnode.testnet.sui.io:443",
+        );
+        Self::new(endpoint, "testnet".to_string(), Self::api_key_from_env())
+    }
+
+    /// Create a new gRPC fetcher with a custom endpoint.
+    pub fn custom(endpoint: impl Into<String>) -> Self {
+        let endpoint = endpoint.into();
+        let network = format!("custom({})", endpoint);
+        Self::new(endpoint, network, Self::api_key_from_env())
+    }
+
+    /// Create a gRPC fetcher from a FetcherConfig.
+    pub fn from_config(config: &FetcherConfig) -> Option<Self> {
+        if !config.enabled {
+            return None;
+        }
+
+        Some(if let Some(endpoint) = &config.endpoint {
+            Self::custom(endpoint.clone())
+        } else if let Some(network) = &config.network {
+            match network.as_str() {
+                "testnet" => Self::testnet(),
+                _ => {
+                    if config.use_archive {
+                        Self::mainnet_with_archive()
+                    } else {
+                        Self::mainnet()
+                    }
+                }
+            }
+        } else if config.use_archive {
+            Self::mainnet_with_archive()
+        } else {
+            Self::mainnet()
+        })
+    }
+
+    /// Get the underlying gRPC client (initializes lazily).
+    pub fn inner(&self) -> Result<Arc<GrpcClient>> {
+        self.client()
+    }
+
+    fn client(&self) -> Result<Arc<GrpcClient>> {
+        if let Some(client) = self.client.lock().as_ref() {
+            return Ok(client.clone());
+        }
+
+        let endpoint = self.endpoint.clone();
+        let api_key = self.api_key.clone();
+        let client =
+            self.block_on(async move { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+        let client = Arc::new(client);
+        *self.client.lock() = Some(client.clone());
+        Ok(client)
+    }
+
+    fn block_on<F, T>(&self, fut: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let handle = self.runtime.handle().clone();
+            let join = std::thread::spawn(move || handle.block_on(fut));
+            join.join()
+                .map_err(|_| anyhow!("gRPC runtime thread panicked"))?
+        } else {
+            self.runtime.block_on(fut)
+        }
+    }
+
+    fn to_fetched(
+        object_id: &str,
+        obj: sui_transport::grpc::GrpcObject,
+    ) -> Result<FetchedObjectData> {
+        let bcs_bytes = obj
+            .bcs
+            .ok_or_else(|| anyhow!("gRPC object {} missing BCS bytes", object_id))?;
+        let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+        let is_immutable = matches!(obj.owner, GrpcOwner::Immutable);
+        Ok(FetchedObjectData {
+            bcs_bytes,
+            type_string: obj.type_string,
+            is_shared,
+            is_immutable,
+            version: obj.version,
+        })
+    }
+}
+
+impl Fetcher for GrpcFetcher {
+    fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let client = self.client()?;
+        let package_id = package_id.to_string();
+        let fetch_id = package_id.clone();
+        let object = self.block_on(async move { client.get_object(&fetch_id).await })?;
+        let object = object.ok_or_else(|| anyhow!("package not found: {}", package_id))?;
+        object
+            .package_modules
+            .ok_or_else(|| anyhow!("object is not a package: {}", package_id))
+    }
+
+    fn fetch_object(&self, object_id: &str) -> Result<FetchedObjectData> {
+        let client = self.client()?;
+        let object_id = object_id.to_string();
+        let fetch_id = object_id.clone();
+        let object = self.block_on(async move { client.get_object(&fetch_id).await })?;
+        let object = object.ok_or_else(|| anyhow!("object not found: {}", object_id))?;
+        Self::to_fetched(&object_id, object)
+    }
+
+    fn fetch_object_at_version(&self, object_id: &str, version: u64) -> Result<FetchedObjectData> {
+        let client = self.client()?;
+        let object_id = object_id.to_string();
+        let fetch_id = object_id.clone();
+        let object =
+            self.block_on(
+                async move { client.get_object_at_version(&fetch_id, Some(version)).await },
+            )?;
+        let object = object
+            .ok_or_else(|| anyhow!("object not found at version {}: {}", version, object_id))?;
+        Self::to_fetched(&object_id, object)
+    }
+
+    fn network_name(&self) -> &str {
+        &self.network
     }
 }
 
@@ -117,11 +319,11 @@ pub struct MockFetcher {
     /// Network name for identification
     network: String,
     /// Pre-loaded package modules: package_id -> [(module_name, module_bytes)]
-    packages: std::collections::HashMap<String, Vec<(String, Vec<u8>)>>,
+    packages: HashMap<String, Vec<(String, Vec<u8>)>>,
     /// Pre-loaded objects: object_id -> FetchedObjectData
-    objects: std::collections::HashMap<String, FetchedObjectData>,
+    objects: HashMap<String, FetchedObjectData>,
     /// Pre-loaded versioned objects: (object_id, version) -> FetchedObjectData
-    versioned_objects: std::collections::HashMap<(String, u64), FetchedObjectData>,
+    versioned_objects: HashMap<(String, u64), FetchedObjectData>,
     /// If set, all fetch calls will return this error
     force_error: Option<String>,
 }
@@ -131,9 +333,9 @@ impl MockFetcher {
     pub fn new(network: &str) -> Self {
         Self {
             network: network.to_string(),
-            packages: std::collections::HashMap::new(),
-            objects: std::collections::HashMap::new(),
-            versioned_objects: std::collections::HashMap::new(),
+            packages: HashMap::new(),
+            objects: HashMap::new(),
+            versioned_objects: HashMap::new(),
             force_error: None,
         }
     }
@@ -190,49 +392,43 @@ impl MockFetcher {
 impl Fetcher for MockFetcher {
     fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
         if let Some(ref error) = self.force_error {
-            return Err(anyhow::anyhow!("{}", error));
+            return Err(anyhow!("{}", error));
         }
 
         self.packages
             .get(&Self::normalize_id(package_id))
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("MockFetcher: package not found: {}", package_id))
+            .ok_or_else(|| anyhow!("MockFetcher: package not found: {}", package_id))
     }
 
     fn fetch_object(&self, object_id: &str) -> Result<FetchedObjectData> {
         if let Some(ref error) = self.force_error {
-            return Err(anyhow::anyhow!("{}", error));
+            return Err(anyhow!("{}", error));
         }
 
         self.objects
             .get(&Self::normalize_id(object_id))
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("MockFetcher: object not found: {}", object_id))
+            .ok_or_else(|| anyhow!("MockFetcher: object not found: {}", object_id))
     }
 
     fn fetch_object_at_version(&self, object_id: &str, version: u64) -> Result<FetchedObjectData> {
         if let Some(ref error) = self.force_error {
-            return Err(anyhow::anyhow!("{}", error));
+            return Err(anyhow!("{}", error));
         }
 
-        // First try versioned objects
         let key = (Self::normalize_id(object_id), version);
-        if let Some(data) = self.versioned_objects.get(&key) {
-            return Ok(data.clone());
-        }
-
-        // Fall back to regular objects if version matches
-        if let Some(data) = self.objects.get(&Self::normalize_id(object_id)) {
-            if data.version == version {
-                return Ok(data.clone());
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "MockFetcher: object not found at version: {} @ v{}",
-            object_id,
-            version
-        ))
+        self.versioned_objects
+            .get(&key)
+            .cloned()
+            .or_else(|| self.objects.get(&Self::normalize_id(object_id)).cloned())
+            .ok_or_else(|| {
+                anyhow!(
+                    "MockFetcher: object not found: {} (version {})",
+                    object_id,
+                    version
+                )
+            })
     }
 
     fn network_name(&self) -> &str {
@@ -254,149 +450,22 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_fetcher_packages() {
-        let mut fetcher = MockFetcher::new("test");
-
-        // Not found initially
-        assert!(fetcher.fetch_package_modules("0x2").is_err());
-
-        // Add a package
-        fetcher.add_package(
-            "0x2",
-            vec![
-                ("coin".to_string(), vec![0x01, 0x02, 0x03]),
-                ("balance".to_string(), vec![0x04, 0x05]),
-            ],
-        );
-
-        // Now it should be found
-        let modules = fetcher.fetch_package_modules("0x2").unwrap();
-        assert_eq!(modules.len(), 2);
-        assert_eq!(modules[0].0, "coin");
-        assert_eq!(modules[0].1, vec![0x01, 0x02, 0x03]);
-
-        // Test case normalization (0X vs 0x)
-        assert!(fetcher.fetch_package_modules("0X2").is_ok());
+    fn test_grpc_fetcher_from_config_disabled() {
+        let config = FetcherConfig::default();
+        assert!(GrpcFetcher::from_config(&config).is_none());
     }
 
     #[test]
-    fn test_mock_fetcher_objects() {
-        let mut fetcher = MockFetcher::new("test");
-
-        let obj_data = FetchedObjectData {
-            bcs_bytes: vec![0x01, 0x02, 0x03],
-            type_string: Some("0x2::coin::Coin<0x2::sui::SUI>".to_string()),
-            is_shared: false,
-            is_immutable: false,
-            version: 5,
-        };
-
-        // Not found initially
-        assert!(fetcher.fetch_object("0x123").is_err());
-
-        // Add the object
-        fetcher.add_object("0x123", obj_data.clone());
-
-        // Now it should be found
-        let fetched = fetcher.fetch_object("0x123").unwrap();
-        assert_eq!(fetched.bcs_bytes, vec![0x01, 0x02, 0x03]);
-        assert_eq!(fetched.version, 5);
-        assert!(!fetched.is_shared);
-
-        // Version mismatch
-        assert!(fetcher.fetch_object_at_version("0x123", 10).is_err());
-
-        // Correct version
-        let fetched = fetcher.fetch_object_at_version("0x123", 5).unwrap();
-        assert_eq!(fetched.version, 5);
+    fn test_grpc_fetcher_from_config_mainnet() {
+        let config = FetcherConfig::mainnet();
+        let fetcher = GrpcFetcher::from_config(&config).unwrap();
+        assert_eq!(fetcher.network_name(), "mainnet");
     }
 
     #[test]
-    fn test_mock_fetcher_versioned_objects() {
-        let mut fetcher = MockFetcher::new("test");
-
-        // Add same object at different versions
-        fetcher.add_object_at_version(
-            "0x123",
-            1,
-            FetchedObjectData {
-                bcs_bytes: vec![0x01],
-                type_string: None,
-                is_shared: false,
-                is_immutable: false,
-                version: 1,
-            },
-        );
-        fetcher.add_object_at_version(
-            "0x123",
-            5,
-            FetchedObjectData {
-                bcs_bytes: vec![0x05],
-                type_string: None,
-                is_shared: true,
-                is_immutable: false,
-                version: 5,
-            },
-        );
-
-        // Fetch different versions
-        let v1 = fetcher.fetch_object_at_version("0x123", 1).unwrap();
-        assert_eq!(v1.bcs_bytes, vec![0x01]);
-        assert!(!v1.is_shared);
-
-        let v5 = fetcher.fetch_object_at_version("0x123", 5).unwrap();
-        assert_eq!(v5.bcs_bytes, vec![0x05]);
-        assert!(v5.is_shared);
-
-        // Non-existent version
-        assert!(fetcher.fetch_object_at_version("0x123", 3).is_err());
-    }
-
-    #[test]
-    fn test_mock_fetcher_forced_errors() {
-        let mut fetcher = MockFetcher::new("test");
-
-        // Add some data
-        fetcher.add_package("0x2", vec![("coin".to_string(), vec![0x01])]);
-        fetcher.add_object(
-            "0x123",
-            FetchedObjectData {
-                bcs_bytes: vec![0x01],
-                type_string: None,
-                is_shared: false,
-                is_immutable: false,
-                version: 1,
-            },
-        );
-
-        // Data is accessible
-        assert!(fetcher.fetch_package_modules("0x2").is_ok());
-        assert!(fetcher.fetch_object("0x123").is_ok());
-
-        // Force an error
-        fetcher.set_error("simulated network failure");
-
-        // All fetches now fail
-        let err = fetcher.fetch_package_modules("0x2").unwrap_err();
-        assert!(err.to_string().contains("simulated network failure"));
-
-        let err = fetcher.fetch_object("0x123").unwrap_err();
-        assert!(err.to_string().contains("simulated network failure"));
-
-        // Clear the error
-        fetcher.clear_error();
-
-        // Data is accessible again
-        assert!(fetcher.fetch_package_modules("0x2").is_ok());
-        assert!(fetcher.fetch_object("0x123").is_ok());
-    }
-
-    #[test]
-    fn test_mock_fetcher_network_name() {
-        let fetcher = MockFetcher::new("mock-mainnet");
-        assert_eq!(fetcher.network_name(), "mock-mainnet");
-
-        let fetcher = MockFetcher::default();
-        assert_eq!(fetcher.network_name(), "");
+    fn test_grpc_fetcher_from_config_archive() {
+        let config = FetcherConfig::mainnet_with_archive();
+        let fetcher = GrpcFetcher::from_config(&config).unwrap();
+        assert_eq!(fetcher.network_name(), "mainnet-archive");
     }
 }

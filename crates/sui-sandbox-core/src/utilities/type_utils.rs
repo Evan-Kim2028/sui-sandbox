@@ -185,6 +185,33 @@ pub fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
     package_ids.into_iter().collect()
 }
 
+/// Extract package addresses referenced by a TypeTag.
+///
+/// This walks nested type parameters and collects all struct addresses,
+/// excluding framework packages (0x1, 0x2, 0x3).
+pub fn extract_package_ids_from_type_tag(tag: &TypeTag) -> BTreeSet<AccountAddress> {
+    fn visit(tag: &TypeTag, out: &mut BTreeSet<AccountAddress>) {
+        match tag {
+            TypeTag::Struct(s) => {
+                let addr = s.address;
+                let addr_hex = addr.to_hex_literal();
+                if !super::address::is_framework_package(&addr_hex) {
+                    out.insert(addr);
+                }
+                for param in &s.type_params {
+                    visit(param, out);
+                }
+            }
+            TypeTag::Vector(inner) => visit(inner, out),
+            _ => {}
+        }
+    }
+
+    let mut out = BTreeSet::new();
+    visit(tag, &mut out);
+    out
+}
+
 /// Extract package addresses that a module depends on from its bytecode.
 ///
 /// Parses the compiled Move bytecode to find all module handles (references to

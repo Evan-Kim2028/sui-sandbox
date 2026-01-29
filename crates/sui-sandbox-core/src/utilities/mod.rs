@@ -59,8 +59,9 @@ pub mod version_utils;
 pub use address::{is_framework_package, normalize_address};
 pub use generic_patcher::{FieldPatchRule, GenericObjectPatcher, PatchAction, PatchCondition};
 pub use type_utils::{
-    extract_dependencies_from_bytecode, extract_package_ids_from_type, parse_and_rewrite_type,
-    parse_type_tag, rewrite_type_tag, split_type_params,
+    extract_dependencies_from_bytecode, extract_package_ids_from_type,
+    extract_package_ids_from_type_tag, parse_and_rewrite_type, parse_type_tag, rewrite_type_tag,
+    split_type_params,
 };
 pub use version_utils::detect_version_constants;
 

@@ -1,0 +1,22 @@
+[package]
+name = "sui-historical-cache"
+version = "0.1.0"
+edition = "2021"
+description = "Filesystem-backed historical object/version cache for Walrus checkpoint replay"
+
+[dependencies]
+# Core utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+hex.workspace = true
+
+# Sui types
+move-core-types.workspace = true
+
+# Thread safety
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1780,6 +1780,8 @@ pub enum VersionChangeType {
     Deleted,
     /// Object was wrapped in this transaction.
     Wrapped,
+    /// Object was unwrapped (extracted from another object) in this transaction.
+    Unwrapped,
 }
 
 impl TransactionEffects {
@@ -2830,10 +2832,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let arg_to_info: Vec<(Argument, Option<ObjectID>)> = args
             .iter()
             .map(|arg| {
-                (
-                    *arg,
-                    self.get_object_id_and_type_from_arg(arg).map(|(id, _)| id),
-                )
+                let obj_id = self.get_object_id_and_type_from_arg(arg).map(|(id, _)| id);
+                (*arg, obj_id)
             })
             .collect();
 
@@ -2880,6 +2880,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 // Accumulate gas
                 self.gas_used += output.gas_used;
 
+                // Sync objects created by native transfer/share/freeze calls
+                self.sync_created_objects_from_vm();
+
                 if output.return_values.is_empty() {
                     Ok(CommandResult::Empty)
                 } else {
@@ -2904,6 +2907,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     let tx_context_bytes = self.vm.synthesize_tx_context()?;
                     resolved_args.push(tx_context_bytes);
 
+                    // IMPORTANT: Create an extended arg_to_info that includes TxContext.
+                    // The VM will report mutable_ref_outputs using the extended argument indices,
+                    // so we need TxContext in the list (with None object ID since it's not an object).
+                    let mut arg_to_info_with_ctx = arg_to_info.clone();
+                    // Use Input(u16::MAX) as placeholder for TxContext - won't be used since object_id is None
+                    arg_to_info_with_ctx.push((Argument::Input(u16::MAX), None));
+
                     let retry_result = self.vm.execute_function_with_structured_error(
                         &module_id,
                         function.as_str(),
@@ -2915,12 +2925,15 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         crate::vm::ExecutionResult::Success(output) => {
                             // Track mutations from mutable reference outputs
                             self.apply_mutable_ref_outputs(
-                                &arg_to_info,
+                                &arg_to_info_with_ctx,
                                 &output.mutable_ref_outputs,
                             )?;
 
                             // Accumulate gas
                             self.gas_used += output.gas_used;
+
+                            // Sync objects created by native transfer/share/freeze calls
+                            self.sync_created_objects_from_vm();
 
                             if output.return_values.is_empty() {
                                 return Ok(CommandResult::Empty);
@@ -3001,10 +3014,85 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 // CRITICAL: Update the stored value in place so subsequent commands
                 // see the modified object state. Use the unified update method that
                 // handles Input, Result, and NestedResult uniformly with proper error checking.
-                self.update_arg_bytes(original_arg, new_bytes.clone())?;
+                // Skip update for TxContext placeholder (Input(u16::MAX) with no object ID)
+                if !(matches!(original_arg, Argument::Input(65535)) && maybe_object_id.is_none()) {
+                    self.update_arg_bytes(original_arg, new_bytes.clone())?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// Sync objects created by native transfer/share/freeze calls from VM's shared state.
+    ///
+    /// When a MoveCall creates objects that are immediately transferred/shared/frozen
+    /// (not returned from the function), those are tracked in the VM's shared state.
+    /// This method syncs them to our created_objects map so they're included in effects.
+    fn sync_created_objects_from_vm(&mut self) {
+        use crate::object_runtime::Owner as RuntimeOwner;
+
+        // Drain created objects from the VM's shared state
+        let created = self.vm.drain_created_objects();
+
+        for (object_id, type_tag, bytes, runtime_owner) in created {
+            // Skip if we already know about this object
+            if self.created_objects.contains_key(&object_id)
+                || self.mutated_objects.contains_key(&object_id)
+            {
+                continue;
+            }
+
+            // Check if it's a known input object
+            let is_input = self.inputs.iter().any(|input| {
+                if let InputValue::Object(obj_input) = input {
+                    match obj_input {
+                        ObjectInput::Owned { id, .. }
+                        | ObjectInput::ImmRef { id, .. }
+                        | ObjectInput::MutRef { id, .. }
+                        | ObjectInput::Shared { id, .. }
+                        | ObjectInput::Receiving { id, .. } => *id == object_id,
+                    }
+                } else {
+                    false
+                }
+            });
+
+            if !is_input {
+                // Convert object_runtime::Owner to ptb::Owner
+                let owner = match runtime_owner {
+                    RuntimeOwner::Address(addr) => Owner::Address(addr),
+                    RuntimeOwner::Shared => Owner::Shared,
+                    RuntimeOwner::Immutable => Owner::Immutable,
+                    RuntimeOwner::Object(_) => {
+                        // Object-owned: treat as address-owned by sender for PTB purposes
+                        Owner::Address(self.sender)
+                    }
+                };
+
+                tracing::debug!(
+                    object_id = %object_id.to_hex_literal(),
+                    bytes_len = bytes.len(),
+                    type_tag = ?type_tag,
+                    owner = ?owner,
+                    "synced created object from VM native (transfer/share/freeze)"
+                );
+
+                // Track storage create cost for gas metering
+                self.vm.track_object_create(bytes.len());
+
+                // Add to created_objects
+                self.created_objects
+                    .insert(object_id, (bytes, Some(type_tag)));
+
+                // Track ownership
+                self.object_owners.insert(object_id, owner);
+
+                // Mark as transferable if address-owned
+                if matches!(owner, Owner::Address(_)) {
+                    self.transferable_objects.insert(object_id);
+                }
+            }
+        }
     }
 
     /// Track newly created objects from MoveCall return values.
@@ -3653,6 +3741,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             let (package_id, upgrade_cap_id) = self.pre_published[self.publish_index];
             self.publish_index += 1;
 
+            // Track the package object as created (immutable)
+            self.created_objects.insert(package_id, (Vec::new(), None));
+            self.object_owners.insert(package_id, Owner::Immutable);
+
             // UpgradeCap type: 0x2::package::UpgradeCap
             let upgrade_cap_type = well_known::types::UPGRADE_CAP_TYPE.clone();
 
@@ -3699,6 +3791,11 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         if self.upgrade_index < self.pre_upgraded.len() {
             let (new_package_id, receipt_id) = self.pre_upgraded[self.upgrade_index];
             self.upgrade_index += 1;
+
+            // Track the upgraded package object as created (immutable)
+            self.created_objects
+                .insert(new_package_id, (Vec::new(), None));
+            self.object_owners.insert(new_package_id, Owner::Immutable);
 
             // UpgradeReceipt type: 0x2::package::UpgradeReceipt
             let upgrade_receipt_type = well_known::types::UPGRADE_RECEIPT_TYPE.clone();
@@ -4890,6 +4987,40 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     change_type: VersionChangeType::Wrapped,
                 },
             );
+        }
+
+        // Unwrapped objects: extracted from another object during this transaction.
+        // These have no input version (they were inside another object) but get output version.
+        for change in &self.object_changes {
+            if let ObjectChange::Unwrapped { id, .. } = change {
+                // Skip if already handled (e.g., if also mutated after unwrap)
+                if versions.contains_key(id) {
+                    continue;
+                }
+
+                // Unwrapped objects: no input version, output version is lamport_timestamp
+                // Try to get output bytes if we have them (from mutated_objects or created_objects)
+                let output_digest: [u8; 32] = if let Some((bytes, _)) = self.mutated_objects.get(id)
+                {
+                    Blake2b256::digest(bytes).into()
+                } else if let Some((bytes, _)) = self.created_objects.get(id) {
+                    Blake2b256::digest(bytes).into()
+                } else {
+                    // No final bytes available - use marker
+                    [0u8; 32]
+                };
+
+                versions.insert(
+                    *id,
+                    ObjectVersionInfo {
+                        input_version: None,
+                        output_version: self.lamport_timestamp,
+                        input_digest: None,
+                        output_digest,
+                        change_type: VersionChangeType::Unwrapped,
+                    },
+                );
+            }
         }
 
         versions

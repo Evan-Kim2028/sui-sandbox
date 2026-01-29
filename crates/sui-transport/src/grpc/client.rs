@@ -14,6 +14,7 @@ use tonic::transport::Channel;
 use super::generated::sui_rpc_v2::{
     self as proto, ledger_service_client::LedgerServiceClient,
     subscription_service_client::SubscriptionServiceClient,
+    transaction_execution_service_client::TransactionExecutionServiceClient,
 };
 
 /// gRPC client for Sui network.
@@ -136,6 +137,40 @@ impl GrpcClient {
             checkpoint_height: info.checkpoint_height.unwrap_or(0),
             lowest_available_checkpoint: info.lowest_available_checkpoint.unwrap_or(0),
         })
+    }
+
+    // =========================================================================
+    // Transaction Simulation (Dev Inspect / Dry Run)
+    // =========================================================================
+
+    /// Simulate a transaction via the TransactionExecutionService.
+    ///
+    /// Use `checks = Disabled` for dev-inspect-like behavior and `checks = Enabled`
+    /// for dry-run semantics. When checks are enabled, `do_gas_selection` controls
+    /// whether the fullnode fills in gas payment/budget.
+    pub async fn simulate_transaction(
+        &self,
+        transaction: proto::Transaction,
+        checks: proto::simulate_transaction_request::TransactionChecks,
+        do_gas_selection: bool,
+    ) -> Result<proto::SimulateTransactionResponse> {
+        let mut client = TransactionExecutionServiceClient::new(self.channel.clone());
+
+        let request = proto::SimulateTransactionRequest {
+            transaction: Some(transaction),
+            read_mask: Some(prost_types::FieldMask {
+                paths: vec!["*".to_string()],
+            }),
+            checks: Some(checks as i32),
+            do_gas_selection: Some(do_gas_selection),
+        };
+
+        let response = client
+            .simulate_transaction(self.wrap_request(request))
+            .await
+            .map_err(|e| anyhow!("gRPC error simulating transaction: {}", e))?;
+
+        Ok(response.into_inner())
     }
 
     // =========================================================================

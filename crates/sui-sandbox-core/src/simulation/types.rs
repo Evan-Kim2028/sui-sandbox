@@ -108,6 +108,10 @@ pub struct SimulatedObject {
 
     /// Version number (for tracking mutations).
     pub version: u64,
+
+    /// Optional runtime ownership metadata.
+    /// Used for building full Sui objects when available.
+    pub owner: Option<crate::object_runtime::Owner>,
 }
 
 /// Result of a direct function call.

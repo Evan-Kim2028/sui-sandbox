@@ -4342,3 +4342,262 @@ pub mod subscription_service_client {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteTransactionRequest {
+    /// The transaction to execute.
+    #[prost(message, optional, tag = "1")]
+    pub transaction: ::core::option::Option<Transaction>,
+    /// Set of `UserSignature`s authorizing the execution of the provided
+    /// transaction.
+    #[prost(message, repeated, tag = "2")]
+    pub signatures: ::prost::alloc::vec::Vec<UserSignature>,
+    /// Mask specifying which fields to read.
+    /// If no mask is specified, defaults to `effects.status,checkpoint`.
+    #[prost(message, optional, tag = "3")]
+    pub read_mask: ::core::option::Option<::prost_types::FieldMask>,
+}
+/// Response message for `NodeService.ExecuteTransaction`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteTransactionResponse {
+    #[prost(message, optional, tag = "1")]
+    pub transaction: ::core::option::Option<ExecutedTransaction>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SimulateTransactionRequest {
+    #[prost(message, optional, tag = "1")]
+    pub transaction: ::core::option::Option<Transaction>,
+    /// Mask specifying which fields to read.
+    #[prost(message, optional, tag = "2")]
+    pub read_mask: ::core::option::Option<::prost_types::FieldMask>,
+    /// Specify whether checks should be ENABLED (default) or DISABLED while executing the transaction
+    #[prost(
+        enumeration = "simulate_transaction_request::TransactionChecks",
+        optional,
+        tag = "3"
+    )]
+    pub checks: ::core::option::Option<i32>,
+    /// Perform gas selection based on a budget estimation and include the
+    /// selected gas payment and budget in the response.
+    ///
+    /// This option will be ignored if `checks` is `DISABLED`.
+    #[prost(bool, optional, tag = "4")]
+    pub do_gas_selection: ::core::option::Option<bool>,
+}
+/// Nested message and enum types in `SimulateTransactionRequest`.
+pub mod simulate_transaction_request {
+    /// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum TransactionChecks {
+        Enabled = 0,
+        Disabled = 1,
+    }
+    impl TransactionChecks {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::Enabled => "ENABLED",
+                Self::Disabled => "DISABLED",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "ENABLED" => Some(Self::Enabled),
+                "DISABLED" => Some(Self::Disabled),
+                _ => None,
+            }
+        }
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SimulateTransactionResponse {
+    #[prost(message, optional, tag = "1")]
+    pub transaction: ::core::option::Option<ExecutedTransaction>,
+    #[prost(message, repeated, tag = "2")]
+    pub command_outputs: ::prost::alloc::vec::Vec<CommandResult>,
+}
+/// An intermediate result/output from the execution of a single command
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommandResult {
+    #[prost(message, repeated, tag = "1")]
+    pub return_values: ::prost::alloc::vec::Vec<CommandOutput>,
+    #[prost(message, repeated, tag = "2")]
+    pub mutated_by_ref: ::prost::alloc::vec::Vec<CommandOutput>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CommandOutput {
+    #[prost(message, optional, tag = "1")]
+    pub argument: ::core::option::Option<Argument>,
+    #[prost(message, optional, tag = "2")]
+    pub value: ::core::option::Option<Bcs>,
+    /// JSON rendering of the output.
+    #[prost(message, optional, tag = "3")]
+    pub json: ::core::option::Option<::prost_types::Value>,
+}
+/// Generated client implementations.
+pub mod transaction_execution_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    #[derive(Debug, Clone)]
+    pub struct TransactionExecutionServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl TransactionExecutionServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> TransactionExecutionServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> TransactionExecutionServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            TransactionExecutionServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        pub async fn execute_transaction(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExecuteTransactionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExecuteTransactionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/sui.rpc.v2.TransactionExecutionService/ExecuteTransaction",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "sui.rpc.v2.TransactionExecutionService",
+                        "ExecuteTransaction",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn simulate_transaction(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SimulateTransactionRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::SimulateTransactionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/sui.rpc.v2.TransactionExecutionService/SimulateTransaction",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "sui.rpc.v2.TransactionExecutionService",
+                        "SimulateTransaction",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}

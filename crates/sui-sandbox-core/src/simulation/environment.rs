@@ -11,12 +11,12 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::resolver::ModuleResolver;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::fetcher::{FetchedObjectData, Fetcher};
 use crate::natives::EmittedEvent;
-use crate::object_runtime::ChildFetcherFn;
+use crate::object_runtime::{ChildFetcherFn, KeyBasedChildFetcherFn, VersionedChildFetcherFn};
 use crate::ptb::{Command, InputValue, ObjectInput};
 use crate::resolver::LocalModuleResolver;
 use crate::vm::VMHarness;
@@ -25,7 +25,8 @@ use crate::well_known;
 use super::consensus::{ConsensusOrderEntry, ConsensusValidation, LockResult, SharedObjectLock};
 use super::state::{
     FetcherConfig, PersistentState, SerializedDynamicField, SerializedModule, SerializedObject,
-    SerializedPendingReceive, StateMetadata,
+    SerializedPackage, SerializedPackageLinkage, SerializedPackageModule, SerializedPendingReceive,
+    StateMetadata,
 };
 use super::types::{
     leb128_encode, CoinMetadata, CompileError, CompileErrorDetail, CompileResult, ExecutionResult,
@@ -34,6 +35,89 @@ use super::types::{
     SUI_COIN_TYPE, SUI_DECIMALS, SUI_SYMBOL,
 };
 use super::SimulationError;
+
+use sui_protocol_config::ProtocolConfig;
+use sui_types::base_types::{ObjectID, SequenceNumber};
+use sui_types::digests::TransactionDigest;
+use sui_types::move_package::{MovePackage, TypeOrigin, UpgradeInfo};
+use sui_types::object::Object;
+
+/// Package metadata stored alongside the module resolver.
+#[derive(Debug, Clone)]
+struct PackageEntry {
+    storage_id: AccountAddress,
+    version: u64,
+    original_id: Option<AccountAddress>,
+    modules: Vec<(String, Vec<u8>)>,
+    linkage: BTreeMap<AccountAddress, (AccountAddress, u64)>,
+}
+
+impl PackageEntry {
+    fn to_serialized(&self) -> SerializedPackage {
+        use base64::Engine;
+        SerializedPackage {
+            address: self.storage_id.to_hex_literal(),
+            version: self.version,
+            original_id: self.original_id.map(|id| id.to_hex_literal()),
+            modules: self
+                .modules
+                .iter()
+                .map(|(name, bytes)| SerializedPackageModule {
+                    name: name.clone(),
+                    bytecode_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                })
+                .collect(),
+            linkage: self
+                .linkage
+                .iter()
+                .map(|(orig, (upgraded, version))| SerializedPackageLinkage {
+                    original_id: orig.to_hex_literal(),
+                    upgraded_id: upgraded.to_hex_literal(),
+                    upgraded_version: *version,
+                })
+                .collect(),
+        }
+    }
+
+    fn from_serialized(pkg: &SerializedPackage) -> Result<Self> {
+        use base64::Engine;
+        let storage_id = AccountAddress::from_hex_literal(&pkg.address)
+            .map_err(|e| anyhow!("Invalid package address {}: {}", pkg.address, e))?;
+        let original_id = match &pkg.original_id {
+            Some(id) => Some(
+                AccountAddress::from_hex_literal(id)
+                    .map_err(|e| anyhow!("Invalid original_id {}: {}", id, e))?,
+            ),
+            None => None,
+        };
+        let modules = pkg
+            .modules
+            .iter()
+            .map(|m| {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&m.bytecode_b64)
+                    .map_err(|e| anyhow!("Failed to decode module {}: {}", m.name, e))?;
+                Ok((m.name.clone(), bytes))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut linkage = BTreeMap::new();
+        for link in &pkg.linkage {
+            let orig = AccountAddress::from_hex_literal(&link.original_id)
+                .map_err(|e| anyhow!("Invalid linkage original_id {}: {}", link.original_id, e))?;
+            let upgraded = AccountAddress::from_hex_literal(&link.upgraded_id)
+                .map_err(|e| anyhow!("Invalid linkage upgraded_id {}: {}", link.upgraded_id, e))?;
+            linkage.insert(orig, (upgraded, link.upgraded_version));
+        }
+
+        Ok(Self {
+            storage_id,
+            version: pkg.version,
+            original_id,
+            modules,
+            linkage,
+        })
+    }
+}
 
 /// The main simulation environment.
 pub struct SimulationEnvironment {
@@ -105,6 +189,30 @@ pub struct SimulationEnvironment {
     /// Optional callback for on-demand child object fetching during execution.
     /// This is called when a dynamic field child is requested but not found in preloaded state.
     child_fetcher: Option<std::sync::Arc<ChildFetcherFn>>,
+
+    /// Optional callback for versioned child object fetching during execution.
+    /// Preferred for replay when using Sui natives.
+    versioned_child_fetcher: Option<std::sync::Arc<VersionedChildFetcherFn>>,
+
+    /// Optional callback for key-based child fetching during execution.
+    /// This is called when ID-based lookup fails and the runtime can compute
+    /// a dynamic field key to query external sources.
+    key_based_child_fetcher: Option<std::sync::Arc<KeyBasedChildFetcherFn>>,
+
+    /// Address aliases for package upgrades (storage_id -> original_id).
+    address_aliases: HashMap<AccountAddress, AccountAddress>,
+
+    /// Package versions used for alias resolution.
+    package_versions: HashMap<AccountAddress, u64>,
+
+    /// Versioned object history: id -> (version -> object snapshot).
+    object_history: BTreeMap<AccountAddress, BTreeMap<u64, SimulatedObject>>,
+
+    /// Package metadata store (bytecode + linkage).
+    package_store: BTreeMap<AccountAddress, PackageEntry>,
+
+    /// Full package objects built from stored metadata.
+    package_objects: BTreeMap<AccountAddress, Object>,
 }
 
 impl SimulationEnvironment {
@@ -152,6 +260,13 @@ impl SimulationEnvironment {
             all_events: Vec::new(),
             last_tx_events: Vec::new(),
             child_fetcher: None,
+            versioned_child_fetcher: None,
+            key_based_child_fetcher: None,
+            address_aliases: HashMap::new(),
+            package_versions: HashMap::new(),
+            object_history: BTreeMap::new(),
+            package_store: BTreeMap::new(),
+            package_objects: BTreeMap::new(),
         };
 
         // Initialize the Clock object (0x6)
@@ -185,8 +300,12 @@ impl SimulationEnvironment {
             is_shared: true,
             is_immutable: false, // Clock is shared, not immutable
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Shared),
         };
         self.objects.insert(clock_id, clock_obj);
+        if let Some(obj) = self.objects.get(&clock_id).cloned() {
+            self.record_object_history(&obj);
+        }
 
         Ok(())
     }
@@ -218,8 +337,12 @@ impl SimulationEnvironment {
             is_shared: true,
             is_immutable: false, // Random is shared, not immutable
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Shared),
         };
         self.objects.insert(random_id, random_obj);
+        if let Some(obj) = self.objects.get(&random_id).cloned() {
+            self.record_object_history(&obj);
+        }
 
         Ok(())
     }
@@ -255,6 +378,8 @@ impl SimulationEnvironment {
                 clock_obj.bcs_bytes[32..40].copy_from_slice(&new_timestamp_ms.to_le_bytes());
                 clock_obj.version += 1;
             }
+            let snapshot = clock_obj.clone();
+            self.record_object_history(&snapshot);
         } else {
             // Re-initialize if somehow missing
             self.timestamp_ms = Some(new_timestamp_ms);
@@ -350,6 +475,7 @@ impl SimulationEnvironment {
     /// running multiple benchmark iterations against the same package corpus.
     pub fn reset_state(&mut self) -> Result<()> {
         self.objects.clear();
+        self.object_history.clear();
         self.id_counter = 0;
         self.dynamic_fields.clear();
         self.shared_locks.clear();
@@ -387,9 +513,42 @@ impl SimulationEnvironment {
         self.child_fetcher = Some(std::sync::Arc::new(fetcher));
     }
 
+    /// Set a versioned child fetcher for replay (preferred with Sui natives).
+    pub fn set_versioned_child_fetcher(&mut self, fetcher: VersionedChildFetcherFn) {
+        self.versioned_child_fetcher = Some(std::sync::Arc::new(fetcher));
+    }
+
     /// Clear the child fetcher callback.
     pub fn clear_child_fetcher(&mut self) {
         self.child_fetcher = None;
+    }
+
+    /// Set a callback for key-based child object fetching during execution.
+    /// This callback is called when ID-based lookup fails and the runtime
+    /// can compute a dynamic field key for lookup.
+    pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
+        self.key_based_child_fetcher = Some(std::sync::Arc::new(fetcher));
+    }
+
+    /// Clear the key-based child fetcher callback.
+    pub fn clear_key_based_child_fetcher(&mut self) {
+        self.key_based_child_fetcher = None;
+    }
+
+    /// Set address aliases with version hints for upgraded packages.
+    pub fn set_address_aliases_with_versions(
+        &mut self,
+        aliases: HashMap<AccountAddress, AccountAddress>,
+        package_versions: HashMap<AccountAddress, u64>,
+    ) {
+        self.address_aliases = aliases;
+        self.package_versions = package_versions;
+    }
+
+    /// Clear address aliases.
+    pub fn clear_address_aliases(&mut self) {
+        self.address_aliases.clear();
+        self.package_versions.clear();
     }
 
     /// Set the transaction timestamp for TxContext.
@@ -414,6 +573,7 @@ impl SimulationEnvironment {
     /// Deploy a package from bytecode modules.
     /// Returns the package address extracted from the module bytecode.
     pub fn deploy_package(&mut self, modules: Vec<(String, Vec<u8>)>) -> Result<AccountAddress> {
+        let modules_for_store = modules.clone();
         // Add modules to resolver
         let (count, package_addr) = self.resolver.add_package_modules(modules)?;
         if count == 0 {
@@ -421,7 +581,18 @@ impl SimulationEnvironment {
         }
 
         // Return the package address from bytecode, or generate a fresh ID if not found
-        Ok(package_addr.unwrap_or_else(|| self.fresh_id()))
+        let package_addr = package_addr.unwrap_or_else(|| self.fresh_id());
+        let entry = PackageEntry {
+            storage_id: package_addr,
+            version: 1,
+            original_id: None,
+            modules: modules_for_store,
+            linkage: BTreeMap::new(),
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(package_addr, 1);
+
+        Ok(package_addr)
     }
 
     /// Fetch and deploy a package from mainnet.
@@ -431,14 +602,25 @@ impl SimulationEnvironment {
         })?;
 
         let modules = fetcher.fetch_package_modules(package_id)?;
+        let modules_for_store = modules.clone();
         let (count, _) = self.resolver.add_package_modules(modules)?;
 
         if count == 0 {
             return Err(anyhow!("No modules loaded from package {}", package_id));
         }
 
-        AccountAddress::from_hex_literal(package_id)
-            .map_err(|e| anyhow!("Invalid package address: {}", e))
+        let package_addr = AccountAddress::from_hex_literal(package_id)
+            .map_err(|e| anyhow!("Invalid package address: {}", e))?;
+        let entry = PackageEntry {
+            storage_id: package_addr,
+            version: 1,
+            original_id: None,
+            modules: modules_for_store,
+            linkage: BTreeMap::new(),
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(package_addr, 1);
+        Ok(package_addr)
     }
 
     /// Deploy a package with pre-fetched modules at a specific address.
@@ -452,6 +634,7 @@ impl SimulationEnvironment {
         let target_addr = AccountAddress::from_hex_literal(package_id)
             .map_err(|e| anyhow!("Invalid package address: {}", e))?;
 
+        let modules_for_store = modules.clone();
         let (count, _) = self
             .resolver
             .add_package_modules_at(modules, Some(target_addr))?;
@@ -459,6 +642,16 @@ impl SimulationEnvironment {
         if count == 0 {
             return Err(anyhow!("No modules loaded for package {}", package_id));
         }
+
+        let entry = PackageEntry {
+            storage_id: target_addr,
+            version: 1,
+            original_id: None,
+            modules: modules_for_store,
+            linkage: BTreeMap::new(),
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(target_addr, 1);
 
         Ok(target_addr)
     }
@@ -498,6 +691,13 @@ impl SimulationEnvironment {
             TypeTag::Address
         };
 
+        let owner = if is_shared {
+            Some(crate::object_runtime::Owner::Shared)
+        } else if is_immutable {
+            Some(crate::object_runtime::Owner::Immutable)
+        } else {
+            None
+        };
         let obj = SimulatedObject {
             id,
             type_tag,
@@ -505,8 +705,12 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable,
             version,
+            owner,
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -518,6 +722,11 @@ impl SimulationEnvironment {
         is_shared: bool,
     ) -> AccountAddress {
         let id = self.fresh_id();
+        let owner = if is_shared {
+            Some(crate::object_runtime::Owner::Shared)
+        } else {
+            Some(crate::object_runtime::Owner::Address(self.sender))
+        };
         let obj = SimulatedObject {
             id,
             type_tag,
@@ -525,8 +734,12 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable: false,
             version: 1,
+            owner,
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         id
     }
 
@@ -553,8 +766,12 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -585,8 +802,16 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable: false,
             version: 1,
+            owner: if is_shared {
+                Some(crate::object_runtime::Owner::Shared)
+            } else {
+                Some(crate::object_runtime::Owner::Address(self.sender))
+            },
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -622,8 +847,12 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version,
+            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
     }
 
     /// Inject an object with a specific ID, type, bytes, version, and sharing status.
@@ -646,8 +875,18 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable,
             version,
+            owner: if is_shared {
+                Some(crate::object_runtime::Owner::Shared)
+            } else if is_immutable {
+                Some(crate::object_runtime::Owner::Immutable)
+            } else {
+                Some(crate::object_runtime::Owner::Address(self.sender))
+            },
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
     }
 
     /// Register a new coin type with its metadata.
@@ -693,16 +932,31 @@ impl SimulationEnvironment {
         self.objects.get(id)
     }
 
+    /// Get a historical version of an object if available.
+    pub fn get_object_at_version(
+        &self,
+        id: &AccountAddress,
+        version: u64,
+    ) -> Option<&SimulatedObject> {
+        self.object_history
+            .get(id)
+            .and_then(|versions| versions.get(&version))
+    }
+
     /// Set object bytes directly.
     pub fn set_object_bytes(&mut self, id: AccountAddress, bytes: Vec<u8>) -> Result<()> {
-        let obj = self
-            .objects
-            .get_mut(&id)
-            .ok_or_phase_with(Phase::Execution, || {
-                format!("object {} not found", id.to_hex_literal())
-            })?;
-        obj.bcs_bytes = bytes;
-        obj.version += 1;
+        let snapshot = {
+            let obj = self
+                .objects
+                .get_mut(&id)
+                .ok_or_phase_with(Phase::Execution, || {
+                    format!("object {} not found", id.to_hex_literal())
+                })?;
+            obj.bcs_bytes = bytes;
+            obj.version += 1;
+            obj.clone()
+        };
+        self.record_object_history(&snapshot);
         Ok(())
     }
 
@@ -726,8 +980,16 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable: false, // Could be detected from object flags if needed
             version: 1,
+            owner: if is_shared {
+                Some(crate::object_runtime::Owner::Shared)
+            } else {
+                None
+            },
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -759,8 +1021,16 @@ impl SimulationEnvironment {
             is_shared,
             is_immutable: false,
             version: 1,
+            owner: if is_shared {
+                Some(crate::object_runtime::Owner::Shared)
+            } else {
+                None
+            },
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -795,6 +1065,21 @@ impl SimulationEnvironment {
         self.load_fetched_object(object_id, fetched)
     }
 
+    /// Fetch an object at a specific version and add it to the environment.
+    pub fn fetch_object_from_mainnet_at_version(
+        &mut self,
+        object_id: &str,
+        version: u64,
+    ) -> Result<AccountAddress> {
+        let fetcher = self
+            .fetcher
+            .as_ref()
+            .ok_or_else(|| anyhow!("Mainnet fetching not enabled"))?;
+
+        let fetched = fetcher.fetch_object_at_version(object_id, version)?;
+        self.load_fetched_object(object_id, fetched)
+    }
+
     /// Load a fetched object into the simulation environment.
     ///
     /// This is a helper method that converts FetchedObjectData to SimulatedObject
@@ -822,8 +1107,23 @@ impl SimulationEnvironment {
             is_shared: fetched.is_shared,
             is_immutable: fetched.is_immutable,
             version: fetched.version,
+            owner: if fetched.is_shared {
+                Some(crate::object_runtime::Owner::Shared)
+            } else if fetched.is_immutable {
+                Some(crate::object_runtime::Owner::Immutable)
+            } else {
+                None
+            },
         };
-        self.objects.insert(id, obj);
+        let update_latest = self
+            .objects
+            .get(&id)
+            .map(|existing| fetched.version >= existing.version)
+            .unwrap_or(true);
+        if update_latest {
+            self.objects.insert(id, obj.clone());
+        }
+        self.record_object_history(&obj);
         Ok(id)
     }
 
@@ -848,6 +1148,123 @@ impl SimulationEnvironment {
         crate::types::format_type_tag(type_tag)
     }
 
+    /// Record an object snapshot into the versioned history store.
+    fn record_object_history(&mut self, obj: &SimulatedObject) {
+        self.object_history
+            .entry(obj.id)
+            .or_default()
+            .insert(obj.version, obj.clone());
+    }
+
+    /// Build a MovePackage object from stored metadata.
+    fn build_package_object(&self, entry: &PackageEntry) -> Result<Object> {
+        use move_binary_format::CompiledModule;
+
+        let mut module_map = BTreeMap::new();
+        let mut compiled = Vec::new();
+        for (name, bytes) in &entry.modules {
+            let module = CompiledModule::deserialize_with_defaults(bytes)
+                .map_err(|e| anyhow!("Failed to deserialize module {}: {:?}", name, e))?;
+            compiled.push(module);
+            module_map.insert(name.clone(), bytes.clone());
+        }
+
+        let protocol_config: ProtocolConfig =
+            crate::gas::load_protocol_config(self.config.protocol_version);
+
+        let storage_id: ObjectID = entry.storage_id.into();
+        let version = SequenceNumber::from_u64(entry.version);
+
+        let original_pkg = entry.original_id.and_then(|id| {
+            self.package_objects.get(&id).and_then(|obj| {
+                if let sui_types::object::Data::Package(pkg) = &obj.data {
+                    Some(pkg)
+                } else {
+                    None
+                }
+            })
+        });
+
+        let type_origin_table = Self::build_type_origin_table(&compiled, storage_id, original_pkg);
+
+        let linkage_table: BTreeMap<ObjectID, UpgradeInfo> = entry
+            .linkage
+            .iter()
+            .map(|(orig, (upgraded, version))| {
+                (
+                    (*orig).into(),
+                    UpgradeInfo {
+                        upgraded_id: (*upgraded).into(),
+                        upgraded_version: SequenceNumber::from_u64(*version),
+                    },
+                )
+            })
+            .collect();
+
+        let move_package = MovePackage::new(
+            storage_id,
+            version,
+            module_map,
+            protocol_config.max_move_package_size(),
+            type_origin_table,
+            linkage_table,
+        )?;
+
+        Ok(Object::new_from_package(
+            move_package,
+            TransactionDigest::ZERO,
+        ))
+    }
+
+    fn build_type_origin_table(
+        modules: &[move_binary_format::CompiledModule],
+        storage_id: ObjectID,
+        original_pkg: Option<&MovePackage>,
+    ) -> Vec<TypeOrigin> {
+        let mut table = Vec::new();
+        let mut existing = original_pkg
+            .map(|pkg| pkg.type_origin_map())
+            .unwrap_or_default();
+
+        for module in modules {
+            for struct_def in module.struct_defs() {
+                let struct_handle = module.datatype_handle_at(struct_def.struct_handle);
+                let module_name = module.name().to_string();
+                let struct_name = module.identifier_at(struct_handle.name).to_string();
+                let key = (module_name.clone(), struct_name.clone());
+                let origin = existing.remove(&key).unwrap_or(storage_id);
+                table.push(TypeOrigin {
+                    module_name,
+                    datatype_name: struct_name,
+                    package: origin,
+                });
+            }
+            for enum_def in module.enum_defs() {
+                let enum_handle = module.datatype_handle_at(enum_def.enum_handle);
+                let module_name = module.name().to_string();
+                let enum_name = module.identifier_at(enum_handle.name).to_string();
+                let key = (module_name.clone(), enum_name.clone());
+                let origin = existing.remove(&key).unwrap_or(storage_id);
+                table.push(TypeOrigin {
+                    module_name,
+                    datatype_name: enum_name,
+                    package: origin,
+                });
+            }
+        }
+
+        table
+    }
+
+    /// Register a package entry and build its full object representation.
+    fn register_package_entry(&mut self, entry: PackageEntry) -> Result<()> {
+        let storage_id = entry.storage_id;
+        let package_object = self.build_package_object(&entry)?;
+        self.package_store.insert(storage_id, entry);
+        self.package_objects.insert(storage_id, package_object);
+        Ok(())
+    }
+
     /// List all available packages.
     pub fn list_packages(&self) -> Vec<AccountAddress> {
         self.resolver.list_packages()
@@ -856,6 +1273,89 @@ impl SimulationEnvironment {
     /// List all objects in the environment.
     pub fn list_objects(&self) -> Vec<&SimulatedObject> {
         self.objects.values().collect()
+    }
+
+    /// Ensure all package dependencies referenced by inputs and commands are loaded.
+    fn ensure_packages_loaded(
+        &mut self,
+        inputs: &[InputValue],
+        commands: &[Command],
+    ) -> Result<()> {
+        use crate::utilities::extract_package_ids_from_type_tag;
+
+        if self.fetcher.is_none() {
+            return Ok(());
+        }
+
+        let mut deps: std::collections::BTreeSet<AccountAddress> =
+            std::collections::BTreeSet::new();
+
+        for input in inputs {
+            if let InputValue::Object(obj) = input {
+                if let Some(tag) = obj.type_tag() {
+                    deps.extend(extract_package_ids_from_type_tag(tag));
+                }
+            }
+        }
+
+        for cmd in commands {
+            match cmd {
+                Command::MoveCall {
+                    package, type_args, ..
+                } => {
+                    deps.insert(*package);
+                    for tag in type_args {
+                        deps.extend(extract_package_ids_from_type_tag(tag));
+                    }
+                }
+                Command::MakeMoveVec {
+                    type_tag: Some(tag),
+                    ..
+                } => {
+                    deps.extend(extract_package_ids_from_type_tag(tag));
+                }
+                Command::Publish { dep_ids, .. } => {
+                    deps.extend(dep_ids.iter().copied());
+                }
+                Command::Upgrade { package, .. } => {
+                    deps.insert(*package);
+                }
+                _ => {}
+            }
+        }
+
+        for pkg in deps {
+            let pkg_hex = pkg.to_hex_literal();
+            if crate::utilities::is_framework_package(&pkg_hex) {
+                continue;
+            }
+            if self.resolver.has_package(&pkg) || self.address_aliases.contains_key(&pkg) {
+                continue;
+            }
+            if self.package_store.contains_key(&pkg) {
+                continue;
+            }
+
+            let modules = {
+                let fetcher = self.fetcher.as_ref().expect("checked above");
+                fetcher.fetch_package_modules(&pkg_hex)?
+            };
+            if modules.is_empty() {
+                continue;
+            }
+            self.resolver
+                .add_package_modules_at(modules.clone(), Some(pkg))?;
+            let entry = PackageEntry {
+                storage_id: pkg,
+                version: 1,
+                original_id: None,
+                modules,
+                linkage: BTreeMap::new(),
+            };
+            self.register_package_entry(entry)?;
+        }
+
+        Ok(())
     }
 
     /// Pre-publish modules and return (package_id, upgrade_cap_id).
@@ -903,7 +1403,19 @@ impl SimulationEnvironment {
             .map(|(name, bytes)| (name.clone(), bytes.clone()))
             .collect();
 
-        self.resolver.add_package_modules(modules_with_names)?;
+        self.resolver
+            .add_package_modules(modules_with_names.clone())?;
+
+        // Register package metadata for this publish
+        let entry = PackageEntry {
+            storage_id: package_addr,
+            version: 1,
+            original_id: None,
+            modules: modules_with_names,
+            linkage: BTreeMap::new(),
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(package_addr, 1);
 
         // Create UpgradeCap
         let upgrade_cap_id = self.fresh_id();
@@ -922,8 +1434,12 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(upgrade_cap_id, upgrade_cap);
+        if let Some(obj) = self.objects.get(&upgrade_cap_id).cloned() {
+            self.record_object_history(&obj);
+        }
 
         Ok((package_addr, upgrade_cap_id))
     }
@@ -957,6 +1473,15 @@ impl SimulationEnvironment {
         // Generate a new package address for the upgraded version
         // In real Sui, this is deterministic based on the original package + digest
         let new_package_addr = self.fresh_id();
+        let new_version = self
+            .package_versions
+            .get(&original_package)
+            .copied()
+            .unwrap_or(1)
+            .saturating_add(1);
+        self.package_versions.insert(original_package, new_version);
+        self.address_aliases
+            .insert(new_package_addr, original_package);
 
         // Add modules to resolver with the new package address
         // We need to rewrite the module addresses
@@ -967,7 +1492,22 @@ impl SimulationEnvironment {
             modules_with_names.push((name.clone(), module_bytes.clone()));
         }
 
-        self.resolver.add_package_modules(modules_with_names)?;
+        self.resolver
+            .add_package_modules(modules_with_names.clone())?;
+
+        let linkage = self
+            .package_store
+            .get(&original_package)
+            .map(|entry| entry.linkage.clone())
+            .unwrap_or_default();
+        let entry = PackageEntry {
+            storage_id: new_package_addr,
+            version: new_version,
+            original_id: Some(original_package),
+            modules: modules_with_names,
+            linkage,
+        };
+        self.register_package_entry(entry)?;
 
         // Create UpgradeReceipt
         let receipt_id = self.fresh_id();
@@ -986,8 +1526,12 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(receipt_id, receipt);
+        if let Some(obj) = self.objects.get(&receipt_id).cloned() {
+            self.record_object_history(&obj);
+        }
 
         Ok((new_package_addr, receipt_id))
     }
@@ -1210,12 +1754,27 @@ impl SimulationEnvironment {
             }
         }
 
+        if let Err(e) = self.ensure_packages_loaded(&inputs, &commands) {
+            return ExecutionResult {
+                success: false,
+                effects: None,
+                error: Some(SimulationError::ExecutionError {
+                    message: format!("Failed to load package dependencies: {}", e),
+                    command_index: None,
+                }),
+                raw_error: Some(e.to_string()),
+                failed_command_index: None,
+                failed_command_description: Some("Package dependency loading".to_string()),
+                commands_succeeded: 0,
+                error_context: None,
+                state_at_failure: None,
+            };
+        }
+
         // Build VM config with correct sender and timestamp
-        let mut config = crate::vm::SimulationConfig {
-            sender_address: self.sender.into(),
-            tx_timestamp_ms: self.timestamp_ms,
-            ..Default::default()
-        };
+        let mut config = self.config.clone();
+        config.sender_address = self.sender.into();
+        config.tx_timestamp_ms = self.timestamp_ms;
         // Use the timestamp for clock as well
         if let Some(ts) = self.timestamp_ms {
             config.clock_base_ms = ts;
@@ -1242,12 +1801,35 @@ impl SimulationEnvironment {
             }
         };
 
-        // Set up on-demand child fetcher if configured
-        if let Some(ref fetcher_arc) = self.child_fetcher {
+        // Set up on-demand child fetcher if configured (prefer versioned)
+        if let Some(ref fetcher_arc) = self.versioned_child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            harness.set_versioned_child_fetcher(Box::new(move |parent_id, child_id| {
+                fetcher_clone(parent_id, child_id)
+            }));
+        } else if let Some(ref fetcher_arc) = self.child_fetcher {
             let fetcher_clone = fetcher_arc.clone();
             harness.set_child_fetcher(Box::new(move |parent_id, child_id| {
                 fetcher_clone(parent_id, child_id)
             }));
+        }
+
+        // Set up key-based child fetcher if configured
+        if let Some(ref fetcher_arc) = self.key_based_child_fetcher {
+            let fetcher_clone = fetcher_arc.clone();
+            harness.set_key_based_child_fetcher(Box::new(
+                move |parent_id, child_id, key_type, key_bytes| {
+                    fetcher_clone(parent_id, child_id, key_type, key_bytes)
+                },
+            ));
+        }
+
+        if !self.address_aliases.is_empty() {
+            let mut versions = HashMap::new();
+            for (addr, ver) in &self.package_versions {
+                versions.insert(addr.to_hex_literal(), *ver);
+            }
+            harness.set_address_aliases_with_versions(self.address_aliases.clone(), versions);
         }
 
         // Preload dynamic field state from the environment.
@@ -1279,6 +1861,7 @@ impl SimulationEnvironment {
 
         // Set gas budget if specified
         executor.set_gas_budget(gas_budget);
+        executor.set_enforce_immutability(self.config.enforce_immutability);
 
         // Enable version tracking if configured
         if self.config.track_versions {
@@ -1348,6 +1931,13 @@ impl SimulationEnvironment {
     /// This syncs both created and mutated object bytes back to the environment.
     fn apply_object_changes(&mut self, effects: &crate::ptb::TransactionEffects) {
         use crate::ptb::{ObjectChange, Owner};
+        let version_info = effects.object_versions.as_ref();
+
+        let to_runtime_owner = |owner: &Owner| match owner {
+            Owner::Shared => Some(crate::object_runtime::Owner::Shared),
+            Owner::Immutable => Some(crate::object_runtime::Owner::Immutable),
+            Owner::Address(addr) => Some(crate::object_runtime::Owner::Address(*addr)),
+        };
 
         for change in &effects.object_changes {
             match change {
@@ -1356,6 +1946,9 @@ impl SimulationEnvironment {
                     owner,
                     object_type,
                 } => {
+                    if self.package_store.contains_key(id) {
+                        continue;
+                    }
                     // Get the bytes from the effects if available
                     let bcs_bytes = effects
                         .created_object_bytes
@@ -1368,6 +1961,10 @@ impl SimulationEnvironment {
                         Owner::Immutable => (false, true),
                         Owner::Address(_) => (false, false),
                     };
+                    let resolved_owner = to_runtime_owner(owner);
+                    let output_version = version_info
+                        .and_then(|m| m.get(id).map(|info| info.output_version))
+                        .unwrap_or(1);
 
                     // Create or update the object
                     if let Some(existing) = self.objects.get_mut(id) {
@@ -1380,6 +1977,8 @@ impl SimulationEnvironment {
                         }
                         existing.is_shared = is_shared;
                         existing.is_immutable = is_immutable;
+                        existing.owner = resolved_owner;
+                        existing.version = output_version;
                     } else {
                         // Create new object
                         let obj = SimulatedObject {
@@ -1388,9 +1987,13 @@ impl SimulationEnvironment {
                             bcs_bytes,
                             is_shared,
                             is_immutable,
-                            version: 1,
+                            version: output_version,
+                            owner: resolved_owner,
                         };
                         self.objects.insert(*id, obj);
+                    }
+                    if let Some(obj) = self.objects.get(id).cloned() {
+                        self.record_object_history(&obj);
                     }
                 }
                 ObjectChange::Mutated {
@@ -1398,10 +2001,14 @@ impl SimulationEnvironment {
                     owner,
                     object_type,
                 } => {
+                    if self.package_store.contains_key(id) {
+                        continue;
+                    }
                     // Get the mutated bytes from the effects
                     let mutated_bytes = effects.mutated_object_bytes.get(id);
 
                     // Update the object if it exists
+                    let mut snapshot: Option<SimulatedObject> = None;
                     if let Some(obj) = self.objects.get_mut(id) {
                         // Update ownership
                         match owner {
@@ -1417,7 +2024,10 @@ impl SimulationEnvironment {
                                 // Keep current shared/immutable status for address ownership
                             }
                         }
-                        obj.version += 1;
+                        obj.owner = to_runtime_owner(owner);
+                        obj.version = version_info
+                            .and_then(|m| m.get(id).map(|info| info.output_version))
+                            .unwrap_or_else(|| obj.version.saturating_add(1));
 
                         // Update type if we have it
                         if let Some(t) = object_type {
@@ -1431,6 +2041,10 @@ impl SimulationEnvironment {
                                 obj.bcs_bytes = new_bytes.clone();
                             }
                         }
+                        snapshot = Some(obj.clone());
+                    }
+                    if let Some(obj) = snapshot.as_ref() {
+                        self.record_object_history(obj);
                     }
                 }
                 ObjectChange::Deleted { id, .. } => {
@@ -1446,6 +2060,9 @@ impl SimulationEnvironment {
                     owner,
                     object_type,
                 } => {
+                    if self.package_store.contains_key(id) {
+                        continue;
+                    }
                     // Get bytes from created_object_bytes (unwrapped objects are tracked there)
                     let bcs_bytes = effects
                         .created_object_bytes
@@ -1458,6 +2075,10 @@ impl SimulationEnvironment {
                         Owner::Immutable => (false, true),
                         Owner::Address(_) => (false, false),
                     };
+                    let resolved_owner = to_runtime_owner(owner);
+                    let output_version = version_info
+                        .and_then(|m| m.get(id).map(|info| info.output_version))
+                        .unwrap_or(1);
 
                     if let Some(existing) = self.objects.get_mut(id) {
                         // Update existing
@@ -1467,6 +2088,10 @@ impl SimulationEnvironment {
                         if let Some(t) = object_type {
                             existing.type_tag = t.clone();
                         }
+                        existing.is_shared = is_shared;
+                        existing.is_immutable = is_immutable;
+                        existing.owner = resolved_owner;
+                        existing.version = output_version;
                     } else {
                         // Create new
                         let obj = SimulatedObject {
@@ -1475,9 +2100,13 @@ impl SimulationEnvironment {
                             bcs_bytes,
                             is_shared,
                             is_immutable,
-                            version: 1,
+                            version: output_version,
+                            owner: resolved_owner,
                         };
                         self.objects.insert(*id, obj);
+                    }
+                    if let Some(obj) = self.objects.get(id).cloned() {
+                        self.record_object_history(&obj);
                     }
                 }
                 ObjectChange::Transferred {
@@ -1803,6 +2432,15 @@ impl SimulationEnvironment {
         self.lamport_clock
     }
 
+    /// Set the lamport clock to an explicit value.
+    ///
+    /// This is useful for deterministic transaction replay where you want the
+    /// executor's lamport timestamp to match on-chain semantics (typically
+    /// `max_input_version + 1`).
+    pub fn set_lamport_clock(&mut self, value: u64) {
+        self.lamport_clock = value;
+    }
+
     /// Advance the epoch by a given amount.
     pub fn advance_epoch(&mut self, by: u64) {
         self.config.advance_epoch(by);
@@ -1993,6 +2631,8 @@ impl SimulationEnvironment {
             if let Some(obj) = self.objects.get_mut(object_id) {
                 if obj.is_shared {
                     obj.version = new_version;
+                    let snapshot = obj.clone();
+                    self.record_object_history(&snapshot);
                 }
             }
         }
@@ -2394,8 +3034,19 @@ impl SimulationEnvironment {
         }
 
         // Deploy to resolver with address aliasing
+        let modules_for_store = modules_with_names.clone();
         self.resolver
             .add_package_modules_at(modules_with_names, Some(package_id))?;
+
+        let entry = PackageEntry {
+            storage_id: package_id,
+            version: 1,
+            original_id: None,
+            modules: modules_for_store,
+            linkage: BTreeMap::new(),
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(package_id, 1);
 
         Ok((package_id, module_names))
     }
@@ -2478,8 +3129,12 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
+            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
+        if let Some(obj) = self.objects.get(&id).cloned() {
+            self.record_object_history(&obj);
+        }
         Ok(id)
     }
 
@@ -2619,6 +3274,73 @@ impl SimulationEnvironment {
         }
     }
 
+    /// Get a specific historical version of an object prepared for PTB execution.
+    pub fn get_object_for_ptb_at_version(
+        &self,
+        object_id: &str,
+        version: u64,
+        mode: Option<&str>,
+    ) -> Result<ObjectInput> {
+        let addr = AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow!("Invalid object ID: {}", e))?;
+
+        let obj = self
+            .get_object_at_version(&addr, version)
+            .ok_or_else(|| anyhow!("ObjectNotFoundAtVersion: {}@{}", object_id, version))?;
+
+        let type_tag = Some(obj.type_tag.clone());
+        match mode {
+            Some("mutable") | Some("mut") => Ok(ObjectInput::MutRef {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+                version: Some(version),
+            }),
+            Some("immutable") | Some("imm") => Ok(ObjectInput::ImmRef {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+                version: Some(version),
+            }),
+            Some("owned") | Some("value") => Ok(ObjectInput::Owned {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+                version: Some(version),
+            }),
+            Some("shared") => Ok(ObjectInput::Shared {
+                id: addr,
+                bytes: obj.bcs_bytes.clone(),
+                type_tag,
+                version: Some(version),
+            }),
+            None | Some(_) => {
+                if obj.is_shared {
+                    Ok(ObjectInput::Shared {
+                        id: addr,
+                        bytes: obj.bcs_bytes.clone(),
+                        type_tag,
+                        version: Some(version),
+                    })
+                } else if obj.is_immutable {
+                    Ok(ObjectInput::ImmRef {
+                        id: addr,
+                        bytes: obj.bcs_bytes.clone(),
+                        type_tag,
+                        version: Some(version),
+                    })
+                } else {
+                    Ok(ObjectInput::MutRef {
+                        id: addr,
+                        bytes: obj.bcs_bytes.clone(),
+                        type_tag,
+                        version: Some(version),
+                    })
+                }
+            }
+        }
+    }
+
     /// Get an object for PTB execution, auto-fetching from mainnet if not found locally.
     /// This is the recommended method when mainnet fetching is enabled.
     pub fn get_or_fetch_object_for_ptb(
@@ -2642,6 +3364,37 @@ impl SimulationEnvironment {
 
         // No fetcher - return not found error
         Err(anyhow!("ObjectNotFound: {}", object_id))
+    }
+
+    /// Get or fetch a historical object version for PTB execution.
+    pub fn get_or_fetch_object_for_ptb_at_version(
+        &mut self,
+        object_id: &str,
+        version: u64,
+        mode: Option<&str>,
+    ) -> Result<ObjectInput> {
+        let addr = AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow!("Invalid object ID: {}", e))?;
+
+        if self
+            .object_history
+            .get(&addr)
+            .and_then(|m| m.get(&version))
+            .is_some()
+        {
+            return self.get_object_for_ptb_at_version(object_id, version, mode);
+        }
+
+        if self.fetcher.is_some() {
+            self.fetch_object_from_mainnet_at_version(object_id, version)?;
+            return self.get_object_for_ptb_at_version(object_id, version, mode);
+        }
+
+        Err(anyhow!(
+            "ObjectNotFoundAtVersion: {}@{} (fetching disabled)",
+            object_id,
+            version
+        ))
     }
 
     /// Check if an object exists in the local store.
@@ -2784,9 +3537,14 @@ impl SimulationEnvironment {
     pub fn reset(&mut self) -> Result<()> {
         self.resolver = LocalModuleResolver::with_sui_framework()?;
         self.objects.clear();
+        self.object_history.clear();
         self.id_counter = 0;
         self.sender = AccountAddress::ZERO;
         self.timestamp_ms = None;
+        self.package_store.clear();
+        self.package_objects.clear();
+        self.address_aliases.clear();
+        self.package_versions.clear();
         Ok(())
     }
 
@@ -2930,6 +3688,17 @@ impl SimulationEnvironment {
         use base64::Engine;
 
         // Export objects
+        let encode_owner = |owner: &crate::object_runtime::Owner| match owner {
+            crate::object_runtime::Owner::Shared => Some("shared".to_string()),
+            crate::object_runtime::Owner::Immutable => Some("immutable".to_string()),
+            crate::object_runtime::Owner::Address(addr) => {
+                Some(format!("address:{}", addr.to_hex_literal()))
+            }
+            crate::object_runtime::Owner::Object(id) => {
+                Some(format!("object:{}", id.to_hex_literal()))
+            }
+        };
+
         let objects: Vec<SerializedObject> = self
             .objects
             .values()
@@ -2940,6 +3709,7 @@ impl SimulationEnvironment {
                 is_shared: obj.is_shared,
                 is_immutable: obj.is_immutable,
                 version: obj.version,
+                owner: obj.owner.as_ref().and_then(encode_owner),
             })
             .collect();
 
@@ -2968,6 +3738,27 @@ impl SimulationEnvironment {
                     _ => None,
                 }
             })
+            .collect();
+
+        let object_history: Vec<SerializedObject> = self
+            .object_history
+            .values()
+            .flat_map(|versions| versions.values())
+            .map(|obj| SerializedObject {
+                id: obj.id.to_hex_literal(),
+                type_tag: format!("{}", obj.type_tag),
+                bcs_bytes_b64: base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
+                is_shared: obj.is_shared,
+                is_immutable: obj.is_immutable,
+                version: obj.version,
+                owner: obj.owner.as_ref().and_then(encode_owner),
+            })
+            .collect();
+
+        let packages: Vec<SerializedPackage> = self
+            .package_store
+            .values()
+            .map(|p| p.to_serialized())
             .collect();
 
         // Export coin registry
@@ -3011,7 +3802,9 @@ impl SimulationEnvironment {
         PersistentState {
             version: PersistentState::CURRENT_VERSION,
             objects,
+            object_history,
             modules,
+            packages,
             coin_registry,
             sender: self.sender.to_hex_literal(),
             id_counter: self.id_counter,
@@ -3105,6 +3898,21 @@ impl SimulationEnvironment {
             let bcs_bytes = base64::engine::general_purpose::STANDARD
                 .decode(&obj.bcs_bytes_b64)
                 .map_err(|e| anyhow!("Failed to decode object {}: {}", obj.id, e))?;
+            let owner = match obj.owner.as_deref() {
+                Some("shared") => Some(crate::object_runtime::Owner::Shared),
+                Some("immutable") => Some(crate::object_runtime::Owner::Immutable),
+                Some(s) if s.starts_with("address:") => {
+                    AccountAddress::from_hex_literal(&s["address:".len()..])
+                        .ok()
+                        .map(crate::object_runtime::Owner::Address)
+                }
+                Some(s) if s.starts_with("object:") => {
+                    AccountAddress::from_hex_literal(&s["object:".len()..])
+                        .ok()
+                        .map(crate::object_runtime::Owner::Object)
+                }
+                _ => None,
+            };
 
             let sim_obj = SimulatedObject {
                 id,
@@ -3113,8 +3921,57 @@ impl SimulationEnvironment {
                 is_shared: obj.is_shared,
                 is_immutable: obj.is_immutable,
                 version: obj.version,
+                owner,
             };
             self.objects.insert(id, sim_obj);
+        }
+
+        // Load historical object versions if present
+        for obj in &state.object_history {
+            let id = AccountAddress::from_hex_literal(&obj.id)
+                .map_err(|e| anyhow!("Invalid object ID {}: {}", obj.id, e))?;
+            let type_tag = crate::types::parse_type_tag(&obj.type_tag)
+                .map_err(|e| anyhow!("Invalid type tag {}: {}", obj.type_tag, e))?;
+            let bcs_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&obj.bcs_bytes_b64)
+                .map_err(|e| anyhow!("Failed to decode object {}: {}", obj.id, e))?;
+            let owner = match obj.owner.as_deref() {
+                Some("shared") => Some(crate::object_runtime::Owner::Shared),
+                Some("immutable") => Some(crate::object_runtime::Owner::Immutable),
+                Some(s) if s.starts_with("address:") => {
+                    AccountAddress::from_hex_literal(&s["address:".len()..])
+                        .ok()
+                        .map(crate::object_runtime::Owner::Address)
+                }
+                Some(s) if s.starts_with("object:") => {
+                    AccountAddress::from_hex_literal(&s["object:".len()..])
+                        .ok()
+                        .map(crate::object_runtime::Owner::Object)
+                }
+                _ => None,
+            };
+
+            let sim_obj = SimulatedObject {
+                id,
+                type_tag,
+                bcs_bytes,
+                is_shared: obj.is_shared,
+                is_immutable: obj.is_immutable,
+                version: obj.version,
+                owner,
+            };
+            self.object_history
+                .entry(id)
+                .or_default()
+                .insert(sim_obj.version, sim_obj.clone());
+            let update_latest = self
+                .objects
+                .get(&id)
+                .map(|existing| sim_obj.version >= existing.version)
+                .unwrap_or(true);
+            if update_latest {
+                self.objects.insert(id, sim_obj);
+            }
         }
 
         // Load coin registry
@@ -3178,6 +4035,32 @@ impl SimulationEnvironment {
         // since network fetchers are not available in sui-sandbox-core.
         if let Some(fetcher_config) = state.fetcher_config {
             self.fetcher_config = fetcher_config;
+        }
+
+        // Load packages metadata
+        for pkg in &state.packages {
+            let entry = PackageEntry::from_serialized(pkg)?;
+            if !self.resolver.has_package(&entry.storage_id) {
+                let _ = self
+                    .resolver
+                    .add_package_modules_at(entry.modules.clone(), Some(entry.storage_id));
+            }
+            if let Some(original) = entry.original_id {
+                self.address_aliases.insert(entry.storage_id, original);
+                self.package_versions.insert(original, entry.version);
+            } else {
+                self.package_versions
+                    .insert(entry.storage_id, entry.version);
+            }
+            self.register_package_entry(entry)?;
+        }
+
+        // Seed history if none provided
+        if self.object_history.is_empty() {
+            let snapshots: Vec<SimulatedObject> = self.objects.values().cloned().collect();
+            for obj in snapshots {
+                self.record_object_history(&obj);
+            }
         }
 
         Ok(())
