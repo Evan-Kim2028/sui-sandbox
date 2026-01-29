@@ -1939,7 +1939,9 @@ fn strict_compare(
 
         // For writes, compare exact output Move.contents bytes (and let digest equality fall out).
         match exp.change_type {
-            VersionChangeType::Created | VersionChangeType::Mutated | VersionChangeType::Unwrapped => {
+            VersionChangeType::Created
+            | VersionChangeType::Mutated
+            | VersionChangeType::Unwrapped => {
                 let expected_bytes = output_objects
                     .get(id)
                     .ok_or_else(|| {

@@ -403,10 +403,7 @@ fn build_proto_input(
     };
 
     let arg = ProtoArgument {
-        kind: Some(
-            proto::argument::ArgumentKind::Input
-                as i32,
-        ),
+        kind: Some(proto::argument::ArgumentKind::Input as i32),
         input: Some(idx),
         result: None,
         subresult: None,
@@ -684,10 +681,7 @@ async fn main() -> Result<()> {
                 .and_then(|effects| effects.status.as_ref())
                 .map(|status| {
                     let success = status.success.unwrap_or(false);
-                    let error = status
-                        .error
-                        .as_ref()
-                        .and_then(|e| e.description.clone());
+                    let error = status.error.as_ref().and_then(|e| e.description.clone());
                     (success, error)
                 })
                 .unwrap_or((false, None));

@@ -105,7 +105,9 @@ pub struct GrpcFetcher {
 
 impl GrpcFetcher {
     fn api_key_from_env() -> Option<String> {
-        std::env::var("SUI_GRPC_API_KEY").ok().filter(|s| !s.is_empty())
+        std::env::var("SUI_GRPC_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())
     }
 
     fn endpoint_from_env(var: &str, default: &str) -> String {
@@ -131,10 +133,8 @@ impl GrpcFetcher {
 
     /// Create a new gRPC fetcher for mainnet.
     pub fn mainnet() -> Self {
-        let endpoint = Self::endpoint_from_env(
-            "SUI_GRPC_ENDPOINT",
-            "https://fullnode.mainnet.sui.io:443",
-        );
+        let endpoint =
+            Self::endpoint_from_env("SUI_GRPC_ENDPOINT", "https://fullnode.mainnet.sui.io:443");
         Self::new(endpoint, "mainnet".to_string(), Self::api_key_from_env())
     }
 
@@ -205,7 +205,8 @@ impl GrpcFetcher {
 
         let endpoint = self.endpoint.clone();
         let api_key = self.api_key.clone();
-        let client = self.block_on(async move { GrpcClient::with_api_key(&endpoint, api_key).await })?;
+        let client =
+            self.block_on(async move { GrpcClient::with_api_key(&endpoint, api_key).await })?;
         let client = Arc::new(client);
         *self.client.lock() = Some(client.clone());
         Ok(client)
@@ -226,7 +227,10 @@ impl GrpcFetcher {
         }
     }
 
-    fn to_fetched(object_id: &str, obj: sui_transport::grpc::GrpcObject) -> Result<FetchedObjectData> {
+    fn to_fetched(
+        object_id: &str,
+        obj: sui_transport::grpc::GrpcObject,
+    ) -> Result<FetchedObjectData> {
         let bcs_bytes = obj
             .bcs
             .ok_or_else(|| anyhow!("gRPC object {} missing BCS bytes", object_id))?;
@@ -267,18 +271,12 @@ impl Fetcher for GrpcFetcher {
         let client = self.client()?;
         let object_id = object_id.to_string();
         let fetch_id = object_id.clone();
-        let object = self.block_on(async move {
-            client
-                .get_object_at_version(&fetch_id, Some(version))
-                .await
-        })?;
-        let object = object.ok_or_else(|| {
-            anyhow!(
-                "object not found at version {}: {}",
-                version,
-                object_id
-            )
-        })?;
+        let object =
+            self.block_on(
+                async move { client.get_object_at_version(&fetch_id, Some(version)).await },
+            )?;
+        let object = object
+            .ok_or_else(|| anyhow!("object not found at version {}: {}", version, object_id))?;
         Self::to_fetched(&object_id, object)
     }
 
