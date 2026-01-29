@@ -37,9 +37,9 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::benchmark::fetcher::{Fetcher, GrpcFetcher};
-use crate::benchmark::object_runtime::ChildFetcherFn;
-use crate::benchmark::simulation::{FetcherConfig, PersistentState, SimulationEnvironment};
+use crate::fetcher::{Fetcher, GrpcFetcher};
+use crate::object_runtime::ChildFetcherFn;
+use crate::simulation::{FetcherConfig, PersistentState, SimulationEnvironment};
 
 /// A session-aware wrapper around SimulationEnvironment.
 ///

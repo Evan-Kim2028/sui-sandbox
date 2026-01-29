@@ -55,6 +55,7 @@ pub mod predictive_prefetch;
 pub mod ptb;
 pub mod resolver;
 pub mod sandbox_types;
+pub mod session;
 pub mod simulation;
 pub mod state_source;
 pub mod sui_object_runtime;
@@ -75,7 +76,7 @@ pub mod storage_log;
 pub mod utilities;
 
 // Re-export main types at crate root for convenience
-pub use fetcher::{FetchedObjectData, Fetcher, MockFetcher, NoopFetcher};
+pub use fetcher::{FetchedObjectData, Fetcher, GrpcFetcher, MockFetcher, NoopFetcher};
 pub use object_runtime::{
     ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
     VersionedChildFetcherFn,

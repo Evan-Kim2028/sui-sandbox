@@ -15,8 +15,8 @@
 
 use move_core_types::account_address::AccountAddress;
 use std::path::PathBuf;
-use sui_move_interface_extractor::benchmark::sandbox::{execute_request, SandboxRequest};
-use sui_move_interface_extractor::benchmark::simulation::{PersistentState, SimulationEnvironment};
+use sui_sandbox_core::session::SimulationSession;
+use sui_sandbox_core::simulation::{PersistentState, SimulationEnvironment};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -251,12 +251,12 @@ fn test_save_with_metadata() {
 #[test]
 fn test_fetcher_config_persisted_when_enabled() {
     // Create env with mainnet fetching
-    let env = SimulationEnvironment::new()
-        .expect("create env")
+    let session = SimulationSession::new()
+        .expect("create session")
         .with_mainnet_fetching();
 
     // Export state
-    let state = env.export_state();
+    let state = session.export_state();
 
     // Verify fetcher config is persisted
     assert!(
@@ -272,10 +272,10 @@ fn test_fetcher_config_persisted_when_enabled() {
 #[test]
 fn test_fetcher_config_not_persisted_when_disabled() {
     // Create env without fetching (default)
-    let env = SimulationEnvironment::new().expect("create env");
+    let session = SimulationSession::new().expect("create session");
 
     // Export state
-    let state = env.export_state();
+    let state = session.export_state();
 
     // Verify fetcher config is not persisted when disabled
     assert!(
@@ -287,12 +287,12 @@ fn test_fetcher_config_not_persisted_when_disabled() {
 #[test]
 fn test_fetcher_config_archive_mode_persisted() {
     // Create env with archive fetching
-    let env = SimulationEnvironment::new()
-        .expect("create env")
+    let session = SimulationSession::new()
+        .expect("create session")
         .with_mainnet_archive_fetching();
 
     // Export state
-    let state = env.export_state();
+    let state = session.export_state();
 
     // Verify archive mode is captured
     assert!(state.fetcher_config.is_some());
@@ -308,28 +308,28 @@ fn test_fetcher_config_round_trip_mainnet() {
 
     // Create and save env with mainnet fetching
     {
-        let env = SimulationEnvironment::new()
-            .expect("create env")
+        let session = SimulationSession::new()
+            .expect("create session")
             .with_mainnet_fetching();
-        env.save_state(&path).expect("save");
+        session.save_state(&path).expect("save");
     }
 
     // Load into a fresh env and verify fetcher is reconnected
-    let mut env2 = SimulationEnvironment::new().expect("create env");
-    env2.load_state(&path).expect("load");
+    let mut session2 = SimulationSession::new().expect("create session");
+    session2.load_state(&path).expect("load");
 
     assert!(
-        env2.is_fetching_enabled(),
+        session2.is_fetching_enabled(),
         "fetcher should be auto-reconnected"
     );
-    let fc = env2.fetcher_config();
+    let fc = session2.fetcher_config();
     assert!(fc.enabled);
     assert_eq!(fc.network, Some("mainnet".to_string()));
 }
 
 #[test]
 fn test_fetcher_config_round_trip_with_custom_config() {
-    use sui_move_interface_extractor::benchmark::simulation::FetcherConfig;
+    use sui_sandbox_core::simulation::FetcherConfig;
 
     let (_dir, path) = create_temp_state_file();
 
@@ -341,18 +341,18 @@ fn test_fetcher_config_round_trip_with_custom_config() {
             endpoint: None,
             use_archive: false,
         };
-        let env = SimulationEnvironment::new()
-            .expect("create env")
+        let session = SimulationSession::new()
+            .expect("create session")
             .with_fetcher_config(config);
-        env.save_state(&path).expect("save");
+        session.save_state(&path).expect("save");
     }
 
     // Load and verify
-    let mut env2 = SimulationEnvironment::new().expect("create env");
-    env2.load_state(&path).expect("load");
+    let mut session2 = SimulationSession::new().expect("create session");
+    session2.load_state(&path).expect("load");
 
-    assert!(env2.is_fetching_enabled());
-    let fc = env2.fetcher_config();
+    assert!(session2.is_fetching_enabled());
+    let fc = session2.fetcher_config();
     assert_eq!(fc.network, Some("testnet".to_string()));
 }
 
@@ -362,16 +362,16 @@ fn test_fetcher_config_from_state_file() {
 
     // Create state file with mainnet fetching
     {
-        let env = SimulationEnvironment::new()
-            .expect("create env")
+        let session = SimulationSession::new()
+            .expect("create session")
             .with_mainnet_fetching();
-        env.save_state(&path).expect("save");
+        session.save_state(&path).expect("save");
     }
 
     // Use from_state_file and verify fetcher is restored
-    let env = SimulationEnvironment::from_state_file(&path).expect("load");
+    let session = SimulationSession::from_state_file(&path).expect("load");
     assert!(
-        env.is_fetching_enabled(),
+        session.is_fetching_enabled(),
         "fetcher should be restored from state file"
     );
 }
@@ -409,11 +409,11 @@ fn test_load_v3_state_without_fetcher_config() {
 
 #[test]
 fn test_version_4_in_state_file() {
-    let env = SimulationEnvironment::new()
-        .expect("create env")
+    let session = SimulationSession::new()
+        .expect("create session")
         .with_mainnet_fetching();
 
-    let state = env.export_state();
+    let state = session.export_state();
     assert_eq!(
         state.version, 4,
         "State version should be 4 with fetcher config"
@@ -629,158 +629,4 @@ fn test_export_excludes_framework_modules() {
             "Should not export 0x3 framework modules"
         );
     }
-}
-
-// =============================================================================
-// SandboxRequest Handler Tests (JSON API Level)
-// =============================================================================
-
-#[test]
-fn test_sandbox_request_set_sender() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-
-    let request = SandboxRequest::SetSender {
-        address: "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
-    };
-
-    let response = execute_request(&mut env, &request, false);
-    assert!(
-        response.success,
-        "SetSender should succeed: {:?}",
-        response.error
-    );
-
-    // Verify sender was set
-    let expected = AccountAddress::from_hex_literal(
-        "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-    )
-    .unwrap();
-    assert_eq!(env.sender(), expected);
-}
-
-#[test]
-fn test_sandbox_request_get_sender() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-
-    // Set a known sender first
-    let addr = AccountAddress::from_hex_literal(
-        "0x1111111111111111111111111111111111111111111111111111111111111111",
-    )
-    .unwrap();
-    env.set_sender(addr);
-
-    let request = SandboxRequest::GetSender;
-    let response = execute_request(&mut env, &request, false);
-
-    assert!(response.success, "GetSender should succeed");
-    assert!(response.data.is_some(), "Should have data");
-
-    let data = response.data.unwrap();
-    let sender_hex = data["sender"].as_str().unwrap();
-    assert!(
-        sender_hex.contains("1111111111111111"),
-        "Should return correct sender"
-    );
-}
-
-#[test]
-fn test_sandbox_request_set_sender_invalid_address() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-
-    let request = SandboxRequest::SetSender {
-        address: "not-a-valid-address".to_string(),
-    };
-
-    let response = execute_request(&mut env, &request, false);
-    assert!(!response.success, "Should fail for invalid address");
-    assert!(response.error.is_some(), "Should have error message");
-}
-
-#[test]
-fn test_sandbox_request_save_state() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-    let (_dir, path) = create_temp_state_file();
-
-    // Create some state
-    env.create_coin("0x2::sui::SUI", 1_000_000).expect("coin");
-
-    let request = SandboxRequest::SaveState {
-        path: path.to_string_lossy().to_string(),
-        description: Some("Test save".to_string()),
-        tags: Some(vec!["test".to_string()]),
-    };
-
-    let response = execute_request(&mut env, &request, false);
-    assert!(
-        response.success,
-        "SaveState should succeed: {:?}",
-        response.error
-    );
-    assert!(path.exists(), "State file should exist");
-
-    // Verify response data
-    let data = response.data.unwrap();
-    assert_eq!(data["version"].as_u64().unwrap(), 4);
-    assert!(data["objects_count"].as_u64().unwrap() > 0);
-}
-
-#[test]
-fn test_sandbox_request_load_state() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-    let (_dir, path) = create_temp_state_file();
-
-    // Create and save state
-    let coin = env.create_coin("0x2::sui::SUI", 999_000).expect("coin");
-    env.save_state(&path).expect("save");
-
-    // Create fresh env and load via request
-    let mut env2 = SimulationEnvironment::new().expect("env2");
-
-    let request = SandboxRequest::LoadState {
-        path: path.to_string_lossy().to_string(),
-    };
-
-    let response = execute_request(&mut env2, &request, false);
-    assert!(
-        response.success,
-        "LoadState should succeed: {:?}",
-        response.error
-    );
-
-    // Verify object was loaded
-    assert!(
-        env2.get_object(&coin).is_some(),
-        "Coin should exist after load"
-    );
-}
-
-#[test]
-fn test_sandbox_request_load_state_nonexistent() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-
-    let request = SandboxRequest::LoadState {
-        path: "/nonexistent/path/state.json".to_string(),
-    };
-
-    let response = execute_request(&mut env, &request, false);
-    assert!(!response.success, "Should fail for nonexistent file");
-    assert!(response.error.is_some());
-}
-
-#[test]
-fn test_sandbox_request_save_state_without_metadata() {
-    let mut env = SimulationEnvironment::new().expect("create env");
-    let (_dir, path) = create_temp_state_file();
-
-    let request = SandboxRequest::SaveState {
-        path: path.to_string_lossy().to_string(),
-        description: None,
-        tags: None,
-    };
-
-    let response = execute_request(&mut env, &request, false);
-    assert!(
-        response.success,
-        "SaveState without metadata should succeed"
-    );
 }

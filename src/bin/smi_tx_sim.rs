@@ -15,10 +15,17 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use sui_move_interface_extractor::grpc::{
-    GrpcClient, ProtoArgument, ProtoCommand, ProtoInput, ProtoInputKind, ProtoMoveCall,
-    ProtoProgrammableTransaction, ProtoTransaction, ProtoTransactionKind, ProtoTransactionKindType,
-};
+use sui_transport::grpc::generated::sui_rpc_v2 as proto;
+use sui_transport::grpc::GrpcClient;
+
+type ProtoArgument = proto::Argument;
+type ProtoCommand = proto::Command;
+type ProtoInput = proto::Input;
+type ProtoInputKind = proto::input::InputKind;
+type ProtoMoveCall = proto::MoveCall;
+type ProtoProgrammableTransaction = proto::ProgrammableTransaction;
+type ProtoTransaction = proto::Transaction;
+type ProtoTransactionKind = proto::TransactionKind;
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
 enum Mode {
@@ -292,7 +299,7 @@ fn build_proto_input(
             .as_u64()
             .ok_or_else(|| anyhow!("result index must be u16"))?;
         let arg = ProtoArgument {
-            kind: Some(sui_move_interface_extractor::grpc::generated::sui_rpc_v2::argument::ArgumentKind::Result as i32),
+            kind: Some(proto::argument::ArgumentKind::Result as i32),
             result: Some(i as u32),
             input: None,
             subresult: None,
@@ -314,7 +321,7 @@ fn build_proto_input(
             .as_u64()
             .ok_or_else(|| anyhow!("nested_result res index must be u16"))?;
         let arg = ProtoArgument {
-            kind: Some(sui_move_interface_extractor::grpc::generated::sui_rpc_v2::argument::ArgumentKind::Result as i32),
+            kind: Some(proto::argument::ArgumentKind::Result as i32),
             result: Some(cmd as u32),
             input: None,
             subresult: Some(res as u32),
@@ -397,7 +404,7 @@ fn build_proto_input(
 
     let arg = ProtoArgument {
         kind: Some(
-            sui_move_interface_extractor::grpc::generated::sui_rpc_v2::argument::ArgumentKind::Input
+            proto::argument::ArgumentKind::Input
                 as i32,
         ),
         input: Some(idx),
@@ -580,7 +587,7 @@ fn build_transaction(
         };
 
         commands.push(ProtoCommand {
-            command: Some(sui_move_interface_extractor::grpc::generated::sui_rpc_v2::command::Command::MoveCall(move_call)),
+            command: Some(proto::command::Command::MoveCall(move_call)),
         });
     }
 
@@ -589,11 +596,11 @@ fn build_transaction(
     // Serialize PTB to BCS for the output
     // Note: We can't easily serialize proto to BCS, but we can provide the proto structure
     // For now, we'll skip the BCS output in build-only mode
-    let ptb_bcs = Vec::new(); // Placeholder - gRPC handles serialization internally
+    let ptb_bcs: Vec<u8> = Vec::new(); // Placeholder - gRPC handles serialization internally
 
     let tx_kind = ProtoTransactionKind {
-        kind: Some(ProtoTransactionKindType::ProgrammableTransaction as i32),
-        data: Some(sui_move_interface_extractor::grpc::generated::sui_rpc_v2::transaction_kind::Data::ProgrammableTransaction(ptb)),
+        kind: Some(proto::transaction_kind::Kind::ProgrammableTransaction as i32),
+        data: Some(proto::transaction_kind::Data::ProgrammableTransaction(ptb)),
     };
 
     let transaction = ProtoTransaction {
@@ -651,29 +658,45 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("connect gRPC: {}", args.grpc_url))?;
 
-            let result = match args.mode {
+            let checks = match args.mode {
                 Mode::DevInspect => {
                     mode_used = "dev_inspect".to_string();
-                    client.dev_inspect(transaction).await?
+                    proto::simulate_transaction_request::TransactionChecks::Disabled
                 }
                 Mode::DryRun => {
                     mode_used = "dry_run".to_string();
-                    client.dry_run(transaction, true).await?
+                    proto::simulate_transaction_request::TransactionChecks::Enabled
                 }
                 Mode::BuildOnly => unreachable!(),
             };
 
-            // Extract created object types
-            created.extend(result.created_object_types.iter().cloned());
+            let response = client
+                .simulate_transaction(transaction, checks, matches!(args.mode, Mode::DryRun))
+                .await?;
 
             // Also include static analysis
             created.extend(static_created.iter().cloned());
 
+            let (success, error) = response
+                .transaction
+                .as_ref()
+                .and_then(|tx| tx.effects.as_ref())
+                .and_then(|effects| effects.status.as_ref())
+                .map(|status| {
+                    let success = status.success.unwrap_or(false);
+                    let error = status
+                        .error
+                        .as_ref()
+                        .and_then(|e| e.description.clone());
+                    (success, error)
+                })
+                .unwrap_or((false, None));
+
             // Serialize simulation result to JSON
             simulation_json = Some(serde_json::json!({
-                "success": result.success,
-                "error": result.error,
-                "command_outputs_count": result.command_outputs.len(),
+                "success": success,
+                "error": error,
+                "command_outputs_count": response.command_outputs.len(),
             }));
         }
     }
