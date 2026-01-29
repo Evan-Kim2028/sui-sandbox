@@ -601,7 +601,12 @@ impl GrpcEpoch {
             .system_state
             .as_ref()
             .and_then(|s| s.protocol_version)
-            .or_else(|| proto.protocol_config.as_ref().and_then(|c| c.protocol_version));
+            .or_else(|| {
+                proto
+                    .protocol_config
+                    .as_ref()
+                    .and_then(|c| c.protocol_version)
+            });
 
         Self {
             epoch: proto.epoch.unwrap_or(0),

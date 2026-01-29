@@ -35,9 +35,9 @@
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 /// Maximum items per GraphQL page (Sui's server limit).
 const MAX_PAGE_SIZE: usize = 50;
@@ -479,7 +479,10 @@ impl GraphQLClient {
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(Self::DEFAULT_CONNECT_TIMEOUT_SECS);
-        (Duration::from_secs(timeout_secs), Duration::from_secs(connect_secs))
+        (
+            Duration::from_secs(timeout_secs),
+            Duration::from_secs(connect_secs),
+        )
     }
 
     fn build_agent(timeout: Duration, connect_timeout: Duration) -> ureq::Agent {
@@ -2334,7 +2337,12 @@ impl GraphQLClient {
         checkpoint: u64,
     ) -> Result<Vec<DynamicFieldInfo>> {
         let paginator = Paginator::new(PaginationDirection::Forward, limit, |cursor, page_size| {
-            self.fetch_dynamic_fields_page_at_checkpoint(parent_address, cursor, page_size, checkpoint)
+            self.fetch_dynamic_fields_page_at_checkpoint(
+                parent_address,
+                cursor,
+                page_size,
+                checkpoint,
+            )
         });
 
         paginator.collect_all()

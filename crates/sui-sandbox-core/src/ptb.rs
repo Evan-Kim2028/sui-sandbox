@@ -1863,7 +1863,6 @@ pub struct PTBExecutor<'a, 'b> {
     /// Stores the updated BCS bytes after mutation for syncing back to environment
     mutated_objects: HashMap<ObjectID, (Vec<u8>, Option<TypeTag>)>,
 
-
     /// Pre-published packages: (package_id, upgrade_cap_id) pairs
     /// These are populated by SimulationEnvironment before execution
     pre_published: Vec<(ObjectID, ObjectID)>,
@@ -5775,8 +5774,10 @@ mod tests {
             .with_gas_consumed(1500)
             .with_prior_commands(vec![0, 1]);
 
-        let mut snapshot = ExecutionSnapshot::default();
-        snapshot.total_gas_consumed = 1500;
+        let snapshot = ExecutionSnapshot {
+            total_gas_consumed: 1500,
+            ..Default::default()
+        };
 
         let effects = TransactionEffects::failure_at_with_context(
             "insufficient balance".to_string(),

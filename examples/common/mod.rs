@@ -61,6 +61,7 @@ use tokio::runtime::Runtime;
 use anyhow::Result;
 use base64::Engine;
 use fastcrypto::encoding::Encoding;
+use std::str::FromStr;
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::CachedTransaction;
@@ -68,7 +69,6 @@ use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
 use sui_state_fetcher::ReplayState;
 use sui_transport::grpc::{GrpcClient, GrpcTransaction};
-use std::str::FromStr;
 use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
 /// Build a GenericObjectPatcher with modules from the resolver.
@@ -316,7 +316,7 @@ pub fn build_replay_config(state: &ReplayState) -> Result<SimulationConfig> {
 
     if let Some(rgp) = state
         .reference_gas_price
-        .or_else(|| if state.transaction.gas_price > 0 {
+        .or(if state.transaction.gas_price > 0 {
             Some(state.transaction.gas_price)
         } else {
             None
@@ -368,8 +368,7 @@ pub fn build_replay_config_from_grpc(
     }
 
     let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
-    let sender_address =
-        AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
+    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
 
     let protocol_version = if protocol_version > 0 {
         protocol_version
@@ -452,12 +451,17 @@ pub fn build_cached_object_index(
 }
 
 // Re-export prefetch utilities
-pub use sui_prefetch::{prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint, PrefetchedDynamicFields};
+pub use sui_prefetch::{
+    prefetch_dynamic_fields, prefetch_dynamic_fields_at_checkpoint, PrefetchedDynamicFields,
+};
 pub use sui_transport::graphql::GraphQLClient;
 
 use move_core_types::language_storage::TypeTag;
 use sui_prefetch::{DynamicFieldKey, PrefetchedChild};
 use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
+
+type CachedObjectIndex = Arc<HashMap<String, (String, Vec<u8>)>>;
+type StructFieldsCache = Arc<std::sync::Mutex<HashMap<String, Vec<(String, String)>>>>;
 
 /// Dynamic discovery cache for child objects discovered during execution.
 /// This is populated when we enumerate parent's dynamic fields and caches
@@ -651,8 +655,7 @@ pub fn create_enhanced_child_fetcher_with_cache(
             if version_ok {
                 if let Some(bcs_b64) = &obj.bcs_base64 {
                     if let Some(type_str) = &obj.type_string {
-                        if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(bcs_b64)
-                        {
+                        if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(bcs_b64) {
                             // Apply patching if available
                             let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
                                 if let Some(ref mut p) = *guard {
@@ -716,14 +719,15 @@ pub fn create_enhanced_child_fetcher_with_cache(
         // Strategy 3: Try enumerating parent's dynamic fields to find the child
         // AND cache all discovered children for future lookups
         let (dfs, snapshot_used) = match checkpoint {
-            Some(cp) => match graphql_arc.fetch_dynamic_fields_at_checkpoint(&parent_id_str, 200, cp)
-            {
-                Ok(fields) => (fields, true),
-                Err(_) => match graphql_arc.fetch_dynamic_fields(&parent_id_str, 200) {
-                    Ok(fields) => (fields, false),
-                    Err(_) => (Vec::new(), false),
-                },
-            },
+            Some(cp) => {
+                match graphql_arc.fetch_dynamic_fields_at_checkpoint(&parent_id_str, 200, cp) {
+                    Ok(fields) => (fields, true),
+                    Err(_) => match graphql_arc.fetch_dynamic_fields(&parent_id_str, 200) {
+                        Ok(fields) => (fields, false),
+                        Err(_) => (Vec::new(), false),
+                    },
+                }
+            }
             None => match graphql_arc.fetch_dynamic_fields(&parent_id_str, 200) {
                 Ok(fields) => (fields, false),
                 Err(_) => (Vec::new(), false),
@@ -769,7 +773,9 @@ pub fn create_enhanced_child_fetcher_with_cache(
                                     .fetch_object_at_version(&child_obj_id, expected)
                                     .ok();
                             } else if let Some(cp) = checkpoint {
-                                if let Ok(obj) = graphql_arc.fetch_object_at_checkpoint(&child_obj_id, cp) {
+                                if let Ok(obj) =
+                                    graphql_arc.fetch_object_at_checkpoint(&child_obj_id, cp)
+                                {
                                     obj_opt = Some(obj);
                                     obj_snapshot_used = true;
                                 }
@@ -811,7 +817,8 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
                             if let Some(name_bcs) = df.decode_name_bcs() {
                                 let normalized_parent = {
-                                    let hex = parent_id_str.strip_prefix("0x").unwrap_or(&parent_id_str);
+                                    let hex =
+                                        parent_id_str.strip_prefix("0x").unwrap_or(&parent_id_str);
                                     format!("0x{}", hex.to_lowercase())
                                 };
                                 let key = DynamicFieldKey {
@@ -857,11 +864,7 @@ pub fn create_enhanced_child_fetcher_with_cache(
             let _ = df_count; // silence unused warning
         }
 
-        if std::env::var("SUI_CHILD_FETCH_DEBUG")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
             eprintln!(
                 "[child_fetcher] FAILED parent={} child={} known_version={:?}",
                 parent_id_str, child_id_str, known_version
@@ -880,17 +883,15 @@ pub fn create_key_based_child_fetcher(
     prefetched: PrefetchedDynamicFields,
     discovery_cache: Option<DynamicDiscoveryCache>,
     graphql: Option<GraphQLClient>,
-    cached_objects: Option<Arc<HashMap<String, (String, Vec<u8>)>>>,
+    cached_objects: Option<CachedObjectIndex>,
 ) -> KeyBasedChildFetcherFn {
     let prefetched_arc = Arc::new(prefetched);
     let discovery_cache = discovery_cache;
     let graphql = graphql.map(Arc::new);
-    let cached_objects = cached_objects;
     let jsonrpc_endpoint = std::env::var("SUI_JSON_RPC_ENDPOINT")
         .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
     let jsonrpc_agent = ureq::Agent::new();
-    let struct_fields_cache: Arc<std::sync::Mutex<HashMap<String, Vec<(String, String)>>>> =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let struct_fields_cache: StructFieldsCache = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     Box::new(
         move |parent_id: AccountAddress,
@@ -905,11 +906,7 @@ pub fn create_key_based_child_fetcher(
                 prefetched_arc.get_by_key_fuzzy(&parent_str, &key_type_str, key_bytes)
             {
                 if let Some(type_tag) = parse_type_tag(&child.type_string) {
-                    if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                        .ok()
-                        .as_deref()
-                        == Some("1")
-                    {
+                    if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                         eprintln!(
                             "[key_fetcher] HIT prefetched parent={} key_type={} key_len={}",
                             parent_str,
@@ -934,11 +931,7 @@ pub fn create_key_based_child_fetcher(
 
                 if let Some(child) = cache.by_key.get(&key) {
                     if let Some(type_tag) = parse_type_tag(&child.type_string) {
-                        if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                            .ok()
-                            .as_deref()
-                            == Some("1")
-                        {
+                        if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                             eprintln!(
                                 "[key_fetcher] HIT cache parent={} key_type={} key_len={}",
                                 parent_str,
@@ -950,15 +943,13 @@ pub fn create_key_based_child_fetcher(
                     }
                 }
 
-                if let Some((_, child)) = cache.by_key.iter().find(|(k, _)| {
-                    k.parent_id == normalized_parent && k.name_bcs == key_bytes
-                }) {
+                if let Some((_, child)) = cache
+                    .by_key
+                    .iter()
+                    .find(|(k, _)| k.parent_id == normalized_parent && k.name_bcs == key_bytes)
+                {
                     if let Some(type_tag) = parse_type_tag(&child.type_string) {
-                        if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                            .ok()
-                            .as_deref()
-                            == Some("1")
-                        {
+                        if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                             eprintln!(
                                 "[key_fetcher] HIT cache_fuzzy parent={} key_type={} key_len={}",
                                 parent_str,
@@ -972,17 +963,10 @@ pub fn create_key_based_child_fetcher(
             }
 
             if let Some(cache) = cached_objects.as_ref() {
-                if let Some((type_tag, bcs)) = lookup_cached_dynamic_field(
-                    cache,
-                    &parent_str,
-                    key_type,
-                    key_bytes,
-                ) {
-                    if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                        .ok()
-                        .as_deref()
-                        == Some("1")
-                    {
+                if let Some((type_tag, bcs)) =
+                    lookup_cached_dynamic_field(cache, &parent_str, key_type, key_bytes)
+                {
+                    if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                         eprintln!(
                             "[key_fetcher] HIT cached_objects parent={} key_type={} key_len={}",
                             parent_str,
@@ -999,13 +983,10 @@ pub fn create_key_based_child_fetcher(
                     gql.fetch_dynamic_field_by_name(&parent_str, &key_type_str, key_bytes)
                 {
                     if let (Some(type_str), Some(bcs_b64)) = (df.value_type, df.value_bcs) {
-                        if let Ok(bcs) =
-                            base64::engine::general_purpose::STANDARD.decode(&bcs_b64)
+                        if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(&bcs_b64)
                         {
                             if let Some(type_tag) = parse_type_tag(&type_str) {
-                                if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                                    .ok()
-                                    .as_deref()
+                                if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref()
                                     == Some("1")
                                 {
                                     eprintln!(
@@ -1022,16 +1003,15 @@ pub fn create_key_based_child_fetcher(
                 }
             }
 
-            let name_value = key_bytes_to_json_value(key_type, key_bytes)
-                .or_else(|| {
-                    struct_key_bytes_to_json_value(
-                        &jsonrpc_agent,
-                        &jsonrpc_endpoint,
-                        key_type,
-                        key_bytes,
-                        &struct_fields_cache,
-                    )
-                });
+            let name_value = key_bytes_to_json_value(key_type, key_bytes).or_else(|| {
+                struct_key_bytes_to_json_value(
+                    &jsonrpc_agent,
+                    &jsonrpc_endpoint,
+                    key_type,
+                    key_bytes,
+                    &struct_fields_cache,
+                )
+            });
 
             if let Some(name_value) = name_value {
                 if let Some((type_str, bcs)) = fetch_dynamic_field_via_jsonrpc(
@@ -1042,11 +1022,7 @@ pub fn create_key_based_child_fetcher(
                     name_value,
                 ) {
                     if let Some(type_tag) = parse_type_tag(&type_str) {
-                        if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                            .ok()
-                            .as_deref()
-                            == Some("1")
-                        {
+                        if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                             eprintln!(
                                 "[key_fetcher] HIT jsonrpc_name parent={} key_type={} key_len={}",
                                 parent_str,
@@ -1067,11 +1043,7 @@ pub fn create_key_based_child_fetcher(
                 key_bytes,
             ) {
                 if let Some(type_tag) = parse_type_tag(&type_str) {
-                    if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                        .ok()
-                        .as_deref()
-                        == Some("1")
-                    {
+                    if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                         eprintln!(
                             "[key_fetcher] HIT jsonrpc_bcs parent={} key_type={} key_len={}",
                             parent_str,
@@ -1083,11 +1055,7 @@ pub fn create_key_based_child_fetcher(
                 }
             }
 
-            if std::env::var("SUI_CHILD_FETCH_DEBUG")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
                 let key_hex = key_bytes
                     .iter()
                     .map(|b| format!("{:02x}", b))
@@ -1109,11 +1077,21 @@ pub fn create_key_based_child_fetcher(
 
 fn key_bytes_to_json_value(key_type: &TypeTag, key_bytes: &[u8]) -> Option<serde_json::Value> {
     match key_type {
-        TypeTag::Bool => bcs::from_bytes::<bool>(key_bytes).ok().map(serde_json::Value::from),
-        TypeTag::U8 => bcs::from_bytes::<u8>(key_bytes).ok().map(serde_json::Value::from),
-        TypeTag::U16 => bcs::from_bytes::<u16>(key_bytes).ok().map(serde_json::Value::from),
-        TypeTag::U32 => bcs::from_bytes::<u32>(key_bytes).ok().map(serde_json::Value::from),
-        TypeTag::U64 => bcs::from_bytes::<u64>(key_bytes).ok().map(serde_json::Value::from),
+        TypeTag::Bool => bcs::from_bytes::<bool>(key_bytes)
+            .ok()
+            .map(serde_json::Value::from),
+        TypeTag::U8 => bcs::from_bytes::<u8>(key_bytes)
+            .ok()
+            .map(serde_json::Value::from),
+        TypeTag::U16 => bcs::from_bytes::<u16>(key_bytes)
+            .ok()
+            .map(serde_json::Value::from),
+        TypeTag::U32 => bcs::from_bytes::<u32>(key_bytes)
+            .ok()
+            .map(serde_json::Value::from),
+        TypeTag::U64 => bcs::from_bytes::<u64>(key_bytes)
+            .ok()
+            .map(serde_json::Value::from),
         TypeTag::U128 => bcs::from_bytes::<u128>(key_bytes)
             .ok()
             .map(|v| serde_json::Value::String(v.to_string())),
@@ -1124,12 +1102,12 @@ fn key_bytes_to_json_value(key_type: &TypeTag, key_bytes: &[u8]) -> Option<serde
             .ok()
             .map(|a| serde_json::Value::String(a.to_hex_literal())),
         TypeTag::Vector(inner) => match inner.as_ref() {
-            TypeTag::U8 => bcs::from_bytes::<Vec<u8>>(key_bytes)
-                .ok()
-                .map(|v| serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())),
-            TypeTag::U64 => bcs::from_bytes::<Vec<u64>>(key_bytes)
-                .ok()
-                .map(|v| serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())),
+            TypeTag::U8 => bcs::from_bytes::<Vec<u8>>(key_bytes).ok().map(|v| {
+                serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())
+            }),
+            TypeTag::U64 => bcs::from_bytes::<Vec<u64>>(key_bytes).ok().map(|v| {
+                serde_json::Value::Array(v.into_iter().map(serde_json::Value::from).collect())
+            }),
             TypeTag::Address => bcs::from_bytes::<Vec<AccountAddress>>(key_bytes)
                 .ok()
                 .map(|v| {
@@ -1150,7 +1128,7 @@ fn struct_key_bytes_to_json_value(
     endpoint: &str,
     key_type: &TypeTag,
     key_bytes: &[u8],
-    cache: &Arc<std::sync::Mutex<HashMap<String, Vec<(String, String)>>>>,
+    cache: &StructFieldsCache,
 ) -> Option<serde_json::Value> {
     let struct_tag = match key_type {
         TypeTag::Struct(tag) => tag.as_ref(),
@@ -1210,12 +1188,7 @@ fn fetch_normalized_struct_fields(
         "params": [package, module, name]
     });
 
-    let resp: serde_json::Value = agent
-        .post(endpoint)
-        .send_json(req)
-        .ok()?
-        .into_json()
-        .ok()?;
+    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
 
     let fields = resp
         .get("result")
@@ -1297,7 +1270,7 @@ fn extract_dynamic_field_name_type(type_str: &str) -> Option<String> {
     }
     let inner = &type_str[start + 1..end];
     let params = sui_sandbox_core::utilities::split_type_params(inner);
-    params.get(0).map(|s| s.trim().to_string())
+    params.first().map(|s| s.trim().to_string())
 }
 
 fn fetch_dynamic_field_via_jsonrpc(
@@ -1320,12 +1293,7 @@ fn fetch_dynamic_field_via_jsonrpc(
         ]
     });
 
-    let resp: serde_json::Value = agent
-        .post(endpoint)
-        .send_json(req)
-        .ok()?
-        .into_json()
-        .ok()?;
+    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
 
     let object_id = resp
         .get("result")
@@ -1352,12 +1320,7 @@ fn fetch_dynamic_field_via_jsonrpc_by_bcs(
             "params": [parent_id, cursor, 200]
         });
 
-        let resp: serde_json::Value = agent
-            .post(endpoint)
-            .send_json(req)
-            .ok()?
-            .into_json()
-            .ok()?;
+        let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
 
         let result = resp.get("result")?;
         let data = match result.get("data").and_then(|v| v.as_array()) {
@@ -1427,12 +1390,7 @@ fn fetch_object_bcs_via_jsonrpc(
         ]
     });
 
-    let resp: serde_json::Value = agent
-        .post(endpoint)
-        .send_json(req)
-        .ok()?
-        .into_json()
-        .ok()?;
+    let resp: serde_json::Value = agent.post(endpoint).send_json(req).ok()?.into_json().ok()?;
 
     let bcs = resp
         .get("result")
@@ -1452,7 +1410,9 @@ fn fetch_object_bcs_via_jsonrpc(
 fn decode_bcs_name(encoding: &str, bcs_name: &str) -> Option<Vec<u8>> {
     match encoding {
         "base58" => fastcrypto::encoding::Base58::decode(bcs_name).ok(),
-        _ => base64::engine::general_purpose::STANDARD.decode(bcs_name).ok(),
+        _ => base64::engine::general_purpose::STANDARD
+            .decode(bcs_name)
+            .ok(),
     }
 }
 

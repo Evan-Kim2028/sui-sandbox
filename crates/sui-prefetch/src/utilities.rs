@@ -450,6 +450,7 @@ pub fn prefetch_dynamic_fields_with_version_bound(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prefetch_dynamic_fields_with_version_bound_internal(
     graphql: &sui_transport::graphql::GraphQLClient,
     grpc: &GrpcClient,
@@ -601,9 +602,8 @@ fn prefetch_dynamic_fields_with_version_bound_internal(
 
             // Try to fetch the full object BCS from gRPC only when we have a known version
             let fetch_result = match version_opt {
-                Some(version) => {
-                    rt.block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await })
-                }
+                Some(version) => rt
+                    .block_on(async { grpc.get_object_at_version(&child_id, Some(version)).await }),
                 None => Ok(None),
             };
 
@@ -666,8 +666,9 @@ fn prefetch_dynamic_fields_with_version_bound_internal(
                     let mut gql_snapshot_used = false;
 
                     if let Some(expected_version) = version_opt {
-                        gql_obj_opt =
-                            graphql.fetch_object_at_version(&child_id, expected_version).ok();
+                        gql_obj_opt = graphql
+                            .fetch_object_at_version(&child_id, expected_version)
+                            .ok();
                     } else if let Some(cp) = checkpoint {
                         if let Ok(obj) = graphql.fetch_object_at_checkpoint(&child_id, cp) {
                             gql_obj_opt = Some(obj);

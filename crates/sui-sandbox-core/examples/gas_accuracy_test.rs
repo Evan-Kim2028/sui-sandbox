@@ -41,6 +41,9 @@ use sui_sandbox_core::utilities::{
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 
+type PackageObjects = (HashMap<String, Vec<u8>>, HashMap<String, String>);
+type PackagesWithSource = Vec<(String, Vec<(String, String)>, Option<String>, bool)>;
+
 // ============================================================================
 // JSON-RPC Types for fetching transaction digests
 // ============================================================================
@@ -567,7 +570,7 @@ fn fetch_objects(
     rt: &Arc<tokio::runtime::Runtime>,
     grpc: &Arc<GrpcClient>,
     historical_versions: &HashMap<String, u64>,
-) -> Result<(HashMap<String, Vec<u8>>, HashMap<String, String>)> {
+) -> Result<PackageObjects> {
     let mut raw_objects: HashMap<String, Vec<u8>> = HashMap::new();
     let mut object_types: HashMap<String, String> = HashMap::new();
 
@@ -600,8 +603,7 @@ where
         pkg_resolver.packages_as_base64().into_iter().collect();
 
     // Build packages with source for sorting
-    let mut packages_with_source: Vec<(String, Vec<(String, String)>, Option<String>, bool)> =
-        Vec::new();
+    let mut packages_with_source: PackagesWithSource = Vec::new();
 
     for (pkg_id, modules_b64) in all_packages {
         if let Some(upgraded) = linkage_upgrades.get(&pkg_id as &str) {
@@ -663,11 +665,10 @@ where
             })
             .collect();
 
-        if let Ok((_, source_addr)) = resolver.add_package_modules_at(decoded_modules, target_addr)
+        if let Ok((_, Some(source_addr))) =
+            resolver.add_package_modules_at(decoded_modules, target_addr)
         {
-            if let Some(src) = source_addr {
-                loaded_source_addrs.insert(src.to_hex_literal());
-            }
+            loaded_source_addrs.insert(source_addr.to_hex_literal());
         }
     }
 
@@ -718,13 +719,11 @@ fn create_child_fetcher(
 
 fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
     let mut packages = Vec::new();
-    for part in type_str.split(|c| c == '<' || c == '>' || c == ',') {
+    for part in type_str.split(|c| ['<', '>', ','].contains(&c)) {
         let trimmed = part.trim();
         if let Some(addr) = trimmed.split("::").next() {
-            if addr.starts_with("0x") && addr.len() >= 10 {
-                if !packages.contains(&addr.to_string()) {
-                    packages.push(addr.to_string());
-                }
+            if addr.starts_with("0x") && addr.len() >= 10 && !packages.contains(&addr.to_string()) {
+                packages.push(addr.to_string());
             }
         }
     }

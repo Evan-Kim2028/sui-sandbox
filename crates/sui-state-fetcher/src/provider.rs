@@ -185,11 +185,7 @@ impl HistoricalStateProvider {
             elapsed_ms = tx_start.elapsed().as_millis(),
             "fetched transaction via gRPC"
         );
-        if std::env::var("SUI_DUMP_TX_OBJECTS")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("SUI_DUMP_TX_OBJECTS").ok().as_deref() == Some("1") {
             eprintln!(
                 "[tx_objects] digest={} objects_len={}",
                 digest,
@@ -210,11 +206,7 @@ impl HistoricalStateProvider {
             .await
             {
                 Ok(Ok(Some(cp))) => {
-                    if std::env::var("SUI_DUMP_TX_OBJECTS")
-                        .ok()
-                        .as_deref()
-                        == Some("1")
-                    {
+                    if std::env::var("SUI_DUMP_TX_OBJECTS").ok().as_deref() == Some("1") {
                         eprintln!(
                             "[checkpoint_objects] digest={} checkpoint={} objects_len={}",
                             digest,
@@ -258,11 +250,7 @@ impl HistoricalStateProvider {
             }
         }
 
-        if std::env::var("SUI_DUMP_RUNTIME_OBJECTS")
-            .ok()
-            .as_deref()
-            == Some("1")
-        {
+        if std::env::var("SUI_DUMP_RUNTIME_OBJECTS").ok().as_deref() == Some("1") {
             eprintln!(
                 "[runtime_objects] digest={} unchanged_loaded_runtime_objects={} unchanged_consensus_objects={}",
                 digest,
@@ -289,8 +277,10 @@ impl HistoricalStateProvider {
             let found_input = grpc_tx
                 .inputs
                 .iter()
-                .filter_map(|input| extract_object_id_and_version(input))
-                .find(|(id, _)| normalize_address(&format!("0x{}", hex::encode(id.as_ref()))) == target_norm)
+                .filter_map(extract_object_id_and_version)
+                .find(|(id, _)| {
+                    normalize_address(&format!("0x{}", hex::encode(id.as_ref()))) == target_norm
+                })
                 .map(|(_, v)| v);
             if found_unchanged.is_some() || found_changed.is_some() {
                 eprintln!(
@@ -302,11 +292,7 @@ impl HistoricalStateProvider {
                     found_consensus,
                     found_input
                 );
-            } else if std::env::var("SUI_DUMP_RUNTIME_OBJECTS")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            } else if std::env::var("SUI_DUMP_RUNTIME_OBJECTS").ok().as_deref() == Some("1") {
                 eprintln!(
                     "[runtime_objects] digest={} target={} not found in unchanged/changed/consensus/input objects",
                     digest, target_norm
@@ -471,7 +457,11 @@ impl HistoricalStateProvider {
                     added += 1;
                 }
             }
-            debug!(digest = digest, added = added, "added checkpoint dynamic field objects");
+            debug!(
+                digest = digest,
+                added = added,
+                "added checkpoint dynamic field objects"
+            );
         }
 
         // Merge prefetched children (they take precedence since they have BCS data)
@@ -522,11 +512,7 @@ impl HistoricalStateProvider {
 
         let pkg_start = std::time::Instant::now();
         let packages = self
-            .fetch_packages_with_deps(
-                &package_ids_vec,
-                package_versions_opt,
-                grpc_tx.checkpoint,
-            )
+            .fetch_packages_with_deps(&package_ids_vec, package_versions_opt, grpc_tx.checkpoint)
             .await?;
         debug!(
             digest = digest,
@@ -595,18 +581,24 @@ impl HistoricalStateProvider {
 
             // Fetch dynamic fields for this parent (checkpoint snapshot if available)
             let (fields, snapshot_used) = match checkpoint {
-                Some(cp) => match self
-                    .graphql
-                    .fetch_dynamic_fields_at_checkpoint(&parent_id, limit_per_parent, cp)
-                {
+                Some(cp) => match self.graphql.fetch_dynamic_fields_at_checkpoint(
+                    &parent_id,
+                    limit_per_parent,
+                    cp,
+                ) {
                     Ok(fields) => (fields, true),
-                    Err(_) => match self.graphql.fetch_dynamic_fields(&parent_id, limit_per_parent)
+                    Err(_) => match self
+                        .graphql
+                        .fetch_dynamic_fields(&parent_id, limit_per_parent)
                     {
                         Ok(fields) => (fields, false),
                         Err(_) => continue,
                     },
                 },
-                None => match self.graphql.fetch_dynamic_fields(&parent_id, limit_per_parent) {
+                None => match self
+                    .graphql
+                    .fetch_dynamic_fields(&parent_id, limit_per_parent)
+                {
                     Ok(fields) => (fields, false),
                     Err(_) => continue,
                 },
@@ -625,7 +617,8 @@ impl HistoricalStateProvider {
                         let child_normalized = normalize_address(child_id);
 
                         // Get version - prefer historical versions, then GraphQL, then gRPC latest
-                        let version_opt = if let Some(v) = historical_versions.get(&child_normalized)
+                        let version_opt = if let Some(v) =
+                            historical_versions.get(&child_normalized)
                         {
                             Some(*v)
                         } else if let Some(v) = df.version {
@@ -634,8 +627,7 @@ impl HistoricalStateProvider {
                             } else {
                                 continue;
                             }
-                        } else if let Ok(Some(obj)) =
-                            self.grpc.get_object(&child_normalized).await
+                        } else if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await
                         {
                             if snapshot_used || obj.version <= max_lamport_version {
                                 Some(obj.version)
@@ -651,53 +643,36 @@ impl HistoricalStateProvider {
                         };
 
                         // Get BCS data - prefer from dynamic field response, fallback to object fetch
-                        let (type_str, bcs) =
-                            if let (Some(vt), Some(vb)) = (&df.value_type, &df.value_bcs) {
-                                if let Ok(decoded) =
-                                    base64::engine::general_purpose::STANDARD.decode(vb)
-                                {
-                                    (vt.clone(), decoded)
-                                } else {
-                                    continue;
-                                }
-                            } else if let Ok(obj) =
-                                self.graphql.fetch_object_at_version(&child_normalized, version)
+                        let (type_str, bcs) = if let (Some(vt), Some(vb)) =
+                            (&df.value_type, &df.value_bcs)
+                        {
+                            if let Ok(decoded) =
+                                base64::engine::general_purpose::STANDARD.decode(vb)
                             {
-                                if let (Some(ts), Some(b64)) = (obj.type_string, obj.bcs_base64) {
-                                    if let Ok(decoded) =
-                                        base64::engine::general_purpose::STANDARD.decode(&b64)
-                                    {
-                                        (ts, decoded)
-                                    } else {
-                                        continue;
-                                    }
-                                } else {
-                                    continue;
-                                }
-                            } else if let Some(cp) = checkpoint {
-                                if let Ok(obj) =
-                                    self.graphql.fetch_object_at_checkpoint(&child_normalized, cp)
+                                (vt.clone(), decoded)
+                            } else {
+                                continue;
+                            }
+                        } else if let Ok(obj) = self
+                            .graphql
+                            .fetch_object_at_version(&child_normalized, version)
+                        {
+                            if let (Some(ts), Some(b64)) = (obj.type_string, obj.bcs_base64) {
+                                if let Ok(decoded) =
+                                    base64::engine::general_purpose::STANDARD.decode(&b64)
                                 {
-                                    if obj.version != version {
-                                        continue;
-                                    }
-                                    if let (Some(ts), Some(b64)) =
-                                        (obj.type_string, obj.bcs_base64)
-                                    {
-                                        if let Ok(decoded) =
-                                            base64::engine::general_purpose::STANDARD.decode(&b64)
-                                        {
-                                            (ts, decoded)
-                                        } else {
-                                            continue;
-                                        }
-                                    } else {
-                                        continue;
-                                    }
+                                    (ts, decoded)
                                 } else {
                                     continue;
                                 }
-                            } else if let Ok(obj) = self.graphql.fetch_object(&child_normalized) {
+                            } else {
+                                continue;
+                            }
+                        } else if let Some(cp) = checkpoint {
+                            if let Ok(obj) = self
+                                .graphql
+                                .fetch_object_at_checkpoint(&child_normalized, cp)
+                            {
                                 if obj.version != version {
                                     continue;
                                 }
@@ -714,7 +689,25 @@ impl HistoricalStateProvider {
                                 }
                             } else {
                                 continue;
-                            };
+                            }
+                        } else if let Ok(obj) = self.graphql.fetch_object(&child_normalized) {
+                            if obj.version != version {
+                                continue;
+                            }
+                            if let (Some(ts), Some(b64)) = (obj.type_string, obj.bcs_base64) {
+                                if let Ok(decoded) =
+                                    base64::engine::general_purpose::STANDARD.decode(&b64)
+                                {
+                                    (ts, decoded)
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        };
 
                         result.push((child_normalized.clone(), version, type_str, bcs));
 
@@ -858,7 +851,9 @@ impl HistoricalStateProvider {
             // Fetch via gRPC (has linkage table, unlike GraphQL)
             let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
             let grpc_result = if let Some(ver) = version_hint {
-                self.grpc.get_object_at_version(&pkg_id_str, Some(ver)).await
+                self.grpc
+                    .get_object_at_version(&pkg_id_str, Some(ver))
+                    .await
             } else {
                 self.grpc.get_object(&pkg_id_str).await
             };
@@ -911,9 +906,7 @@ impl HistoricalStateProvider {
                     }
                     // Try GraphQL checkpoint snapshot as fallback
                     if let Some(cp) = checkpoint {
-                        if let Ok(pkg) =
-                            self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp)
-                        {
+                        if let Ok(pkg) = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp) {
                             let pkg_data = PackageData {
                                 address: pkg_id,
                                 version: pkg.version,

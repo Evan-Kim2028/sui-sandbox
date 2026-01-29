@@ -284,7 +284,10 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
         10, // look back a few epochs for fee history
     );
     if epoch_fields_fetched > 0 {
-        println!("   ✓ Prefetched {} epoch-keyed fields", epoch_fields_fetched);
+        println!(
+            "   ✓ Prefetched {} epoch-keyed fields",
+            epoch_fields_fetched
+        );
     }
 
     if !prefetched.failed.is_empty() {
@@ -342,8 +345,10 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
     harness.set_child_fetcher(child_fetcher);
 
     // Also set up key-based child fetcher for package upgrade handling
-    let cached_index =
-        Arc::new(build_cached_object_index(&replay_data.objects, &replay_data.object_types));
+    let cached_index = Arc::new(build_cached_object_index(
+        &replay_data.objects,
+        &replay_data.object_types,
+    ));
     let key_fetcher = create_key_based_child_fetcher(
         prefetched.clone(),
         Some(discovery_cache),

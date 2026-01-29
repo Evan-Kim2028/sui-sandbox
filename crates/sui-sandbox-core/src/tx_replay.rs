@@ -1495,114 +1495,6 @@ pub fn cached_to_ptb_commands(
     to_ptb_commands_with_objects(&cached.transaction, &cached.objects)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_transaction_digest() {
-        let digest = TransactionDigest::new("abc123");
-        assert_eq!(digest.0, "abc123");
-    }
-
-    /// Convert a PtbArgument to an Argument (test helper).
-    fn convert_ptb_argument(arg: &PtbArgument) -> Argument {
-        match arg {
-            PtbArgument::Input { index } => Argument::Input(*index),
-            PtbArgument::Result { index } => Argument::Result(*index),
-            PtbArgument::NestedResult {
-                index,
-                result_index,
-            } => Argument::NestedResult(*index, *result_index),
-            PtbArgument::GasCoin => Argument::Input(0), // Gas coin is typically input 0
-        }
-    }
-
-    #[test]
-    fn test_ptb_argument_conversion() {
-        let input = PtbArgument::Input { index: 5 };
-        let arg = convert_ptb_argument(&input);
-        assert!(matches!(arg, Argument::Input(5)));
-
-        let result = PtbArgument::Result { index: 3 };
-        let arg = convert_ptb_argument(&result);
-        assert!(matches!(arg, Argument::Result(3)));
-
-        let nested = PtbArgument::NestedResult {
-            index: 2,
-            result_index: 1,
-        };
-        let arg = convert_ptb_argument(&nested);
-        assert!(matches!(arg, Argument::NestedResult(2, 1)));
-    }
-
-    #[test]
-    fn test_transaction_status_serialization() {
-        let success = TransactionStatus::Success;
-        let json = serde_json::to_string(&success).unwrap();
-        assert_eq!(json, "\"Success\"");
-
-        let failure = TransactionStatus::Failure {
-            error: "test error".to_string(),
-        };
-        let json = serde_json::to_string(&failure).unwrap();
-        assert!(json.contains("test error"));
-    }
-
-    #[test]
-    fn test_gas_summary_default() {
-        let gas = GasSummary::default();
-        assert_eq!(gas.computation_cost, 0);
-        assert_eq!(gas.storage_cost, 0);
-    }
-
-    #[test]
-    fn test_derive_dynamic_field_id() {
-        // Test case from Cetus Pool's skip_list:
-        // Parent UID: 0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3
-        // Key type: u64
-        // Key value: 481316
-        // Expected object ID: 0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704
-
-        let parent = AccountAddress::from_hex_literal(
-            "0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3",
-        )
-        .unwrap();
-
-        let key: u64 = 481316;
-
-        let derived = super::derive_dynamic_field_id_u64(parent, key).unwrap();
-
-        let expected = AccountAddress::from_hex_literal(
-            "0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704",
-        )
-        .unwrap();
-
-        assert_eq!(
-            derived,
-            expected,
-            "Derived ID mismatch:\n  got:      {}\n  expected: {}",
-            derived.to_hex_literal(),
-            expected.to_hex_literal()
-        );
-
-        // Test another key value (key=0 for historical skip_list head)
-        let key_0_derived = super::derive_dynamic_field_id_u64(parent, 0).unwrap();
-        let key_0_expected = AccountAddress::from_hex_literal(
-            "0x364f5bc3735b4aadfe4ff299163c407c8058ab7f014308ec62550a5306a1fb7f",
-        )
-        .unwrap();
-
-        assert_eq!(
-            key_0_derived,
-            key_0_expected,
-            "Derived ID for key=0 mismatch:\n  got:      {}\n  expected: {}",
-            key_0_derived.to_hex_literal(),
-            key_0_expected.to_hex_literal()
-        );
-    }
-}
-
 // ============================================================================
 // GraphQL to FetchedTransaction Conversion
 // ============================================================================
@@ -1823,3 +1715,111 @@ fn extract_all_dependencies(
 // Note: fetch_and_cache_transaction and load_or_fetch_transaction functions
 // that depend on DataFetcher have been moved to the main crate's tx_replay module
 // since they require network access via DataFetcher which is not available here.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_digest() {
+        let digest = TransactionDigest::new("abc123");
+        assert_eq!(digest.0, "abc123");
+    }
+
+    /// Convert a PtbArgument to an Argument (test helper).
+    fn convert_ptb_argument(arg: &PtbArgument) -> Argument {
+        match arg {
+            PtbArgument::Input { index } => Argument::Input(*index),
+            PtbArgument::Result { index } => Argument::Result(*index),
+            PtbArgument::NestedResult {
+                index,
+                result_index,
+            } => Argument::NestedResult(*index, *result_index),
+            PtbArgument::GasCoin => Argument::Input(0), // Gas coin is typically input 0
+        }
+    }
+
+    #[test]
+    fn test_ptb_argument_conversion() {
+        let input = PtbArgument::Input { index: 5 };
+        let arg = convert_ptb_argument(&input);
+        assert!(matches!(arg, Argument::Input(5)));
+
+        let result = PtbArgument::Result { index: 3 };
+        let arg = convert_ptb_argument(&result);
+        assert!(matches!(arg, Argument::Result(3)));
+
+        let nested = PtbArgument::NestedResult {
+            index: 2,
+            result_index: 1,
+        };
+        let arg = convert_ptb_argument(&nested);
+        assert!(matches!(arg, Argument::NestedResult(2, 1)));
+    }
+
+    #[test]
+    fn test_transaction_status_serialization() {
+        let success = TransactionStatus::Success;
+        let json = serde_json::to_string(&success).unwrap();
+        assert_eq!(json, "\"Success\"");
+
+        let failure = TransactionStatus::Failure {
+            error: "test error".to_string(),
+        };
+        let json = serde_json::to_string(&failure).unwrap();
+        assert!(json.contains("test error"));
+    }
+
+    #[test]
+    fn test_gas_summary_default() {
+        let gas = GasSummary::default();
+        assert_eq!(gas.computation_cost, 0);
+        assert_eq!(gas.storage_cost, 0);
+    }
+
+    #[test]
+    fn test_derive_dynamic_field_id() {
+        // Test case from Cetus Pool's skip_list:
+        // Parent UID: 0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3
+        // Key type: u64
+        // Key value: 481316
+        // Expected object ID: 0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704
+
+        let parent = AccountAddress::from_hex_literal(
+            "0x6dd50d2538eb0977065755d430067c2177a93a048016270d3e56abd4c9e679b3",
+        )
+        .unwrap();
+
+        let key: u64 = 481316;
+
+        let derived = super::derive_dynamic_field_id_u64(parent, key).unwrap();
+
+        let expected = AccountAddress::from_hex_literal(
+            "0x01aff7f7c58ba303e1d23df4ef9ccc1562d9bdcee7aeed813a3edb3a7f2b3704",
+        )
+        .unwrap();
+
+        assert_eq!(
+            derived,
+            expected,
+            "Derived ID mismatch:\n  got:      {}\n  expected: {}",
+            derived.to_hex_literal(),
+            expected.to_hex_literal()
+        );
+
+        // Test another key value (key=0 for historical skip_list head)
+        let key_0_derived = super::derive_dynamic_field_id_u64(parent, 0).unwrap();
+        let key_0_expected = AccountAddress::from_hex_literal(
+            "0x364f5bc3735b4aadfe4ff299163c407c8058ab7f014308ec62550a5306a1fb7f",
+        )
+        .unwrap();
+
+        assert_eq!(
+            key_0_derived,
+            key_0_expected,
+            "Derived ID for key=0 mismatch:\n  got:      {}\n  expected: {}",
+            key_0_derived.to_hex_literal(),
+            key_0_expected.to_hex_literal()
+        );
+    }
+}

@@ -92,8 +92,7 @@ fn build_replay_config_for_tx(
     if epoch == 0 {
         if let Some(checkpoint) = grpc_tx.checkpoint {
             let cp_result = rt.block_on(async {
-                tokio::time::timeout(Duration::from_secs(10), grpc.get_checkpoint(checkpoint))
-                    .await
+                tokio::time::timeout(Duration::from_secs(10), grpc.get_checkpoint(checkpoint)).await
             });
             if let Ok(Ok(Some(cp))) = cp_result {
                 epoch = cp.epoch;

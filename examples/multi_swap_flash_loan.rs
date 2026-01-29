@@ -28,9 +28,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use common::{
-    build_replay_config_from_grpc, extract_package_ids_from_type, parse_type_tag_simple,
-};
+use common::{build_replay_config_from_grpc, extract_package_ids_from_type, parse_type_tag_simple};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::object_runtime::ChildFetcherFn;
