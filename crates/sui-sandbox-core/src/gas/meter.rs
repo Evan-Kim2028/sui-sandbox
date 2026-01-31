@@ -80,12 +80,13 @@ impl AccurateGasMeter {
     /// * `params` - Gas parameters from protocol config
     pub fn new(budget: u64, gas_price: u64, params: &GasParameters) -> Self {
         let cost_table = cost_table_for_version(params.gas_model_version);
-        let gas_status = GasStatus::new(
+        let mut gas_status = GasStatus::new(
             cost_table,
             budget,
             gas_price.max(1), // Ensure non-zero gas price
             params.gas_model_version,
         );
+        gas_status.set_metering(true);
 
         Self {
             gas_status,

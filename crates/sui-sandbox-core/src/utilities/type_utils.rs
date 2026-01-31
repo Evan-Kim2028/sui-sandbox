@@ -10,11 +10,16 @@
 //! - Deserializing objects by their type
 //! - Discovering packages needed for transaction execution
 //! - Resolving transitive dependencies
+//!
+//! # Note
+//!
+//! The [`parse_type_tag`] function delegates to [`crate::types::parse_type_tag`] which
+//! provides caching for improved performance. This module re-exports it with an `Option`
+//! return type for backwards compatibility.
 
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::{StructTag, TypeTag};
+use move_core_types::language_storage::TypeTag;
 use std::collections::{BTreeSet, HashSet};
 
 /// Parse a Sui type string into a Move TypeTag.
@@ -22,6 +27,9 @@ use std::collections::{BTreeSet, HashSet};
 /// Handles primitive types (u8, u64, etc.), vectors, and struct types with
 /// nested type parameters. This is needed for correctly deserializing objects
 /// by their type.
+///
+/// This function delegates to [`crate::types::parse_type_tag`] which uses a
+/// thread-local cache for improved performance on repeated calls.
 ///
 /// # Examples
 ///
@@ -37,54 +45,8 @@ use std::collections::{BTreeSet, HashSet};
 /// assert!(coin_type.is_some());
 /// ```
 pub fn parse_type_tag(type_str: &str) -> Option<TypeTag> {
-    match type_str {
-        "u8" => return Some(TypeTag::U8),
-        "u64" => return Some(TypeTag::U64),
-        "u128" => return Some(TypeTag::U128),
-        "u256" => return Some(TypeTag::U256),
-        "bool" => return Some(TypeTag::Bool),
-        "address" => return Some(TypeTag::Address),
-        _ => {}
-    }
-
-    if type_str.starts_with("vector<") && type_str.ends_with('>') {
-        let inner = &type_str[7..type_str.len() - 1];
-        return parse_type_tag(inner).map(|t| TypeTag::Vector(Box::new(t)));
-    }
-
-    let (base_type, type_params_str) = if let Some(idx) = type_str.find('<') {
-        (
-            &type_str[..idx],
-            Some(&type_str[idx + 1..type_str.len() - 1]),
-        )
-    } else {
-        (type_str, None)
-    };
-
-    let parts: Vec<&str> = base_type.split("::").collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-    let module = Identifier::new(parts[1]).ok()?;
-    let name = Identifier::new(parts[2]).ok()?;
-
-    let type_params = type_params_str
-        .map(|s| {
-            split_type_params(s)
-                .iter()
-                .filter_map(|t| parse_type_tag(t.trim()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
+    // Delegate to the canonical cached implementation in types.rs
+    crate::types::parse_type_tag(type_str).ok()
 }
 
 /// Split type parameters respecting nested angle brackets.

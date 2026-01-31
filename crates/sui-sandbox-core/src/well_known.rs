@@ -27,34 +27,42 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use std::sync::LazyLock;
 
+// Re-export framework constants from sui-sandbox-types
+pub use sui_sandbox_types::framework::{
+    CLOCK_OBJECT_ID, DENY_LIST_OBJECT_ID, MOVE_STDLIB, RANDOM_OBJECT_ID, SUI_FRAMEWORK, SUI_SYSTEM,
+};
+
 /// Well-known addresses in the Sui ecosystem.
+///
+/// NOTE: Prefer using the constants directly from `sui_sandbox_types::framework`
+/// (e.g., `MOVE_STDLIB`, `SUI_FRAMEWORK`). This module provides `LazyLock` versions
+/// for backwards compatibility where a `&'static AccountAddress` is needed.
 pub mod addr {
     use super::*;
 
     /// Move stdlib address (0x1)
     pub static MOVE_STDLIB: LazyLock<AccountAddress> =
-        LazyLock::new(|| AccountAddress::from_hex_literal("0x1").expect("0x1 is a valid address"));
+        LazyLock::new(|| sui_sandbox_types::framework::MOVE_STDLIB);
 
     /// Sui framework address (0x2)
     pub static SUI_FRAMEWORK: LazyLock<AccountAddress> =
-        LazyLock::new(|| AccountAddress::from_hex_literal("0x2").expect("0x2 is a valid address"));
+        LazyLock::new(|| sui_sandbox_types::framework::SUI_FRAMEWORK);
 
     /// Sui system address (0x3)
     pub static SUI_SYSTEM: LazyLock<AccountAddress> =
-        LazyLock::new(|| AccountAddress::from_hex_literal("0x3").expect("0x3 is a valid address"));
+        LazyLock::new(|| sui_sandbox_types::framework::SUI_SYSTEM);
 
     /// Clock object address (0x6)
     pub static CLOCK: LazyLock<AccountAddress> =
-        LazyLock::new(|| AccountAddress::from_hex_literal("0x6").expect("0x6 is a valid address"));
+        LazyLock::new(|| sui_sandbox_types::framework::CLOCK_OBJECT_ID);
 
     /// Random object address (0x8)
     pub static RANDOM: LazyLock<AccountAddress> =
-        LazyLock::new(|| AccountAddress::from_hex_literal("0x8").expect("0x8 is a valid address"));
+        LazyLock::new(|| sui_sandbox_types::framework::RANDOM_OBJECT_ID);
 
     /// Deny list object address (0x403)
-    pub static DENY_LIST: LazyLock<AccountAddress> = LazyLock::new(|| {
-        AccountAddress::from_hex_literal("0x403").expect("0x403 is a valid address")
-    });
+    pub static DENY_LIST: LazyLock<AccountAddress> =
+        LazyLock::new(|| sui_sandbox_types::framework::DENY_LIST_OBJECT_ID);
 }
 
 /// Well-known module and type identifiers.

@@ -45,6 +45,8 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use std::collections::{HashMap, HashSet};
+// Re-export ObjectID from sui_sandbox_types for backward compatibility
+pub use sui_sandbox_types::ObjectID;
 
 use crate::natives::EmittedEvent;
 use crate::vm::{gas_costs, VMHarness};
@@ -449,8 +451,7 @@ pub fn topological_sort(commands: &[Command]) -> Result<Vec<usize>, Vec<usize>> 
     Ok(result)
 }
 
-/// Unique identifier for objects in the PTB context.
-pub type ObjectID = AccountAddress;
+// ObjectID is imported from sui_sandbox_types
 
 /// A command in a Programmable Transaction Block.
 #[derive(Debug, Clone)]
@@ -1246,6 +1247,8 @@ pub enum ObjectInput {
         type_tag: Option<TypeTag>,
         /// Object version (for version tracking)
         version: Option<u64>,
+        /// Whether the shared object is passed as mutable (&mut T) or immutable (&T)
+        mutable: bool,
     },
 
     /// Receiving object (sent to another object via transfer::public_receive).
@@ -2241,8 +2244,9 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         if self.enforce_immutability && self.immutable_objects.contains(object_id) {
             return Err(anyhow!(
                 "Cannot mutate immutable object {}. Objects passed by immutable reference \
-                 (&T) cannot be modified. This matches Sui network behavior where mutable \
-                 access requires passing the object by mutable reference (&mut T).",
+                 (&T) or shared immutable inputs cannot be modified. This matches Sui network \
+                 behavior where mutable access requires passing the object by mutable reference \
+                 (&mut T) or a mutable shared input.",
                 object_id.to_hex_literal()
             ));
         }
@@ -2253,6 +2257,69 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// When enabled, shared objects taken by value must be re-shared or deleted.
     pub fn set_enforce_shared_object_rules(&mut self, enforce: bool) {
         self.enforce_shared_object_rules = enforce;
+    }
+
+    /// Validate that shared immutable inputs were not mutated.
+    ///
+    /// Shared object inputs marked immutable (mutable=false) must not be changed
+    /// (mutated, deleted, wrapped, transferred, or unwrapped). This enforces Sui's
+    /// shared mutability contract: mutable access must be explicitly requested.
+    pub fn validate_shared_mutability(&self) -> Result<()> {
+        if !self.enforce_immutability {
+            return Ok(());
+        }
+
+        let mut violations = Vec::new();
+
+        for input in &self.inputs {
+            let InputValue::Object(ObjectInput::Shared { id, mutable, .. }) = input else {
+                continue;
+            };
+            if *mutable {
+                continue;
+            }
+
+            let mut reason: Option<&'static str> = None;
+            if self.mutated_objects.contains_key(id) {
+                reason = Some("mutated");
+            } else if self.deleted_objects.contains_key(id) {
+                reason = Some("deleted");
+            } else if self.wrapped_objects.contains_key(id) {
+                reason = Some("wrapped");
+            } else {
+                for change in &self.object_changes {
+                    match change {
+                        ObjectChange::Transferred { id: cid, .. }
+                        | ObjectChange::Unwrapped { id: cid, .. } => {
+                            if cid == id {
+                                reason = Some("transferred");
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some(kind) = reason {
+                violations.push(format!(
+                    "Shared immutable input {} was {}",
+                    id.to_hex_literal(),
+                    kind
+                ));
+            }
+        }
+
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "SharedObjectMutabilityViolation: {}\n\n\
+                 Shared immutable inputs must not be mutated. \
+                 Mark the shared input as mutable to allow changes.",
+                violations.join("\n")
+            ))
+        }
     }
 
     /// Check if a shared object was taken by value in this transaction.
@@ -2383,8 +2450,11 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Track Shared objects that are taken by value.
         // These must be re-shared or deleted by the end of the transaction.
         // This enforces Sui's rule: shared objects cannot be frozen, transferred, or wrapped.
-        if let ObjectInput::Shared { id, .. } = &obj {
+        if let ObjectInput::Shared { id, mutable, .. } = &obj {
             self.shared_objects_by_value.insert(*id);
+            if !*mutable {
+                self.immutable_objects.insert(*id);
+            }
         }
         // Register version if version tracking is enabled and version is provided
         if self.track_versions {
@@ -2416,8 +2486,11 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 self.immutable_objects.insert(*id);
             }
             // Track Shared objects that are taken by value.
-            if let ObjectInput::Shared { id, .. } = obj {
+            if let ObjectInput::Shared { id, mutable, .. } = obj {
                 self.shared_objects_by_value.insert(*id);
+                if !*mutable {
+                    self.immutable_objects.insert(*id);
+                }
             }
             // Register version if version tracking is enabled and version is provided
             if self.track_versions {
@@ -2572,6 +2645,48 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 // If we can't find the struct, conservatively allow transfer
                 // (the VM will catch any real issues)
                 true
+            }
+        }
+    }
+
+    /// Check if a type has the `key` ability (is an object type).
+    fn check_type_has_key_ability(&self, type_tag: &TypeTag) -> bool {
+        use move_binary_format::file_format::Ability;
+
+        match type_tag {
+            // Primitives do not have key
+            TypeTag::Bool
+            | TypeTag::U8
+            | TypeTag::U16
+            | TypeTag::U32
+            | TypeTag::U64
+            | TypeTag::U128
+            | TypeTag::U256
+            | TypeTag::Address
+            | TypeTag::Signer => false,
+
+            // Vectors do not have key
+            TypeTag::Vector(_) => false,
+
+            // Structs - look up the actual abilities
+            TypeTag::Struct(struct_tag) => {
+                if let Some(module) = self
+                    .vm
+                    .storage()
+                    .module_resolver()
+                    .get_module_by_addr_name(&struct_tag.address, struct_tag.module.as_str())
+                {
+                    for struct_def in &module.struct_defs {
+                        let handle = &module.datatype_handles[struct_def.struct_handle.0 as usize];
+                        let name = module.identifier_at(handle.name).to_string();
+                        if name == struct_tag.name.as_str() {
+                            return handle.abilities.has_ability(Ability::Key);
+                        }
+                    }
+                }
+
+                // If we can't find the struct, conservatively assume it is NOT an object.
+                false
             }
         }
     }
@@ -2871,6 +2986,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                 // Sync objects created by native transfer/share/freeze calls
                 self.sync_created_objects_from_vm();
+                // Sync new dynamic field children (Table/Bag entries)
+                self.sync_new_dynamic_fields_from_vm();
+                // Sync any remaining new object IDs
+                self.sync_new_object_ids_from_vm();
 
                 if output.return_values.is_empty() {
                     Ok(CommandResult::Empty)
@@ -2923,6 +3042,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                             // Sync objects created by native transfer/share/freeze calls
                             self.sync_created_objects_from_vm();
+                            // Sync new dynamic field children (Table/Bag entries)
+                            self.sync_new_dynamic_fields_from_vm();
+                            // Sync any remaining new object IDs
+                            self.sync_new_object_ids_from_vm();
 
                             if output.return_values.is_empty() {
                                 return Ok(CommandResult::Empty);
@@ -3018,7 +3141,12 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// (not returned from the function), those are tracked in the VM's shared state.
     /// This method syncs them to our created_objects map so they're included in effects.
     fn sync_created_objects_from_vm(&mut self) {
-        use crate::object_runtime::Owner as RuntimeOwner;
+        use crate::sandbox_runtime::Owner as RuntimeOwner;
+        use std::collections::HashSet;
+
+        let debug = std::env::var("SUI_DEBUG_MUTATIONS").is_ok();
+        let new_ids: HashSet<_> = self.vm.get_new_object_ids().into_iter().collect();
+        let has_new_ids = !new_ids.is_empty();
 
         // Drain created objects from the VM's shared state
         let created = self.vm.drain_created_objects();
@@ -3047,6 +3175,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             });
 
             if !is_input {
+                if has_new_ids && !new_ids.contains(&object_id) {
+                    continue;
+                }
+
                 // Convert object_runtime::Owner to ptb::Owner
                 let owner = match runtime_owner {
                     RuntimeOwner::Address(addr) => Owner::Address(addr),
@@ -3071,7 +3203,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
                 // Add to created_objects
                 self.created_objects
-                    .insert(object_id, (bytes, Some(type_tag)));
+                    .insert(object_id, (bytes, Some(type_tag.clone())));
+                if debug {
+                    eprintln!(
+                        "[mutations] created via VM native id={} type={:?}",
+                        object_id.to_hex_literal(),
+                        type_tag
+                    );
+                }
 
                 // Track ownership
                 self.object_owners.insert(object_id, owner);
@@ -3084,6 +3223,170 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         }
     }
 
+    /// Ensure shared mutable inputs are recorded as mutated when not otherwise tracked.
+    ///
+    /// Sui effects report shared mutable inputs as mutated even when their bytes do not change.
+    /// If a shared mutable object was used but the VM did not emit a mutable-ref output, we
+    /// still need to include it in mutated effects for parity.
+    fn sync_shared_mutable_inputs(&mut self) {
+        let debug = std::env::var("SUI_DEBUG_MUTATIONS").is_ok();
+        for input in &self.inputs {
+            if let InputValue::Object(ObjectInput::Shared {
+                id,
+                bytes,
+                type_tag,
+                mutable: true,
+                ..
+            }) = input
+            {
+                if self.mutated_objects.contains_key(id)
+                    || self.created_objects.contains_key(id)
+                    || self.deleted_objects.contains_key(id)
+                    || self.wrapped_objects.contains_key(id)
+                {
+                    continue;
+                }
+                if debug {
+                    eprintln!(
+                        "[mutations] marking shared mutable input as mutated id={}",
+                        id.to_hex_literal()
+                    );
+                }
+                self.mutated_objects
+                    .insert(*id, (bytes.clone(), type_tag.clone()));
+            }
+        }
+    }
+
+    /// Sync newly created dynamic field child objects from the VM state.
+    /// These are objects stored under a parent (Table/Bag) that did not exist
+    /// before this PTB execution.
+    fn sync_new_dynamic_fields_from_vm(&mut self) {
+        let debug = std::env::var("SUI_DEBUG_MUTATIONS").is_ok();
+        let new_ids: HashSet<_> = self.vm.get_new_object_ids().into_iter().collect();
+        let has_new_ids = !new_ids.is_empty();
+        if debug {
+            let sample: Vec<_> = new_ids
+                .iter()
+                .take(5)
+                .map(|id| id.to_hex_literal())
+                .collect();
+            eprintln!(
+                "[mutations] new_ids count={} sample={:?}",
+                new_ids.len(),
+                sample
+            );
+        }
+        for ((parent_id, child_id), type_tag, bytes) in self.vm.extract_new_dynamic_fields() {
+            if self.created_objects.contains_key(&child_id)
+                || self.mutated_objects.contains_key(&child_id)
+                || self.deleted_objects.contains_key(&child_id)
+            {
+                continue;
+            }
+            if has_new_ids && !new_ids.contains(&child_id) {
+                if debug {
+                    eprintln!(
+                        "[mutations] skipped dynamic field (not new id) id={} parent={}",
+                        child_id.to_hex_literal(),
+                        parent_id.to_hex_literal()
+                    );
+                }
+                continue;
+            }
+
+            self.created_objects
+                .insert(child_id, (bytes.clone(), Some(type_tag.clone())));
+            if debug {
+                eprintln!(
+                    "[mutations] created dynamic field id={} parent={}",
+                    child_id.to_hex_literal(),
+                    parent_id.to_hex_literal()
+                );
+            }
+            let _ = parent_id; // parent ownership isn't tracked in PTB Owner; treat as sender-owned
+            self.object_owners
+                .insert(child_id, Owner::Address(self.sender));
+        }
+    }
+
+    /// Sync mutated dynamic field child objects from the VM state.
+    /// Compares current child bytes with the preloaded snapshot.
+    fn sync_mutated_dynamic_fields_from_vm(&mut self) {
+        let (preloaded, mutated, children) = {
+            let state = self.vm.shared_state().lock();
+            (
+                state.preloaded_children.clone(),
+                state.mutated_children.clone(),
+                state.children.clone(),
+            )
+        };
+
+        for (parent_id, child_id) in mutated {
+            if !preloaded.contains(&(parent_id, child_id)) {
+                continue;
+            }
+            if self.created_objects.contains_key(&child_id)
+                || self.deleted_objects.contains_key(&child_id)
+            {
+                continue;
+            }
+            if let Some((type_tag, bytes)) = children.get(&(parent_id, child_id)) {
+                self.mutated_objects
+                    .insert(child_id, (bytes.clone(), Some(type_tag.clone())));
+                self.object_owners
+                    .entry(child_id)
+                    .or_insert(Owner::Address(self.sender));
+            }
+        }
+    }
+
+    /// Apply child ID alias mapping (computed -> actual) to effect tracking.
+    fn apply_child_id_aliases(&mut self) {
+        let Some(aliases) = self.vm.child_id_aliases() else {
+            return;
+        };
+
+        for (computed, actual) in aliases {
+            if computed == actual {
+                continue;
+            }
+            if let Some(entry) = self.created_objects.remove(&computed) {
+                self.created_objects.entry(actual).or_insert(entry);
+            }
+            if let Some(entry) = self.mutated_objects.remove(&computed) {
+                self.mutated_objects.entry(actual).or_insert(entry);
+            }
+            if let Some(owner) = self.object_owners.remove(&computed) {
+                self.object_owners.entry(actual).or_insert(owner);
+            }
+        }
+    }
+
+    /// Sync any remaining new object IDs that were recorded but not captured
+    /// via transfer/share/freeze or dynamic field tracking.
+    fn sync_new_object_ids_from_vm(&mut self) {
+        let allow_placeholders = std::env::var("SUI_ALLOW_PLACEHOLDER_CREATED_IDS")
+            .ok()
+            .as_deref()
+            == Some("1");
+        for object_id in self.vm.get_new_object_ids() {
+            if self.created_objects.contains_key(&object_id)
+                || self.mutated_objects.contains_key(&object_id)
+                || self.deleted_objects.contains_key(&object_id)
+            {
+                continue;
+            }
+            if !allow_placeholders {
+                continue;
+            }
+
+            self.created_objects.insert(object_id, (Vec::new(), None));
+            self.object_owners
+                .insert(object_id, Owner::Address(self.sender));
+        }
+    }
+
     /// Track newly created objects from MoveCall return values.
     ///
     /// When a MoveCall creates new objects (e.g., coin::split, object::new), the new object
@@ -3093,7 +3396,36 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Objects created during MoveCall are transferable by the sender, just like objects
     /// created by SplitCoins or other built-in commands.
     fn track_created_objects_from_returns(&mut self, return_values: &[TypedValue]) {
+        use std::collections::HashSet;
+
+        // Only treat return values as created objects if the VM recorded new IDs.
+        // This avoids false positives when non-object values begin with 32 bytes.
+        let new_ids: HashSet<ObjectID> = self.vm.get_new_object_ids().into_iter().collect();
+        let require_new_id = !new_ids.is_empty();
+        let (existing_child_ids, removed_child_ids, pending_receive_ids) = {
+            let state = self.vm.shared_state().lock();
+            let existing_child_ids: HashSet<ObjectID> =
+                state.children.keys().map(|(_, child)| *child).collect();
+            let removed_child_ids: HashSet<ObjectID> = state
+                .removed_children
+                .iter()
+                .map(|(_, child)| *child)
+                .collect();
+            let pending_receive_ids: HashSet<ObjectID> = state
+                .pending_receives
+                .keys()
+                .map(|(_, child)| *child)
+                .collect();
+            (existing_child_ids, removed_child_ids, pending_receive_ids)
+        };
+
         for typed_value in return_values {
+            let Some(type_tag) = typed_value.type_tag.as_ref() else {
+                continue;
+            };
+            if !self.check_type_has_key_ability(type_tag) {
+                continue;
+            }
             // Objects have a UID as their first field (32 bytes)
             if typed_value.bytes.len() >= 32 {
                 // Extract potential ObjectID from first 32 bytes
@@ -3101,6 +3433,10 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     .try_into()
                     .expect("slice is 32 bytes");
                 let potential_id = ObjectID::from(potential_id_bytes);
+
+                if require_new_id && !new_ids.contains(&potential_id) {
+                    continue;
+                }
 
                 // Check if this is a NEW object (not in inputs or previously created)
                 let is_known = self.inputs.iter().any(|input| {
@@ -3115,10 +3451,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     } else {
                         false
                     }
-                }) || self.created_objects.contains_key(&potential_id)
+                }) || existing_child_ids.contains(&potential_id)
+                    || removed_child_ids.contains(&potential_id)
+                    || pending_receive_ids.contains(&potential_id)
+                    || self.created_objects.contains_key(&potential_id)
                     || self.mutated_objects.contains_key(&potential_id);
 
                 if !is_known {
+                    let debug = std::env::var("SUI_DEBUG_MUTATIONS").is_ok();
                     // This looks like a newly created object
                     tracing::debug!(
                         object_id = %potential_id.to_hex_literal(),
@@ -3126,6 +3466,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         type_tag = ?typed_value.type_tag,
                         "detected newly created object from MoveCall return"
                     );
+                    if debug {
+                        eprintln!(
+                            "[mutations] created from return id={} type={:?}",
+                            potential_id.to_hex_literal(),
+                            typed_value.type_tag
+                        );
+                    }
 
                     // Track storage create cost for gas metering
                     self.vm.track_object_create(typed_value.bytes.len());
@@ -4092,8 +4439,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         &self,
         module: &str,
         function: &str,
-    ) -> Option<crate::error_context::AbortInfo> {
-        use crate::error_context::AbortInfo;
+    ) -> Option<crate::error_context::TransactionAbortInfo> {
+        use crate::error_context::TransactionAbortInfo;
 
         let structured = self.last_structured_error.as_ref()?;
         let abort_info = structured.abort_info.as_ref()?;
@@ -4116,7 +4463,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let abort_meaning =
             crate::error_context::get_abort_code_context(abort_info.abort_code, &resolved_module);
 
-        Some(AbortInfo {
+        Some(TransactionAbortInfo {
             module: resolved_module,
             function: resolved_function,
             abort_code: abort_info.abort_code,
@@ -4134,8 +4481,8 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         error_msg: &str,
         module: &str,
         function: &str,
-    ) -> Option<crate::error_context::AbortInfo> {
-        use crate::error_context::AbortInfo;
+    ) -> Option<crate::error_context::TransactionAbortInfo> {
+        use crate::error_context::TransactionAbortInfo;
 
         // Parse abort code from various VM error formats:
         // - VMError { major_status: ABORTED, sub_status: Some(202), ... }
@@ -4187,7 +4534,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
         abort_code.map(|code| {
             let abort_meaning = crate::error_context::get_abort_code_context(code, module);
-            AbortInfo {
+            TransactionAbortInfo {
                 module: module.to_string(),
                 function: function.to_string(),
                 abort_code: code,
@@ -4590,6 +4937,32 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
             }
         }
 
+        // SHARED MUTABILITY VALIDATION: Ensure shared immutable inputs were not mutated.
+        // This must happen after all commands complete but before we finalize effects.
+        if let Err(e) = self.validate_shared_mutability() {
+            use crate::error_context::CommandErrorContext;
+            let error_context = CommandErrorContext::new(commands.len(), "SharedObjectMutability")
+                .with_gas_consumed(self.gas_used);
+            let state_at_failure = self.build_execution_snapshot(self.results.len());
+
+            self.execution_trace.add_failure(
+                commands.len(),
+                "SharedObjectMutability",
+                "Shared immutable input mutated".to_string(),
+                e.to_string(),
+            );
+            self.execution_trace
+                .complete(false, Some(start_time.elapsed().as_millis() as u64));
+            return Ok(TransactionEffects::failure_at_with_context(
+                e.to_string(),
+                commands.len(),
+                "Shared mutability validation failed".to_string(),
+                self.results.len(),
+                error_context,
+                state_at_failure,
+            ));
+        }
+
         // SHARED OBJECT VALIDATION: Ensure shared objects taken by value are properly handled.
         // This must happen after all commands complete but before we finalize effects.
         // Shared objects must be either re-shared or deleted - they cannot be frozen,
@@ -4624,6 +4997,13 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         if self.enable_lifecycle_tracking {
             self.execution_trace.object_summary = Some(self.lifecycle_tracker.summary());
         }
+
+        // Ensure mutated dynamic field children are tracked in effects
+        self.sync_mutated_dynamic_fields_from_vm();
+        // Apply any child ID alias mapping before computing effects
+        self.apply_child_id_aliases();
+        // Ensure shared mutable inputs are reflected in mutated effects
+        self.sync_shared_mutable_inputs();
 
         Ok(self.compute_effects())
     }
@@ -4730,6 +5110,17 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Compute the transaction effects after execution.
     fn compute_effects(&self) -> TransactionEffects {
         let mut effects = TransactionEffects::success();
+        let debug = std::env::var("SUI_DEBUG_MUTATIONS").is_ok();
+        if debug {
+            let consumed_ids: Vec<_> = self
+                .consumed_objects
+                .iter()
+                .map(|id| id.to_hex_literal())
+                .collect();
+            if !consumed_ids.is_empty() {
+                eprintln!("[mutations] consumed ids: {:?}", consumed_ids);
+            }
+        }
 
         // Add created objects with their tracked ownership and type
         for (id, (_bytes, object_type)) in &self.created_objects {
@@ -6105,6 +6496,7 @@ mod tests {
             bytes: vec![],
             type_tag: None,
             version: Some(999),
+            mutable: true,
         };
         assert_eq!(obj3.version(), Some(999));
 

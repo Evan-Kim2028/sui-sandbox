@@ -7,7 +7,7 @@
 //!
 //! - [`VMHarness`]: Main entry point for executing Move functions
 //! - [`InMemoryStorage`]: Module resolver with execution tracing
-//! - [`ExecutionTrace`]: Records which modules were accessed during execution
+//! - [`ModuleAccessTrace`]: Records which modules were accessed during execution
 //! - [`SimulationConfig`]: Configuration for sandbox behavior
 //!
 //! ## How It Works
@@ -32,7 +32,7 @@ use move_vm_runtime::native_extensions::NativeContextExtensions;
 use move_vm_types::gas::{GasMeter, SimpleInstruction, UnmeteredGasMeter};
 use move_vm_types::views::{TypeView, ValueView};
 use parking_lot::Mutex;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::gas::{
@@ -40,9 +40,9 @@ use crate::gas::{
     StorageTracker,
 };
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
-use crate::object_runtime::{
-    ChildFetcherFn, KeyBasedChildFetcherFn, ObjectRuntimeState, SharedObjectRuntime,
-    VersionedChildFetcherFn,
+use crate::sandbox_runtime::{
+    ChildFetcherFn, ChildIdAliasMap, KeyBasedChildFetcherFn, KeyTypeResolverFn, ObjectRuntimeState,
+    SharedObjectRuntime, VersionedChildFetcherFn,
 };
 use crate::resolver::LocalModuleResolver;
 use crate::sui_object_runtime;
@@ -60,9 +60,8 @@ const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
 /// This is an arbitrary value that provides a reasonable starting epoch.
 const DEFAULT_EPOCH: u64 = 100;
 
-/// Default gas budget when unlimited gas is requested (50 SUI).
-/// Used by strict() configuration and as a reference value.
-const DEFAULT_GAS_BUDGET: u64 = 50_000_000_000;
+// Re-use gas constants from the gas module (single source of truth)
+use crate::gas::DEFAULT_GAS_BUDGET;
 
 // =============================================================================
 // SimulationConfig
@@ -251,16 +250,33 @@ pub struct SimulationConfig {
     /// When false, uses simple hardcoded costs (~30-40% accuracy).
     #[serde(default)]
     pub accurate_gas: bool,
+
+    /// Checkpoint for historical replay (optional).
+    ///
+    /// When set, package fetching will use the package version at this checkpoint.
+    /// This is critical for replay fidelity - packages may be upgraded over time,
+    /// and we need the exact bytecode that was deployed at the time of the transaction.
+    ///
+    /// When None, packages are fetched at their latest version.
+    #[serde(default)]
+    pub replay_checkpoint: Option<u64>,
+
+    /// Child object resolution mode.
+    ///
+    /// Controls how child objects (dynamic fields) are fetched:
+    /// - `Sandbox`: Ignores version bounds, fetches latest (fast, for development)
+    /// - `Replay`: Respects version bounds, fetches historical (accurate for replay)
+    ///
+    /// Default: `Sandbox` for backward compatibility.
+    #[serde(default)]
+    pub child_resolution_mode: crate::sui_object_runtime::ChildResolutionMode,
 }
 
-/// Default protocol version (mainnet v73 as of late 2025)
-pub const DEFAULT_PROTOCOL_VERSION: u64 = 73;
+// Re-use protocol and gas constants from the gas module (single source of truth)
+pub use crate::gas::{DEFAULT_PROTOCOL_VERSION, DEFAULT_REFERENCE_GAS_PRICE};
 
 /// Default storage price per unit in MIST (mainnet value as of epoch ~500+)
 pub const DEFAULT_STORAGE_PRICE: u64 = 76;
-
-/// Default reference gas price in MIST
-pub const DEFAULT_REFERENCE_GAS_PRICE: u64 = 750;
 
 impl Default for SimulationConfig {
     fn default() -> Self {
@@ -293,8 +309,10 @@ impl Default for SimulationConfig {
             gas_price: DEFAULT_REFERENCE_GAS_PRICE, // No tip by default
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             storage_price: DEFAULT_STORAGE_PRICE,
-            track_versions: false, // Opt-in for backwards compatibility
-            accurate_gas: true,    // Default to accurate gas for improved fidelity
+            track_versions: false,   // Opt-in for backwards compatibility
+            accurate_gas: true,      // Default to accurate gas for improved fidelity
+            replay_checkpoint: None, // Not in replay mode by default
+            child_resolution_mode: crate::sui_object_runtime::ChildResolutionMode::Sandbox,
         }
     }
 }
@@ -335,8 +353,10 @@ impl SimulationConfig {
             gas_price: DEFAULT_REFERENCE_GAS_PRICE,
             protocol_version: DEFAULT_PROTOCOL_VERSION,
             storage_price: DEFAULT_STORAGE_PRICE,
-            track_versions: false, // Opt-in feature
-            accurate_gas: true,    // Strict mode uses accurate gas
+            track_versions: false,   // Opt-in feature
+            accurate_gas: true,      // Strict mode uses accurate gas
+            replay_checkpoint: None, // Not in replay mode by default
+            child_resolution_mode: crate::sui_object_runtime::ChildResolutionMode::Sandbox,
         }
     }
 
@@ -470,6 +490,42 @@ impl SimulationConfig {
         self
     }
 
+    /// Builder method: set replay checkpoint for historical package fetching.
+    ///
+    /// When set, package fetching will use the package version at this checkpoint.
+    /// This is critical for replay fidelity - packages may be upgraded over time,
+    /// and we need the exact bytecode that was deployed at the time of the transaction.
+    pub fn with_replay_checkpoint(mut self, checkpoint: u64) -> Self {
+        self.replay_checkpoint = Some(checkpoint);
+        self
+    }
+
+    /// Builder method: set child object resolution mode.
+    ///
+    /// Controls how child objects (dynamic fields) are fetched:
+    /// - `Sandbox`: Ignores version bounds, fetches latest (fast, for development)
+    /// - `Replay`: Respects version bounds, fetches historical (accurate for replay)
+    pub fn with_child_resolution_mode(
+        mut self,
+        mode: crate::sui_object_runtime::ChildResolutionMode,
+    ) -> Self {
+        self.child_resolution_mode = mode;
+        self
+    }
+
+    /// Configure for accurate transaction replay.
+    ///
+    /// This is a convenience method that sets up the config for replay mode:
+    /// - Sets the replay checkpoint for historical package fetching
+    /// - Sets child resolution to Replay mode for version-bound child fetching
+    /// - Enables version tracking
+    pub fn for_replay(mut self, checkpoint: u64) -> Self {
+        self.replay_checkpoint = Some(checkpoint);
+        self.child_resolution_mode = crate::sui_object_runtime::ChildResolutionMode::Replay;
+        self.track_versions = true;
+        self
+    }
+
     /// Advance the epoch by a given amount (mutates in place).
     pub fn advance_epoch(&mut self, by: u64) {
         self.epoch = self.epoch.saturating_add(by);
@@ -478,13 +534,20 @@ impl SimulationConfig {
 
 /// Tracks which modules are accessed during VM execution.
 /// This allows us to verify that target package modules were actually loaded/executed.
+///
+/// Note: This is distinct from `errors::ExecutionDiagnostics` which provides richer
+/// execution diagnostics including call traces, abort info, and timing.
 #[derive(Debug, Clone, Default)]
-pub struct ExecutionTrace {
+pub struct ModuleAccessTrace {
     /// Module IDs that were accessed during execution (via get_module calls)
     pub modules_accessed: BTreeSet<ModuleId>,
 }
 
-impl ExecutionTrace {
+/// Type alias for backward compatibility.
+#[deprecated(since = "0.11.0", note = "Use ModuleAccessTrace instead")]
+pub type ExecutionTrace = ModuleAccessTrace;
+
+impl ModuleAccessTrace {
     pub fn new() -> Self {
         Self::default()
     }
@@ -995,37 +1058,6 @@ pub mod gas_costs {
             assert_eq!(cost, 203_000);
         }
     }
-}
-
-/// Estimate gas for a function execution.
-fn estimate_gas(
-    args: &[Vec<u8>],
-    type_args: &[TypeTag],
-    return_values: &[Vec<u8>],
-    mutable_ref_outputs: &[(u8, Vec<u8>)],
-) -> u64 {
-    let mut gas = gas_costs::FUNCTION_CALL_BASE;
-
-    // Input bytes
-    for arg in args {
-        gas += arg.len() as u64 * gas_costs::INPUT_BYTE;
-    }
-
-    // Type arguments
-    gas += type_args.len() as u64 * gas_costs::TYPE_ARG;
-
-    // Output bytes (return values)
-    for ret in return_values {
-        gas += ret.len() as u64 * gas_costs::OUTPUT_BYTE;
-    }
-
-    // Mutable reference outputs (mutations)
-    for (_, bytes) in mutable_ref_outputs {
-        gas += bytes.len() as u64 * gas_costs::OUTPUT_BYTE;
-        gas += gas_costs::OBJECT_MUTATE;
-    }
-
-    gas
 }
 
 /// A gas meter that tracks actual gas consumption with a budget.
@@ -1691,7 +1723,7 @@ fn create_tx_context_bytes_with_config(config: &SimulationConfig) -> Vec<u8> {
 pub struct InMemoryStorage<'a> {
     module_resolver: &'a LocalModuleResolver,
     /// Shared trace to record module accesses during execution
-    trace: Arc<Mutex<ExecutionTrace>>,
+    trace: Arc<Mutex<ModuleAccessTrace>>,
 }
 
 impl<'a> InMemoryStorage<'a> {
@@ -1699,14 +1731,14 @@ impl<'a> InMemoryStorage<'a> {
         Self::with_trace(
             module_resolver,
             restricted,
-            Arc::new(Mutex::new(ExecutionTrace::new())),
+            Arc::new(Mutex::new(ModuleAccessTrace::new())),
         )
     }
 
     pub fn with_trace(
         module_resolver: &'a LocalModuleResolver,
         restricted: bool,
-        trace: Arc<Mutex<ExecutionTrace>>,
+        trace: Arc<Mutex<ModuleAccessTrace>>,
     ) -> Self {
         let mut storage = Self {
             module_resolver,
@@ -1751,7 +1783,18 @@ impl<'a> LinkageResolver for InMemoryStorage<'a> {
     }
 
     fn relocate(&self, module_id: &ModuleId) -> Result<ModuleId, Self::Error> {
-        // Check if this address has an alias (for package upgrades)
+        // Prefer linkage upgrades (original -> upgraded) for package version resolution.
+        if let Some(upgraded_addr) = self
+            .module_resolver
+            .get_linkage_upgrade(module_id.address())
+        {
+            let upgraded_id = ModuleId::new(upgraded_addr, module_id.name().to_owned());
+            // Only relocate if the upgraded module exists at that address.
+            if self.module_resolver.has_module(&upgraded_id) {
+                return Ok(upgraded_id);
+            }
+        }
+        // Fallback to alias-based relocation (storage -> original).
         if let Some(aliased_addr) = self.module_resolver.get_alias(module_id.address()) {
             let relocated = ModuleId::new(aliased_addr, module_id.name().to_owned());
             return Ok(relocated);
@@ -1776,7 +1819,7 @@ pub struct VMHarness<'a> {
     /// Mock native state for Sui-specific natives (events, clock, etc.)
     native_state: Arc<MockNativeState>,
     /// Shared execution trace for tracking module access
-    trace: Arc<Mutex<ExecutionTrace>>,
+    trace: Arc<Mutex<ModuleAccessTrace>>,
     /// Simulation configuration (gas settings, clock base, crypto mocks, etc.)
     config: SimulationConfig,
     /// Shared dynamic field state that persists across VM sessions.
@@ -1788,6 +1831,10 @@ pub struct VMHarness<'a> {
     /// Optional callback for key-based child object fetching.
     /// Used as fallback when ID-based lookup fails due to package upgrade type mismatches.
     key_based_child_fetcher: Option<Arc<KeyBasedChildFetcherFn>>,
+    /// Optional callback for resolving dynamic field key types by key bytes.
+    key_type_resolver: Option<Arc<KeyTypeResolverFn>>,
+    /// Optional map of computed child IDs to actual on-chain child IDs.
+    child_id_aliases: Option<ChildIdAliasMap>,
     /// Track all child object IDs accessed during execution (for tracing).
     /// This persists across multiple sessions for the lifetime of the harness.
     accessed_children: Arc<Mutex<std::collections::HashSet<AccountAddress>>>,
@@ -1797,9 +1844,6 @@ pub struct VMHarness<'a> {
     /// Package versions for version-aware reverse alias selection.
     /// Maps storage_id (normalized hex string) -> version number.
     package_versions: std::collections::HashMap<String, u64>,
-    /// Protocol config for Sui natives mode (cached to avoid recreating)
-    #[allow(dead_code)]
-    protocol_config: Option<ProtocolConfig>,
     /// Sui native extensions (only used when use_sui_natives is true)
     /// This is created lazily when a child fetcher is set.
     sui_extensions: Option<sui_object_runtime::SuiNativeExtensions>,
@@ -1826,6 +1870,16 @@ impl<'a> VMHarness<'a> {
         native_state.epoch = config.epoch;
         let clock_base = config.tx_timestamp_ms.unwrap_or(config.clock_base_ms);
         native_state.epoch_timestamp_ms = clock_base;
+        native_state.tx_hash = config.tx_hash;
+        native_state.reference_gas_price = config.reference_gas_price;
+        native_state.gas_price = config.gas_price;
+        native_state.gas_budget = config.gas_budget.unwrap_or(DEFAULT_GAS_BUDGET);
+        native_state.protocol_version = config.protocol_version;
+        native_state.random = if config.deterministic_random {
+            crate::natives::MockRandom::with_seed(config.random_seed)
+        } else {
+            crate::natives::MockRandom::new()
+        };
         // Also set the MockClock's base to the configured timestamp
         // This ensures clock::timestamp_ms() returns the correct time
         native_state.clock = crate::natives::MockClock::with_base(clock_base);
@@ -1858,7 +1912,7 @@ impl<'a> VMHarness<'a> {
         };
 
         let vm = MoveVM::new(natives).map_err(|e| anyhow!("failed to create VM: {:?}", e))?;
-        let trace = Arc::new(Mutex::new(ExecutionTrace::new()));
+        let trace = Arc::new(Mutex::new(ModuleAccessTrace::new()));
         // Create storage tracker if accurate gas is enabled
         let storage_tracker = if config.accurate_gas {
             let params = GasParameters::from_protocol_config(&crate::gas::load_protocol_config(
@@ -1886,6 +1940,7 @@ impl<'a> VMHarness<'a> {
                 gas_budget: config.gas_budget.unwrap_or(DEFAULT_GAS_BUDGET),
                 sponsor: None,
                 is_metered: config.accurate_gas,
+                child_resolution_mode: config.child_resolution_mode,
             };
             Some(sui_object_runtime::SuiNativeExtensions::new(
                 noop_fetcher,
@@ -1904,10 +1959,11 @@ impl<'a> VMHarness<'a> {
             shared_df_state: Arc::new(Mutex::new(ObjectRuntimeState::new())),
             child_fetcher: None,
             key_based_child_fetcher: None,
+            key_type_resolver: None,
+            child_id_aliases: None,
             accessed_children: Arc::new(Mutex::new(std::collections::HashSet::new())),
             address_aliases: std::collections::HashMap::new(),
             package_versions: std::collections::HashMap::new(),
-            protocol_config,
             sui_extensions,
             storage_tracker,
         })
@@ -2086,6 +2142,16 @@ impl<'a> VMHarness<'a> {
         self.config.accurate_gas
     }
 
+    fn metered_gas_used(&self, gas_meter: &GasMeterImpl) -> u64 {
+        if gas_meter.is_unmetered() {
+            return 0;
+        }
+        if let Some(summary) = self.get_gas_summary(gas_meter) {
+            return summary.gas_used();
+        }
+        gas_meter.gas_consumed()
+    }
+
     /// Set address aliases with version hints for accurate reverse mapping.
     ///
     /// Prefer this over `set_address_aliases` when replaying transactions involving
@@ -2104,6 +2170,16 @@ impl<'a> VMHarness<'a> {
     ) {
         self.address_aliases = aliases;
         self.package_versions = versions;
+    }
+
+    /// Access the underlying module resolver (debugging/inspection).
+    pub fn module_resolver(&self) -> &LocalModuleResolver {
+        self.storage.module_resolver
+    }
+
+    /// Snapshot of the execution trace (modules accessed so far).
+    pub fn execution_trace(&self) -> ModuleAccessTrace {
+        self.trace.lock().clone()
     }
 
     /// Set a callback for on-demand child object fetching.
@@ -2142,6 +2218,7 @@ impl<'a> VMHarness<'a> {
                 sponsor: None,
                 // Enable gas metering for native functions when accurate_gas is enabled
                 is_metered: self.config.accurate_gas,
+                child_resolution_mode: self.config.child_resolution_mode,
             };
 
             self.sui_extensions = Some(sui_object_runtime::SuiNativeExtensions::new(
@@ -2192,6 +2269,7 @@ impl<'a> VMHarness<'a> {
                 sponsor: None,
                 // Enable gas metering for native functions when accurate_gas is enabled
                 is_metered: self.config.accurate_gas,
+                child_resolution_mode: self.config.child_resolution_mode,
             };
 
             self.sui_extensions = Some(sui_object_runtime::SuiNativeExtensions::new(
@@ -2206,6 +2284,21 @@ impl<'a> VMHarness<'a> {
     /// dynamic field key content instead of computed hash.
     pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
         self.key_based_child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Set a key type resolver for dynamic field hashing fallbacks.
+    pub fn set_key_type_resolver(&mut self, resolver: KeyTypeResolverFn) {
+        self.key_type_resolver = Some(Arc::new(resolver));
+    }
+
+    /// Set the child ID alias map (computed -> actual).
+    pub fn set_child_id_aliases(&mut self, aliases: ChildIdAliasMap) {
+        self.child_id_aliases = Some(aliases);
+    }
+
+    /// Snapshot the child ID alias map (computed -> actual).
+    pub fn child_id_aliases(&self) -> Option<HashMap<AccountAddress, AccountAddress>> {
+        self.child_id_aliases.as_ref().map(|map| map.lock().clone())
     }
 
     /// Register an input object for Sui natives mode.
@@ -2268,7 +2361,7 @@ impl<'a> VMHarness<'a> {
         AccountAddress,
         move_core_types::language_storage::TypeTag,
         Vec<u8>,
-        crate::object_runtime::Owner,
+        crate::sandbox_runtime::Owner,
     )> {
         self.shared_df_state.lock().all_created_objects()
     }
@@ -2282,9 +2375,14 @@ impl<'a> VMHarness<'a> {
         AccountAddress,
         move_core_types::language_storage::TypeTag,
         Vec<u8>,
-        crate::object_runtime::Owner,
+        crate::sandbox_runtime::Owner,
     )> {
         self.shared_df_state.lock().drain_created_objects()
+    }
+
+    /// Get all new object IDs recorded during execution (from object::record_new_uid).
+    pub fn get_new_object_ids(&self) -> Vec<AccountAddress> {
+        self.shared_df_state.lock().get_new_ids()
     }
 
     /// Get the current simulation configuration.
@@ -2293,7 +2391,7 @@ impl<'a> VMHarness<'a> {
     }
 
     /// Get the execution trace showing which modules were accessed
-    pub fn get_trace(&self) -> ExecutionTrace {
+    pub fn get_trace(&self) -> ModuleAccessTrace {
         self.trace.lock().clone()
     }
 
@@ -2325,8 +2423,12 @@ impl<'a> VMHarness<'a> {
     ) {
         let mut state = self.shared_df_state.lock();
         for ((parent, child), type_tag, bytes) in fields {
+            let bytes_snapshot = bytes.clone();
             state.add_child(parent, child, type_tag, bytes);
             state.preloaded_children.insert((parent, child));
+            state
+                .preloaded_child_bytes
+                .insert((parent, child), bytes_snapshot);
         }
     }
 
@@ -2348,6 +2450,11 @@ impl<'a> VMHarness<'a> {
     /// Clear dynamic field state (call between transactions if needed).
     pub fn clear_dynamic_fields(&self) {
         self.shared_df_state.lock().clear();
+    }
+
+    /// Get a reference to the shared dynamic field state.
+    pub fn shared_state(&self) -> &Arc<Mutex<ObjectRuntimeState>> {
+        &self.shared_df_state
     }
 
     /// Preload pending receives from SimulationEnvironment.
@@ -2398,6 +2505,19 @@ impl<'a> VMHarness<'a> {
                     fetcher_clone(parent_id, child_id, key_type, key_bytes)
                 },
             ));
+        }
+
+        // If we have a key type resolver, set it up for dynamic field hashing fallbacks
+        if let Some(resolver_arc) = &self.key_type_resolver {
+            let resolver_clone = resolver_arc.clone();
+            shared_runtime.set_key_type_resolver(Box::new(move |parent_id, key_bytes| {
+                resolver_clone(parent_id, key_bytes)
+            }));
+        }
+
+        // If we have child ID aliases, attach them for hash override
+        if let Some(alias_map) = &self.child_id_aliases {
+            shared_runtime.set_child_id_aliases(alias_map.clone());
         }
 
         // Pass address aliases to enable type tag rewriting for upgraded packages.
@@ -2514,9 +2634,6 @@ impl<'a> VMHarness<'a> {
             )
             .map_err(|e| anyhow!("execution failed: {:?}", e))?;
 
-        // Get actual gas consumed from the meter
-        let metered_gas = gas_meter.gas_consumed();
-
         let (result, _store) = session.finish();
         let _changes = result.map_err(|e| anyhow!("session finish failed: {:?}", e))?;
 
@@ -2536,22 +2653,7 @@ impl<'a> VMHarness<'a> {
             .map(|(idx, bytes, _layout)| (idx, bytes, None))
             .collect();
 
-        // Use metered gas when metering is enabled, otherwise fall back to estimation.
-        // IMPORTANT: When using accurate gas metering, we trust the meter's value even if 0.
-        // Heuristic estimation is only used for unmetered execution (e.g., when no gas budget).
-        let gas_used = if gas_meter.is_unmetered() {
-            // No gas metering - use heuristic estimation for backwards compatibility
-            let return_bytes: Vec<Vec<u8>> =
-                return_values.iter().map(|v| v.bytes.clone()).collect();
-            let ref_bytes: Vec<(u8, Vec<u8>)> = mutable_ref_outputs
-                .iter()
-                .map(|(idx, bytes, _)| (*idx, bytes.clone()))
-                .collect();
-            estimate_gas(&args, &ty_args, &return_bytes, &ref_bytes)
-        } else {
-            // Gas metering is enabled - use the metered value (accurate or simple)
-            metered_gas
-        };
+        let gas_used = self.metered_gas_used(&gas_meter);
 
         Ok(ExecutionOutput {
             return_values,
@@ -2654,9 +2756,6 @@ impl<'a> VMHarness<'a> {
             }
         };
 
-        // Get actual gas consumed from the meter
-        let metered_gas = gas_meter.gas_consumed();
-
         // Finish session
         let (result, _store) = session.finish();
         if let Err(vm_error) = result {
@@ -2681,22 +2780,7 @@ impl<'a> VMHarness<'a> {
             .map(|(idx, bytes, _layout)| (idx, bytes, None))
             .collect();
 
-        // Use metered gas when metering is enabled, otherwise fall back to estimation.
-        // IMPORTANT: When using accurate gas metering, we trust the meter's value even if 0.
-        // Heuristic estimation is only used for unmetered execution (e.g., when no gas budget).
-        let gas_used = if gas_meter.is_unmetered() {
-            // No gas metering - use heuristic estimation for backwards compatibility
-            let return_bytes: Vec<Vec<u8>> =
-                return_values.iter().map(|v| v.bytes.clone()).collect();
-            let ref_bytes: Vec<(u8, Vec<u8>)> = mutable_ref_outputs
-                .iter()
-                .map(|(idx, bytes, _)| (*idx, bytes.clone()))
-                .collect();
-            estimate_gas(&args, &ty_args, &return_bytes, &ref_bytes)
-        } else {
-            // Gas metering is enabled - use the metered value (accurate or simple)
-            metered_gas
-        };
+        let gas_used = self.metered_gas_used(&gas_meter);
 
         ExecutionResult::Success(ExecutionOutput {
             return_values,
@@ -2848,13 +2932,6 @@ impl<'a, 'b> PTBSession<'a, 'b> {
         let function_name = move_core_types::identifier::Identifier::new(function_name)?;
 
         // Pre-calculate input gas before args/ty_args are consumed
-        let input_gas = gas_costs::FUNCTION_CALL_BASE
-            + args
-                .iter()
-                .map(|a| a.len() as u64 * gas_costs::INPUT_BYTE)
-                .sum::<u64>()
-            + ty_args.len() as u64 * gas_costs::TYPE_ARG;
-
         // Create a SharedObjectRuntime that references our shared state
         let shared_runtime = SharedObjectRuntime::new(self.shared_state.clone());
         let mut extensions = NativeContextExtensions::default();
@@ -2893,9 +2970,6 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             )
             .map_err(|e| anyhow!("execution failed: {:?}", e))?;
 
-        // Get actual gas consumed
-        let metered_gas = gas_meter.gas_consumed();
-
         // Finish the session
         let (result, _store) = session.finish();
         let _changes = result.map_err(|e| anyhow!("session finish failed: {:?}", e))?;
@@ -2920,26 +2994,7 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             .map(|(idx, bytes, _layout)| (idx, bytes, None))
             .collect();
 
-        // Use metered gas when metering is enabled, otherwise fall back to estimation.
-        // IMPORTANT: When using accurate gas metering, we trust the meter's value even if 0.
-        // Heuristic estimation is only used for unmetered execution (e.g., when no gas budget).
-        let gas_used: u64 = if gas_meter.is_unmetered() {
-            // No gas metering - use heuristic estimation for backwards compatibility
-            let output_gas = return_values
-                .iter()
-                .map(|r| r.bytes.len() as u64 * gas_costs::OUTPUT_BYTE)
-                .sum::<u64>()
-                + mutable_ref_outputs
-                    .iter()
-                    .map(|(_, bytes, _)| {
-                        bytes.len() as u64 * gas_costs::OUTPUT_BYTE + gas_costs::OBJECT_MUTATE
-                    })
-                    .sum::<u64>();
-            input_gas + output_gas
-        } else {
-            // Gas metering is enabled - use the metered value (accurate or simple)
-            metered_gas
-        };
+        let gas_used: u64 = self.harness.metered_gas_used(&gas_meter);
 
         Ok(ExecutionOutput {
             return_values,
@@ -3127,5 +3182,158 @@ mod structured_error_tests {
 
         assert!(converted.is_err());
         assert!(converted.unwrap_err().to_string().contains("test error"));
+    }
+}
+
+#[cfg(test)]
+mod simulation_config_tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = SimulationConfig::default();
+
+        // Default behavior: permissive for easy testing
+        assert!(config.mock_crypto_pass);
+        assert!(config.advancing_clock);
+        assert!(config.deterministic_random);
+        assert!(config.permissive_ownership);
+        assert!(!config.use_sui_natives);
+
+        // Gas metering enabled by default
+        assert!(config.gas_budget.is_some());
+        assert!(config.accurate_gas);
+
+        // Protocol version should be recent
+        assert!(config.protocol_version >= 60);
+    }
+
+    #[test]
+    fn test_strict_config() {
+        let config = SimulationConfig::strict();
+
+        // Strict mode: realistic behavior
+        assert!(!config.mock_crypto_pass);
+        assert!(!config.permissive_ownership);
+        assert!(config.enforce_immutability);
+        assert!(config.accurate_gas);
+    }
+
+    #[test]
+    fn test_config_builder_methods() {
+        let sender = [1u8; 32];
+        let tx_hash = [2u8; 32];
+
+        let config = SimulationConfig::default()
+            .with_sender(sender)
+            .with_tx_hash(tx_hash)
+            .with_epoch(200)
+            .with_gas_budget(Some(5_000_000_000))
+            .with_gas_price(1000)
+            .with_tx_timestamp(1700000000000);
+
+        assert_eq!(config.sender_address, sender);
+        assert_eq!(config.tx_hash, tx_hash);
+        assert_eq!(config.epoch, 200);
+        assert_eq!(config.gas_budget, Some(5_000_000_000));
+        assert_eq!(config.gas_price, 1000);
+        assert_eq!(config.tx_timestamp_ms, Some(1700000000000));
+    }
+
+    #[test]
+    fn test_without_gas_metering() {
+        let config = SimulationConfig::default().without_gas_metering();
+        assert!(config.gas_budget.is_none());
+    }
+
+    #[test]
+    fn test_unique_tx_hash_per_instance() {
+        let config1 = SimulationConfig::default();
+        let config2 = SimulationConfig::default();
+
+        // Each instance should have a unique tx_hash for unique object IDs
+        assert_ne!(config1.tx_hash, config2.tx_hash);
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = SimulationConfig::default()
+            .with_epoch(150)
+            .with_gas_budget(Some(1_000_000));
+
+        // Should be serializable
+        let json = serde_json::to_string(&config).expect("serialize config");
+        let deserialized: SimulationConfig =
+            serde_json::from_str(&json).expect("deserialize config");
+
+        assert_eq!(deserialized.epoch, 150);
+        assert_eq!(deserialized.gas_budget, Some(1_000_000));
+    }
+
+    #[test]
+    fn test_for_replay_config() {
+        let config = SimulationConfig::default().for_replay(12345);
+
+        assert_eq!(config.replay_checkpoint, Some(12345));
+        assert!(matches!(
+            config.child_resolution_mode,
+            crate::sui_object_runtime::ChildResolutionMode::Replay
+        ));
+    }
+}
+
+#[cfg(test)]
+mod module_access_trace_tests {
+    use super::*;
+
+    #[test]
+    fn test_trace_basic_operations() {
+        let trace = ModuleAccessTrace::new();
+
+        // Empty trace
+        assert!(trace.modules_accessed.is_empty());
+        assert!(!trace.accessed_package(&AccountAddress::from_hex_literal("0x2").unwrap()));
+    }
+
+    #[test]
+    fn test_trace_with_module() {
+        let mut trace = ModuleAccessTrace::new();
+        let addr = AccountAddress::from_hex_literal("0x2").unwrap();
+        let module_id = ModuleId::new(
+            addr,
+            move_core_types::identifier::Identifier::new("coin").unwrap(),
+        );
+
+        trace.modules_accessed.insert(module_id.clone());
+
+        assert!(trace.modules_accessed.contains(&module_id));
+        assert!(trace.accessed_package(&addr));
+        assert!(!trace.accessed_package(&AccountAddress::from_hex_literal("0x3").unwrap()));
+    }
+
+    #[test]
+    fn test_modules_from_package() {
+        let mut trace = ModuleAccessTrace::new();
+
+        let addr2 = AccountAddress::from_hex_literal("0x2").unwrap();
+        let module1 = ModuleId::new(
+            addr2,
+            move_core_types::identifier::Identifier::new("coin").unwrap(),
+        );
+        let module2 = ModuleId::new(
+            addr2,
+            move_core_types::identifier::Identifier::new("balance").unwrap(),
+        );
+        let module3 = ModuleId::new(
+            AccountAddress::from_hex_literal("0x3").unwrap(),
+            move_core_types::identifier::Identifier::new("token").unwrap(),
+        );
+
+        trace.modules_accessed.insert(module1.clone());
+        trace.modules_accessed.insert(module2.clone());
+        trace.modules_accessed.insert(module3);
+
+        let modules_from_0x2 = trace.modules_from_package(&addr2);
+        assert_eq!(modules_from_0x2.len(), 2);
     }
 }

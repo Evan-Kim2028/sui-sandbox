@@ -62,6 +62,7 @@ use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
+use sui_sandbox_types::encoding::try_base64_decode;
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 use std::fs;
@@ -144,6 +145,8 @@ pub struct LocalModuleResolver {
     /// Address aliases: maps target address -> source address
     /// When looking up a module at target address, also try source address
     address_aliases: BTreeMap<AccountAddress, AccountAddress>,
+    /// Linkage upgrades: maps original (runtime) address -> upgraded (storage) address
+    linkage_upgrades: BTreeMap<AccountAddress, AccountAddress>,
     /// Cache for function signatures and visibility (thread-safe).
     /// Key: (package_addr, module_name, function_name)
     function_cache: std::sync::Arc<
@@ -163,6 +166,7 @@ impl LocalModuleResolver {
             modules: BTreeMap::new(),
             modules_bytes: BTreeMap::new(),
             address_aliases: BTreeMap::new(),
+            linkage_upgrades: BTreeMap::new(),
             function_cache: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -250,10 +254,7 @@ impl LocalModuleResolver {
                 Ok(pkg) => {
                     for module in &pkg.modules {
                         if let Some(ref bytecode_b64) = module.bytecode_base64 {
-                            use base64::Engine;
-                            if let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(bytecode_b64)
-                            {
+                            if let Some(bytes) = try_base64_decode(bytecode_b64) {
                                 match CompiledModule::deserialize_with_defaults(&bytes) {
                                     Ok(compiled) => {
                                         let id = compiled.self_id();
@@ -478,6 +479,8 @@ impl LocalModuleResolver {
         if let (Some(target), Some(source)) = (target_addr, source_addr) {
             if target != source {
                 self.address_aliases.insert(target, source);
+                // Track original -> upgraded mapping for LinkageResolver
+                self.linkage_upgrades.insert(source, target);
             }
         }
 
@@ -529,13 +532,10 @@ impl LocalModuleResolver {
         use std::collections::BTreeSet;
 
         // Framework addresses that we always have bundled
-        let framework_addrs: BTreeSet<AccountAddress> = [
-            AccountAddress::from_hex_literal("0x1").unwrap(),
-            AccountAddress::from_hex_literal("0x2").unwrap(),
-            AccountAddress::from_hex_literal("0x3").unwrap(),
-        ]
-        .into_iter()
-        .collect();
+        let framework_addrs: BTreeSet<AccountAddress> =
+            sui_sandbox_types::framework::FRAMEWORK_ADDRESSES
+                .into_iter()
+                .collect();
 
         let mut missing = BTreeSet::new();
 
@@ -583,6 +583,28 @@ impl LocalModuleResolver {
         }
     }
 
+    /// Register a linkage upgrade mapping (original -> upgraded).
+    pub fn add_linkage_upgrade(&mut self, original: AccountAddress, upgraded: AccountAddress) {
+        if original != upgraded {
+            self.linkage_upgrades.insert(original, upgraded);
+        }
+    }
+
+    /// Register multiple linkage upgrade mappings (original -> upgraded).
+    pub fn add_linkage_upgrades<I>(&mut self, upgrades: I)
+    where
+        I: IntoIterator<Item = (AccountAddress, AccountAddress)>,
+    {
+        for (original, upgraded) in upgrades {
+            self.add_linkage_upgrade(original, upgraded);
+        }
+    }
+
+    /// Get the upgraded storage address for an original (runtime) address, if any.
+    pub fn get_linkage_upgrade(&self, original: &AccountAddress) -> Option<AccountAddress> {
+        self.linkage_upgrades.get(original).copied()
+    }
+
     /// Import address aliases from a PackageUpgradeResolver.
     ///
     /// This synchronizes the resolver's internal alias map with the comprehensive
@@ -596,6 +618,17 @@ impl LocalModuleResolver {
         &mut self,
         upgrade_resolver: &sui_resolver::package_upgrades::PackageUpgradeResolver,
     ) {
+        // Track original -> storage upgrades for LinkageResolver
+        for (original_id, storage_id) in upgrade_resolver.all_upgrades() {
+            if let (Ok(original_addr), Ok(storage_addr)) = (
+                AccountAddress::from_hex_literal(original_id),
+                AccountAddress::from_hex_literal(storage_id),
+            ) {
+                if original_addr != storage_addr {
+                    self.linkage_upgrades.insert(original_addr, storage_addr);
+                }
+            }
+        }
         for (storage_id, original_id) in upgrade_resolver.all_storage_to_original() {
             if let (Ok(storage_addr), Ok(original_addr)) = (
                 AccountAddress::from_hex_literal(storage_id),
@@ -648,6 +681,85 @@ impl LocalModuleResolver {
                 source = %source.to_hex_literal(),
                 "address alias points to missing modules"
             );
+        }
+    }
+
+    /// Log unresolved function or datatype handles for loaded modules.
+    ///
+    /// This is useful when verifier errors report LOOKUP_FAILED for
+    /// function/datatype handles, which often indicates a dependency
+    /// package version mismatch.
+    pub fn log_unresolved_member_handles(&self) {
+        for module in self.modules.values() {
+            let module_id = module.self_id();
+
+            for (idx, handle) in module.function_handles.iter().enumerate() {
+                let mod_handle = &module.module_handles[handle.module.0 as usize];
+                let dep_addr = *module.address_identifier_at(mod_handle.address);
+                let dep_name = module.identifier_at(mod_handle.name);
+                let dep_id = ModuleId::new(dep_addr, dep_name.to_owned());
+                let dep_module = self.get_module_with_alias(&dep_id);
+                if let Some(dep_module) = dep_module {
+                    let func_name = module.identifier_at(handle.name);
+                    let mut found = false;
+                    for def in dep_module.function_defs() {
+                        let def_handle = dep_module.function_handle_at(def.function);
+                        let def_name = dep_module.identifier_at(def_handle.name);
+                        if def_name == func_name {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        eprintln!(
+                            "[linkage] missing_function {}::{} referenced by {} (fh#{})",
+                            dep_id.address().to_hex_literal(),
+                            func_name,
+                            module_id,
+                            idx
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "[linkage] missing_module {} referenced by {} (fh#{})",
+                        dep_id, module_id, idx
+                    );
+                }
+            }
+
+            for (idx, handle) in module.datatype_handles.iter().enumerate() {
+                let mod_handle = &module.module_handles[handle.module.0 as usize];
+                let dep_addr = *module.address_identifier_at(mod_handle.address);
+                let dep_name = module.identifier_at(mod_handle.name);
+                let dep_id = ModuleId::new(dep_addr, dep_name.to_owned());
+                let dep_module = self.get_module_with_alias(&dep_id);
+                if let Some(dep_module) = dep_module {
+                    let struct_name = module.identifier_at(handle.name);
+                    let mut found = false;
+                    for def in dep_module.struct_defs() {
+                        let def_handle = &dep_module.datatype_handles[def.struct_handle.0 as usize];
+                        let def_name = dep_module.identifier_at(def_handle.name);
+                        if def_name == struct_name {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        eprintln!(
+                            "[linkage] missing_struct {}::{} referenced by {} (dt#{})",
+                            dep_id.address().to_hex_literal(),
+                            struct_name,
+                            module_id,
+                            idx
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "[linkage] missing_module {} referenced by {} (dt#{})",
+                        dep_id, module_id, idx
+                    );
+                }
+            }
         }
     }
 

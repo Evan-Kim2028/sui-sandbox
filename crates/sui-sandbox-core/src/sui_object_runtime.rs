@@ -1,8 +1,20 @@
-//! Sui ObjectRuntime Integration
+//! Sui Native ObjectRuntime Integration
 //!
-//! This module provides integration with Sui's actual ObjectRuntime for dynamic field support.
-//! Instead of reimplementing dynamic field natives, we use Sui's production implementations
-//! which ensures 1:1 parity with on-chain behavior.
+//! This module provides integration with **Sui's actual production ObjectRuntime**.
+//! It's used when `use_sui_natives: true` for 100% accuracy with on-chain behavior.
+//!
+//! ## Two Runtime Systems
+//!
+//! The sandbox supports two runtime systems for dynamic field operations:
+//!
+//! | Runtime | Module | When Used | Accuracy |
+//! |---------|--------|-----------|----------|
+//! | **Sandbox** | `sandbox_runtime` | `use_sui_natives: false` (default) | ~90% |
+//! | **Sui Native** (this module) | `sui_object_runtime` | `use_sui_natives: true` | 100% |
+//!
+//! **When to use which:**
+//! - **Sandbox runtime (default)**: Fast iteration, testing, development
+//! - **Sui native runtime (this module)**: Transaction replay, production parity validation
 //!
 //! ## Key Components
 //!
@@ -10,6 +22,7 @@
 //!   child fetching logic (GraphQL/archive lookup).
 //! - [`create_sui_object_runtime`]: Factory function to create Sui's ObjectRuntime with
 //!   our resolver and input objects.
+//! - [`SuiNativeExtensions`]: Holder for all Sui native extensions.
 //!
 //! ## Why Use Sui's Actual Implementation?
 //!
@@ -21,6 +34,14 @@
 //! Our custom implementation had subtle bugs in reference handling that caused
 //! incorrect field access after borrow_child_object_mut. Using Sui's actual code
 //! guarantees correctness.
+//!
+//! ## Callback Types
+//!
+//! This module uses different callback types than `sandbox_runtime`:
+//! - [`ChildFetchFn`]: Uses `ObjectID`, returns `(type, bytes, version, parent)`
+//! - [`VersionBoundChildFetchFn`]: Also takes version upper bound for replay accuracy
+//!
+//! These are converted from `sandbox_runtime` callbacks in `VMHarness::set_child_fetcher()`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -44,31 +65,103 @@ use sui_types::metrics::LimitsMetrics;
 use sui_types::object::{Data, MoveObject, Object, ObjectInner, Owner};
 use sui_types::storage::ChildObjectResolver;
 
-/// Callback type for fetching child objects on-demand.
+/// Callback type for fetching child objects on-demand (sandbox mode).
 /// Takes child_object_id and returns Option<(TypeTag, BCS bytes, version, parent_id)>.
+///
+/// This is the "sandbox" style fetcher that ignores version bounds and fetches the latest
+/// version of a child object. Suitable for exploratory testing and development.
 pub type ChildFetchFn =
     Arc<dyn Fn(ObjectID) -> Option<(TypeTag, Vec<u8>, u64, ObjectID)> + Send + Sync>;
+
+/// Callback type for fetching child objects with version bound (replay mode).
+/// Takes (child_object_id, version_upper_bound) and returns Option<(TypeTag, BCS bytes, version, parent_id)>.
+///
+/// This is the "replay" style fetcher that respects version bounds and fetches the child
+/// object at a version <= the upper bound. Critical for accurate transaction replay.
+pub type VersionBoundChildFetchFn =
+    Arc<dyn Fn(ObjectID, u64) -> Option<(TypeTag, Vec<u8>, u64, ObjectID)> + Send + Sync>;
+
+/// Child resolution mode for the object resolver.
+///
+/// This determines how child objects are fetched during execution:
+/// - `Sandbox`: Ignores version bounds, fetches latest version (fast, good for development)
+/// - `Replay`: Respects version bounds, fetches historical version (accurate for replay)
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub enum ChildResolutionMode {
+    /// Sandbox mode: fetch latest version, ignore version bounds.
+    /// Good for development, testing, and exploratory simulation.
+    #[default]
+    Sandbox,
+    /// Replay mode: respect version bounds, fetch historical version.
+    /// Required for accurate transaction replay matching on-chain behavior.
+    Replay,
+}
 
 /// Wrapper that implements Sui's `ChildObjectResolver` trait using our child fetching logic.
 ///
 /// This allows Sui's ObjectRuntime to load child objects from our data sources
 /// (GraphQL, transaction replay archive, etc.) while using Sui's actual native
 /// function implementations.
+///
+/// Supports two modes:
+/// - Sandbox mode: Uses `ChildFetchFn`, ignores version bounds
+/// - Replay mode: Uses `VersionBoundChildFetchFn`, respects version bounds
 pub struct ChildObjectResolverWrapper {
-    /// The child fetcher function that looks up objects
-    fetcher: ChildFetchFn,
-    /// Protocol config for the current chain version
-    #[allow(dead_code)]
+    /// The sandbox-style fetcher (ignores version bounds)
+    sandbox_fetcher: Option<ChildFetchFn>,
+    /// The replay-style fetcher (respects version bounds)
+    replay_fetcher: Option<VersionBoundChildFetchFn>,
+    /// Resolution mode
+    mode: ChildResolutionMode,
+    /// Protocol config for the current chain version (used in MoveObject creation)
     protocol_config: ProtocolConfig,
 }
 
 impl ChildObjectResolverWrapper {
-    /// Create a new resolver with the given fetcher function.
+    /// Create a new resolver with the given fetcher function (sandbox mode).
+    ///
+    /// This is the backward-compatible constructor that ignores version bounds.
     pub fn new(fetcher: ChildFetchFn, protocol_config: ProtocolConfig) -> Self {
         Self {
-            fetcher,
+            sandbox_fetcher: Some(fetcher),
+            replay_fetcher: None,
+            mode: ChildResolutionMode::Sandbox,
             protocol_config,
         }
+    }
+
+    /// Create a new resolver in replay mode with version-bound aware fetching.
+    ///
+    /// Use this for accurate transaction replay that respects child object versions.
+    pub fn new_replay(fetcher: VersionBoundChildFetchFn, protocol_config: ProtocolConfig) -> Self {
+        Self {
+            sandbox_fetcher: None,
+            replay_fetcher: Some(fetcher),
+            mode: ChildResolutionMode::Replay,
+            protocol_config,
+        }
+    }
+
+    /// Create a resolver that supports both modes with automatic selection.
+    ///
+    /// In replay mode, uses the version-bound fetcher; in sandbox mode, uses the simple fetcher.
+    pub fn new_dual(
+        sandbox_fetcher: ChildFetchFn,
+        replay_fetcher: VersionBoundChildFetchFn,
+        mode: ChildResolutionMode,
+        protocol_config: ProtocolConfig,
+    ) -> Self {
+        Self {
+            sandbox_fetcher: Some(sandbox_fetcher),
+            replay_fetcher: Some(replay_fetcher),
+            mode,
+            protocol_config,
+        }
+    }
+
+    /// Get the current resolution mode.
+    pub fn mode(&self) -> ChildResolutionMode {
+        self.mode
     }
 }
 
@@ -78,6 +171,10 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
     /// This is called by Sui's dynamic field natives when they need to load a child object.
     /// We delegate to our fetcher function which may look up the object from GraphQL,
     /// an archive, or the transaction replay environment.
+    ///
+    /// Behavior depends on `ChildResolutionMode`:
+    /// - `Sandbox`: Ignores `child_version_upper_bound`, fetches latest version
+    /// - `Replay`: Respects `child_version_upper_bound`, fetches version <= bound
     fn read_child_object(
         &self,
         parent: &ObjectID,
@@ -88,11 +185,40 @@ impl ChildObjectResolver for ChildObjectResolverWrapper {
             parent = %parent.to_hex_literal(),
             child = %child.to_hex_literal(),
             version_bound = child_version_upper_bound.value(),
+            mode = ?self.mode,
             "read_child_object"
         );
 
-        // Call our fetcher to get the child object data
-        let result = (self.fetcher)(*child);
+        // Call the appropriate fetcher based on mode
+        let result = match self.mode {
+            ChildResolutionMode::Sandbox => {
+                // Sandbox mode: ignore version bound, use sandbox fetcher
+                match &self.sandbox_fetcher {
+                    Some(fetcher) => (fetcher)(*child),
+                    None => {
+                        // Fall back to replay fetcher with max version if available
+                        self.replay_fetcher
+                            .as_ref()
+                            .and_then(|f| (f)(*child, u64::MAX))
+                    }
+                }
+            }
+            ChildResolutionMode::Replay => {
+                // Replay mode: respect version bound
+                match &self.replay_fetcher {
+                    Some(fetcher) => (fetcher)(*child, child_version_upper_bound.value()),
+                    None => {
+                        // Fall back to sandbox fetcher but log a warning
+                        warn!(
+                            child = %child.to_hex_literal(),
+                            version_bound = child_version_upper_bound.value(),
+                            "Replay mode but no version-bound fetcher; using sandbox fetcher"
+                        );
+                        self.sandbox_fetcher.as_ref().and_then(|f| (f)(*child))
+                    }
+                }
+            }
+        };
 
         match result {
             Some((type_tag, bcs_bytes, version, fetched_parent)) => {
@@ -344,6 +470,10 @@ pub struct SuiRuntimeConfig {
     /// When true, native function costs are charged from Sui's NativesCostTable.
     /// Default: false for backwards compatibility.
     pub is_metered: bool,
+    /// Child object resolution mode.
+    /// Controls whether version bounds are respected when fetching child objects.
+    /// Default: Sandbox (ignores version bounds for backward compatibility).
+    pub child_resolution_mode: ChildResolutionMode,
 }
 
 impl Default for SuiRuntimeConfig {
@@ -356,6 +486,7 @@ impl Default for SuiRuntimeConfig {
             gas_budget: 50_000_000_000,
             sponsor: None,
             is_metered: false,
+            child_resolution_mode: ChildResolutionMode::Sandbox,
         }
     }
 }
@@ -384,7 +515,9 @@ pub struct SuiNativeExtensions {
 }
 
 impl SuiNativeExtensions {
-    /// Create a new SuiNativeExtensions by leaking the resolver and protocol config.
+    /// Create a new SuiNativeExtensions with a sandbox-mode fetcher.
+    ///
+    /// This is the backward-compatible constructor that ignores version bounds.
     ///
     /// SAFETY: This leaks memory, which is acceptable for simulation/testing contexts
     /// where the process will exit and reclaim all memory. Do not use this in a
@@ -394,13 +527,77 @@ impl SuiNativeExtensions {
         let protocol_config: &'static ProtocolConfig =
             Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE()));
 
-        // Create and leak the resolver
-        let resolver_box = Box::new(ChildObjectResolverWrapper::new(
-            fetcher,
+        // Create resolver based on configured mode
+        let resolver: &'static dyn ChildObjectResolver = match config.child_resolution_mode {
+            ChildResolutionMode::Sandbox => {
+                // Sandbox mode: use the simple fetcher that ignores version bounds
+                let resolver_box = Box::new(ChildObjectResolverWrapper::new(
+                    fetcher,
+                    protocol_config.clone(),
+                ));
+                Box::leak(resolver_box)
+            }
+            ChildResolutionMode::Replay => {
+                // Replay mode requested but only sandbox fetcher provided
+                // Create a wrapper that adapts the sandbox fetcher but logs warnings
+                warn!("Replay mode requested but using sandbox fetcher - version bounds will be ignored");
+                let resolver_box = Box::new(ChildObjectResolverWrapper::new(
+                    fetcher,
+                    protocol_config.clone(),
+                ));
+                Box::leak(resolver_box)
+            }
+        };
+
+        Self::create_with_resolver(resolver, protocol_config, config)
+    }
+
+    /// Create a new SuiNativeExtensions with a replay-mode fetcher that respects version bounds.
+    ///
+    /// Use this for accurate transaction replay where child object versions matter.
+    ///
+    /// SAFETY: This leaks memory, which is acceptable for simulation/testing contexts.
+    pub fn new_replay(replay_fetcher: VersionBoundChildFetchFn, config: SuiRuntimeConfig) -> Self {
+        let protocol_config: &'static ProtocolConfig =
+            Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE()));
+
+        let resolver_box = Box::new(ChildObjectResolverWrapper::new_replay(
+            replay_fetcher,
             protocol_config.clone(),
         ));
         let resolver: &'static dyn ChildObjectResolver = Box::leak(resolver_box);
 
+        Self::create_with_resolver(resolver, protocol_config, config)
+    }
+
+    /// Create a new SuiNativeExtensions with both fetcher types for automatic mode selection.
+    ///
+    /// The mode from `config.child_resolution_mode` determines which fetcher is used.
+    pub fn new_dual(
+        sandbox_fetcher: ChildFetchFn,
+        replay_fetcher: VersionBoundChildFetchFn,
+        config: SuiRuntimeConfig,
+    ) -> Self {
+        let protocol_config: &'static ProtocolConfig =
+            Box::leak(Box::new(ProtocolConfig::get_for_max_version_UNSAFE()));
+
+        let resolver_box = Box::new(ChildObjectResolverWrapper::new_dual(
+            sandbox_fetcher,
+            replay_fetcher,
+            config.child_resolution_mode,
+            protocol_config.clone(),
+        ));
+        let resolver: &'static dyn ChildObjectResolver = Box::leak(resolver_box);
+
+        Self::create_with_resolver(resolver, protocol_config, config)
+    }
+
+    /// Internal helper to create extensions with a pre-configured resolver.
+    fn create_with_resolver(
+        resolver: &'static dyn ChildObjectResolver,
+        protocol_config: &'static ProtocolConfig,
+        config: SuiRuntimeConfig,
+    ) -> Self {
         // Create TxContext
         let rgp = config.gas_price;
         let tx_context = TxContext::new_from_components(

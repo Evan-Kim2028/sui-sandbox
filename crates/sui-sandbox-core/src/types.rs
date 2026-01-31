@@ -184,14 +184,39 @@ pub fn format_struct_tag(s: &StructTag) -> String {
 }
 
 // =============================================================================
-// Common Type Constructors
+// Well-Known Type Strings
 // =============================================================================
+// Canonical type strings for commonly used Sui types.
+// All code should reference these constants rather than hardcoding type strings.
 
 /// The canonical SUI coin type string.
 pub const SUI_TYPE_STR: &str = "0x2::sui::SUI";
 
 /// The canonical Coin<SUI> type string.
 pub const COIN_SUI_TYPE_STR: &str = "0x2::coin::Coin<0x2::sui::SUI>";
+
+/// The Clock type string.
+pub const CLOCK_TYPE_STR: &str = "0x2::clock::Clock";
+
+/// The Random type string.
+pub const RANDOM_TYPE_STR: &str = "0x2::random::Random";
+
+// =============================================================================
+// Well-Known Object IDs
+// =============================================================================
+// System object IDs that are constant across all Sui networks.
+
+/// Clock object ID (0x6) - the shared Clock object for timestamp access.
+pub const CLOCK_OBJECT_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000006";
+
+/// Random object ID (0x8) - the shared Random object for on-chain randomness.
+pub const RANDOM_OBJECT_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000008";
+
+// =============================================================================
+// Common Type Constructors
+// =============================================================================
 
 /// Create a TypeTag for the SUI type (0x2::sui::SUI).
 ///
@@ -583,6 +608,9 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// - 0x-prefixed
 /// - Format depends on `move-core-types` implementation (may be short or long form)
 ///
+/// NOTE: For the full 64-character normalized form, use
+/// [`sui_resolver::normalize_address`] instead.
+///
 /// # Examples
 /// ```
 /// use sui_sandbox_core::types::normalize_address;
@@ -594,35 +622,27 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// assert!(normalize_address("not_an_address").is_none());
 /// ```
 pub fn normalize_address(addr: &str) -> Option<String> {
-    let trimmed = addr.trim();
-    let addr = AccountAddress::from_hex_literal(trimmed).ok()?;
-    Some(addr.to_hex_literal())
+    // Use sui_resolver's checked variant for validation
+    sui_resolver::normalize_address_checked(addr)
+        .map(|_| {
+            // But return move-core-types short form for backward compatibility
+            let trimmed = addr.trim();
+            let addr = AccountAddress::from_hex_literal(trimmed).ok().unwrap();
+            addr.to_hex_literal()
+        })
 }
 
 /// Normalize an address to short form (no leading zeros except for special addresses).
 ///
 /// Special addresses (0x0, 0x1, 0x2, 0x3) keep their short form.
 /// Other addresses are trimmed of leading zeros but keep at least one digit.
+///
+/// NOTE: For consistent short-form normalization, prefer
+/// [`sui_resolver::normalize_address_short`] which doesn't validate.
 pub fn normalize_address_short(addr: &str) -> Option<String> {
-    let trimmed = addr.trim();
-    let addr = AccountAddress::from_hex_literal(trimmed).ok()?;
-
-    // Use the short form for common framework addresses
-    let bytes = addr.into_bytes();
-    let is_short = bytes[..31].iter().all(|&b| b == 0) && bytes[31] <= 3;
-
-    if is_short {
-        Some(format!("0x{}", bytes[31]))
-    } else {
-        // Trim leading zeros
-        let hex = hex::encode(bytes);
-        let trimmed = hex.trim_start_matches('0');
-        if trimmed.is_empty() {
-            Some("0x0".to_string())
-        } else {
-            Some(format!("0x{}", trimmed))
-        }
-    }
+    // Use sui_resolver's checked variant for validation
+    sui_resolver::normalize_address_checked(addr)?;
+    Some(sui_resolver::normalize_address_short(addr))
 }
 
 // =============================================================================
@@ -784,15 +804,29 @@ pub fn parse_type_tag_with_aliases(
 // Framework Type Detection
 // =============================================================================
 
-/// Well-known framework addresses.
-pub const FRAMEWORK_ADDRESSES: [&str; 4] = ["0x1", "0x2", "0x3", "0xdee9"];
+/// Well-known system package addresses (includes DeepBook).
+///
+/// This includes the standard framework addresses plus DeepBook (0xdee9).
+/// For just the standard framework addresses (0x1, 0x2, 0x3), use
+/// [`sui_resolver::FRAMEWORK_ADDRESSES`] instead.
+pub const SYSTEM_PACKAGE_ADDRESSES: [&str; 4] = ["0x1", "0x2", "0x3", "0xdee9"];
 
-/// Check if an address is a framework address.
-pub fn is_framework_address(addr: &AccountAddress) -> bool {
-    let short = normalize_address_short(&addr.to_hex_literal());
-    short
-        .map(|s| FRAMEWORK_ADDRESSES.contains(&s.as_str()))
-        .unwrap_or(false)
+/// DeepBook package address (0xdee9).
+pub const DEEPBOOK_ADDRESS: &str = "0xdee9";
+
+/// Check if an address is a system package address (framework + DeepBook).
+///
+/// This returns true for 0x1, 0x2, 0x3 (standard framework) and 0xdee9 (DeepBook).
+/// For checking just the standard framework addresses (0x1, 0x2, 0x3),
+/// use [`sui_resolver::is_framework_account_address`] instead.
+pub fn is_system_package_address(addr: &AccountAddress) -> bool {
+    // Check standard framework addresses via sui_resolver
+    if sui_resolver::is_framework_account_address(addr) {
+        return true;
+    }
+    // Also check DeepBook
+    let short = sui_resolver::normalize_address_short(&addr.to_hex_literal());
+    short == DEEPBOOK_ADDRESS
 }
 
 /// Check if a TypeTag is a Sui Coin type.

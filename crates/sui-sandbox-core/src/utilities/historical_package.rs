@@ -44,8 +44,8 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use base64::Engine;
 use move_binary_format::CompiledModule;
+use sui_sandbox_types::encoding::base64_encode;
 
 use super::address::{is_framework_package, normalize_address};
 use super::type_utils::extract_dependencies_from_bytecode;
@@ -530,10 +530,7 @@ impl<F: PackageFetcher> HistoricalPackageResolver<F> {
                     .raw_modules
                     .iter()
                     .map(|(name, bytes)| {
-                        (
-                            name.clone(),
-                            base64::engine::general_purpose::STANDARD.encode(bytes),
-                        )
+                        (name.clone(), base64_encode(bytes))
                     })
                     .collect();
                 (pkg_id.clone(), modules_b64)

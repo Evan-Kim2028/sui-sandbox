@@ -17,7 +17,8 @@
 //! - [`vm`]: VMHarness for executing Move functions
 //! - [`resolver`]: LocalModuleResolver for loading bytecode
 //! - [`natives`]: Native function implementations
-//! - [`object_runtime`]: Object storage and dynamic field support
+//! - [`sandbox_runtime`]: Object storage and dynamic field support (default runtime)
+//! - [`sui_object_runtime`]: Sui native runtime integration (opt-in, 100% accuracy)
 //! - [`well_known`]: Well-known Sui types and addresses
 //!
 //! # Example
@@ -49,8 +50,12 @@ pub mod fetcher;
 pub mod gas;
 pub mod mm2;
 pub mod natives;
-pub mod object_runtime;
+pub mod sandbox_runtime;
 pub mod phases;
+
+// Backward compatibility alias for renamed module
+#[deprecated(since = "0.11.0", note = "Use sandbox_runtime instead")]
+pub use sandbox_runtime as object_runtime;
 pub mod predictive_prefetch;
 pub mod ptb;
 pub mod resolver;
@@ -66,7 +71,7 @@ pub mod vm;
 pub mod well_known;
 
 // Package building and analysis (for creating mock contracts)
-pub mod bytecode_analyzer;
+// Note: bytecode_analyzer functionality is in mm2/bytecode_analyzer.rs
 pub mod output;
 pub mod package_builder;
 pub mod state_layer;
@@ -75,9 +80,12 @@ pub mod storage_log;
 // Utilities for working around infrastructure limitations
 pub mod utilities;
 
+// Shared utilities for CLI and MCP integration
+pub mod shared;
+
 // Re-export main types at crate root for convenience
 pub use fetcher::{FetchedObjectData, Fetcher, GrpcFetcher, MockFetcher, NoopFetcher};
-pub use object_runtime::{
+pub use sandbox_runtime::{
     ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
     VersionedChildFetcherFn,
 };

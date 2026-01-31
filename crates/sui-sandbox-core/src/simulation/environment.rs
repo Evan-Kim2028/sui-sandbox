@@ -12,11 +12,16 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use move_core_types::resolver::ModuleResolver;
 use std::collections::{BTreeMap, HashMap};
+use sui_sandbox_types::encoding::{
+    base64_decode, base64_encode, parse_address, try_base64_decode, try_parse_address,
+};
 
 use crate::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::fetcher::{FetchedObjectData, Fetcher};
 use crate::natives::EmittedEvent;
-use crate::object_runtime::{ChildFetcherFn, KeyBasedChildFetcherFn, VersionedChildFetcherFn};
+use crate::sandbox_runtime::{
+    ChildFetcherFn, KeyBasedChildFetcherFn, KeyTypeResolverFn, VersionedChildFetcherFn,
+};
 use crate::ptb::{Command, InputValue, ObjectInput};
 use crate::resolver::LocalModuleResolver;
 use crate::vm::VMHarness;
@@ -54,7 +59,6 @@ struct PackageEntry {
 
 impl PackageEntry {
     fn to_serialized(&self) -> SerializedPackage {
-        use base64::Engine;
         SerializedPackage {
             address: self.storage_id.to_hex_literal(),
             version: self.version,
@@ -64,7 +68,7 @@ impl PackageEntry {
                 .iter()
                 .map(|(name, bytes)| SerializedPackageModule {
                     name: name.clone(),
-                    bytecode_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    bytecode_b64: base64_encode(bytes),
                 })
                 .collect(),
             linkage: self
@@ -80,32 +84,23 @@ impl PackageEntry {
     }
 
     fn from_serialized(pkg: &SerializedPackage) -> Result<Self> {
-        use base64::Engine;
-        let storage_id = AccountAddress::from_hex_literal(&pkg.address)
-            .map_err(|e| anyhow!("Invalid package address {}: {}", pkg.address, e))?;
+        let storage_id = parse_address(&pkg.address, "package address")?;
         let original_id = match &pkg.original_id {
-            Some(id) => Some(
-                AccountAddress::from_hex_literal(id)
-                    .map_err(|e| anyhow!("Invalid original_id {}: {}", id, e))?,
-            ),
+            Some(id) => Some(parse_address(id, "original_id")?),
             None => None,
         };
         let modules = pkg
             .modules
             .iter()
             .map(|m| {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&m.bytecode_b64)
-                    .map_err(|e| anyhow!("Failed to decode module {}: {}", m.name, e))?;
+                let bytes = base64_decode(&m.bytecode_b64, &format!("module {}", m.name))?;
                 Ok((m.name.clone(), bytes))
             })
             .collect::<Result<Vec<_>>>()?;
         let mut linkage = BTreeMap::new();
         for link in &pkg.linkage {
-            let orig = AccountAddress::from_hex_literal(&link.original_id)
-                .map_err(|e| anyhow!("Invalid linkage original_id {}: {}", link.original_id, e))?;
-            let upgraded = AccountAddress::from_hex_literal(&link.upgraded_id)
-                .map_err(|e| anyhow!("Invalid linkage upgraded_id {}: {}", link.upgraded_id, e))?;
+            let orig = parse_address(&link.original_id, "linkage original_id")?;
+            let upgraded = parse_address(&link.upgraded_id, "linkage upgraded_id")?;
             linkage.insert(orig, (upgraded, link.upgraded_version));
         }
 
@@ -199,6 +194,9 @@ pub struct SimulationEnvironment {
     /// a dynamic field key to query external sources.
     key_based_child_fetcher: Option<std::sync::Arc<KeyBasedChildFetcherFn>>,
 
+    /// Optional callback for resolving dynamic field key types by key bytes.
+    key_type_resolver: Option<std::sync::Arc<KeyTypeResolverFn>>,
+
     /// Address aliases for package upgrades (storage_id -> original_id).
     address_aliases: HashMap<AccountAddress, AccountAddress>,
 
@@ -262,6 +260,7 @@ impl SimulationEnvironment {
             child_fetcher: None,
             versioned_child_fetcher: None,
             key_based_child_fetcher: None,
+            key_type_resolver: None,
             address_aliases: HashMap::new(),
             package_versions: HashMap::new(),
             object_history: BTreeMap::new(),
@@ -300,7 +299,7 @@ impl SimulationEnvironment {
             is_shared: true,
             is_immutable: false, // Clock is shared, not immutable
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Shared),
+            owner: Some(crate::sandbox_runtime::Owner::Shared),
         };
         self.objects.insert(clock_id, clock_obj);
         if let Some(obj) = self.objects.get(&clock_id).cloned() {
@@ -337,7 +336,7 @@ impl SimulationEnvironment {
             is_shared: true,
             is_immutable: false, // Random is shared, not immutable
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Shared),
+            owner: Some(crate::sandbox_runtime::Owner::Shared),
         };
         self.objects.insert(random_id, random_obj);
         if let Some(obj) = self.objects.get(&random_id).cloned() {
@@ -363,6 +362,7 @@ impl SimulationEnvironment {
             bytes: random_obj.bcs_bytes.clone(),
             type_tag: Some(random_obj.type_tag.clone()),
             version: Some(random_obj.version),
+            mutable: false,
         })
     }
 
@@ -423,6 +423,7 @@ impl SimulationEnvironment {
             bytes: clock_obj.bcs_bytes.clone(),
             type_tag: Some(clock_obj.type_tag.clone()),
             version: Some(clock_obj.version),
+            mutable: false,
         })
     }
 
@@ -453,6 +454,11 @@ impl SimulationEnvironment {
     /// Get the current fetcher configuration.
     pub fn fetcher_config(&self) -> &FetcherConfig {
         &self.fetcher_config
+    }
+
+    /// Update the fetcher configuration (persists with save_state).
+    pub fn set_fetcher_config(&mut self, config: FetcherConfig) {
+        self.fetcher_config = config;
     }
 
     /// Check if mainnet fetching is enabled.
@@ -530,6 +536,11 @@ impl SimulationEnvironment {
         self.key_based_child_fetcher = Some(std::sync::Arc::new(fetcher));
     }
 
+    /// Set a key type resolver for dynamic field hashing fallbacks.
+    pub fn set_key_type_resolver(&mut self, resolver: KeyTypeResolverFn) {
+        self.key_type_resolver = Some(std::sync::Arc::new(resolver));
+    }
+
     /// Clear the key-based child fetcher callback.
     pub fn clear_key_based_child_fetcher(&mut self) {
         self.key_based_child_fetcher = None;
@@ -596,12 +607,20 @@ impl SimulationEnvironment {
     }
 
     /// Fetch and deploy a package from mainnet.
+    ///
+    /// If `config.replay_checkpoint` is set, fetches the package version at that checkpoint
+    /// for accurate historical replay.
     pub fn deploy_package_from_mainnet(&mut self, package_id: &str) -> Result<AccountAddress> {
         let fetcher = self.fetcher.as_ref().ok_or_else(|| {
             anyhow!("Mainnet fetching not enabled. Call with_mainnet_fetching() first.")
         })?;
 
-        let modules = fetcher.fetch_package_modules(package_id)?;
+        // Use checkpoint-based fetching for replay fidelity if configured
+        let modules = if let Some(checkpoint) = self.config.replay_checkpoint {
+            fetcher.fetch_package_modules_at_checkpoint(package_id, checkpoint)?
+        } else {
+            fetcher.fetch_package_modules(package_id)?
+        };
         let modules_for_store = modules.clone();
         let (count, _) = self.resolver.add_package_modules(modules)?;
 
@@ -656,6 +675,45 @@ impl SimulationEnvironment {
         Ok(target_addr)
     }
 
+    /// Register a package with explicit linkage metadata.
+    ///
+    /// This is useful when loading historical packages (e.g. mainnet fetches)
+    /// where we already know the upgrade lineage and linkage table.
+    pub fn register_package_with_linkage(
+        &mut self,
+        storage_id: AccountAddress,
+        version: u64,
+        original_id: Option<AccountAddress>,
+        modules: Vec<(String, Vec<u8>)>,
+        linkage: BTreeMap<AccountAddress, (AccountAddress, u64)>,
+    ) -> Result<()> {
+        let modules_for_store = modules.clone();
+        let (count, _) = self
+            .resolver
+            .add_package_modules_at(modules, Some(storage_id))?;
+
+        if count == 0 {
+            return Err(anyhow!(
+                "No modules loaded for package {}",
+                storage_id.to_hex_literal()
+            ));
+        }
+
+        let entry = PackageEntry {
+            storage_id,
+            version,
+            original_id,
+            modules: modules_for_store,
+            linkage,
+        };
+        self.register_package_entry(entry)?;
+        self.package_versions.insert(storage_id, version);
+        if let Some(orig) = original_id {
+            self.package_versions.insert(orig, version);
+        }
+        Ok(())
+    }
+
     /// Get mutable access to the resolver for advanced operations.
     ///
     /// This is useful for session management where the session needs to load
@@ -692,9 +750,9 @@ impl SimulationEnvironment {
         };
 
         let owner = if is_shared {
-            Some(crate::object_runtime::Owner::Shared)
+            Some(crate::sandbox_runtime::Owner::Shared)
         } else if is_immutable {
-            Some(crate::object_runtime::Owner::Immutable)
+            Some(crate::sandbox_runtime::Owner::Immutable)
         } else {
             None
         };
@@ -723,9 +781,9 @@ impl SimulationEnvironment {
     ) -> AccountAddress {
         let id = self.fresh_id();
         let owner = if is_shared {
-            Some(crate::object_runtime::Owner::Shared)
+            Some(crate::sandbox_runtime::Owner::Shared)
         } else {
-            Some(crate::object_runtime::Owner::Address(self.sender))
+            Some(crate::sandbox_runtime::Owner::Address(self.sender))
         };
         let obj = SimulatedObject {
             id,
@@ -766,7 +824,7 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
+            owner: Some(crate::sandbox_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
         if let Some(obj) = self.objects.get(&id).cloned() {
@@ -803,9 +861,9 @@ impl SimulationEnvironment {
             is_immutable: false,
             version: 1,
             owner: if is_shared {
-                Some(crate::object_runtime::Owner::Shared)
+                Some(crate::sandbox_runtime::Owner::Shared)
             } else {
-                Some(crate::object_runtime::Owner::Address(self.sender))
+                Some(crate::sandbox_runtime::Owner::Address(self.sender))
             },
         };
         self.objects.insert(id, obj);
@@ -847,7 +905,7 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version,
-            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
+            owner: Some(crate::sandbox_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
         if let Some(obj) = self.objects.get(&id).cloned() {
@@ -876,11 +934,11 @@ impl SimulationEnvironment {
             is_immutable,
             version,
             owner: if is_shared {
-                Some(crate::object_runtime::Owner::Shared)
+                Some(crate::sandbox_runtime::Owner::Shared)
             } else if is_immutable {
-                Some(crate::object_runtime::Owner::Immutable)
+                Some(crate::sandbox_runtime::Owner::Immutable)
             } else {
-                Some(crate::object_runtime::Owner::Address(self.sender))
+                Some(crate::sandbox_runtime::Owner::Address(self.sender))
             },
         };
         self.objects.insert(id, obj);
@@ -981,7 +1039,7 @@ impl SimulationEnvironment {
             is_immutable: false, // Could be detected from object flags if needed
             version: 1,
             owner: if is_shared {
-                Some(crate::object_runtime::Owner::Shared)
+                Some(crate::sandbox_runtime::Owner::Shared)
             } else {
                 None
             },
@@ -1022,7 +1080,7 @@ impl SimulationEnvironment {
             is_immutable: false,
             version: 1,
             owner: if is_shared {
-                Some(crate::object_runtime::Owner::Shared)
+                Some(crate::sandbox_runtime::Owner::Shared)
             } else {
                 None
             },
@@ -1039,10 +1097,9 @@ impl SimulationEnvironment {
         &mut self,
         objects: &std::collections::HashMap<String, String>,
     ) -> Result<usize> {
-        use base64::Engine;
         let mut loaded = 0;
         for (object_id, b64_bytes) in objects {
-            if let Ok(bcs_bytes) = base64::engine::general_purpose::STANDARD.decode(b64_bytes) {
+            if let Some(bcs_bytes) = try_base64_decode(b64_bytes) {
                 // Assume shared if object ID appears in shared objects commonly
                 // For now default to non-shared, self-healing can fix if needed
                 if self.load_cached_object(object_id, bcs_bytes, false).is_ok() {
@@ -1108,9 +1165,9 @@ impl SimulationEnvironment {
             is_immutable: fetched.is_immutable,
             version: fetched.version,
             owner: if fetched.is_shared {
-                Some(crate::object_runtime::Owner::Shared)
+                Some(crate::sandbox_runtime::Owner::Shared)
             } else if fetched.is_immutable {
-                Some(crate::object_runtime::Owner::Immutable)
+                Some(crate::sandbox_runtime::Owner::Immutable)
             } else {
                 None
             },
@@ -1140,12 +1197,6 @@ impl SimulationEnvironment {
     /// - Primitive types: "u8", "u64", "bool", "address", "vector<u8>"
     pub fn parse_type_string(type_str: &str) -> Option<TypeTag> {
         crate::types::parse_type_string(type_str)
-    }
-
-    /// Format a TypeTag back to a string (for debugging/display).
-    /// Delegates to the canonical implementation in types module.
-    pub fn format_type_tag(type_tag: &TypeTag) -> String {
-        crate::types::format_type_tag(type_tag)
     }
 
     /// Record an object snapshot into the versioned history store.
@@ -1338,7 +1389,12 @@ impl SimulationEnvironment {
 
             let modules = {
                 let fetcher = self.fetcher.as_ref().expect("checked above");
-                fetcher.fetch_package_modules(&pkg_hex)?
+                // Use checkpoint-based fetching for replay fidelity if configured
+                if let Some(checkpoint) = self.config.replay_checkpoint {
+                    fetcher.fetch_package_modules_at_checkpoint(&pkg_hex, checkpoint)?
+                } else {
+                    fetcher.fetch_package_modules(&pkg_hex)?
+                }
             };
             if modules.is_empty() {
                 continue;
@@ -1434,7 +1490,7 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
+            owner: Some(crate::sandbox_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(upgrade_cap_id, upgrade_cap);
         if let Some(obj) = self.objects.get(&upgrade_cap_id).cloned() {
@@ -1526,7 +1582,7 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
+            owner: Some(crate::sandbox_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(receipt_id, receipt);
         if let Some(obj) = self.objects.get(&receipt_id).cloned() {
@@ -1547,14 +1603,11 @@ impl SimulationEnvironment {
         // Extract shared objects from inputs and acquire locks
         let shared_objects: Vec<(AccountAddress, bool)> = inputs
             .iter()
-            .filter_map(|input| {
-                match input {
-                    InputValue::Object(ObjectInput::Shared { id, .. }) => {
-                        // Shared objects are accessed mutably by default in PTBs
-                        Some((*id, true))
-                    }
-                    _ => None,
+            .filter_map(|input| match input {
+                InputValue::Object(ObjectInput::Shared { id, mutable, .. }) => {
+                    Some((*id, *mutable))
                 }
+                _ => None,
             })
             .collect();
 
@@ -1633,7 +1686,9 @@ impl SimulationEnvironment {
         let shared_objects: Vec<(AccountAddress, bool)> = inputs
             .iter()
             .filter_map(|input| match input {
-                InputValue::Object(ObjectInput::Shared { id, .. }) => Some((*id, true)),
+                InputValue::Object(ObjectInput::Shared { id, mutable, .. }) => {
+                    Some((*id, *mutable))
+                }
                 _ => None,
             })
             .collect();
@@ -1824,6 +1879,13 @@ impl SimulationEnvironment {
             ));
         }
 
+        if let Some(ref resolver_arc) = self.key_type_resolver {
+            let resolver_clone = resolver_arc.clone();
+            harness.set_key_type_resolver(Box::new(move |parent_id, key_bytes| {
+                resolver_clone(parent_id, key_bytes)
+            }));
+        }
+
         if !self.address_aliases.is_empty() {
             let mut versions = HashMap::new();
             for (addr, ver) in &self.package_versions {
@@ -1934,9 +1996,9 @@ impl SimulationEnvironment {
         let version_info = effects.object_versions.as_ref();
 
         let to_runtime_owner = |owner: &Owner| match owner {
-            Owner::Shared => Some(crate::object_runtime::Owner::Shared),
-            Owner::Immutable => Some(crate::object_runtime::Owner::Immutable),
-            Owner::Address(addr) => Some(crate::object_runtime::Owner::Address(*addr)),
+            Owner::Shared => Some(crate::sandbox_runtime::Owner::Shared),
+            Owner::Immutable => Some(crate::sandbox_runtime::Owner::Immutable),
+            Owner::Address(addr) => Some(crate::sandbox_runtime::Owner::Address(*addr)),
         };
 
         for change in &effects.object_changes {
@@ -3129,7 +3191,7 @@ impl SimulationEnvironment {
             is_shared: false,
             is_immutable: false,
             version: 1,
-            owner: Some(crate::object_runtime::Owner::Address(self.sender)),
+            owner: Some(crate::sandbox_runtime::Owner::Address(self.sender)),
         };
         self.objects.insert(id, obj);
         if let Some(obj) = self.objects.get(&id).cloned() {
@@ -3244,6 +3306,7 @@ impl SimulationEnvironment {
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
                 version: Some(obj.version),
+                mutable: true,
             }),
             // Default: infer from object properties
             None | Some(_) => {
@@ -3253,6 +3316,7 @@ impl SimulationEnvironment {
                         bytes: obj.bcs_bytes.clone(),
                         type_tag,
                         version: Some(obj.version),
+                        mutable: true,
                     })
                 } else if obj.is_immutable {
                     Ok(ObjectInput::ImmRef {
@@ -3313,6 +3377,7 @@ impl SimulationEnvironment {
                 bytes: obj.bcs_bytes.clone(),
                 type_tag,
                 version: Some(version),
+                mutable: true,
             }),
             None | Some(_) => {
                 if obj.is_shared {
@@ -3321,6 +3386,7 @@ impl SimulationEnvironment {
                         bytes: obj.bcs_bytes.clone(),
                         type_tag,
                         version: Some(version),
+                        mutable: true,
                     })
                 } else if obj.is_immutable {
                     Ok(ObjectInput::ImmRef {
@@ -3685,16 +3751,14 @@ impl SimulationEnvironment {
 
     /// Export the current state to a serializable format.
     pub fn export_state(&self) -> PersistentState {
-        use base64::Engine;
-
         // Export objects
-        let encode_owner = |owner: &crate::object_runtime::Owner| match owner {
-            crate::object_runtime::Owner::Shared => Some("shared".to_string()),
-            crate::object_runtime::Owner::Immutable => Some("immutable".to_string()),
-            crate::object_runtime::Owner::Address(addr) => {
+        let encode_owner = |owner: &crate::sandbox_runtime::Owner| match owner {
+            crate::sandbox_runtime::Owner::Shared => Some("shared".to_string()),
+            crate::sandbox_runtime::Owner::Immutable => Some("immutable".to_string()),
+            crate::sandbox_runtime::Owner::Address(addr) => {
                 Some(format!("address:{}", addr.to_hex_literal()))
             }
-            crate::object_runtime::Owner::Object(id) => {
+            crate::sandbox_runtime::Owner::Object(id) => {
                 Some(format!("object:{}", id.to_hex_literal()))
             }
         };
@@ -3705,7 +3769,7 @@ impl SimulationEnvironment {
             .map(|obj| SerializedObject {
                 id: obj.id.to_hex_literal(),
                 type_tag: format!("{}", obj.type_tag),
-                bcs_bytes_b64: base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
+                bcs_bytes_b64: base64_encode(&obj.bcs_bytes),
                 is_shared: obj.is_shared,
                 is_immutable: obj.is_immutable,
                 version: obj.version,
@@ -3715,13 +3779,10 @@ impl SimulationEnvironment {
 
         // Export non-framework modules
         // We skip 0x1, 0x2, 0x3 as those are always loaded from bundled framework
-        let framework_addrs: std::collections::BTreeSet<AccountAddress> = [
-            AccountAddress::from_hex_literal("0x1").unwrap(),
-            AccountAddress::from_hex_literal("0x2").unwrap(),
-            AccountAddress::from_hex_literal("0x3").unwrap(),
-        ]
-        .into_iter()
-        .collect();
+        let framework_addrs: std::collections::BTreeSet<AccountAddress> =
+            sui_sandbox_types::framework::FRAMEWORK_ADDRESSES
+                .into_iter()
+                .collect();
 
         let modules: Vec<SerializedModule> = self
             .resolver
@@ -3733,7 +3794,7 @@ impl SimulationEnvironment {
                 match self.resolver.get_module(&id) {
                     Ok(Some(bytes)) => Some(SerializedModule {
                         id: format!("{}::{}", id.address().to_hex_literal(), id.name()),
-                        bytecode_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                        bytecode_b64: base64_encode(&bytes),
                     }),
                     _ => None,
                 }
@@ -3747,7 +3808,7 @@ impl SimulationEnvironment {
             .map(|obj| SerializedObject {
                 id: obj.id.to_hex_literal(),
                 type_tag: format!("{}", obj.type_tag),
-                bcs_bytes_b64: base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
+                bcs_bytes_b64: base64_encode(&obj.bcs_bytes),
                 is_shared: obj.is_shared,
                 is_immutable: obj.is_immutable,
                 version: obj.version,
@@ -3777,7 +3838,7 @@ impl SimulationEnvironment {
                     parent_id: parent_id.to_hex_literal(),
                     child_id: child_id.to_hex_literal(),
                     type_tag: format!("{}", type_tag),
-                    value_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    value_b64: base64_encode(bytes),
                 },
             )
             .collect();
@@ -3791,7 +3852,7 @@ impl SimulationEnvironment {
                     recipient_id: recipient_id.to_hex_literal(),
                     sent_id: sent_id.to_hex_literal(),
                     type_tag: format!("{}", type_tag),
-                    object_bytes_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    object_bytes_b64: base64_encode(bytes),
                 },
             )
             .collect();
@@ -3865,8 +3926,6 @@ impl SimulationEnvironment {
 
     /// Load state from a file, merging with current state.
     pub fn load_state(&mut self, path: &std::path::Path) -> Result<()> {
-        use base64::Engine;
-
         let json = std::fs::read_to_string(path)
             .map_err(|e| anyhow!("Failed to read state file: {}", e))?;
         let state: PersistentState = serde_json::from_str(&json)
@@ -3883,33 +3942,26 @@ impl SimulationEnvironment {
 
         // Load modules
         for module in &state.modules {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(&module.bytecode_b64)
-                .map_err(|e| anyhow!("Failed to decode module {}: {}", module.id, e))?;
+            let bytes = base64_decode(&module.bytecode_b64, &format!("module {}", module.id))?;
             self.resolver.add_module_bytes(bytes)?;
         }
 
         // Load objects
         for obj in &state.objects {
-            let id = AccountAddress::from_hex_literal(&obj.id)
-                .map_err(|e| anyhow!("Invalid object ID {}: {}", obj.id, e))?;
+            let id = parse_address(&obj.id, "object ID")?;
             let type_tag = crate::types::parse_type_tag(&obj.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", obj.type_tag, e))?;
-            let bcs_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&obj.bcs_bytes_b64)
-                .map_err(|e| anyhow!("Failed to decode object {}: {}", obj.id, e))?;
+            let bcs_bytes = base64_decode(&obj.bcs_bytes_b64, &format!("object {}", obj.id))?;
             let owner = match obj.owner.as_deref() {
-                Some("shared") => Some(crate::object_runtime::Owner::Shared),
-                Some("immutable") => Some(crate::object_runtime::Owner::Immutable),
+                Some("shared") => Some(crate::sandbox_runtime::Owner::Shared),
+                Some("immutable") => Some(crate::sandbox_runtime::Owner::Immutable),
                 Some(s) if s.starts_with("address:") => {
-                    AccountAddress::from_hex_literal(&s["address:".len()..])
-                        .ok()
-                        .map(crate::object_runtime::Owner::Address)
+                    try_parse_address(&s["address:".len()..])
+                        .map(crate::sandbox_runtime::Owner::Address)
                 }
                 Some(s) if s.starts_with("object:") => {
-                    AccountAddress::from_hex_literal(&s["object:".len()..])
-                        .ok()
-                        .map(crate::object_runtime::Owner::Object)
+                    try_parse_address(&s["object:".len()..])
+                        .map(crate::sandbox_runtime::Owner::Object)
                 }
                 _ => None,
             };
@@ -3928,25 +3980,20 @@ impl SimulationEnvironment {
 
         // Load historical object versions if present
         for obj in &state.object_history {
-            let id = AccountAddress::from_hex_literal(&obj.id)
-                .map_err(|e| anyhow!("Invalid object ID {}: {}", obj.id, e))?;
+            let id = parse_address(&obj.id, "object ID")?;
             let type_tag = crate::types::parse_type_tag(&obj.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", obj.type_tag, e))?;
-            let bcs_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&obj.bcs_bytes_b64)
-                .map_err(|e| anyhow!("Failed to decode object {}: {}", obj.id, e))?;
+            let bcs_bytes = base64_decode(&obj.bcs_bytes_b64, &format!("object {}", obj.id))?;
             let owner = match obj.owner.as_deref() {
-                Some("shared") => Some(crate::object_runtime::Owner::Shared),
-                Some("immutable") => Some(crate::object_runtime::Owner::Immutable),
+                Some("shared") => Some(crate::sandbox_runtime::Owner::Shared),
+                Some("immutable") => Some(crate::sandbox_runtime::Owner::Immutable),
                 Some(s) if s.starts_with("address:") => {
-                    AccountAddress::from_hex_literal(&s["address:".len()..])
-                        .ok()
-                        .map(crate::object_runtime::Owner::Address)
+                    try_parse_address(&s["address:".len()..])
+                        .map(crate::sandbox_runtime::Owner::Address)
                 }
                 Some(s) if s.starts_with("object:") => {
-                    AccountAddress::from_hex_literal(&s["object:".len()..])
-                        .ok()
-                        .map(crate::object_runtime::Owner::Object)
+                    try_parse_address(&s["object:".len()..])
+                        .map(crate::sandbox_runtime::Owner::Object)
                 }
                 _ => None,
             };
@@ -3995,15 +4042,11 @@ impl SimulationEnvironment {
 
         // Load dynamic fields (Table/Bag entries) - v2+
         for df in &state.dynamic_fields {
-            let parent_id = AccountAddress::from_hex_literal(&df.parent_id)
-                .map_err(|e| anyhow!("Invalid parent ID {}: {}", df.parent_id, e))?;
-            let child_id = AccountAddress::from_hex_literal(&df.child_id)
-                .map_err(|e| anyhow!("Invalid child ID {}: {}", df.child_id, e))?;
+            let parent_id = parse_address(&df.parent_id, "parent ID")?;
+            let child_id = parse_address(&df.child_id, "child ID")?;
             let type_tag = crate::types::parse_type_tag(&df.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", df.type_tag, e))?;
-            let value = base64::engine::general_purpose::STANDARD
-                .decode(&df.value_b64)
-                .map_err(|e| anyhow!("Failed to decode dynamic field value: {}", e))?;
+            let value = base64_decode(&df.value_b64, "dynamic field value")?;
 
             self.dynamic_fields
                 .insert((parent_id, child_id), (type_tag, value));
@@ -4011,15 +4054,11 @@ impl SimulationEnvironment {
 
         // Load pending receives (send-to-object pattern) - v2+
         for pr in &state.pending_receives {
-            let recipient_id = AccountAddress::from_hex_literal(&pr.recipient_id)
-                .map_err(|e| anyhow!("Invalid recipient ID {}: {}", pr.recipient_id, e))?;
-            let sent_id = AccountAddress::from_hex_literal(&pr.sent_id)
-                .map_err(|e| anyhow!("Invalid sent ID {}: {}", pr.sent_id, e))?;
+            let recipient_id = parse_address(&pr.recipient_id, "recipient ID")?;
+            let sent_id = parse_address(&pr.sent_id, "sent ID")?;
             let type_tag = crate::types::parse_type_tag(&pr.type_tag)
                 .map_err(|e| anyhow!("Invalid type tag {}: {}", pr.type_tag, e))?;
-            let object_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&pr.object_bytes_b64)
-                .map_err(|e| anyhow!("Failed to decode pending receive bytes: {}", e))?;
+            let object_bytes = base64_decode(&pr.object_bytes_b64, "pending receive bytes")?;
 
             self.pending_receives
                 .insert((recipient_id, sent_id), (object_bytes, type_tag));
@@ -4501,7 +4540,7 @@ mod tests {
     fn test_format_type_tag_roundtrip() {
         let type_str = "0x2::coin::Coin<0x2::sui::SUI>";
         if let Some(parsed) = SimulationEnvironment::parse_type_string(type_str) {
-            let formatted = SimulationEnvironment::format_type_tag(&parsed);
+            let formatted = crate::types::format_type_tag(&parsed);
             assert!(formatted.contains("coin::Coin"));
             assert!(formatted.contains("sui::SUI"));
         }

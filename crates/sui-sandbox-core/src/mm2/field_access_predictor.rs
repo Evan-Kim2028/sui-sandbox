@@ -465,9 +465,7 @@ fn find_function_def_index(
 
 /// Check if an address is a Sui framework address.
 fn is_framework_address(addr: &AccountAddress) -> bool {
-    let bytes = addr.to_vec();
-    // 0x1, 0x2, 0x3 are framework addresses
-    bytes.iter().take(31).all(|&b| b == 0) && bytes[31] <= 3
+    sui_resolver::is_framework_account_address(addr)
 }
 
 /// Analyze a batch of MoveCall commands and predict all dynamic field accesses.

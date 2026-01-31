@@ -109,8 +109,9 @@ impl PatchingStats {
 pub struct EnhancedObjectPatcher {
     /// Underlying generic patcher for struct-based patching
     generic_patcher: GenericObjectPatcher,
-    /// Version field detector (reserved for future use)
-    #[allow(dead_code)]
+    /// Version field detector for auto-detecting version fields from bytecode.
+    /// Currently unused but reserved for future bytecode analysis integration.
+    #[allow(dead_code)] // Intentionally reserved for future bytecode-based version detection
     version_detector: VersionFieldDetector,
     /// Manual overrides by object ID
     overrides: HashMap<String, ManualPatchOverride>,
@@ -361,7 +362,7 @@ impl EnhancedObjectPatcher {
 
     /// Find the version to use for a type based on its package.
     /// Reserved for future use when auto-detecting versions from bytecode.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Intentionally reserved for future bytecode-based version detection
     fn find_version_for_type(&self, type_str: &str) -> Option<u64> {
         // Extract package address from type (first part before ::)
         let pkg_part = type_str.split("::").next()?;

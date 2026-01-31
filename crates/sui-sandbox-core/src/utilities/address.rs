@@ -1,38 +1,17 @@
 //! Address normalization utilities.
 //!
-//! Sui addresses can appear in different formats:
-//! - Short form: `0x2`, `0x3637`
-//! - Full form: `0x0000000000000000000000000000000000000000000000000000000000000002`
-//!
-//! This inconsistency causes issues with HashMap lookups and address comparisons.
-//! These utilities normalize addresses to a consistent format.
+//! This module re-exports address utilities from `sui_resolver`.
+//! All address normalization should use these canonical functions.
 
-/// Normalize a Sui address to a consistent 66-character format (0x + 64 hex chars).
-///
-/// Sui addresses can appear in shortened form (0x2) or full form
-/// (0x0000...0002). This function ensures consistent formatting for
-/// HashMap key lookups and address comparisons.
-///
-/// # Examples
-///
-/// ```
-/// use sui_sandbox_core::utilities::normalize_address;
-///
-/// assert_eq!(
-///     normalize_address("0x2"),
-///     "0x0000000000000000000000000000000000000000000000000000000000000002"
-/// );
-/// assert_eq!(
-///     normalize_address("0x3637"),
-///     "0x0000000000000000000000000000000000000000000000000000000000003637"
-/// );
-/// ```
-pub fn normalize_address(addr: &str) -> String {
-    let addr = addr.strip_prefix("0x").unwrap_or(addr);
-    format!("0x{:0>64}", addr)
-}
+// Re-export canonical address utilities from sui-resolver
+pub use sui_resolver::{
+    address_to_string, is_framework_account_address, is_framework_address, normalize_address,
+    normalize_address_checked, normalize_address_short, parse_address, FRAMEWORK_ADDRESSES,
+};
 
 /// Check if a package ID is a framework package (0x1, 0x2, 0x3).
+///
+/// This is an alias for [`is_framework_address`] for backward compatibility.
 ///
 /// Framework packages are bundled with the VM and don't need to be fetched
 /// from the network. This function handles both short and full address formats.
@@ -48,15 +27,7 @@ pub fn normalize_address(addr: &str) -> String {
 /// assert!(!is_framework_package("0x1234"));
 /// ```
 pub fn is_framework_package(pkg_id: &str) -> bool {
-    matches!(
-        pkg_id,
-        "0x0000000000000000000000000000000000000000000000000000000000000001"
-            | "0x0000000000000000000000000000000000000000000000000000000000000002"
-            | "0x0000000000000000000000000000000000000000000000000000000000000003"
-            | "0x1"
-            | "0x2"
-            | "0x3"
-    )
+    is_framework_address(pkg_id)
 }
 
 #[cfg(test)]

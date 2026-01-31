@@ -327,7 +327,7 @@ pub struct CommandErrorContext {
     pub coin_balances: Option<CoinOperationContext>,
 
     /// For abort errors: detailed abort information
-    pub abort_info: Option<AbortInfo>,
+    pub abort_info: Option<TransactionAbortInfo>,
 }
 
 /// Snapshot of an object's state at a point in time.
@@ -366,9 +366,15 @@ pub struct CoinOperationContext {
     pub source_balances: Option<Vec<u64>>,
 }
 
-/// Detailed information about a Move abort.
+/// Detailed information about a Move abort from transaction execution.
+///
+/// This struct captures abort information from gRPC transaction data,
+/// including CleverError constant names when available.
+///
+/// Note: This is distinct from `errors::AbortInfo` which is used for
+/// local VM execution diagnostics with call stacks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AbortInfo {
+pub struct TransactionAbortInfo {
     /// Module where the abort occurred (e.g., "0x2::coin")
     pub module: String,
 
@@ -390,7 +396,11 @@ pub struct AbortInfo {
     pub involved_objects: Vec<String>,
 }
 
-impl AbortInfo {
+/// Type alias for backward compatibility.
+#[deprecated(since = "0.11.0", note = "Use TransactionAbortInfo instead")]
+pub type AbortInfo = TransactionAbortInfo;
+
+impl TransactionAbortInfo {
     /// Create AbortInfo from gRPC MoveAbort data.
     ///
     /// This extracts the constant_name from CleverError if available,
@@ -518,7 +528,7 @@ impl CommandErrorContext {
     }
 
     /// Set abort information.
-    pub fn with_abort_info(mut self, info: AbortInfo) -> Self {
+    pub fn with_abort_info(mut self, info: TransactionAbortInfo) -> Self {
         self.abort_info = Some(info);
         self
     }

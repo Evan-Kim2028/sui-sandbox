@@ -274,13 +274,7 @@ pub fn extract_addresses_from_bytecode_constants(bytecode: &[u8]) -> Vec<String>
 
 /// Check if an address is a framework address (0x1, 0x2, 0x3).
 fn is_framework_address(addr: &str) -> bool {
-    let normalized = super::normalize_address(addr);
-    matches!(
-        normalized.as_str(),
-        "0x0000000000000000000000000000000000000000000000000000000000000001"
-            | "0x0000000000000000000000000000000000000000000000000000000000000002"
-            | "0x0000000000000000000000000000000000000000000000000000000000000003"
-    )
+    sui_resolver::is_framework_address(addr)
 }
 
 /// Convert hex string to bytes.

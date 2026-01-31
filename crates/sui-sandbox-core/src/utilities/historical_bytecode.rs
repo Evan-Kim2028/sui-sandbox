@@ -117,22 +117,15 @@ pub fn extract_packages_from_commands(commands: &[crate::ptb::Command]) -> BTree
 /// Normalize a package/object ID to consistent hex format.
 ///
 /// Converts "0xABC" or "ABC" to "0x0000...0abc" (64 hex chars after 0x).
+///
+/// This delegates to the canonical implementation in sui-resolver.
 pub fn normalize_id(id: &str) -> String {
-    let id = id.trim();
-    let hex_part = id.strip_prefix("0x").unwrap_or(id).to_lowercase();
-    // Pad to 64 hex characters
-    format!("0x{:0>64}", hex_part)
+    sui_resolver::normalize_id(id)
 }
 
 /// Check if an ID is a framework package (0x1, 0x2, 0x3).
 pub fn is_framework_id(id: &str) -> bool {
-    let normalized = normalize_id(id);
-    matches!(
-        normalized.as_str(),
-        "0x0000000000000000000000000000000000000000000000000000000000000001"
-            | "0x0000000000000000000000000000000000000000000000000000000000000002"
-            | "0x0000000000000000000000000000000000000000000000000000000000000003"
-    )
+    sui_resolver::is_framework_address(id)
 }
 
 /// Build a map of original → upgraded package IDs from linkage tables.

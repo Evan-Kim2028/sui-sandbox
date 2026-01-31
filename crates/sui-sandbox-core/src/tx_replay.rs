@@ -97,14 +97,202 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use serde::Serialize;
+use std::str::FromStr;
+use sui_sandbox_types::encoding::{base64_decode, try_base64_decode};
+use sui_types::base_types::ObjectID as SuiObjectID;
+use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
 use crate::ptb::{Argument, Command, InputValue, ObjectInput};
 use crate::vm::VMHarness;
+
+fn linkage_debug_enabled() -> bool {
+    matches!(
+        std::env::var("SUI_DEBUG_LINKAGE")
+            .ok()
+            .as_deref()
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Input object metadata used for synthetic replay fallbacks.
+#[derive(Debug, Clone)]
+pub struct MissingInputObject {
+    pub object_id: String,
+    pub version: u64,
+    pub is_shared: bool,
+    pub is_immutable: bool,
+}
+
+/// Identify input objects that are missing from the provided cache.
+///
+/// This is useful for replay flows that want to synthesize placeholder objects
+/// when historical bytes are unavailable (e.g., pruned data).
+pub fn find_missing_input_objects(
+    tx: &FetchedTransaction,
+    cached_objects: &HashMap<String, String>,
+) -> Vec<MissingInputObject> {
+    fn cache_has(cached: &HashMap<String, String>, object_id: &str) -> bool {
+        let normalized = crate::utilities::normalize_address(object_id);
+        let short = crate::types::normalize_address_short(object_id);
+        cached.contains_key(object_id)
+            || cached.contains_key(&normalized)
+            || short
+                .as_ref()
+                .map(|s| cached.contains_key(s))
+                .unwrap_or(false)
+    }
+
+    let mut missing = Vec::new();
+    for input in &tx.inputs {
+        match input {
+            TransactionInput::Object {
+                object_id, version, ..
+            } => {
+                if !cache_has(cached_objects, object_id) {
+                    missing.push(MissingInputObject {
+                        object_id: crate::utilities::normalize_address(object_id),
+                        version: *version,
+                        is_shared: false,
+                        is_immutable: false,
+                    });
+                }
+            }
+            TransactionInput::SharedObject {
+                object_id,
+                initial_shared_version,
+                ..
+            } => {
+                if !cache_has(cached_objects, object_id) {
+                    missing.push(MissingInputObject {
+                        object_id: crate::utilities::normalize_address(object_id),
+                        version: *initial_shared_version,
+                        is_shared: true,
+                        is_immutable: false,
+                    });
+                }
+            }
+            TransactionInput::ImmutableObject {
+                object_id, version, ..
+            } => {
+                if !cache_has(cached_objects, object_id) {
+                    missing.push(MissingInputObject {
+                        object_id: crate::utilities::normalize_address(object_id),
+                        version: *version,
+                        is_shared: false,
+                        is_immutable: true,
+                    });
+                }
+            }
+            TransactionInput::Receiving {
+                object_id, version, ..
+            } => {
+                if !cache_has(cached_objects, object_id) {
+                    missing.push(MissingInputObject {
+                        object_id: crate::utilities::normalize_address(object_id),
+                        version: *version,
+                        is_shared: false,
+                        is_immutable: false,
+                    });
+                }
+            }
+            TransactionInput::Pure { .. } => {}
+        }
+    }
+
+    missing
+}
+
+#[cfg(test)]
+mod mutated_filter_tests {
+    use super::{filter_mutated_to_inputs, TransactionInput};
+
+    #[test]
+    fn filters_mutated_ids_to_inputs_with_normalization() {
+        let inputs = vec![
+            TransactionInput::Object {
+                object_id: "0x1".to_string(),
+                version: 1,
+                digest: "0xdead".to_string(),
+            },
+            TransactionInput::SharedObject {
+                object_id: "0x2".to_string(),
+                initial_shared_version: 1,
+                mutable: true,
+            },
+        ];
+        let mutated = vec![
+            "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            "0x2".to_string(),
+            "0x3".to_string(),
+        ];
+        let filtered = filter_mutated_to_inputs(mutated, &inputs);
+        let expected: std::collections::HashSet<_> =
+            ["0x1".to_string(), "0x2".to_string()].into_iter().collect();
+        let actual: std::collections::HashSet<_> = filtered.into_iter().collect();
+        assert_eq!(actual, expected);
+    }
+}
+
+fn normalize_object_id(id: &str) -> String {
+    AccountAddress::from_hex_literal(id)
+        .map(|addr| addr.to_hex_literal())
+        .unwrap_or_else(|_| id.to_string())
+}
+
+fn filter_mutated_to_inputs(mutated: Vec<String>, inputs: &[TransactionInput]) -> Vec<String> {
+    if inputs.is_empty() {
+        return mutated;
+    }
+    let mut input_ids = std::collections::HashSet::new();
+    for input in inputs {
+        match input {
+            TransactionInput::Object { object_id, .. }
+            | TransactionInput::ImmutableObject { object_id, .. }
+            | TransactionInput::Receiving { object_id, .. }
+            | TransactionInput::SharedObject { object_id, .. } => {
+                input_ids.insert(normalize_object_id(object_id));
+            }
+            TransactionInput::Pure { .. } => {}
+        }
+    }
+    if input_ids.is_empty() {
+        return mutated;
+    }
+    mutated
+        .into_iter()
+        .map(|id| normalize_object_id(&id))
+        .filter(|id| input_ids.contains(id))
+        .collect()
+}
+
+fn infer_ids_created_seed(tx: &FetchedTransaction) -> Option<u64> {
+    let effects = tx.effects.as_ref()?;
+    if effects.created.is_empty() {
+        return None;
+    }
+    let digest = SuiTransactionDigest::from_str(&tx.digest.0).ok()?;
+    let targets: std::collections::HashSet<String> = effects
+        .created
+        .iter()
+        .map(|id| crate::utilities::normalize_address(id))
+        .collect();
+
+    for seed in 0u64..256 {
+        let candidate = SuiObjectID::derive_id(digest, seed);
+        let candidate_hex = format!("0x{}", hex::encode(candidate.into_bytes()));
+        if targets.contains(&crate::utilities::normalize_address(&candidate_hex)) {
+            return Some(seed);
+        }
+    }
+
+    None
+}
 
 // Re-export type parsing functions from the canonical location (types module)
 // This maintains backwards compatibility while centralizing the implementation.
@@ -444,12 +632,14 @@ pub fn replay_parallel(
 // These are extension functions that work on FetchedTransaction but depend on
 // VM and PTB types that can't be in sui-sandbox-types.
 
+// Re-use gas constants from the gas module (single source of truth)
+use crate::gas::DEFAULT_GAS_BALANCE;
+
 /// Convert a FetchedTransaction to PTB commands for local execution.
 pub fn to_ptb_commands(tx: &FetchedTransaction) -> Result<(Vec<InputValue>, Vec<Command>)> {
     // Use a large default balance for simulation (1 billion SUI = 10^18 MIST)
     // This ensures SplitCoins won't fail due to insufficient balance
     // The actual gas coin balance on-chain is typically much larger than gas_budget
-    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000; // 1B SUI in MIST
     to_ptb_commands_internal(tx, DEFAULT_GAS_BALANCE, &std::collections::HashMap::new())
 }
 
@@ -458,7 +648,6 @@ pub fn to_ptb_commands_with_objects(
     tx: &FetchedTransaction,
     cached_objects: &std::collections::HashMap<String, String>,
 ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
     to_ptb_commands_internal(tx, DEFAULT_GAS_BALANCE, cached_objects)
 }
 
@@ -469,7 +658,6 @@ pub fn to_ptb_commands_with_objects_and_aliases(
     cached_objects: &std::collections::HashMap<String, String>,
     address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
 ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
     to_ptb_commands_internal_with_aliases(tx, DEFAULT_GAS_BALANCE, cached_objects, address_aliases)
 }
 
@@ -513,7 +701,6 @@ pub fn to_ptb_commands_with_versions(
     cached_objects: &std::collections::HashMap<String, String>,
     object_versions: &std::collections::HashMap<String, u64>,
 ) -> Result<(Vec<InputValue>, Vec<Command>)> {
-    const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
     to_ptb_commands_internal_with_versions(tx, DEFAULT_GAS_BALANCE, cached_objects, object_versions)
 }
 
@@ -536,13 +723,20 @@ fn to_ptb_commands_internal(
     // Returns an error if the object is not found - missing objects should be
     // fetched before replay, not silently replaced with placeholders.
     let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
+        let normalized = crate::utilities::normalize_address(object_id);
+        let short = crate::types::normalize_address_short(object_id)
+            .unwrap_or_else(|| object_id.to_string());
         cached_objects
             .get(object_id)
-            .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache - ensure all input objects are fetched before replay", object_id))
-            .and_then(|b64| {
-                base64::engine::general_purpose::STANDARD.decode(b64)
-                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}' from base64: {}", object_id, e))
+            .or_else(|| cached_objects.get(&normalized))
+            .or_else(|| cached_objects.get(&short))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "object '{}' not found in cache - ensure all input objects are fetched before replay",
+                    object_id
+                )
             })
+            .and_then(|b64| base64_decode(b64, &format!("object '{}'", object_id)))
     };
 
     // Check if any command uses GasCoin
@@ -599,7 +793,7 @@ fn to_ptb_commands_internal(
             TransactionInput::SharedObject {
                 object_id,
                 initial_shared_version,
-                ..
+                mutable,
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -608,6 +802,7 @@ fn to_ptb_commands_internal(
                     bytes,
                     type_tag: None,
                     version: Some(*initial_shared_version),
+                    mutable: *mutable,
                 }));
             }
             TransactionInput::ImmutableObject {
@@ -760,14 +955,15 @@ fn to_ptb_commands_internal_with_versions(
 
     // Helper to get object bytes from cache
     let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
+        let normalized = crate::utilities::normalize_address(object_id);
+        let short = crate::types::normalize_address_short(object_id)
+            .unwrap_or_else(|| object_id.to_string());
         cached_objects
             .get(object_id)
+            .or_else(|| cached_objects.get(&normalized))
+            .or_else(|| cached_objects.get(&short))
             .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache", object_id))
-            .and_then(|b64| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}': {}", object_id, e))
-            })
+            .and_then(|b64| base64_decode(b64, &format!("object '{}'", object_id)))
     };
 
     // Helper to get version for an object - prefers external map, falls back to input version
@@ -829,7 +1025,7 @@ fn to_ptb_commands_internal_with_versions(
             TransactionInput::SharedObject {
                 object_id,
                 initial_shared_version,
-                ..
+                mutable,
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -839,6 +1035,7 @@ fn to_ptb_commands_internal_with_versions(
                     bytes,
                     type_tag: None,
                     version: Some(ver),
+                    mutable: *mutable,
                 }));
             }
             TransactionInput::ImmutableObject {
@@ -968,13 +1165,20 @@ fn to_ptb_commands_internal_with_aliases(
     // Returns an error if the object is not found - missing objects should be
     // fetched before replay, not silently replaced with placeholders.
     let get_object_bytes = |object_id: &str| -> Result<Vec<u8>> {
+        let normalized = crate::utilities::normalize_address(object_id);
+        let short = crate::types::normalize_address_short(object_id)
+            .unwrap_or_else(|| object_id.to_string());
         cached_objects
             .get(object_id)
-            .ok_or_else(|| anyhow::anyhow!("object '{}' not found in cache - ensure all input objects are fetched before replay", object_id))
-            .and_then(|b64| {
-                base64::engine::general_purpose::STANDARD.decode(b64)
-                    .map_err(|e| anyhow::anyhow!("failed to decode object '{}' from base64: {}", object_id, e))
+            .or_else(|| cached_objects.get(&normalized))
+            .or_else(|| cached_objects.get(&short))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "object '{}' not found in cache - ensure all input objects are fetched before replay",
+                    object_id
+                )
             })
+            .and_then(|b64| base64_decode(b64, &format!("object '{}'", object_id)))
     };
 
     // Helper to rewrite address if aliased
@@ -1053,7 +1257,7 @@ fn to_ptb_commands_internal_with_aliases(
             TransactionInput::SharedObject {
                 object_id,
                 initial_shared_version,
-                ..
+                mutable,
             } => {
                 let id = parse_object_id(object_id)?;
                 let bytes = get_object_bytes(object_id)?;
@@ -1062,6 +1266,7 @@ fn to_ptb_commands_internal_with_aliases(
                     bytes,
                     type_tag: None,
                     version: Some(*initial_shared_version),
+                    mutable: *mutable,
                 }));
             }
             TransactionInput::ImmutableObject {
@@ -1120,6 +1325,19 @@ fn to_ptb_commands_internal_with_aliases(
                     .map_err(|e| anyhow!("Invalid package address: {}", e))?;
                 // Rewrite package address to bytecode self-address
                 let rewritten_package = rewrite_addr(package_addr);
+                if std::env::var("SUI_DEBUG_ALIAS_REWRITE")
+                    .ok()
+                    .as_deref()
+                    .map(|v| matches!(v, "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false)
+                    && rewritten_package != package_addr
+                {
+                    eprintln!(
+                        "[alias_rewrite] package {} -> {}",
+                        package_addr.to_hex_literal(),
+                        rewritten_package.to_hex_literal()
+                    );
+                }
                 let module_id = Identifier::new(module.clone())
                     .map_err(|e| anyhow!("Invalid module name: {}", e))?;
                 let function_id = Identifier::new(function.clone())
@@ -1243,6 +1461,33 @@ pub fn replay_with_version_tracking(
     address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
     object_versions: Option<&std::collections::HashMap<String, u64>>,
 ) -> Result<ReplayResult> {
+    replay_with_version_tracking_with_policy(
+        tx,
+        harness,
+        cached_objects,
+        address_aliases,
+        object_versions,
+        EffectsReconcilePolicy::DynamicFields,
+    )
+}
+
+/// Effects reconciliation policy for replay comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectsReconcilePolicy {
+    /// Strict comparison without filtering dynamic-field children.
+    Strict,
+    /// Reconcile dynamic-field children when on-chain effects omit them.
+    DynamicFields,
+}
+
+pub fn replay_with_version_tracking_with_policy(
+    tx: &FetchedTransaction,
+    harness: &mut VMHarness,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+    object_versions: Option<&std::collections::HashMap<String, u64>>,
+    policy: EffectsReconcilePolicy,
+) -> Result<ReplayResult> {
     use crate::ptb::PTBExecutor;
 
     // Always use alias-aware conversion to handle package upgrades correctly.
@@ -1264,6 +1509,10 @@ pub fn replay_with_version_tracking(
 
     let commands_count = commands.len();
 
+    if let Some(seed) = infer_ids_created_seed(tx) {
+        harness.set_ids_created(seed);
+    }
+
     // Execute using PTBExecutor
     let mut executor = PTBExecutor::new(harness);
 
@@ -1284,6 +1533,52 @@ pub fn replay_with_version_tracking(
     let effects = match executor.execute_commands(&commands) {
         Ok(effects) => effects,
         Err(e) => {
+            if matches!(
+                std::env::var("SUI_DEBUG_ERROR_CONTEXT")
+                    .ok()
+                    .as_deref()
+                    .map(|v| v.to_ascii_lowercase())
+                    .as_deref(),
+                Some("1") | Some("true") | Some("yes") | Some("on")
+            ) {
+                eprintln!(
+                    "[error_context] executor.execute_commands returned Err: {}",
+                    e
+                );
+            }
+            if linkage_debug_enabled() {
+                let missing = harness.module_resolver().get_missing_dependencies();
+                if !missing.is_empty() {
+                    let list = missing
+                        .iter()
+                        .map(|addr| addr.to_hex_literal())
+                        .collect::<Vec<_>>();
+                    eprintln!(
+                        "[linkage] missing_dependencies={} [{}]",
+                        list.len(),
+                        list.join(", ")
+                    );
+                } else {
+                    eprintln!("[linkage] missing_dependencies=0");
+                }
+                harness.module_resolver().log_unresolved_member_handles();
+                let trace = harness.execution_trace();
+                if !trace.modules_accessed.is_empty() {
+                    let mut modules: Vec<String> = trace
+                        .modules_accessed
+                        .iter()
+                        .map(|id| format!("{}::{}", id.address(), id.name()))
+                        .collect();
+                    modules.sort();
+                    eprintln!(
+                        "[linkage] modules_accessed={} [{}]",
+                        modules.len(),
+                        modules.join(", ")
+                    );
+                } else {
+                    eprintln!("[linkage] modules_accessed=0");
+                }
+            }
             return Ok(ReplayResult {
                 digest: tx.digest.clone(),
                 local_success: false,
@@ -1298,6 +1593,37 @@ pub fn replay_with_version_tracking(
             });
         }
     };
+
+    if !effects.success {
+        let debug_ctx = matches!(
+            std::env::var("SUI_DEBUG_ERROR_CONTEXT")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("1") | Some("true") | Some("yes") | Some("on")
+        );
+        if debug_ctx {
+            if let Some(ctx) = effects.error_context.as_ref() {
+                if let Ok(json) = serde_json::to_string_pretty(ctx) {
+                    eprintln!("[error_context] {}", json);
+                } else {
+                    eprintln!("[error_context] {:?}", ctx);
+                }
+            } else {
+                eprintln!("[error_context] <none>");
+            }
+            if let Some(snapshot) = effects.state_at_failure.as_ref() {
+                if let Ok(json) = serde_json::to_string_pretty(snapshot) {
+                    eprintln!("[state_at_failure] {}", json);
+                } else {
+                    eprintln!("[state_at_failure] {:?}", snapshot);
+                }
+            } else {
+                eprintln!("[state_at_failure] <none>");
+            }
+        }
+    }
 
     // Build version info for comparison if available
     let local_versions: Option<HashMap<String, LocalVersionInfo>> =
@@ -1316,6 +1642,84 @@ pub fn replay_with_version_tracking(
         });
 
     // Build local effects summary for object-level comparison
+    let mut local_created: Vec<String> = effects
+        .created
+        .iter()
+        .map(|id| id.to_hex_literal())
+        .collect();
+    let mut local_mutated: Vec<String> = {
+        let mut merged = std::collections::HashSet::new();
+        for id in effects.mutated.iter().chain(effects.transferred.iter()) {
+            merged.insert(id.to_hex_literal());
+        }
+        merged.into_iter().collect()
+    };
+    let mut local_deleted: Vec<String> = effects
+        .deleted
+        .iter()
+        .map(|id| id.to_hex_literal())
+        .collect();
+
+    let mut filtered_df_created = false;
+    let mut filtered_df_created_count = 0usize;
+    let mut filtered_df_mutated = false;
+    let mut filtered_df_mutated_count = 0usize;
+    let mut filtered_df_deleted = false;
+    let mut filtered_df_deleted_count = 0usize;
+    if let (Some(on_chain), EffectsReconcilePolicy::DynamicFields) = (tx.effects.as_ref(), policy) {
+        let mut df_children: std::collections::HashSet<String> = effects
+            .dynamic_field_entries
+            .keys()
+            .map(|(_, child)| child.to_hex_literal())
+            .collect();
+        if df_children.is_empty() {
+            let state = harness.shared_state().lock();
+            df_children.extend(
+                state
+                    .children
+                    .keys()
+                    .map(|(_, child)| child.to_hex_literal()),
+            );
+        }
+        if !df_children.is_empty() {
+            let on_chain_created: std::collections::HashSet<String> =
+                on_chain.created.iter().cloned().collect();
+            let has_df_created = on_chain_created.iter().any(|id| df_children.contains(id));
+            if on_chain_created.is_empty() || !has_df_created {
+                let before = local_created.len();
+                local_created.retain(|id| !df_children.contains(id));
+                if local_created.len() != before {
+                    filtered_df_created = true;
+                    filtered_df_created_count = before.saturating_sub(local_created.len());
+                }
+            }
+
+            let on_chain_mutated: std::collections::HashSet<String> =
+                on_chain.mutated.iter().cloned().collect();
+            let has_df_mutated = on_chain_mutated.iter().any(|id| df_children.contains(id));
+            if on_chain_mutated.is_empty() || !has_df_mutated {
+                let before = local_mutated.len();
+                local_mutated.retain(|id| !df_children.contains(id));
+                if local_mutated.len() != before {
+                    filtered_df_mutated = true;
+                    filtered_df_mutated_count = before.saturating_sub(local_mutated.len());
+                }
+            }
+
+            let on_chain_deleted: std::collections::HashSet<String> =
+                on_chain.deleted.iter().cloned().collect();
+            let has_df_deleted = on_chain_deleted.iter().any(|id| df_children.contains(id));
+            if on_chain_deleted.is_empty() || !has_df_deleted {
+                let before = local_deleted.len();
+                local_deleted.retain(|id| !df_children.contains(id));
+                if local_deleted.len() != before {
+                    filtered_df_deleted = true;
+                    filtered_df_deleted_count = before.saturating_sub(local_deleted.len());
+                }
+            }
+        }
+    }
+
     let local_summary = TransactionEffectsSummary {
         status: if effects.success {
             TransactionStatus::Success
@@ -1327,21 +1731,9 @@ pub fn replay_with_version_tracking(
                     .unwrap_or_else(|| "execution failed".to_string()),
             }
         },
-        created: effects
-            .created
-            .iter()
-            .map(|id| id.to_hex_literal())
-            .collect(),
-        mutated: effects
-            .mutated
-            .iter()
-            .map(|id| id.to_hex_literal())
-            .collect(),
-        deleted: effects
-            .deleted
-            .iter()
-            .map(|id| id.to_hex_literal())
-            .collect(),
+        created: local_created.clone(),
+        mutated: local_mutated.clone(),
+        deleted: local_deleted.clone(),
         wrapped: effects
             .wrapped
             .iter()
@@ -1362,28 +1754,180 @@ pub fn replay_with_version_tracking(
 
     // Compare with on-chain effects using version-aware comparison if versions provided
     let comparison = tx.effects.as_ref().map(|on_chain| {
+        let mut on_chain_cmp = on_chain.clone();
+        let mut local_summary_cmp = local_summary.clone();
+        if !tx.inputs.is_empty() {
+            on_chain_cmp.mutated = filter_mutated_to_inputs(on_chain_cmp.mutated, &tx.inputs);
+            local_summary_cmp.mutated =
+                filter_mutated_to_inputs(local_summary_cmp.mutated, &tx.inputs);
+        }
+        let local_created_count = local_summary_cmp.created.len();
         let mut cmp = if object_versions.is_some() && local_versions.is_some() {
             EffectsComparison::compare_with_versions(
-                on_chain,
+                &on_chain_cmp,
                 effects.success,
-                effects.created.len(),
-                effects.mutated.len(),
+                local_created_count,
+                local_summary_cmp.mutated.len(),
                 effects.deleted.len(),
                 local_versions.as_ref(),
                 object_versions,
             )
         } else {
             EffectsComparison::compare(
-                on_chain,
+                &on_chain_cmp,
                 effects.success,
-                effects.created.len(),
-                effects.mutated.len(),
+                local_created_count,
+                local_summary_cmp.mutated.len(),
                 effects.deleted.len(),
             )
         };
-        cmp.apply_object_id_comparison(on_chain, &local_summary);
+        cmp.apply_object_id_comparison(&on_chain_cmp, &local_summary_cmp);
+        if filtered_df_created {
+            cmp.notes.push(format!(
+                "filtered {} dynamic-field created id(s) from comparison",
+                filtered_df_created_count
+            ));
+        }
+        if filtered_df_mutated {
+            cmp.notes.push(format!(
+                "filtered {} dynamic-field mutated id(s) from comparison",
+                filtered_df_mutated_count
+            ));
+        }
+        if filtered_df_deleted {
+            cmp.notes.push(format!(
+                "filtered {} dynamic-field deleted id(s) from comparison",
+                filtered_df_deleted_count
+            ));
+        }
         cmp
     });
+
+    if std::env::var("SUI_DEBUG_MUTATIONS").is_ok() {
+        if filtered_df_created {
+            eprintln!("[mutations] filtered dynamic-field created ids from comparison");
+        }
+        if filtered_df_mutated {
+            eprintln!("[mutations] filtered dynamic-field mutated ids from comparison");
+        }
+        if filtered_df_deleted {
+            eprintln!("[mutations] filtered dynamic-field deleted ids from comparison");
+        }
+        let local_mutated: Vec<_> = effects
+            .mutated
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect();
+        let local_transferred: Vec<_> = effects
+            .transferred
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect();
+        eprintln!(
+            "[mutations] local mutated={} transferred={}",
+            local_mutated.len(),
+            local_transferred.len()
+        );
+        eprintln!("[mutations] local mutated ids: {:?}", local_mutated);
+        if !local_transferred.is_empty() {
+            eprintln!("[mutations] local transferred ids: {:?}", local_transferred);
+        }
+        if let Some(on_chain) = tx.effects.as_ref() {
+            eprintln!(
+                "[mutations] on-chain mutated count={}",
+                on_chain.mutated.len()
+            );
+            eprintln!("[mutations] on-chain mutated ids: {:?}", on_chain.mutated);
+            eprintln!(
+                "[mutations] on-chain created count={}",
+                on_chain.created.len()
+            );
+            eprintln!("[mutations] on-chain created ids: {:?}", on_chain.created);
+        }
+        let local_created = local_created.clone();
+        if !local_created.is_empty() {
+            eprintln!("[mutations] local created ids: {:?}", local_created);
+        }
+        let mut input_ids = Vec::new();
+        let mut shared_mutable = Vec::new();
+        let mut shared_immutable = Vec::new();
+        for input in &tx.inputs {
+            match input {
+                TransactionInput::Object { object_id, .. }
+                | TransactionInput::ImmutableObject { object_id, .. }
+                | TransactionInput::Receiving { object_id, .. } => {
+                    input_ids.push(object_id.clone());
+                }
+                TransactionInput::SharedObject {
+                    object_id, mutable, ..
+                } => {
+                    input_ids.push(object_id.clone());
+                    if *mutable {
+                        shared_mutable.push(object_id.clone());
+                    } else {
+                        shared_immutable.push(object_id.clone());
+                    }
+                }
+                TransactionInput::Pure { .. } => {}
+            }
+        }
+        eprintln!("[mutations] input object ids: {:?}", input_ids);
+        if !shared_mutable.is_empty() || !shared_immutable.is_empty() {
+            eprintln!(
+                "[mutations] shared inputs mutable={:?} immutable={:?}",
+                shared_mutable, shared_immutable
+            );
+        }
+        if let Some(cmp) = comparison.as_ref() {
+            if !cmp.mutated_ids_missing.is_empty() || !cmp.mutated_ids_extra.is_empty() {
+                eprintln!(
+                    "[mutations] comparison missing={:?} extra={:?}",
+                    cmp.mutated_ids_missing, cmp.mutated_ids_extra
+                );
+                if let Some(on_chain) = tx.effects.as_ref() {
+                    let created_set: std::collections::HashSet<_> =
+                        on_chain.created.iter().cloned().collect();
+                    let extra_in_created: Vec<_> = cmp
+                        .mutated_ids_extra
+                        .iter()
+                        .filter(|id| created_set.contains(*id))
+                        .cloned()
+                        .collect();
+                    if !extra_in_created.is_empty() {
+                        eprintln!(
+                            "[mutations] extra mutated that are also created: {:?}",
+                            extra_in_created
+                        );
+                    }
+                }
+                if !cmp.mutated_ids_extra.is_empty() {
+                    let mut df_children = std::collections::HashSet::new();
+                    for (key, _) in effects.dynamic_field_entries.iter() {
+                        df_children.insert(key.1.to_hex_literal());
+                    }
+                    if !df_children.is_empty() {
+                        let mut hits = Vec::new();
+                        let mut misses = Vec::new();
+                        for id in &cmp.mutated_ids_extra {
+                            if df_children.contains(id) {
+                                hits.push(id.clone());
+                            } else {
+                                misses.push(id.clone());
+                            }
+                        }
+                        eprintln!(
+                            "[mutations] dynamic_field_entries children={} hits={:?} misses={:?}",
+                            df_children.len(),
+                            hits,
+                            misses
+                        );
+                    } else {
+                        eprintln!("[mutations] dynamic_field_entries children=0");
+                    }
+                }
+            }
+        }
+    }
 
     // Build version summary
     let version_summary = effects.object_versions.as_ref().map(|vers| {
@@ -1521,9 +2065,7 @@ pub fn graphql_to_fetched_transaction(
         .map(|input| match input {
             GraphQLTransactionInput::Pure { bytes_base64 } => {
                 // Decode base64 to bytes for Pure input
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(bytes_base64)
-                    .unwrap_or_default();
+                let bytes = try_base64_decode(bytes_base64).unwrap_or_default();
                 TransactionInput::Pure { bytes }
             }
             GraphQLTransactionInput::OwnedObject {
@@ -1685,32 +2227,7 @@ pub use sui_prefetch::grpc_to_fetched_transaction;
 // ============================================================================
 
 // Note: extract_dependencies_from_bytecode has been moved to utilities::type_utils
-// Use crate::utilities::extract_dependencies_from_bytecode instead
-
-/// Extract all unique dependency addresses from a set of packages.
-/// packages is HashMap<String, Vec<(module_name, bytecode_base64)>>
-#[allow(dead_code)]
-fn extract_all_dependencies(
-    packages: &std::collections::HashMap<String, Vec<(String, String)>>,
-) -> std::collections::BTreeSet<String> {
-    use crate::utilities::extract_dependencies_from_bytecode;
-    use std::collections::BTreeSet;
-
-    let mut all_deps: BTreeSet<String> = BTreeSet::new();
-
-    for modules in packages.values() {
-        for (_name, bytecode_base64) in modules {
-            if let Ok(bytecode) = base64::engine::general_purpose::STANDARD.decode(bytecode_base64)
-            {
-                for dep_addr in extract_dependencies_from_bytecode(&bytecode) {
-                    all_deps.insert(dep_addr);
-                }
-            }
-        }
-    }
-
-    all_deps
-}
+// Note: For extracting dependencies from bytecode, use crate::utilities::extract_dependencies_from_bytecode
 
 // Note: fetch_and_cache_transaction and load_or_fetch_transaction functions
 // that depend on DataFetcher have been moved to the main crate's tx_replay module

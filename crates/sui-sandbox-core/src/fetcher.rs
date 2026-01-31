@@ -12,8 +12,10 @@ use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use sui_sandbox_types::encoding::base64_decode;
 use tokio::runtime::{Builder, Runtime};
 
+use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcOwner};
 
 use crate::simulation::FetcherConfig;
@@ -48,6 +50,21 @@ pub trait Fetcher: Send + Sync {
     ///
     /// Returns a list of (module_name, module_bytes) pairs.
     fn fetch_package_modules(&self, package_id: &str) -> Result<Vec<(String, Vec<u8>)>>;
+
+    /// Fetch all modules from a package at a specific checkpoint.
+    ///
+    /// This is critical for replay fidelity - packages may be upgraded over time,
+    /// and we need the exact bytecode that was deployed at the time of the transaction.
+    ///
+    /// Default implementation falls back to `fetch_package_modules` (latest version).
+    fn fetch_package_modules_at_checkpoint(
+        &self,
+        package_id: &str,
+        _checkpoint: u64,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        // Default: fall back to latest (for backward compatibility)
+        self.fetch_package_modules(package_id)
+    }
 
     /// Fetch full object data including type, ownership, and BCS bytes.
     fn fetch_object(&self, object_id: &str) -> Result<FetchedObjectData>;
@@ -95,12 +112,17 @@ impl Fetcher for NoopFetcher {
 ///
 /// This provides backward compatibility with existing code while enabling
 /// the new trait-based abstraction.
+///
+/// For checkpoint-based package queries (needed for replay fidelity), this uses
+/// GraphQL as gRPC doesn't support historical package fetching.
 pub struct GrpcFetcher {
     endpoint: String,
     api_key: Option<String>,
     network: String,
     runtime: Runtime,
     client: parking_lot::Mutex<Option<Arc<GrpcClient>>>,
+    /// GraphQL client for checkpoint-based queries (lazy initialized)
+    graphql_client: parking_lot::Mutex<Option<GraphQLClient>>,
 }
 
 impl GrpcFetcher {
@@ -128,6 +150,7 @@ impl GrpcFetcher {
             network,
             runtime: Self::build_runtime(),
             client: parking_lot::Mutex::new(None),
+            graphql_client: parking_lot::Mutex::new(None),
         }
     }
 
@@ -227,6 +250,23 @@ impl GrpcFetcher {
         }
     }
 
+    /// Get GraphQL client for checkpoint-based queries (lazy initialization).
+    fn graphql_client(&self) -> GraphQLClient {
+        if let Some(client) = self.graphql_client.lock().as_ref() {
+            return client.clone();
+        }
+
+        // Determine GraphQL endpoint based on network
+        let client = if self.network.contains("testnet") {
+            GraphQLClient::testnet()
+        } else {
+            GraphQLClient::mainnet()
+        };
+
+        *self.graphql_client.lock() = Some(client.clone());
+        client
+    }
+
     fn to_fetched(
         object_id: &str,
         obj: sui_transport::grpc::GrpcObject,
@@ -256,6 +296,28 @@ impl Fetcher for GrpcFetcher {
         object
             .package_modules
             .ok_or_else(|| anyhow!("object is not a package: {}", package_id))
+    }
+
+    fn fetch_package_modules_at_checkpoint(
+        &self,
+        package_id: &str,
+        checkpoint: u64,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        // Use GraphQL for checkpoint-based package fetching since gRPC doesn't support it
+        let graphql = self.graphql_client();
+        let pkg = graphql.fetch_package_at_checkpoint(package_id, checkpoint)?;
+
+        // Convert GraphQL modules to (name, bytes) pairs
+        let mut modules = Vec::with_capacity(pkg.modules.len());
+        for module in pkg.modules {
+            let bytes = module
+                .bytecode_base64
+                .as_ref()
+                .ok_or_else(|| anyhow!("module {} missing bytecode", module.name))
+                .and_then(|b64| base64_decode(b64, &format!("module {} bytecode", module.name)))?;
+            modules.push((module.name, bytes));
+        }
+        Ok(modules)
     }
 
     fn fetch_object(&self, object_id: &str) -> Result<FetchedObjectData> {
@@ -379,13 +441,9 @@ impl MockFetcher {
     }
 
     /// Normalize object/package IDs to handle 0x prefix variations.
+    /// Delegates to the canonical implementation in sui-resolver for consistency.
     fn normalize_id(id: &str) -> String {
-        let id = id.trim();
-        if id.starts_with("0x") || id.starts_with("0X") {
-            id.to_lowercase()
-        } else {
-            format!("0x{}", id.to_lowercase())
-        }
+        sui_resolver::normalize_id(id)
     }
 }
 

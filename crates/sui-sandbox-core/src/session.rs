@@ -38,7 +38,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::fetcher::{Fetcher, GrpcFetcher};
-use crate::object_runtime::ChildFetcherFn;
+use crate::sandbox_runtime::ChildFetcherFn;
 use crate::simulation::{FetcherConfig, PersistentState, SimulationEnvironment};
 
 /// A session-aware wrapper around SimulationEnvironment.
@@ -208,6 +208,9 @@ impl SimulationSession {
     // ========================================================================
 
     /// Deploy a package from mainnet using the session's fetcher.
+    ///
+    /// If `config.replay_checkpoint` is set, fetches the package version at that checkpoint
+    /// for accurate historical replay.
     pub fn deploy_package_from_mainnet(
         &mut self,
         package_id: &str,
@@ -217,7 +220,12 @@ impl SimulationSession {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Fetching not enabled"))?;
 
-        let modules = fetcher.fetch_package_modules(package_id)?;
+        // Use checkpoint-based fetching for replay fidelity if configured
+        let modules = if let Some(checkpoint) = self.env.config().replay_checkpoint {
+            fetcher.fetch_package_modules_at_checkpoint(package_id, checkpoint)?
+        } else {
+            fetcher.fetch_package_modules(package_id)?
+        };
         let (count, _) = self.env.resolver_mut().add_package_modules(modules)?;
 
         if count == 0 {

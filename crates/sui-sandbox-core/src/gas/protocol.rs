@@ -10,7 +10,32 @@ use sui_protocol_config::{Chain, ProtocolConfig, ProtocolVersion};
 
 /// Default protocol version to use (current mainnet).
 /// This should be updated as mainnet progresses.
-pub const DEFAULT_PROTOCOL_VERSION: u64 = 68;
+/// As of late 2025, mainnet is at protocol version 73.
+pub const DEFAULT_PROTOCOL_VERSION: u64 = 73;
+
+// =============================================================================
+// Default Gas Constants
+// =============================================================================
+// These constants provide sensible defaults for gas-related parameters.
+// For production use, actual values should be fetched from the network or
+// derived from ProtocolConfig for the specific transaction context.
+
+/// Default gas budget for transactions (50 SUI in MIST).
+/// This is a reasonable default for most transactions on mainnet.
+pub const DEFAULT_GAS_BUDGET: u64 = 50_000_000_000;
+
+/// Default reference gas price (750 MIST per gas unit).
+/// This matches the typical mainnet reference gas price as of protocol v68.
+/// Note: Actual gas price should be fetched from the network for production use.
+pub const DEFAULT_REFERENCE_GAS_PRICE: u64 = 750;
+
+/// Default gas price for simulation (1000 MIST per gas unit).
+/// This is slightly higher than reference to provide conservative estimates.
+pub const DEFAULT_GAS_PRICE: u64 = 1000;
+
+/// Default gas balance for simulated accounts (1 billion SUI in MIST).
+/// This provides ample gas for any simulation scenario.
+pub const DEFAULT_GAS_BALANCE: u64 = 1_000_000_000_000_000_000;
 
 /// Load a ProtocolConfig for the specified version.
 ///
@@ -26,7 +51,17 @@ pub const DEFAULT_PROTOCOL_VERSION: u64 = 68;
 /// let gas_model_version = config.gas_model_version();
 /// ```
 pub fn load_protocol_config(version: u64) -> ProtocolConfig {
-    let protocol_version = ProtocolVersion::new(version);
+    let max_supported = ProtocolVersion::MAX.as_u64();
+    let clamped_version = if version > max_supported {
+        eprintln!(
+            "[protocol] requested protocol_version={} exceeds max_supported={}, clamping",
+            version, max_supported
+        );
+        max_supported
+    } else {
+        version
+    };
+    let protocol_version = ProtocolVersion::new(clamped_version);
     ProtocolConfig::get_for_version(protocol_version, Chain::Mainnet)
 }
 

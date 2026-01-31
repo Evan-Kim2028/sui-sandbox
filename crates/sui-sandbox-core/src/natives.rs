@@ -77,8 +77,10 @@ use fastcrypto::secp256r1::{
 use fastcrypto::serde_helpers::ToFromByteArray;
 use fastcrypto::traits::{RecoverableSignature, ToFromBytes, VerifyingKey};
 use move_vm_types::values::Struct;
+use sui_types::base_types::ObjectID as SuiObjectID;
+use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
-use super::object_runtime::{E_FIELD_DOES_NOT_EXIST, E_FIELD_TYPE_MISMATCH};
+use super::sandbox_runtime::{E_FIELD_DOES_NOT_EXIST, E_FIELD_TYPE_MISMATCH};
 
 /// Abort code for unsupported native functions (category D).
 /// Used when a native cannot be simulated locally.
@@ -470,14 +472,8 @@ pub struct MockNativeState {
     pub native_costs: Option<crate::gas::NativeFunctionCosts>,
 }
 
-/// Default protocol version (mainnet v73 as of late 2025)
-pub const DEFAULT_PROTOCOL_VERSION: u64 = 73;
-
-/// Default reference gas price in MIST
-pub const DEFAULT_REFERENCE_GAS_PRICE: u64 = 750;
-
-/// Default gas budget (50 SUI)
-pub const DEFAULT_GAS_BUDGET: u64 = 50_000_000_000;
+// Re-use gas constants from the gas module (single source of truth)
+pub use crate::gas::{DEFAULT_GAS_BUDGET, DEFAULT_PROTOCOL_VERSION, DEFAULT_REFERENCE_GAS_PRICE};
 
 impl Default for MockNativeState {
     fn default() -> Self {
@@ -637,14 +633,9 @@ impl MockNativeState {
     pub fn fresh_id(&self) -> AccountAddress {
         let count = self.ids_created.fetch_add(1, Ordering::SeqCst);
 
-        // Use SHA3-256(tx_hash || ids_created) to derive globally unique ID
-        // Note: Using Keccak256 from fastcrypto which is already a dependency
-        let mut data = Vec::with_capacity(40);
-        data.extend_from_slice(&self.tx_hash);
-        data.extend_from_slice(&count.to_le_bytes());
-        let hash_result = fastcrypto::hash::Keccak256::digest(&data);
-
-        AccountAddress::new(hash_result.into())
+        let digest = SuiTransactionDigest::new(self.tx_hash);
+        let object_id = SuiObjectID::derive_id(digest, count);
+        AccountAddress::new(object_id.into_bytes())
     }
 
     pub fn ids_created(&self) -> u64 {
@@ -847,15 +838,14 @@ fn build_sui_natives(
             let ids_created = pop_arg!(args, u64);
             let tx_hash = pop_arg!(args, Vec<u8>);
 
-            // Derive object ID using SHA3-256(tx_hash || ids_created)
-            // This matches Sui's native derive_id implementation
-            // Note: Using Keccak256 from fastcrypto which is already a dependency
-            let mut data = Vec::with_capacity(40);
-            data.extend_from_slice(&tx_hash);
-            data.extend_from_slice(&ids_created.to_le_bytes());
-            let hash_result = fastcrypto::hash::Keccak256::digest(&data);
-
-            let bytes: [u8; 32] = hash_result.into();
+            let tx_bytes: [u8; 32] = tx_hash.as_slice().try_into().map_err(|_| {
+                move_binary_format::errors::PartialVMError::new(
+                    move_core_types::vm_status::StatusCode::TYPE_MISMATCH,
+                )
+            })?;
+            let digest = SuiTransactionDigest::new(tx_bytes);
+            let object_id = SuiObjectID::derive_id(digest, ids_created);
+            let bytes = object_id.into_bytes();
 
             Ok(NativeResult::ok(
                 InternalGas::new(cost),
@@ -912,7 +902,7 @@ fn build_sui_natives(
         "object",
         "delete_impl",
         make_native(move |ctx, _ty_args, mut args| {
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
 
             let cost = state_clone.get_native_cost(|c| c.object_delete_impl_base);
 
@@ -934,7 +924,7 @@ fn build_sui_natives(
         "object",
         "record_new_uid",
         make_native(move |ctx, _ty_args, mut args| {
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
 
             let cost = state_clone.get_native_cost(|c| c.object_record_new_id_base);
 
@@ -961,7 +951,7 @@ fn build_sui_natives(
         "transfer",
         "transfer_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::{Owner, SharedObjectRuntime};
+            use crate::sandbox_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_internal_base);
 
@@ -1022,7 +1012,7 @@ fn build_sui_natives(
         "transfer",
         "freeze_object_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::{Owner, SharedObjectRuntime};
+            use crate::sandbox_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_freeze_object_base);
 
@@ -1075,7 +1065,7 @@ fn build_sui_natives(
         "transfer",
         "share_object_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::{Owner, SharedObjectRuntime};
+            use crate::sandbox_runtime::{Owner, SharedObjectRuntime};
 
             let cost = state_clone.get_native_cost(|c| c.transfer_share_object_base);
 
@@ -1129,7 +1119,7 @@ fn build_sui_natives(
         "transfer",
         "receive_impl",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+            use crate::sandbox_runtime::{ObjectRuntime, SharedObjectRuntime};
             let cost = state_clone.get_native_cost(|c| c.transfer_receive_base);
 
             // Get the type we're receiving (this is T, not Receiving<T>)
@@ -1811,8 +1801,8 @@ fn extract_address_from_uid(uid_ref: &move_vm_types::values::StructRef) -> Optio
 /// Tries SharedObjectRuntime first (for PTB sessions), falls back to ObjectRuntime.
 fn get_object_runtime_ref<'a>(
     ctx: &'a NativeContext,
-) -> Result<&'a crate::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
-    use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+) -> Result<&'a crate::sandbox_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError> {
+    use crate::sandbox_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first (used in PTB sessions for persistent state)
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
@@ -1827,9 +1817,9 @@ fn get_object_runtime_ref<'a>(
 /// Helper to get mutable ObjectRuntime from extensions.
 fn get_object_runtime_mut<'a>(
     ctx: &'a mut NativeContext,
-) -> Result<&'a mut crate::object_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError>
+) -> Result<&'a mut crate::sandbox_runtime::ObjectRuntime, move_binary_format::errors::PartialVMError>
 {
-    use crate::object_runtime::{ObjectRuntime, SharedObjectRuntime};
+    use crate::sandbox_runtime::{ObjectRuntime, SharedObjectRuntime};
 
     // Try SharedObjectRuntime first
     if ctx.extensions().get::<SharedObjectRuntime>().is_ok() {
@@ -1849,7 +1839,7 @@ fn sync_child_to_shared_state(
     child_tag: &TypeTag,
     child_bytes: &[u8],
 ) {
-    use crate::object_runtime::SharedObjectRuntime;
+    use crate::sandbox_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         shared.shared_state().lock().add_child(
@@ -1867,7 +1857,7 @@ fn remove_child_from_shared_state(
     parent: AccountAddress,
     child_id: AccountAddress,
 ) {
-    use crate::object_runtime::SharedObjectRuntime;
+    use crate::sandbox_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
         let mut state = shared.shared_state().lock();
@@ -1878,53 +1868,41 @@ fn remove_child_from_shared_state(
             "[remove_child_from_shared_state] parent={}, child={}, removed={} (children {} -> {})",
             &parent.to_hex_literal()[..20],
             &child_id.to_hex_literal()[..20],
-            before > after,
-            before,
-            after
+            _before > _after,
+            _before,
+            _after
         );
     }
+}
+
+/// Mark a child as mutated in shared state (if using SharedObjectRuntime).
+fn mark_child_mutated(ctx: &mut NativeContext, parent: AccountAddress, child_id: AccountAddress) {
+    let _ = (ctx, parent, child_id);
+    // Mutation tracking is synced from the local GlobalValue state on drop,
+    // which avoids false positives from mutable borrows with no writes.
 }
 
 /// Check if a child exists in shared state (if using SharedObjectRuntime).
 /// Note: This does NOT trigger on-demand fetching. Use check_shared_state_for_child_with_fetch
 /// if you need to fetch children that aren't already cached.
-#[allow(dead_code)]
 fn check_shared_state_for_child(
     ctx: &NativeContext,
     parent: AccountAddress,
     child_id: AccountAddress,
 ) -> bool {
-    use crate::object_runtime::SharedObjectRuntime;
+    use crate::sandbox_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         let arc = shared.shared_state();
         let state = arc.lock();
-        let result = state.has_child(parent, child_id);
-        #[cfg(debug_assertions)]
-        {
-            let _arc_ptr = std::sync::Arc::as_ptr(arc);
-            let _child_id_short =
-                &child_id.to_hex_literal()[..22.min(child_id.to_hex_literal().len())];
-            if child_id.to_hex_literal().starts_with("0x716ce7f7")
-                || child_id.to_hex_literal().starts_with("0x49fc691a")
-            {
-                debug_native!("[check_shared_state_for_child] arc={:p}, parent={}, child={}, found={}, total_children={}",
-                    _arc_ptr,
-                    &parent.to_hex_literal()[..22.min(parent.to_hex_literal().len())],
-                    _child_id_short,
-                    result,
-                    state.children.len()
-                );
-            }
-        }
-        return result;
+        return state.has_child(parent, child_id);
     }
     false
 }
 
 /// Count children for a parent in shared state (if using SharedObjectRuntime).
 fn count_shared_state_children(ctx: &NativeContext, parent: AccountAddress) -> u64 {
-    use crate::object_runtime::SharedObjectRuntime;
+    use crate::sandbox_runtime::SharedObjectRuntime;
 
     if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
         return shared
@@ -1961,7 +1939,7 @@ fn add_dynamic_field_natives(
         "dynamic_field",
         "hash_type_and_key",
         make_native(move |ctx, mut ty_args, mut args| {
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
 
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
@@ -1975,19 +1953,19 @@ fn add_dynamic_field_natives(
             })?;
             let parent = pop_arg!(args, AccountAddress);
 
-            let key_tag = ctx.type_to_type_tag(&key_ty)?;
+            let key_tag_original = ctx.type_to_type_tag(&key_ty)?;
 
             // CRITICAL: Rewrite the type tag to use RUNTIME addresses instead of BYTECODE addresses.
             // This is necessary for upgraded packages where:
             // - Bytecode references the original package address (e.g., 0xefe8b36d...)
             // - But runtime types use the current package address (e.g., 0xd384ded6...)
             // Dynamic field keys are stored with RUNTIME addresses, so hash must match.
-            let key_tag = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
-            {
-                shared.rewrite_type_tag(key_tag)
-            } else {
-                key_tag
-            };
+            let key_tag_rewritten =
+                if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                    shared.rewrite_type_tag(key_tag_original.clone())
+                } else {
+                    key_tag_original.clone()
+                };
 
             let cost = state_clone.get_native_cost(|c| c.dynamic_field_hash_base);
 
@@ -2001,21 +1979,102 @@ fn add_dynamic_field_natives(
                 None => return Ok(NativeResult::err(InternalGas::new(cost), 3)),
             };
 
-            let type_tag_bytes = bcs::to_bytes(&key_tag).unwrap_or_default();
+            let compute_child_id = |tag: &TypeTag, key_bytes: &[u8]| -> AccountAddress {
+                let type_tag_bytes = bcs::to_bytes(tag).unwrap_or_default();
 
-            // Derive child ID using Sui's exact formula:
-            // Blake2b256(0xf0 || parent || len(key_bytes) as u64 LE || key_bytes || type_tag_bytes)
-            const CHILD_OBJECT_ID_SCOPE: u8 = 0xf0;
+                // Derive child ID using Sui's exact formula:
+                // Blake2b256(0xf0 || parent || len(key_bytes) as u64 LE || key_bytes || type_tag_bytes)
+                const CHILD_OBJECT_ID_SCOPE: u8 = 0xf0;
 
-            let mut hasher = Blake2b256::default();
-            hasher.update([CHILD_OBJECT_ID_SCOPE]);
-            hasher.update(parent.as_ref());
-            hasher.update((key_bytes.len() as u64).to_le_bytes());
-            hasher.update(&key_bytes);
-            hasher.update(&type_tag_bytes);
+                let mut hasher = Blake2b256::default();
+                hasher.update([CHILD_OBJECT_ID_SCOPE]);
+                hasher.update(parent.as_ref());
+                hasher.update((key_bytes.len() as u64).to_le_bytes());
+                hasher.update(key_bytes);
+                hasher.update(&type_tag_bytes);
 
-            let hash = hasher.finalize();
-            let child_id = AccountAddress::new(hash.digest);
+                let hash = hasher.finalize();
+                AccountAddress::new(hash.digest)
+            };
+
+            fn rewrite_address(tag: &TypeTag, from: AccountAddress, to: AccountAddress) -> TypeTag {
+                match tag {
+                    TypeTag::Struct(s) => {
+                        let mut s = (**s).clone();
+                        if s.address == from {
+                            s.address = to;
+                        }
+                        s.type_params = s
+                            .type_params
+                            .into_iter()
+                            .map(|t| rewrite_address(&t, from, to))
+                            .collect();
+                        TypeTag::Struct(Box::new(s))
+                    }
+                    TypeTag::Vector(inner) => {
+                        TypeTag::Vector(Box::new(rewrite_address(inner, from, to)))
+                    }
+                    other => other.clone(),
+                }
+            }
+
+            let mut candidate_tags: Vec<TypeTag> = Vec::new();
+            candidate_tags.push(key_tag_rewritten.clone());
+            if key_tag_rewritten != key_tag_original {
+                candidate_tags.push(key_tag_original.clone());
+            }
+
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                if let Some(resolved_tag) = shared.resolve_key_type(parent, &key_bytes) {
+                    candidate_tags.push(resolved_tag);
+                }
+                if let TypeTag::Struct(s) = &key_tag_original {
+                    for storage in shared.storage_aliases_for(&s.address) {
+                        if storage == s.address {
+                            continue;
+                        }
+                        let alt = rewrite_address(&key_tag_original, s.address, storage);
+                        candidate_tags.push(alt);
+                    }
+                }
+            }
+
+            // Deduplicate candidates by formatted type tag.
+            let mut seen = std::collections::HashSet::new();
+            candidate_tags.retain(|tag| {
+                let key = crate::types::format_type_tag(tag);
+                seen.insert(key)
+            });
+
+            let mut chosen_child_id = None;
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                for tag in &candidate_tags {
+                    let child_id = compute_child_id(tag, &key_bytes);
+                    shared.record_computed_child(child_id, parent, tag.clone(), key_bytes.clone());
+                    let exists = {
+                        let state = shared.shared_state().lock();
+                        state.has_child(parent, child_id)
+                    };
+                    if exists {
+                        chosen_child_id = Some(child_id);
+                        break;
+                    }
+                    if shared.try_fetch_child(parent, child_id).is_some() {
+                        chosen_child_id = Some(child_id);
+                        break;
+                    }
+                }
+            }
+
+            let mut child_id = match chosen_child_id {
+                Some(id) => id,
+                None => compute_child_id(&key_tag_rewritten, &key_bytes),
+            };
+            if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
+                if let Some(actual_id) = shared.resolve_child_id_alias(child_id) {
+                    child_id = actual_id;
+                }
+            }
 
             // Check for suspicious parent addresses that look like corrupted data
             // Sui addresses are usually SHA-256 based, so having most bytes zero is suspicious
@@ -2034,7 +2093,7 @@ fn add_dynamic_field_natives(
                 debug_native!(
                     "[hash_type_and_key] parent={}, key_type={:?}, key_len={}, result={}",
                     parent.to_hex_literal(),
-                    key_tag,
+                    key_tag_rewritten,
                     key_bytes.len(),
                     child_id.to_hex_literal()
                 );
@@ -2055,7 +2114,7 @@ fn add_dynamic_field_natives(
             // This is essential for handling package upgrades where the computed hash
             // differs from the stored child object's hash due to type address changes.
             if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>() {
-                shared.record_computed_child(child_id, parent, key_tag, key_bytes);
+                shared.record_computed_child(child_id, parent, key_tag_rewritten, key_bytes);
             }
 
             Ok(NativeResult::ok(
@@ -2126,7 +2185,7 @@ fn add_dynamic_field_natives(
         "borrow_child_object",
         make_native(move |ctx, mut ty_args, mut args| {
             let cost = state_clone.get_native_cost(|c| c.dynamic_field_borrow_child_base);
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
             use move_vm_types::values::StructRef;
 
             debug_native!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
@@ -2229,10 +2288,15 @@ fn add_dynamic_field_natives(
                             fetched_tag
                         );
                         // Add to shared state for future lookups
-                        shared
-                            .shared_state()
-                            .lock()
-                            .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                        {
+                            let mut state = shared.shared_state().lock();
+                            state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                            // Mark as preloaded so it is treated as existing, not "new"
+                            state.preloaded_children.insert((parent, child_id));
+                            state
+                                .preloaded_child_bytes
+                                .insert((parent, child_id), fetched_bytes.clone());
+                        }
                         Some(fetched_bytes)
                     } else {
             debug_native!("[borrow_child_object] on-demand fetch failed or not configured");
@@ -2266,7 +2330,7 @@ fn add_dynamic_field_natives(
                         }
                         // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
-                        match runtime.add_child_object(parent, child_id, value, child_tag.clone()) {
+                        match runtime.add_child_object_cached(parent, child_id, value, child_tag.clone()) {
                             Ok(()) => {
                                 // Now we can borrow from the local runtime
                                 match runtime.borrow_child_object(parent, child_id, &child_tag) {
@@ -2318,7 +2382,7 @@ fn add_dynamic_field_natives(
         make_native(move |ctx, mut ty_args, mut args| {
             let cost = state_clone.get_native_cost(|c| c.dynamic_field_borrow_child_base);
             use move_vm_types::values::StructRef;
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
 
             let child_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
@@ -2353,6 +2417,7 @@ fn add_dynamic_field_natives(
                     let runtime = get_object_runtime_mut(ctx)?;
                     match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                         Ok(value) => {
+                            mark_child_mutated(ctx, parent, child_id);
                             if is_field_type {
             debug_native!("[borrow_child_object_mut] LOCAL returning value for parent={}: {:?}",
                                     parent.to_hex_literal(), value);
@@ -2384,10 +2449,15 @@ fn add_dynamic_field_natives(
                 let child_bytes_opt = if child_bytes_opt.is_none() {
                     if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id) {
             debug_native!("[borrow_child_object_mut] on-demand fetch succeeded, {} bytes, type={:?}", fetched_bytes.len(), fetched_tag);
-                        shared
-                            .shared_state()
-                            .lock()
-                            .add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                        {
+                            let mut state = shared.shared_state().lock();
+                            state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                            // Mark as preloaded so it is treated as existing, not "new"
+                            state.preloaded_children.insert((parent, child_id));
+                            state
+                                .preloaded_child_bytes
+                                .insert((parent, child_id), fetched_bytes.clone());
+                        }
                         Some(fetched_bytes)
                     } else {
             debug_native!("[borrow_child_object_mut] on-demand fetch failed or not configured");
@@ -2420,11 +2490,12 @@ fn add_dynamic_field_natives(
                         }
                         // Add to local runtime so we can borrow from it
                         let runtime = shared.local_mut();
-                        match runtime.add_child_object(parent, child_id, value, child_tag.clone()) {
+                        match runtime.add_child_object_cached(parent, child_id, value, child_tag.clone()) {
                             Ok(()) => {
                                 // Now we can borrow mutably from the local runtime
                                 match runtime.borrow_child_object_mut(parent, child_id, &child_tag) {
                                     Ok(ref_value) => {
+                                        mark_child_mutated(ctx, parent, child_id);
                                         if is_field_type {
             debug_native!("[borrow_child_object_mut] Returning ref_value: {:?}", ref_value);
                                         }
@@ -2461,7 +2532,7 @@ fn add_dynamic_field_natives(
         "remove_child_object",
         make_native(move |ctx, mut ty_args, mut args| {
             let cost = state_clone.get_native_cost(|c| c.dynamic_field_remove_child_base);
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
 
             debug_native!("[remove_child_object] ENTERING NATIVE");
             let child_ty = ty_args.pop().ok_or_else(|| {
@@ -2556,7 +2627,7 @@ fn add_dynamic_field_natives(
                         debug_native!("[remove_child_object] Deserialization SUCCESS");
                         // Add to local runtime first so we can remove it
                         let runtime = shared.local_mut();
-                        if let Err(e) = runtime.add_child_object(
+                        if let Err(e) = runtime.add_child_object_cached(
                             parent,
                             child_id,
                             value.copy_value().unwrap(),
@@ -2635,7 +2706,7 @@ fn add_dynamic_field_natives(
             }
 
             // Check if this child was removed during this PTB - if so, don't re-fetch
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
             if let Ok(shared) = ctx.extensions().get::<SharedObjectRuntime>() {
                 if shared
                     .shared_state()
@@ -2666,12 +2737,15 @@ fn add_dynamic_field_natives(
                 if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
                 {
                     // Add to shared state for future lookups
-                    shared.shared_state().lock().add_child(
-                        parent,
-                        child_id,
-                        fetched_tag,
-                        fetched_bytes,
-                    );
+                    {
+                        let mut state = shared.shared_state().lock();
+                        state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                        // Mark as preloaded so this existing child isn't treated as newly created.
+                        state.preloaded_children.insert((parent, child_id));
+                        state
+                            .preloaded_child_bytes
+                            .insert((parent, child_id), fetched_bytes);
+                    }
                     true
                 } else {
                     false
@@ -2728,7 +2802,7 @@ fn add_dynamic_field_natives(
 
             // Not found locally or in shared state - try on-demand fetching
             // This is needed for replay scenarios where dynamic fields are fetched lazily
-            use crate::object_runtime::SharedObjectRuntime;
+            use crate::sandbox_runtime::SharedObjectRuntime;
             let fetched = if let Ok(shared) = ctx.extensions_mut().get_mut::<SharedObjectRuntime>()
             {
                 if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
@@ -2748,12 +2822,12 @@ fn add_dynamic_field_natives(
                             let mut state = arc.lock();
                             #[cfg(debug_assertions)]
                             let _before_count = state.children.len();
-                            state.add_child(
-                                parent,
-                                child_id,
-                                fetched_tag,
-                                fetched_bytes,
-                            );
+                            state.add_child(parent, child_id, fetched_tag, fetched_bytes.clone());
+                            // Mark as preloaded so it is treated as existing, not "new"
+                            state.preloaded_children.insert((parent, child_id));
+                            state
+                                .preloaded_child_bytes
+                                .insert((parent, child_id), fetched_bytes);
                             #[cfg(debug_assertions)]
                             let _after_count = state.children.len();
             debug_native!("[has_child_object_with_ty] arc={:p}, Added child to shared state. Count: {} -> {}. Parent={}, Child={}",

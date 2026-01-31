@@ -14,8 +14,9 @@ pub enum SimulationError {
         address: String,
         /// The specific module within the package (if known)
         module: Option<String>,
-        /// Packages that depend on this one (helps trace the dependency)
-        #[allow(dead_code)]
+        /// Packages that depend on this one (helps trace the dependency).
+        /// Currently always None - reserved for future dependency chain analysis.
+        #[allow(dead_code)] // Part of public API, kept for future use
         referenced_by: Option<Vec<String>>,
         /// Whether this package has known upgrades
         upgrade_info: Option<crate::error_context::PackageUpgradeInfo>,

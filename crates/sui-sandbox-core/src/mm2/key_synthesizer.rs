@@ -30,9 +30,8 @@
 //! ```
 
 use move_core_types::account_address::AccountAddress;
-use move_core_types::language_storage::{StructTag, TypeTag};
+use move_core_types::language_storage::TypeTag;
 use std::collections::HashSet;
-use std::str::FromStr;
 
 /// Synthesizes key values for deterministic key types.
 pub struct KeyValueSynthesizer {
@@ -165,105 +164,9 @@ impl KeyValueSynthesizer {
     }
 
     /// Parse a type string into a TypeTag.
+    /// Delegates to the canonical cached implementation in types module.
     fn parse_type_tag(&self, type_str: &str) -> Option<TypeTag> {
-        // Handle primitive types
-        match type_str {
-            "bool" => return Some(TypeTag::Bool),
-            "u8" => return Some(TypeTag::U8),
-            "u16" => return Some(TypeTag::U16),
-            "u32" => return Some(TypeTag::U32),
-            "u64" => return Some(TypeTag::U64),
-            "u128" => return Some(TypeTag::U128),
-            "u256" => return Some(TypeTag::U256),
-            "address" => return Some(TypeTag::Address),
-            "signer" => return Some(TypeTag::Signer),
-            _ => {}
-        }
-
-        // Handle vector<T>
-        if type_str.starts_with("vector<") && type_str.ends_with('>') {
-            let inner = &type_str[7..type_str.len() - 1];
-            let inner_tag = self.parse_type_tag(inner)?;
-            return Some(TypeTag::Vector(Box::new(inner_tag)));
-        }
-
-        // Handle struct types: address::module::Name<TypeArgs>
-        self.parse_struct_tag(type_str).map(TypeTag::Struct)
-    }
-
-    /// Parse a struct type string into a StructTag.
-    fn parse_struct_tag(&self, type_str: &str) -> Option<Box<StructTag>> {
-        // Split off type arguments if present
-        let (base, type_args_str) = if let Some(idx) = type_str.find('<') {
-            let base = &type_str[..idx];
-            let args = &type_str[idx + 1..type_str.len() - 1]; // Remove < and >
-            (base, Some(args))
-        } else {
-            (type_str, None)
-        };
-
-        // Parse base: address::module::name
-        let parts: Vec<&str> = base.split("::").collect();
-        if parts.len() < 3 {
-            return None;
-        }
-
-        // Handle full address format (0x followed by hex)
-        let address = AccountAddress::from_hex_literal(parts[0]).ok()?;
-        let module = move_core_types::identifier::Identifier::from_str(parts[1]).ok()?;
-        let name = move_core_types::identifier::Identifier::from_str(parts[2]).ok()?;
-
-        // Parse type arguments recursively
-        let type_params = if let Some(args_str) = type_args_str {
-            self.parse_type_args(args_str)?
-        } else {
-            vec![]
-        };
-
-        Some(Box::new(StructTag {
-            address,
-            module,
-            name,
-            type_params,
-        }))
-    }
-
-    /// Parse comma-separated type arguments, handling nested generics.
-    fn parse_type_args(&self, args_str: &str) -> Option<Vec<TypeTag>> {
-        let mut result = Vec::new();
-        let mut current = String::new();
-        let mut depth = 0;
-
-        for c in args_str.chars() {
-            match c {
-                '<' => {
-                    depth += 1;
-                    current.push(c);
-                }
-                '>' => {
-                    depth -= 1;
-                    current.push(c);
-                }
-                ',' if depth == 0 => {
-                    let trimmed = current.trim();
-                    if !trimmed.is_empty() {
-                        result.push(self.parse_type_tag(trimmed)?);
-                    }
-                    current.clear();
-                }
-                _ => {
-                    current.push(c);
-                }
-            }
-        }
-
-        // Don't forget the last argument
-        let trimmed = current.trim();
-        if !trimmed.is_empty() {
-            result.push(self.parse_type_tag(trimmed)?);
-        }
-
-        Some(result)
+        crate::types::parse_type_tag(type_str).ok()
     }
 
     /// Get statistics about the synthesizer.

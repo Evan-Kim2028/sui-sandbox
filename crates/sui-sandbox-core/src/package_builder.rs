@@ -357,16 +357,41 @@ impl PackageBuilder {
         Ok(file_path)
     }
 
-    /// Compile a Move package to bytecode
+    /// Compile a Move package to bytecode.
     ///
-    /// NOTE: This function is temporarily disabled due to API changes in sui-move-build v1.63.4.
-    /// The sui_move_build::SuiPackageHooks was removed and the build API changed significantly.
-    /// TODO: Update to use the new move_package_alt API when needed.
+    /// # Deprecation Notice
+    ///
+    /// This function is **permanently disabled** due to API changes in sui-move-build v1.63.4.
+    /// The `sui_move_build::SuiPackageHooks` was removed and the build API changed significantly.
+    ///
+    /// **Use pre-compiled bytecode instead.** For most use cases:
+    /// - Fetch packages from mainnet/testnet using the `Fetcher` trait
+    /// - Use `deploy_package_from_mainnet()` on `SimulationEnvironment`
+    /// - Load pre-compiled `.mv` files directly
+    #[deprecated(
+        since = "0.10.0",
+        note = "Package compilation is disabled. Use pre-compiled bytecode or fetch from network."
+    )]
     pub fn compile(&self, _package_dir: &Path) -> Result<CompilationResult> {
-        Err(anyhow!("Package compilation is temporarily disabled due to sui-move-build API changes in v1.63.4. Use pre-compiled bytecode instead."))
+        Err(anyhow!(
+            "Package compilation is permanently disabled (sui-move-build API removed in v1.63.4). \
+             Use pre-compiled bytecode instead: \
+             - Fetch packages from network with `deploy_package_from_mainnet()` \
+             - Load pre-compiled .mv files directly"
+        ))
     }
 
-    /// Scaffold, write source, and compile in one step
+    /// Scaffold, write source, and compile in one step.
+    ///
+    /// # Deprecation Notice
+    ///
+    /// This function is **permanently disabled** because it depends on `compile()`.
+    /// See [`compile()`] for alternatives.
+    #[deprecated(
+        since = "0.10.0",
+        note = "Package compilation is disabled. Use pre-compiled bytecode or fetch from network."
+    )]
+    #[allow(deprecated)]
     pub fn build_from_source(
         &self,
         package_name: &str,

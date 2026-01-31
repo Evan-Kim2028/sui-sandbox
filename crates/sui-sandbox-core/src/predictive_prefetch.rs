@@ -729,7 +729,7 @@ fn collect_parent_candidates(
     // This is crucial for finding parent UIDs that are fields inside objects
     // (e.g., the `balances` Bag UID inside a BalanceManager)
     for obj in result.objects.values() {
-        for nested_uid in extract_nested_uids_from_bcs(&obj.bcs) {
+        for nested_uid in extract_nested_uids_from_bcs(&obj.bcs_bytes) {
             if seen.insert(nested_uid) {
                 candidates.push(nested_uid);
             }
@@ -738,7 +738,7 @@ fn collect_parent_candidates(
 
     // Also check supplemental objects
     for obj in result.supplemental_objects.values() {
-        for nested_uid in extract_nested_uids_from_bcs(&obj.bcs) {
+        for nested_uid in extract_nested_uids_from_bcs(&obj.bcs_bytes) {
             if seen.insert(nested_uid) {
                 candidates.push(nested_uid);
             }
@@ -910,18 +910,15 @@ fn extract_key_type_from_field(type_str: &str) -> Option<String> {
 }
 
 /// Parse a hex address string to AccountAddress.
+/// Delegates to the canonical implementation in sui-resolver.
 fn parse_address(addr: &str) -> Result<AccountAddress, String> {
-    AccountAddress::from_hex_literal(addr).map_err(|e| e.to_string())
+    sui_resolver::parse_address(addr).ok_or_else(|| format!("Invalid address: {}", addr))
 }
 
 /// Normalize an object ID to lowercase with 0x prefix and full 64 chars.
+/// Delegates to the canonical implementation in sui-resolver.
 fn normalize_id(id: &str) -> String {
-    let hex = id.strip_prefix("0x").unwrap_or(id).to_lowercase();
-    if hex.len() < 64 {
-        format!("0x{:0>64}", hex)
-    } else {
-        format!("0x{}", hex)
-    }
+    sui_resolver::normalize_id(id)
 }
 
 /// Extract package IDs from a type string.
@@ -957,10 +954,7 @@ fn extract_packages_from_type(type_str: &str) -> Vec<String> {
 
 /// Check if an address is a framework address (0x1, 0x2, 0x3).
 fn is_framework_address(addr: &str) -> bool {
-    let normalized = normalize_id(addr);
-    normalized == "0x0000000000000000000000000000000000000000000000000000000000000001"
-        || normalized == "0x0000000000000000000000000000000000000000000000000000000000000002"
-        || normalized == "0x0000000000000000000000000000000000000000000000000000000000000003"
+    sui_resolver::is_framework_address(addr)
 }
 
 #[cfg(test)]

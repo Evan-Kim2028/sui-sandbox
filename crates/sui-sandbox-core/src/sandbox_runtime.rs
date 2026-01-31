@@ -1,11 +1,20 @@
-//! ObjectRuntime - VM extension for dynamic field simulation and object storage.
+//! Sandbox Runtime - Custom VM extension for dynamic field simulation.
 //!
-//! This module provides an in-memory object runtime that integrates with the Move VM
-//! via its extension mechanism. It enables:
-//! - Full dynamic field support (add, borrow, remove operations)
-//! - Object storage with ownership tracking
-//! - Shared object support
-//! - Object receiving (send-to-object pattern)
+//! This module provides a **custom** in-memory object runtime for sandbox testing.
+//! It's the **default** runtime used when `use_sui_natives: false` (the default).
+//!
+//! ## Two Runtime Systems
+//!
+//! The sandbox supports two runtime systems for dynamic field operations:
+//!
+//! | Runtime | Module | When Used | Accuracy |
+//! |---------|--------|-----------|----------|
+//! | **Sandbox** (this module) | `sandbox_runtime` | `use_sui_natives: false` (default) | ~90% |
+//! | **Sui Native** | `sui_object_runtime` | `use_sui_natives: true` | 100% |
+//!
+//! **When to use which:**
+//! - **Sandbox runtime (default)**: Fast iteration, testing, development
+//! - **Sui native runtime**: Transaction replay, production parity validation
 //!
 //! ## What is a VM Extension?
 //!
@@ -44,24 +53,24 @@
 //! ┌──────────────────────────────────────────────────────────────────┐
 //! │ VMHarness::execute_function()                                    │
 //! │   │                                                              │
-//! │   ├─► Create ObjectRuntime extension                             │
+//! │   ├─► Create SharedObjectRuntime extension                       │
 //! │   ├─► vm.new_session_with_extensions(storage, extensions)        │
 //! │   │                                                              │
 //! │   │   ┌──────────────────────────────────────────────────────┐   │
 //! │   │   │ Native: add_child_object                             │   │
-//! │   │   │   ctx.extensions_mut().get_mut::<ObjectRuntime>()?   │   │
+//! │   │   │   ctx.extensions_mut().get_mut::<SharedObjectRuntime>│   │
 //! │   │   │   runtime.add_child_object(parent, id, value, type)  │   │
 //! │   │   │   └─► Wraps value in GlobalValue and stores it       │   │
 //! │   │   └──────────────────────────────────────────────────────┘   │
 //! │   │                                                              │
 //! │   │   ┌──────────────────────────────────────────────────────┐   │
 //! │   │   │ Native: borrow_child_object                          │   │
-//! │   │   │   ctx.extensions().get::<ObjectRuntime>()?           │   │
+//! │   │   │   ctx.extensions().get::<SharedObjectRuntime>()?     │   │
 //! │   │   │   runtime.borrow_child_object(parent, id, type)      │   │
 //! │   │   │   └─► Returns GlobalValue.borrow_global() as ref     │   │
 //! │   │   └──────────────────────────────────────────────────────┘   │
 //! │   │                                                              │
-//! │   └─► session.finish() - ObjectRuntime is dropped                │
+//! │   └─► session.finish() - SharedObjectRuntime is dropped          │
 //! └──────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -80,24 +89,46 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+// Re-export ObjectID from sui_sandbox_types for backward compatibility
+pub use sui_sandbox_types::ObjectID;
 use tracing::trace;
 
-/// Callback type for on-demand child object fetching by computed ID.
-/// Takes (parent_id, child_id) and returns Option<(type_tag, bcs_bytes)>.
-/// This is called when a child object is requested but not found in the preloaded set.
+// =============================================================================
+// Sandbox Runtime Callback Types
+// =============================================================================
+//
+// These callback types are used by the SANDBOX runtime (this module).
+// They use AccountAddress and are simpler than the Sui native equivalents.
+//
+// For the Sui native runtime callbacks, see `sui_object_runtime.rs`:
+// - `ChildFetchFn` (uses ObjectID, includes parent in return)
+// - `VersionBoundChildFetchFn` (respects version bounds for replay)
+
+/// Callback for on-demand child object fetching (sandbox runtime).
+///
+/// Takes `(parent_id, child_id)` and returns `Option<(type_tag, bcs_bytes)>`.
+/// Called when a child object is requested but not found in the preloaded set.
+///
+/// **Note:** This is for the sandbox runtime. For Sui native runtime with
+/// version bounds, see `sui_object_runtime::ChildFetchFn`.
 pub type ChildFetcherFn =
     Box<dyn Fn(AccountAddress, AccountAddress) -> Option<(TypeTag, Vec<u8>)> + Send + Sync>;
 
-/// Callback type for on-demand child object fetching with version info.
-/// Takes (parent_id, child_id) and returns Option<(type_tag, bcs_bytes, version)>.
+/// Callback for child object fetching with version info (sandbox runtime).
+///
+/// Takes `(parent_id, child_id)` and returns `Option<(type_tag, bcs_bytes, version)>`.
 /// Use this for transaction replay to ensure correct version information.
+///
+/// **Note:** This is for the sandbox runtime. For Sui native runtime with
+/// version bounds, see `sui_object_runtime::VersionBoundChildFetchFn`.
 pub type VersionedChildFetcherFn =
     Box<dyn Fn(AccountAddress, AccountAddress) -> Option<(TypeTag, Vec<u8>, u64)> + Send + Sync>;
 
-/// Callback type for key-based child object fetching.
-/// Takes (parent_id, child_id, key_type_tag, key_bcs_bytes) and returns Option<(type_tag, bcs_bytes)>.
-/// This is called when ID-based lookup fails, allowing lookup by dynamic field key content.
-/// This handles cases where package upgrades cause computed child IDs to differ from stored IDs.
+/// Callback for key-based child object fetching (sandbox runtime).
+///
+/// Takes `(parent_id, child_id, key_type_tag, key_bcs_bytes)` and returns `Option<(type_tag, bcs_bytes)>`.
+/// Called when ID-based lookup fails, allowing lookup by dynamic field key content.
+/// Handles cases where package upgrades cause computed child IDs to differ from stored IDs.
 ///
 /// For dynamic object fields (where key_type is `Wrapper<K>`), the returned type should be
 /// `Field<Wrapper<K>, ID>` and the BCS should encode the Field wrapper containing an ID
@@ -107,6 +138,14 @@ pub type KeyBasedChildFetcherFn = Box<
         + Send
         + Sync,
 >;
+
+/// Callback for resolving dynamic field key types by key bytes.
+///
+/// Takes `(parent_id, key_bcs_bytes)` and returns an optional key TypeTag.
+pub type KeyTypeResolverFn = Box<dyn Fn(AccountAddress, &[u8]) -> Option<TypeTag> + Send + Sync>;
+
+/// Shared map of computed child_id -> actual child_id (from on-chain dynamic field metadata).
+pub type ChildIdAliasMap = Arc<Mutex<HashMap<AccountAddress, AccountAddress>>>;
 
 /// Error codes matching Sui's dynamic_field module
 pub const E_FIELD_ALREADY_EXISTS: u64 = 0;
@@ -120,8 +159,7 @@ pub const E_NOT_OWNER: u64 = 102;
 pub const E_OBJECT_DELETED: u64 = 103;
 pub const E_RECEIVE_NOT_FOUND: u64 = 104;
 
-/// Unique identifier for objects.
-pub type ObjectID = AccountAddress;
+// ObjectID is imported from sui_sandbox_types
 
 /// Ownership status of an object.
 ///
@@ -878,6 +916,33 @@ impl ObjectRuntime {
         Ok(())
     }
 
+    /// Add a child object that already exists on-chain (cached, clean).
+    pub fn add_child_object_cached(
+        &mut self,
+        parent: AccountAddress,
+        child_id: AccountAddress,
+        value: Value,
+        type_tag: TypeTag,
+    ) -> Result<(), u64> {
+        let key = (parent, child_id);
+
+        if self.children.contains_key(&key) {
+            return Err(E_FIELD_ALREADY_EXISTS);
+        }
+
+        let global_value = GlobalValue::cached(value).map_err(|_| E_FIELD_TYPE_MISMATCH)?;
+
+        self.children.insert(
+            key,
+            ChildObject {
+                value: global_value,
+                type_tag,
+            },
+        );
+
+        Ok(())
+    }
+
     /// Check if a child object exists.
     pub fn child_object_exists(&self, parent: AccountAddress, child_id: AccountAddress) -> bool {
         self.children.contains_key(&(parent, child_id))
@@ -947,6 +1012,20 @@ impl ObjectRuntime {
             .value
             .borrow_global()
             .map_err(|_| E_FIELD_DOES_NOT_EXIST)
+    }
+
+    /// Return child keys that were actually mutated (GlobalValue dirty).
+    pub fn mutated_child_keys(&self) -> Vec<(AccountAddress, AccountAddress)> {
+        self.children
+            .iter()
+            .filter_map(|(key, child)| {
+                if child.value.is_mutated() {
+                    Some(*key)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Remove a child object and return the owned value.
@@ -1030,12 +1109,17 @@ pub struct ObjectRuntimeState {
     pub children: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
     /// Set of children that existed before this PTB started (loaded from env)
     pub preloaded_children: HashSet<(AccountAddress, AccountAddress)>,
+    /// Snapshot of preloaded child bytes for mutation detection.
+    pub preloaded_child_bytes: HashMap<(AccountAddress, AccountAddress), Vec<u8>>,
     /// Pending receives: (recipient_object_id, sent_object_id) -> (type_tag, bytes)
     /// Used for transfer::receive pattern where an object was sent to another object.
     pub pending_receives: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)>,
     /// Set of children that have been removed during this PTB execution.
     /// This prevents on-demand fetching from re-creating them.
     pub removed_children: HashSet<(AccountAddress, AccountAddress)>,
+    /// Set of children that were mutably borrowed during this PTB execution.
+    /// Used to approximate mutated dynamic field entries.
+    pub mutated_children: HashSet<(AccountAddress, AccountAddress)>,
     /// Objects created during execution (via transfer, share_object, freeze_object natives).
     /// These are objects that were created within a MoveCall and immediately transferred/shared/frozen,
     /// rather than being returned from the function.
@@ -1121,8 +1205,10 @@ impl ObjectRuntimeState {
     pub fn clear(&mut self) {
         self.children.clear();
         self.preloaded_children.clear();
+        self.preloaded_child_bytes.clear();
         self.pending_receives.clear();
         self.removed_children.clear();
+        self.mutated_children.clear();
         self.created_objects.clear();
         self.new_ids.clear();
         self.deleted_ids.clear();
@@ -1314,6 +1400,12 @@ pub struct SharedObjectRuntime {
     /// Used for dynamic field hash computation: when bytecode uses original_id,
     /// but children were created with storage_id after an upgrade.
     reverse_address_aliases: HashMap<AccountAddress, AccountAddress>,
+    /// All known storage aliases per original_id, ordered by version (desc) when known.
+    reverse_address_aliases_all: HashMap<AccountAddress, Vec<AccountAddress>>,
+    /// Optional resolver for dynamic field key type aliases.
+    key_type_resolver: Option<Arc<KeyTypeResolverFn>>,
+    /// Optional map of computed child IDs to actual on-chain child IDs.
+    child_id_aliases: Option<ChildIdAliasMap>,
     /// Mapping from computed child_id -> (parent, key_type, key_bytes).
     /// Populated during hash_type_and_key calls, used for key-based fallback lookup.
     computed_child_keys: Mutex<HashMap<AccountAddress, ComputedChildInfo>>,
@@ -1338,6 +1430,9 @@ impl SharedObjectRuntime {
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
             reverse_address_aliases: HashMap::new(),
+            reverse_address_aliases_all: HashMap::new(),
+            key_type_resolver: None,
+            child_id_aliases: None,
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1356,6 +1451,9 @@ impl SharedObjectRuntime {
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
             reverse_address_aliases: HashMap::new(),
+            reverse_address_aliases_all: HashMap::new(),
+            key_type_resolver: None,
+            child_id_aliases: None,
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1374,6 +1472,9 @@ impl SharedObjectRuntime {
             accessed_children,
             address_aliases: HashMap::new(),
             reverse_address_aliases: HashMap::new(),
+            reverse_address_aliases_all: HashMap::new(),
+            key_type_resolver: None,
+            child_id_aliases: None,
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }
@@ -1387,6 +1488,43 @@ impl SharedObjectRuntime {
     /// This is called when ID-based lookup fails, allowing lookup by dynamic field key.
     pub fn set_key_based_child_fetcher(&mut self, fetcher: KeyBasedChildFetcherFn) {
         self.key_based_child_fetcher = Some(Arc::new(fetcher));
+    }
+
+    /// Set the key type resolver callback.
+    /// This allows resolving dynamic field key types from on-chain state.
+    pub fn set_key_type_resolver(&mut self, resolver: KeyTypeResolverFn) {
+        self.key_type_resolver = Some(Arc::new(resolver));
+    }
+
+    /// Set child ID aliases map (computed -> actual).
+    pub fn set_child_id_aliases(&mut self, aliases: ChildIdAliasMap) {
+        self.child_id_aliases = Some(aliases);
+    }
+
+    /// Resolve actual child ID if a computed alias exists.
+    pub fn resolve_child_id_alias(&self, child_id: AccountAddress) -> Option<AccountAddress> {
+        self.child_id_aliases
+            .as_ref()
+            .and_then(|map| map.lock().get(&child_id).copied())
+    }
+
+    /// Resolve a dynamic field key type via the configured resolver.
+    pub fn resolve_key_type(&self, parent_id: AccountAddress, key_bytes: &[u8]) -> Option<TypeTag> {
+        self.key_type_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(parent_id, key_bytes))
+    }
+
+    /// Sync mutated child keys from the local runtime into shared state.
+    fn sync_mutated_children(&mut self) {
+        let mutated = self.local.mutated_child_keys();
+        if mutated.is_empty() {
+            return;
+        }
+        let mut state = self.shared_state.lock();
+        for key in mutated {
+            state.mutated_children.insert(key);
+        }
     }
 
     /// Set address aliases for package upgrades.
@@ -1419,6 +1557,7 @@ impl SharedObjectRuntime {
         // after a package upgrade (using storage_id in their types).
         let mut reverse_with_version: HashMap<AccountAddress, (AccountAddress, u64)> =
             HashMap::new();
+        let mut reverse_all: HashMap<AccountAddress, Vec<(AccountAddress, u64)>> = HashMap::new();
 
         for (&storage, &original) in &aliases {
             // Look up version for this storage address
@@ -1432,6 +1571,11 @@ impl SharedObjectRuntime {
                 .or_else(|| versions.get(&format!("0x{}", storage_normalized)))
                 .copied()
                 .unwrap_or(0);
+
+            reverse_all
+                .entry(original)
+                .or_default()
+                .push((storage, version));
 
             reverse_with_version
                 .entry(original)
@@ -1453,6 +1597,19 @@ impl SharedObjectRuntime {
             .map(|(original, (storage, _))| (original, storage))
             .collect();
 
+        let mut reverse_all_addresses: HashMap<AccountAddress, Vec<AccountAddress>> =
+            HashMap::new();
+        for (original, mut entries) in reverse_all {
+            entries.sort_by(|(a_storage, a_version), (b_storage, b_version)| {
+                b_version
+                    .cmp(a_version)
+                    .then_with(|| b_storage.cmp(a_storage))
+            });
+            entries.dedup_by(|(a_storage, _), (b_storage, _)| a_storage == b_storage);
+            let addresses = entries.into_iter().map(|(storage, _)| storage).collect();
+            reverse_all_addresses.insert(original, addresses);
+        }
+
         // Debug output for reverse aliases
         if !reverse.is_empty() {
             trace!(
@@ -1469,7 +1626,16 @@ impl SharedObjectRuntime {
         }
 
         self.reverse_address_aliases = reverse;
+        self.reverse_address_aliases_all = reverse_all_addresses;
         self.address_aliases = aliases;
+    }
+
+    /// Return all known storage aliases for an original address.
+    pub fn storage_aliases_for(&self, original: &AccountAddress) -> Vec<AccountAddress> {
+        self.reverse_address_aliases_all
+            .get(original)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Rewrite a TypeTag to use storage addresses for dynamic field hash computation.
@@ -1631,11 +1797,9 @@ impl SharedObjectRuntime {
         owner: Owner,
     ) {
         let mut state = self.shared_state.lock();
-        // Only record if this is a new ID (created via object::new in this execution)
-        // This mirrors Sui's behavior where transfer on a non-new object is not "Created"
-        if state.is_new_id(object_id) {
-            state.add_created_object(object_id, type_tag, bytes, owner);
-        }
+        // Record the created object payload; filtering for truly new objects
+        // happens during PTB effect synthesis.
+        state.add_created_object(object_id, type_tag, bytes, owner);
     }
 
     /// Check if an object was already created during this execution.
@@ -1654,14 +1818,9 @@ impl SharedObjectRuntime {
         // Always record the access for tracing
         self.record_child_access(child_id);
 
-        // First try ID-based fetcher
-        if let Some(fetcher) = &self.child_fetcher {
-            if let Some(result) = fetcher(parent_id, child_id) {
-                return Some(result);
-            }
-        }
-
-        // If ID-based lookup failed, try key-based lookup
+        // Prefer key-based lookup when we have computed key info.
+        // This allows resolving dynamic object fields where the on-chain ID
+        // may differ from the locally computed hash.
         if let Some(key_fetcher) = &self.key_based_child_fetcher {
             if let Some(info) = self.get_computed_child_info(&child_id) {
                 if let Some(result) =
@@ -1672,7 +1831,20 @@ impl SharedObjectRuntime {
             }
         }
 
+        // Fallback to ID-based fetcher
+        if let Some(fetcher) = &self.child_fetcher {
+            if let Some(result) = fetcher(parent_id, child_id) {
+                return Some(result);
+            }
+        }
+
         None
+    }
+}
+
+impl Drop for SharedObjectRuntime {
+    fn drop(&mut self) {
+        self.sync_mutated_children();
     }
 }
 
@@ -1686,6 +1858,9 @@ impl Default for SharedObjectRuntime {
             accessed_children: Arc::new(Mutex::new(HashSet::new())),
             address_aliases: HashMap::new(),
             reverse_address_aliases: HashMap::new(),
+            reverse_address_aliases_all: HashMap::new(),
+            key_type_resolver: None,
+            child_id_aliases: None,
             computed_child_keys: Mutex::new(HashMap::new()),
         }
     }

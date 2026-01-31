@@ -824,11 +824,15 @@ impl InhabitationMetrics {
 // Execution Trace
 // =============================================================================
 
-/// Execution trace for debugging and analysis.
+/// Rich execution diagnostics for debugging and analysis.
 ///
-/// Records what happened during VM execution, including call stack at abort.
+/// Records what happened during VM execution, including call stack at abort,
+/// gas usage, and timing information.
+///
+/// Note: This is distinct from `vm::ModuleAccessTrace` which only tracks
+/// which modules were loaded (for verifying target package execution).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ExecutionTrace {
+pub struct ExecutionDiagnostics {
     /// Whether execution was attempted
     pub execution_attempted: bool,
     /// Modules that were loaded during execution
@@ -847,6 +851,10 @@ pub struct ExecutionTrace {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
 }
+
+/// Type alias for backward compatibility.
+#[deprecated(since = "0.11.0", note = "Use ExecutionDiagnostics instead")]
+pub type ExecutionTrace = ExecutionDiagnostics;
 
 /// Information about a function call during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -974,7 +982,7 @@ impl AbortInfo {
     }
 }
 
-impl ExecutionTrace {
+impl ExecutionDiagnostics {
     /// Record a function call
     pub fn record_call(&mut self, module: String, function: String, type_args: Vec<String>) {
         self.functions_called.push(FunctionCall {
@@ -1015,7 +1023,7 @@ pub struct EvaluationResult {
     pub inhabitation_metrics: Option<InhabitationMetrics>,
     /// Execution trace (if execution was attempted)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub execution_trace: Option<ExecutionTrace>,
+    pub execution_trace: Option<ExecutionDiagnostics>,
 }
 
 impl EvaluationResult {
@@ -1038,7 +1046,7 @@ impl EvaluationResult {
     }
 
     /// Create a successful result with metrics and trace
-    pub fn success_with_details(metrics: InhabitationMetrics, trace: ExecutionTrace) -> Self {
+    pub fn success_with_details(metrics: InhabitationMetrics, trace: ExecutionDiagnostics) -> Self {
         Self {
             ok: true,
             score: 1.0,
@@ -1105,7 +1113,7 @@ impl EvaluationResult {
         failure: Failure,
         criteria: ScoringCriteria,
         metrics: Option<InhabitationMetrics>,
-        trace: Option<ExecutionTrace>,
+        trace: Option<ExecutionDiagnostics>,
     ) -> Self {
         let score = criteria.score();
         let phase_reached = criteria.phase_reached();
@@ -1134,7 +1142,7 @@ impl EvaluationResult {
     }
 
     /// Add execution trace to an existing result
-    pub fn with_trace(mut self, trace: ExecutionTrace) -> Self {
+    pub fn with_trace(mut self, trace: ExecutionDiagnostics) -> Self {
         self.execution_trace = Some(trace);
         self
     }
@@ -1977,7 +1985,7 @@ mod tests {
 
     #[test]
     fn test_execution_trace_record_call() {
-        let mut trace = ExecutionTrace::default();
+        let mut trace = ExecutionDiagnostics::default();
         trace.record_call(
             "0x2::coin".to_string(),
             "mint".to_string(),
@@ -1989,7 +1997,7 @@ mod tests {
 
     #[test]
     fn test_execution_trace_mark_failed() {
-        let mut trace = ExecutionTrace::default();
+        let mut trace = ExecutionDiagnostics::default();
         trace.record_call("0x2::coin".to_string(), "mint".to_string(), vec![]);
         trace.mark_last_failed("assertion failed".to_string());
         assert!(!trace.functions_called[0].succeeded);
@@ -2072,7 +2080,7 @@ mod tests {
 
     #[test]
     fn test_evaluation_result_with_trace() {
-        let trace = ExecutionTrace {
+        let trace = ExecutionDiagnostics {
             execution_attempted: true,
             duration_ms: Some(150),
             ..Default::default()
@@ -2091,7 +2099,7 @@ mod tests {
             target_types_inhabited: 5,
             ..Default::default()
         };
-        let trace = ExecutionTrace {
+        let trace = ExecutionDiagnostics {
             abort_info: Some(AbortInfo::from_move_abort(
                 42,
                 Some("0x1::test".to_string()),
@@ -2126,7 +2134,7 @@ mod tests {
     #[test]
     fn test_evaluation_result_serialization_with_abort() {
         let failure = Failure::new(ErrorCode::TargetAborted, "abort");
-        let trace = ExecutionTrace {
+        let trace = ExecutionDiagnostics {
             abort_info: Some(AbortInfo::from_move_abort(
                 E_NOT_SUPPORTED,
                 None,

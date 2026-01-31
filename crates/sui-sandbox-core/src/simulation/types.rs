@@ -19,19 +19,11 @@ pub const SUI_DECIMALS: u8 = 9;
 /// SUI coin symbol
 pub const SUI_SYMBOL: &str = "SUI";
 
-/// SUI coin type string
-pub const SUI_COIN_TYPE: &str = "0x2::sui::SUI";
+// Re-use well-known type constants from the types module (single source of truth)
+pub use crate::types::{CLOCK_OBJECT_ID, RANDOM_OBJECT_ID, SUI_TYPE_STR as SUI_COIN_TYPE};
 
-/// Default gas price in MIST
-pub const DEFAULT_GAS_PRICE: u64 = 1000;
-
-/// Clock object ID (0x6) - well-known system object
-pub const CLOCK_OBJECT_ID: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000006";
-
-/// Random object ID (0x8) - well-known system object for on-chain randomness
-pub const RANDOM_OBJECT_ID: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000008";
+// Re-use gas constants from the gas module (single source of truth)
+pub use crate::gas::DEFAULT_GAS_PRICE;
 
 /// Default Clock timestamp base (2024-01-01 00:00:00 UTC)
 pub const DEFAULT_CLOCK_BASE_MS: u64 = 1704067200000;
@@ -111,7 +103,7 @@ pub struct SimulatedObject {
 
     /// Optional runtime ownership metadata.
     /// Used for building full Sui objects when available.
-    pub owner: Option<crate::object_runtime::Owner>,
+    pub owner: Option<crate::sandbox_runtime::Owner>,
 }
 
 /// Result of a direct function call.

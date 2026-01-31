@@ -66,7 +66,6 @@ pub struct SynthesisResult {
     /// Description of what was synthesized
     pub description: String,
     /// Resolved type arguments if this was a generic type (defaults to empty)
-    #[allow(dead_code)]
     pub type_args: Vec<String>,
 }
 
@@ -391,16 +390,6 @@ impl<'a> TypeSynthesizer<'a> {
         }
 
         Err(anyhow!("cannot synthesize type: {}", type_str))
-    }
-
-    /// Parse a type string and synthesize the struct.
-    #[allow(dead_code)]
-    fn synthesize_struct_from_type_str(
-        &mut self,
-        type_str: &str,
-        depth: usize,
-    ) -> Result<SynthesisResult> {
-        self.synthesize_struct_from_type_str_with_context(type_str, depth, &TypeContext::new())
     }
 
     /// Parse a type string with generic type arguments and synthesize the struct.
