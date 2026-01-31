@@ -7,9 +7,8 @@ use std::collections::HashMap;
 use move_core_types::account_address::AccountAddress;
 use serde::{Deserialize, Serialize};
 use sui_sandbox_types::FetchedTransaction;
-
-/// Object ID type (32-byte address).
-pub type ObjectID = AccountAddress;
+// Re-export ObjectID from sui-sandbox-types for use in this crate
+pub use sui_sandbox_types::ObjectID;
 
 /// Everything needed to replay a single transaction.
 ///

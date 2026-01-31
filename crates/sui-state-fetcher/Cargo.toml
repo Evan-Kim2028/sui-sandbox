@@ -16,16 +16,21 @@ tracing.workspace = true
 
 # Async runtime
 tokio.workspace = true
+futures.workspace = true
 
 # Sui types
 move-core-types.workspace = true
+move-binary-format.workspace = true
 bcs.workspace = true
+sui-types.workspace = true
 
 # Workspace crates
 sui-transport.workspace = true
 sui-prefetch.workspace = true
 sui-resolver.workspace = true
 sui-sandbox-types.workspace = true
+sui-historical-cache.workspace = true
+dirs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
