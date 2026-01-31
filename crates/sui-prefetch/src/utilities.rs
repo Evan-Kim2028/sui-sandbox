@@ -7,20 +7,19 @@
 //! ## What Belongs Here
 //!
 //! - Aggregating data from gRPC transaction responses
-//! - gRPC client initialization helpers
+//! - Dynamic field computation and prefetching
 //! - Data extraction from gRPC types
 //!
 //! ## What Does NOT Belong Here
 //!
 //! - Object patching (use `sui_sandbox_core::utilities::GenericObjectPatcher`)
 //! - Address normalization (use `sui_sandbox_core::utilities::normalize_address`)
+//! - gRPC client initialization (use `sui_transport::create_grpc_client`)
 //! - VM/resolver setup (use example-specific code)
 
 use std::collections::HashMap;
 
-use anyhow::Result;
-use move_core_types::account_address::AccountAddress;
-
+use sui_sandbox_types::env_var_or;
 use sui_transport::grpc::{GrpcClient, GrpcInput, GrpcTransaction};
 
 /// Compute the dynamic field child object ID using Sui's exact formula.
@@ -73,112 +72,11 @@ pub fn compute_dynamic_field_id(
 /// This function parses a type string like "u64" or "0x2::object::ID" and
 /// serializes it to the BCS format that Sui uses for type tag encoding.
 pub fn type_string_to_bcs(type_str: &str) -> Option<Vec<u8>> {
-    // Parse the type string to a TypeTag
-    let type_tag = parse_type_string_to_tag(type_str)?;
+    // Use the canonical type parsing from sui-sandbox-types
+    let type_tag = sui_sandbox_types::parse_type_tag(type_str)?;
 
     // Serialize the TypeTag to BCS
     bcs::to_bytes(&type_tag).ok()
-}
-
-/// Parse a type string to a Move TypeTag.
-fn parse_type_string_to_tag(type_str: &str) -> Option<move_core_types::language_storage::TypeTag> {
-    use move_core_types::identifier::Identifier;
-    use move_core_types::language_storage::{StructTag, TypeTag};
-
-    let type_str = type_str.trim();
-
-    // Handle primitive types
-    match type_str {
-        "bool" => return Some(TypeTag::Bool),
-        "u8" => return Some(TypeTag::U8),
-        "u16" => return Some(TypeTag::U16),
-        "u32" => return Some(TypeTag::U32),
-        "u64" => return Some(TypeTag::U64),
-        "u128" => return Some(TypeTag::U128),
-        "u256" => return Some(TypeTag::U256),
-        "address" => return Some(TypeTag::Address),
-        "signer" => return Some(TypeTag::Signer),
-        _ => {}
-    }
-
-    // Handle vector types
-    if let Some(inner) = type_str
-        .strip_prefix("vector<")
-        .and_then(|s| s.strip_suffix('>'))
-    {
-        let inner_tag = parse_type_string_to_tag(inner)?;
-        return Some(TypeTag::Vector(Box::new(inner_tag)));
-    }
-
-    // Handle struct types: 0x<address>::<module>::<name><type_args>
-    // Example: 0x2::object::ID or 0xefe8b...::market::Market<0x2::sui::SUI>
-    let (base_type, type_args_str) = if let Some(angle_pos) = type_str.find('<') {
-        let base = &type_str[..angle_pos];
-        let args_str = &type_str[angle_pos..];
-        (base, Some(args_str))
-    } else {
-        (type_str, None)
-    };
-
-    let parts: Vec<&str> = base_type.split("::").collect();
-    if parts.len() != 3 {
-        return None;
-    }
-
-    let address_str = parts[0];
-    let module_name = parts[1];
-    let struct_name = parts[2];
-
-    let address = AccountAddress::from_hex_literal(address_str).ok()?;
-    let module = Identifier::new(module_name).ok()?;
-    let name = Identifier::new(struct_name).ok()?;
-
-    // Parse type arguments if present
-    let type_params = if let Some(args_str) = type_args_str {
-        parse_type_args(args_str)?
-    } else {
-        vec![]
-    };
-
-    Some(TypeTag::Struct(Box::new(StructTag {
-        address,
-        module,
-        name,
-        type_params,
-    })))
-}
-
-/// Parse type arguments string like "<T1, T2, T3>"
-fn parse_type_args(args_str: &str) -> Option<Vec<move_core_types::language_storage::TypeTag>> {
-    let inner = args_str.strip_prefix('<')?.strip_suffix('>')?;
-    if inner.is_empty() {
-        return Some(vec![]);
-    }
-
-    let mut args = vec![];
-    let mut depth = 0;
-    let mut current_start = 0;
-
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                let arg = inner[current_start..i].trim();
-                args.push(parse_type_string_to_tag(arg)?);
-                current_start = i + 1;
-            }
-            _ => {}
-        }
-    }
-
-    // Handle last argument
-    let last_arg = inner[current_start..].trim();
-    if !last_arg.is_empty() {
-        args.push(parse_type_string_to_tag(last_arg)?);
-    }
-
-    Some(args)
 }
 
 /// Create a Tokio runtime and connect to a gRPC endpoint.
@@ -187,60 +85,6 @@ fn parse_type_args(args_str: &str) -> Option<Vec<move_core_types::language_stora
 ///
 /// **Endpoint**:
 /// - `SUI_GRPC_ENDPOINT` - gRPC endpoint (default: `https://fullnode.mainnet.sui.io:443`)
-///
-/// **API Key**:
-/// - `SUI_GRPC_API_KEY` - API key (optional, depends on provider)
-///
-/// Returns both the runtime (for blocking operations) and the connected client.
-///
-/// # Example
-///
-/// ```ignore
-/// use sui_prefetch::create_grpc_client;
-///
-/// // Using environment variables:
-/// // SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
-/// // SUI_GRPC_API_KEY=your-api-key
-///
-/// let (rt, grpc) = create_grpc_client()?;
-/// let tx = rt.block_on(async { grpc.get_transaction(digest).await })?;
-/// ```
-pub fn create_grpc_client() -> Result<(tokio::runtime::Runtime, GrpcClient)> {
-    let rt = tokio::runtime::Runtime::new()?;
-
-    let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
-
-    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
-
-    Ok((rt, grpc))
-}
-
-/// Create a gRPC client with explicit endpoint and optional API key.
-///
-/// Use this when you need direct control over the endpoint and API key,
-/// bypassing environment variable configuration.
-///
-/// # Example
-///
-/// ```ignore
-/// use sui_prefetch::create_grpc_client_with_config;
-///
-/// let (rt, grpc) = create_grpc_client_with_config(
-///     "https://fullnode.mainnet.sui.io:443",
-///     Some("your-api-key".to_string()),
-/// )?;
-/// ```
-pub fn create_grpc_client_with_config(
-    endpoint: &str,
-    api_key: Option<String>,
-) -> Result<(tokio::runtime::Runtime, GrpcClient)> {
-    let rt = tokio::runtime::Runtime::new()?;
-    let grpc = rt.block_on(async { GrpcClient::with_api_key(endpoint, api_key).await })?;
-    Ok((rt, grpc))
-}
-
 /// Collect historical object versions from a gRPC transaction.
 ///
 /// Aggregates version information from multiple sources in the gRPC response:
@@ -471,10 +315,7 @@ fn prefetch_dynamic_fields_with_version_bound_internal(
         .map(|id| (id.clone(), 0))
         .collect();
 
-    let max_secs = std::env::var("SUI_DF_PREFETCH_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(30);
+    let max_secs: u64 = env_var_or("SUI_DF_PREFETCH_TIMEOUT_SECS", 30);
     let start = Instant::now();
 
     // Helper to normalize address for consistent lookups

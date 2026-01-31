@@ -25,5 +25,6 @@ sui-sdk.workspace = true
 sui-types.workspace = true
 
 # Workspace crates
+sui-resolver.workspace = true
 sui-sandbox-types.workspace = true
 sui-transport.workspace = true

@@ -26,22 +26,29 @@ pub mod conversion;
 pub mod eager_prefetch;
 pub mod utilities;
 
-// Re-export main conversion function
-pub use conversion::grpc_to_fetched_transaction;
-
-// Re-export ground-truth-first prefetch types (recommended)
+// =============================================================================
+// Primary API: Ground-Truth Prefetch (recommended)
+// =============================================================================
+// Uses unchanged_loaded_runtime_objects from transaction effects for 100% accuracy.
 pub use eager_prefetch::{
-    ground_truth_prefetch_for_transaction, FetchedObject, FetchedPackage,
-    GroundTruthPrefetchConfig, GroundTruthPrefetchResult, GroundTruthPrefetchStats,
+    ground_truth_prefetch_for_transaction, GroundTruthPrefetchConfig, GroundTruthPrefetchResult,
+    GroundTruthPrefetchStats,
 };
 
-// Re-export eager prefetch types (legacy GraphQL-first)
+// =============================================================================
+// Legacy API: GraphQL Discovery Prefetch
+// =============================================================================
+// Discovers dynamic fields via GraphQL queries. Use ground-truth when available.
 pub use eager_prefetch::{
     analyze_transaction_access_patterns, eager_prefetch_for_transaction, EagerPrefetchConfig,
     EagerPrefetchResult, PrefetchStats, TransactionAccessAnalysis,
 };
 
-// Re-export utilities
+// =============================================================================
+// Conversion & Utilities
+// =============================================================================
+pub use conversion::grpc_to_fetched_transaction;
+pub use sui_sandbox_types::{FetchedObject, FetchedPackage};
 pub use utilities::{
     collect_historical_versions, compute_dynamic_field_id, prefetch_dynamic_fields,
     prefetch_dynamic_fields_at_checkpoint, prefetch_dynamic_fields_default,

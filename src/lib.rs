@@ -22,6 +22,7 @@ pub mod corpus;
 )]
 pub mod data_fetcher;
 pub mod move_stubs;
+pub mod ptb_classifier;
 pub mod rpc;
 pub mod runner;
 

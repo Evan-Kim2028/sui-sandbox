@@ -319,12 +319,6 @@ pub fn format_address(addr: &AccountAddress) -> String {
     }
 }
 
-/// Format an address in full form
-#[allow(dead_code)]
-pub fn format_address_full(addr: &AccountAddress) -> String {
-    format!("0x{}", hex::encode(addr))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

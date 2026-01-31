@@ -1006,6 +1006,118 @@ mod mutability_enforcement {
         );
     }
 
+    /// Test that Shared objects with mutable=false are tracked as immutable
+    #[test]
+    fn test_shared_immutable_tracked_as_immutable() {
+        let resolver = framework_resolver();
+        let mut vm = VMHarness::new(&resolver, false).unwrap();
+
+        let mut executor = PTBExecutor::new(&mut vm);
+
+        let object_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000abc",
+        )
+        .unwrap();
+        let fake_bytes = vec![0u8; 32];
+        executor
+            .add_object_input(ObjectInput::Shared {
+                id: object_id,
+                bytes: fake_bytes,
+                type_tag: None,
+                version: None,
+                mutable: false,
+            })
+            .unwrap();
+
+        assert!(
+            executor.is_immutable(&object_id),
+            "Shared immutable inputs should be marked as immutable"
+        );
+    }
+
+    /// Shared mutable inputs should be reflected as mutated even if the VM does not emit
+    /// mutable-ref outputs (Sui effects include shared mutable inputs as mutated).
+    #[test]
+    fn test_shared_mutable_inputs_recorded_as_mutated() {
+        let resolver = framework_resolver();
+        let mut vm = VMHarness::new(&resolver, false).unwrap();
+
+        let mut executor = PTBExecutor::new(&mut vm);
+
+        let object_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000def",
+        )
+        .unwrap();
+        let fake_bytes = vec![0u8; 32];
+        executor
+            .add_object_input(ObjectInput::Shared {
+                id: object_id,
+                bytes: fake_bytes,
+                type_tag: None,
+                version: None,
+                mutable: true,
+            })
+            .unwrap();
+
+        let effects = executor
+            .execute(Vec::new())
+            .expect("execution should succeed");
+        assert!(
+            effects.mutated.contains(&object_id),
+            "Shared mutable inputs should be recorded as mutated"
+        );
+    }
+
+    /// Shared immutable inputs must not be mutated (hard fail).
+    #[test]
+    fn test_shared_immutable_mutation_fails() {
+        let resolver = framework_resolver();
+        let mut vm = VMHarness::new(&resolver, false).unwrap();
+
+        let mut executor = PTBExecutor::new(&mut vm);
+
+        let object_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000aaa",
+        )
+        .unwrap();
+        let mut coin_bytes = Vec::with_capacity(40);
+        coin_bytes.extend_from_slice(object_id.as_ref());
+        coin_bytes.extend_from_slice(&100u64.to_le_bytes());
+
+        let coin_idx = executor
+            .add_object_input(ObjectInput::Shared {
+                id: object_id,
+                bytes: coin_bytes,
+                type_tag: None,
+                version: None,
+                mutable: false,
+            })
+            .unwrap();
+
+        let amount_idx = executor
+            .add_pure_input(25u64.to_le_bytes().to_vec())
+            .unwrap();
+
+        let cmd = Command::SplitCoins {
+            coin: Argument::Input(coin_idx),
+            amounts: vec![Argument::Input(amount_idx)],
+        };
+
+        let effects = executor
+            .execute(vec![cmd])
+            .expect("execution should return effects");
+        assert!(
+            !effects.success,
+            "shared immutable mutation should fail execution"
+        );
+        let err = effects.error.unwrap_or_default();
+        assert!(
+            err.contains("SharedObjectMutabilityViolation"),
+            "expected shared mutability violation error, got: {}",
+            err
+        );
+    }
+
     /// Test that MutRef objects are NOT tracked as immutable
     #[test]
     fn test_mutref_not_immutable() {
@@ -1171,6 +1283,7 @@ mod shared_object_validation {
                 bytes: fake_bytes,
                 type_tag: None,
                 version: None,
+                mutable: true,
             })
             .unwrap();
 
@@ -1251,6 +1364,7 @@ mod shared_object_validation {
                 bytes: fake_bytes,
                 type_tag: None,
                 version: None,
+                mutable: true,
             })
             .unwrap();
 

@@ -15,64 +15,49 @@ use sha2::Digest;
 // =============================================================================
 // Address Utilities
 // =============================================================================
-// Canonical address formatting functions. Use these instead of module-specific
-// implementations for consistent address representation across the codebase.
+// These functions delegate to sui-resolver for canonical address handling.
+// Use these instead of module-specific implementations for consistent
+// address representation across the codebase.
 
 /// Parse an address string (short or long form) into an AccountAddress.
 ///
 /// Accepts formats: "0x2", "0x0000...0002", "2"
+/// Returns error for empty strings or invalid hex.
 pub fn parse_address(addr: &str) -> Result<AccountAddress> {
-    let s = addr.trim();
-    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let trimmed = addr.trim();
+    let hex_str = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")).unwrap_or(trimmed);
 
+    // Validate: not empty, only hex chars
     if hex_str.is_empty() {
         return Err(anyhow!("empty address"));
     }
-
     if !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(anyhow!("invalid hex address: {}", addr));
     }
 
-    // Pad to 64 hex chars (32 bytes)
-    let padded = format!("{:0>64}", hex_str);
-    if padded.len() > 64 {
-        return Err(anyhow!("address too long: {}", addr));
-    }
-
-    AccountAddress::from_hex_literal(&format!("0x{}", padded))
-        .map_err(|e| anyhow!("invalid address '{}': {:?}", addr, e))
+    sui_resolver::parse_address(addr).ok_or_else(|| anyhow!("invalid address: {}", addr))
 }
 
 /// Format an address to short form (0x2 instead of 0x0000...0002).
 ///
 /// This is the preferred format for display to users and in API responses.
+/// Delegates to sui-resolver for canonical implementation.
 pub fn format_address_short(addr: &AccountAddress) -> String {
-    let hex = addr.to_hex_literal();
-    // Strip leading zeros after 0x prefix
-    if let Some(without_prefix) = hex.strip_prefix("0x") {
-        let trimmed = without_prefix.trim_start_matches('0');
-        if trimmed.is_empty() {
-            "0x0".to_string()
-        } else {
-            format!("0x{}", trimmed)
-        }
-    } else {
-        hex
-    }
+    sui_resolver::normalize_address_short(&sui_resolver::address_to_string(addr))
 }
 
 /// Format an address to full 64-character form (0x0000...0002).
 ///
 /// This is the canonical form for storage and comparison.
+/// Delegates to sui-resolver for canonical implementation.
 pub fn format_address_full(addr: &AccountAddress) -> String {
-    format!("0x{}", hex::encode(addr.as_ref()))
+    sui_resolver::address_to_string(addr)
 }
 
 /// Check if an address is a framework address (0x1, 0x2, 0x3).
+/// Delegates to sui-resolver for canonical implementation.
 pub fn is_framework_address(addr: &AccountAddress) -> bool {
-    let bytes = addr.as_ref();
-    // Check if all bytes except the last are zero
-    bytes[..31].iter().all(|&b| b == 0) && bytes[31] <= 3 && bytes[31] >= 1
+    sui_resolver::is_framework_account_address(addr)
 }
 
 #[derive(Debug, Clone, Copy)]

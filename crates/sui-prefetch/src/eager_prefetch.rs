@@ -24,6 +24,7 @@
 use std::collections::{HashMap, HashSet};
 
 use sui_resolver::address::normalize_address;
+use sui_sandbox_types::{FetchedObject, FetchedPackage};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcObject, GrpcTransaction};
 
@@ -85,25 +86,7 @@ pub struct GroundTruthPrefetchResult {
     pub stats: GroundTruthPrefetchStats,
 }
 
-/// A fetched object with metadata.
-#[derive(Debug, Clone)]
-pub struct FetchedObject {
-    pub object_id: String,
-    pub version: u64,
-    pub type_string: Option<String>,
-    pub bcs: Vec<u8>,
-}
-
-/// A fetched package with modules.
-#[derive(Debug, Clone)]
-pub struct FetchedPackage {
-    pub package_id: String,
-    pub version: u64,
-    pub modules: Vec<(String, Vec<u8>)>,
-    pub linkage: HashMap<String, String>,
-    /// The original package ID (for upgraded packages).
-    pub original_id: Option<String>,
-}
+// FetchedObject and FetchedPackage are imported from sui-sandbox-types
 
 /// Statistics for ground-truth prefetching.
 #[derive(Debug, Default)]
@@ -253,12 +236,10 @@ pub fn ground_truth_prefetch_for_transaction(
                     result.stats.packages_fetched += 1;
                 } else if let Some(bcs) = obj.bcs {
                     // Regular object
-                    let fetched = FetchedObject {
-                        object_id: obj_id.clone(),
-                        version: obj.version,
-                        type_string: obj.type_string,
-                        bcs,
-                    };
+                    let mut fetched = FetchedObject::new(obj_id.clone(), obj.version, bcs);
+                    if let Some(ts) = obj.type_string {
+                        fetched = fetched.with_type(ts);
+                    }
                     result.objects.insert(obj_id.clone(), fetched);
                 }
             }
@@ -651,12 +632,10 @@ pub fn ground_truth_prefetch_for_transaction(
             for (obj_id, fetch_result) in supp_results {
                 if let Ok(Some(obj)) = fetch_result {
                     if let Some(bcs) = obj.bcs {
-                        let fetched = FetchedObject {
-                            object_id: obj_id.clone(),
-                            version: obj.version,
-                            type_string: obj.type_string,
-                            bcs,
-                        };
+                        let mut fetched = FetchedObject::new(obj_id.clone(), obj.version, bcs);
+                        if let Some(ts) = obj.type_string {
+                            fetched = fetched.with_type(ts);
+                        }
                         result.supplemental_objects.insert(obj_id, fetched);
                         result.stats.supplemental_fetched += 1;
                     }
@@ -758,42 +737,7 @@ fn extract_linkage_with_versions(obj: &GrpcObject) -> HashMap<String, (String, u
         .unwrap_or_default()
 }
 
-/// Extract package dependencies from bytecode using proper Move binary format parsing.
-///
-/// This uses `CompiledModule::module_handles()` to extract all module references,
-/// which is the correct way to find dependencies. The previous byte-scanning approach
-/// was broken and produced false positives (tried to fetch 11,000+ packages).
-#[allow(dead_code)]
-fn extract_dependencies_from_bytecode(bytecode: &[u8]) -> Vec<String> {
-    use move_binary_format::CompiledModule;
-
-    // Deserialize the module properly
-    let module = match CompiledModule::deserialize_with_defaults(bytecode) {
-        Ok(m) => m,
-        Err(_) => return Vec::new(), // Invalid bytecode, return empty
-    };
-
-    // Extract addresses from all module handles - these are the real dependencies
-    let mut deps = Vec::new();
-    let mut seen = HashSet::new();
-
-    for handle in module.module_handles() {
-        let addr = module.address_identifier_at(handle.address);
-        let addr_str = addr.to_hex_literal();
-
-        // Skip framework addresses
-        if is_framework_address(&addr_str) {
-            continue;
-        }
-
-        let normalized = normalize_address(&addr_str);
-        if seen.insert(normalized.clone()) {
-            deps.push(normalized);
-        }
-    }
-
-    deps
-}
+// Note: For basic dependency extraction from bytecode, use sui_sandbox_core::utilities::extract_dependencies_from_bytecode
 
 /// Extract ALL package addresses referenced in bytecode, including:
 /// - Module handles (direct dependencies)

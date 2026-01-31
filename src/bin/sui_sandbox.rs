@@ -42,7 +42,7 @@ mod sandbox_cli;
 
 use sandbox_cli::{
     bridge::BridgeCmd, fetch::FetchCmd, ptb::PtbCmd, publish::PublishCmd, replay::ReplayCmd,
-    run::RunCmd, view::ViewCmd, SandboxState,
+    run::RunCmd, tool::ToolCmd, view::ViewCmd, SandboxState,
 };
 
 #[derive(Parser)]
@@ -58,7 +58,7 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// State file for session persistence (default: .sui-sandbox/state.bin)
+    /// State file for session persistence (legacy CLI uses ~/.sui-sandbox/state.bin; MCP tool uses ~/.sui-sandbox/mcp-state.json)
     #[arg(long, global = true)]
     state_file: Option<std::path::PathBuf>,
 
@@ -102,6 +102,9 @@ enum Commands {
     /// Generate sui client commands for deployment (transition helper)
     Bridge(BridgeCmd),
 
+    /// Invoke MCP tools directly from the CLI (JSON in, JSON out)
+    Tool(ToolCmd),
+
     /// Clean session state (remove persisted state file)
     Clean,
 
@@ -111,43 +114,59 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let Cli {
+        command,
+        state_file,
+        rpc_url,
+        json,
+        verbose,
+    } = Cli::parse();
 
-    // Determine state file path
-    let state_file = cli
-        .state_file
-        .unwrap_or_else(|| std::path::PathBuf::from(".sui-sandbox").join("state.bin"));
+    match command {
+        Commands::Tool(cmd) => {
+            let base = sandbox_cli::network::sandbox_home();
+            let tool_state_file = state_file.unwrap_or_else(|| base.join("mcp-state.json"));
+            cmd.execute(json, Some(tool_state_file.as_path()), &rpc_url)
+                .await
+        }
+        command => {
+            // Determine state file path for legacy CLI commands
+            let base = sandbox_cli::network::sandbox_home();
+            let state_file = state_file.unwrap_or_else(|| base.join("state.bin"));
 
-    // Load or create session state
-    let mut state = SandboxState::load_or_create(&state_file, &cli.rpc_url)?;
+            // Load or create session state
+            let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
 
-    let result = match cli.command {
-        Commands::Publish(cmd) => cmd.execute(&mut state, cli.json, cli.verbose).await,
-        Commands::Run(cmd) => cmd.execute(&mut state, cli.json, cli.verbose).await,
-        Commands::Ptb(cmd) => cmd.execute(&mut state, cli.json, cli.verbose).await,
-        Commands::Fetch(cmd) => cmd.execute(&mut state, cli.json, cli.verbose).await,
-        Commands::Replay(cmd) => cmd.execute(&mut state, cli.json, cli.verbose).await,
-        Commands::View(cmd) => cmd.execute(&state, cli.json).await,
-        Commands::Bridge(cmd) => cmd.execute(cli.json),
-        Commands::Clean => {
-            if state_file.exists() {
-                std::fs::remove_file(&state_file)?;
-                println!("Removed state file: {}", state_file.display());
-            } else {
-                println!("No state file to remove");
+            let result = match command {
+                Commands::Publish(cmd) => cmd.execute(&mut state, json, verbose).await,
+                Commands::Run(cmd) => cmd.execute(&mut state, json, verbose).await,
+                Commands::Ptb(cmd) => cmd.execute(&mut state, json, verbose).await,
+                Commands::Fetch(cmd) => cmd.execute(&mut state, json, verbose).await,
+                Commands::Replay(cmd) => cmd.execute(&mut state, json, verbose).await,
+                Commands::View(cmd) => cmd.execute(&state, json).await,
+                Commands::Bridge(cmd) => cmd.execute(json),
+                Commands::Tool(_) => Ok(()),
+                Commands::Clean => {
+                    if state_file.exists() {
+                        std::fs::remove_file(&state_file)?;
+                        println!("Removed state file: {}", state_file.display());
+                    } else {
+                        println!("No state file to remove");
+                    }
+                    Ok(())
+                }
+                Commands::Status => {
+                    sandbox_cli::output::print_status(&state, json);
+                    Ok(())
+                }
+            };
+
+            // Save state on success
+            if result.is_ok() {
+                state.save(&state_file)?;
             }
-            Ok(())
-        }
-        Commands::Status => {
-            sandbox_cli::output::print_status(&state, cli.json);
-            Ok(())
-        }
-    };
 
-    // Save state on success
-    if result.is_ok() {
-        state.save(&state_file)?;
+            result
+        }
     }
-
-    result
 }

@@ -3,12 +3,15 @@
 //! Handles persistence of sandbox state across CLI invocations.
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use move_core_types::account_address::AccountAddress;
+use move_core_types::language_storage::TypeTag;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::types::parse_type_tag;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
 /// Serializable state that can be persisted to disk
@@ -175,15 +178,7 @@ impl SandboxState {
             .and_then(|s| AccountAddress::from_hex_literal(s).ok())
     }
 
-    /// Create a VM harness from current state with default config
-    #[allow(dead_code)]
-    pub fn create_harness(&self) -> Result<VMHarness<'_>> {
-        let config = SimulationConfig::default();
-        VMHarness::with_config(&self.resolver, false, config)
-    }
-
     /// Create a VM harness with a specific sender and gas budget
-    #[allow(dead_code)]
     pub fn create_harness_with_sender(
         &self,
         sender: AccountAddress,
@@ -218,6 +213,43 @@ impl SandboxState {
         None
     }
 
+    /// Add an object to the state.
+    pub fn add_object(
+        &mut self,
+        object_id: &str,
+        type_tag: Option<&str>,
+        bcs_base64: &str,
+    ) -> Result<()> {
+        let _addr = AccountAddress::from_hex_literal(object_id)
+            .map_err(|e| anyhow::anyhow!("Invalid object ID '{}': {}", object_id, e))?;
+        let stored_type = type_tag.unwrap_or_default().to_string();
+        self.persisted
+            .objects
+            .insert(object_id.to_string(), (stored_type, bcs_base64.to_string()));
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Get object bytes and parsed type tag for PTB inputs.
+    pub fn get_object_input(&self, object_id: &str) -> Result<(Vec<u8>, Option<TypeTag>)> {
+        let (type_str, bcs_base64) = self.persisted.objects.get(object_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Object {} not found in session. Run `sui-sandbox fetch object {}` first.",
+                object_id,
+                object_id
+            )
+        })?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(bcs_base64)
+            .map_err(|e| anyhow::anyhow!("Invalid cached BCS for {}: {}", object_id, e))?;
+        let parsed = if type_str.is_empty() {
+            None
+        } else {
+            parse_type_tag(type_str).ok()
+        };
+        Ok((bytes, parsed))
+    }
+
     /// Set last sender
     pub fn set_last_sender(&mut self, sender: AccountAddress) {
         self.persisted.last_sender = Some(format!("0x{}", hex::encode(sender)));
@@ -225,7 +257,7 @@ impl SandboxState {
     }
 
     /// Get last sender or default
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn last_sender(&self) -> AccountAddress {
         self.persisted
             .last_sender

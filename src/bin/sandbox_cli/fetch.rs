@@ -1,12 +1,19 @@
 //! Fetch command - import packages and objects from mainnet
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use move_core_types::account_address::AccountAddress;
 use serde::Serialize;
 
+use super::network::{cache_dir, infer_network, resolve_graphql_endpoint};
 use super::output::format_error;
 use super::SandboxState;
+use std::collections::HashMap;
+use sui_state_fetcher::types::{PackageData, VersionedObject};
+use sui_state_fetcher::{HistoricalStateProvider, VersionedCache};
+use sui_transport::graphql::GraphQLClient;
+use sui_transport::graphql::ObjectOwner;
 
 #[derive(Parser, Debug)]
 pub struct FetchCmd {
@@ -36,6 +43,20 @@ pub enum FetchTarget {
         #[arg(long)]
         version: Option<u64>,
     },
+    /// Ingest packages from Walrus checkpoints into the local index
+    Checkpoints {
+        /// Start checkpoint (inclusive)
+        #[arg(value_name = "START")]
+        start: u64,
+
+        /// End checkpoint (inclusive)
+        #[arg(value_name = "END")]
+        end: u64,
+
+        /// Number of concurrent checkpoint fetches (default: 4)
+        #[arg(long, default_value = "4")]
+        concurrency: usize,
+    },
 }
 
 impl FetchCmd {
@@ -45,6 +66,18 @@ impl FetchCmd {
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
+        // Handle checkpoints separately since it's async and doesn't use sandbox state
+        if let FetchTarget::Checkpoints {
+            start,
+            end,
+            concurrency,
+        } = &self.target
+        {
+            return self
+                .execute_checkpoints(*start, *end, *concurrency, json_output, verbose)
+                .await;
+        }
+
         let result = self.execute_inner(state, verbose);
 
         match result {
@@ -63,6 +96,47 @@ impl FetchCmd {
         }
     }
 
+    async fn execute_checkpoints(
+        &self,
+        start: u64,
+        end: u64,
+        concurrency: usize,
+        json_output: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        if verbose {
+            eprintln!(
+                "Ingesting packages from checkpoints {}..{} (concurrency: {})",
+                start, end, concurrency
+            );
+        }
+
+        let provider = HistoricalStateProvider::mainnet().await?;
+
+        let ingested = provider
+            .ingest_packages_from_checkpoint_range(start, end, concurrency)
+            .await?;
+
+        let result = IngestResult {
+            success: true,
+            start_checkpoint: start,
+            end_checkpoint: end,
+            packages_ingested: ingested,
+            error: None,
+        };
+
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        } else {
+            println!(
+                "\x1b[32m✓ Ingested {} packages from checkpoints {}..{}\x1b[0m",
+                ingested, start, end
+            );
+        }
+
+        Ok(())
+    }
+
     fn execute_inner(&self, state: &mut SandboxState, verbose: bool) -> Result<FetchResult> {
         match &self.target {
             FetchTarget::Package {
@@ -71,6 +145,9 @@ impl FetchCmd {
             } => fetch_package(state, package_id, *with_deps, verbose),
             FetchTarget::Object { object_id, version } => {
                 fetch_object(state, object_id, *version, verbose)
+            }
+            FetchTarget::Checkpoints { .. } => {
+                unreachable!("Checkpoints handled in execute()")
             }
         }
     }
@@ -98,6 +175,16 @@ pub struct ObjectInfo {
     pub version: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct IngestResult {
+    pub success: bool,
+    pub start_checkpoint: u64,
+    pub end_checkpoint: u64,
+    pub packages_ingested: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 fn fetch_package(
     state: &mut SandboxState,
     package_id: &str,
@@ -111,7 +198,10 @@ fn fetch_package(
     }
 
     // Use sui-transport GraphQL client (synchronous)
-    let client = sui_transport::graphql::GraphQLClient::new(&state.rpc_url);
+    let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
+    let client = GraphQLClient::new(&graphql_endpoint);
+    let network = infer_network(&state.rpc_url, &graphql_endpoint);
+    let cache = VersionedCache::with_storage(cache_dir(&network))?;
 
     let package_data = client
         .fetch_package(package_id)
@@ -135,25 +225,33 @@ fn fetch_package(
     let module_names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
 
     // Add to state
-    state.add_package(addr, modules);
+    state.add_package(addr, modules.clone());
 
     packages_fetched.push(PackageInfo {
         address: package_id.to_string(),
         modules: module_names,
     });
 
+    // Populate the shared versioned cache for MCP parity.
+    let pkg = PackageData {
+        address: addr,
+        version: package_data.version,
+        modules,
+        linkage: HashMap::new(),
+        original_id: None,
+    };
+    cache.put_package(pkg);
+    let _ = cache.flush();
+
     // Fetch dependencies if requested
     if with_deps {
         if verbose {
-            eprintln!("Fetching dependencies...");
-            eprintln!("  Note: Auto-fetching dependencies from linkage table.");
+            eprintln!("Fetching dependencies (closure)...");
         }
-
-        // The GraphQL API doesn't directly expose dependency list in our current implementation
-        // We would need to parse the linkage_table field or iterate through module handles
-        // For now, just inform the user
-        if verbose {
-            eprintln!("  Use 'sui-sandbox fetch package <ID>' for each dependency as needed.");
+        let fetched =
+            fetch_dependency_closure(state, &client, &cache, verbose, &mut packages_fetched)?;
+        if verbose && fetched > 0 {
+            eprintln!("  ✓ fetched {} dependency packages", fetched);
         }
     }
 
@@ -165,8 +263,84 @@ fn fetch_package(
     })
 }
 
+fn fetch_dependency_closure(
+    state: &mut SandboxState,
+    client: &GraphQLClient,
+    cache: &VersionedCache,
+    verbose: bool,
+    packages_fetched: &mut Vec<PackageInfo>,
+) -> Result<usize> {
+    use std::collections::BTreeSet;
+    const MAX_ROUNDS: usize = 8;
+
+    let mut fetched = 0usize;
+    let mut seen: BTreeSet<AccountAddress> = BTreeSet::new();
+
+    for _ in 0..MAX_ROUNDS {
+        let missing = state.resolver.get_missing_dependencies();
+        let pending: Vec<AccountAddress> = missing
+            .into_iter()
+            .filter(|addr| !seen.contains(addr))
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for addr in pending {
+            seen.insert(addr);
+            let addr_hex = addr.to_hex_literal();
+            if verbose {
+                eprintln!("  fetching {}", addr_hex);
+            }
+            let pkg = match client.fetch_package(&addr_hex) {
+                Ok(p) => p,
+                Err(err) => {
+                    if verbose {
+                        eprintln!("  failed to fetch {}: {}", addr_hex, err);
+                    }
+                    continue;
+                }
+            };
+
+            let mut modules: Vec<(String, Vec<u8>)> = Vec::new();
+            let mut module_names = Vec::new();
+            for module in pkg.modules {
+                if let Some(b64) = module.bytecode_base64 {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                        module_names.push(module.name.clone());
+                        modules.push((module.name, bytes));
+                    }
+                }
+            }
+            if modules.is_empty() {
+                if verbose {
+                    eprintln!("  no modules for {}", addr_hex);
+                }
+                continue;
+            }
+
+            state.add_package(addr, modules.clone());
+            packages_fetched.push(PackageInfo {
+                address: addr_hex.clone(),
+                modules: module_names,
+            });
+            let pkg_data = PackageData {
+                address: addr,
+                version: pkg.version,
+                modules,
+                linkage: HashMap::new(),
+                original_id: None,
+            };
+            cache.put_package(pkg_data);
+            let _ = cache.flush();
+            fetched += 1;
+        }
+    }
+
+    Ok(fetched)
+}
+
 fn fetch_object(
-    state: &SandboxState,
+    state: &mut SandboxState,
     object_id: &str,
     version: Option<u64>,
     verbose: bool,
@@ -181,7 +355,10 @@ fn fetch_object(
     }
 
     // Use sui-transport GraphQL client (synchronous)
-    let client = sui_transport::graphql::GraphQLClient::new(&state.rpc_url);
+    let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
+    let client = sui_transport::graphql::GraphQLClient::new(&graphql_endpoint);
+    let network = infer_network(&state.rpc_url, &graphql_endpoint);
+    let cache = VersionedCache::with_storage(cache_dir(&network))?;
 
     let object_data = if let Some(v) = version {
         client
@@ -195,13 +372,39 @@ fn fetch_object(
 
     let object_info = ObjectInfo {
         id: object_id.to_string(),
-        type_tag: object_data.type_string,
+        type_tag: object_data.type_string.clone(),
         version: Some(object_data.version),
     };
 
     if verbose {
         eprintln!("  Type: {:?}", object_info.type_tag);
         eprintln!("  Version: {:?}", object_info.version);
+    }
+
+    if let Some(bcs_base64) = &object_data.bcs_base64 {
+        state.add_object(object_id, object_data.type_string.as_deref(), bcs_base64)?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(bcs_base64)
+            .context("Failed to decode object BCS")?;
+        let (is_shared, is_immutable) = match &object_data.owner {
+            ObjectOwner::Shared { .. } => (true, false),
+            ObjectOwner::Immutable => (false, true),
+            _ => (false, false),
+        };
+        let id = AccountAddress::from_hex_literal(object_id)?;
+        let versioned = VersionedObject {
+            id,
+            version: object_data.version,
+            digest: object_data.digest.clone(),
+            type_tag: object_data.type_string.clone(),
+            bcs_bytes: bytes,
+            is_shared,
+            is_immutable,
+        };
+        cache.put_object(versioned);
+        let _ = cache.flush();
+    } else if verbose {
+        eprintln!("  Warning: object has no BCS payload; not loaded into session");
     }
 
     Ok(FetchResult {

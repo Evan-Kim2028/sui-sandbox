@@ -22,6 +22,11 @@ pub mod address;
 pub mod linkage;
 pub mod package_upgrades;
 
-pub use address::normalize_address;
+// Re-export address utilities
+pub use address::{
+    address_to_string, is_framework_account_address, is_framework_address, normalize_address,
+    normalize_address_checked, normalize_address_short, normalize_id, normalize_id_short,
+    parse_address, FRAMEWORK_ADDRESSES,
+};
 pub use linkage::{extract_linkage_map, extract_linkage_with_versions};
 pub use package_upgrades::PackageUpgradeResolver;

@@ -14,8 +14,8 @@
 use anyhow::Result;
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_types::{
-    FetchedTransaction, GasSummary, PtbArgument, PtbCommand, TransactionDigest,
-    TransactionEffectsSummary, TransactionInput, TransactionStatus,
+    encoding::base64_encode, FetchedTransaction, GasSummary, PtbArgument, PtbCommand,
+    TransactionDigest, TransactionEffectsSummary, TransactionInput, TransactionStatus,
 };
 
 use sui_transport::grpc::{GrpcArgument, GrpcCommand, GrpcInput, GrpcTransaction};
@@ -169,7 +169,7 @@ fn convert_grpc_command(cmd: &GrpcCommand) -> Option<PtbCommand> {
         } => Some(PtbCommand::Publish {
             modules: modules
                 .iter()
-                .map(|m| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, m))
+                .map(|m| base64_encode(m))
                 .collect(),
             dependencies: dependencies.clone(),
         }),
@@ -181,7 +181,7 @@ fn convert_grpc_command(cmd: &GrpcCommand) -> Option<PtbCommand> {
         } => Some(PtbCommand::Upgrade {
             modules: modules
                 .iter()
-                .map(|m| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, m))
+                .map(|m| base64_encode(m))
                 .collect(),
             package: package.clone(),
             ticket: convert_grpc_argument(ticket),

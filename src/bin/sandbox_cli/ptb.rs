@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use super::output::{format_effects, format_effects_json, format_error};
 use super::SandboxState;
 use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, PTBExecutor};
+use sui_sandbox_core::shared::parsing::parse_type_tag_string;
 
 #[derive(Parser, Debug)]
 pub struct PtbCmd {
@@ -79,7 +80,6 @@ pub struct ObjectInputSpec {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct SharedObjectSpec {
     pub id: String,
     pub mutable: bool,
@@ -167,7 +167,7 @@ impl PtbCmd {
         state.set_last_sender(sender);
 
         // Convert spec to PTB inputs and commands
-        let (inputs, commands) = convert_spec(&spec)?;
+        let (inputs, commands) = convert_spec(&spec, state)?;
 
         // Create harness with sender and gas budget
         let mut harness = state.create_harness_with_sender(sender, Some(self.gas_budget))?;
@@ -202,13 +202,13 @@ impl PtbCmd {
 }
 
 /// Convert a PtbSpec to PTB inputs and commands
-fn convert_spec(spec: &PtbSpec) -> Result<(Vec<InputValue>, Vec<Command>)> {
+fn convert_spec(spec: &PtbSpec, state: &SandboxState) -> Result<(Vec<InputValue>, Vec<Command>)> {
     let mut inputs = Vec::new();
     let mut commands = Vec::new();
 
     // Convert explicit inputs
     for input_spec in &spec.inputs {
-        inputs.push(convert_input_spec(input_spec)?);
+        inputs.push(convert_input_spec(input_spec, state)?);
     }
 
     // Track the next available input index for inline args
@@ -251,26 +251,30 @@ fn convert_spec(spec: &PtbSpec) -> Result<(Vec<InputValue>, Vec<Command>)> {
     Ok((inputs, commands))
 }
 
-fn convert_input_spec(spec: &InputSpec) -> Result<InputValue> {
+fn convert_input_spec(spec: &InputSpec, state: &SandboxState) -> Result<InputValue> {
     match spec {
         InputSpec::Pure(pure) => convert_pure_value(&pure.value),
         InputSpec::Object(obj) => {
             if let Some(id) = &obj.imm_or_owned {
                 let addr = AccountAddress::from_hex_literal(id).context("Invalid object ID")?;
+                let (bytes, type_tag) = state.get_object_input(id)?;
                 Ok(InputValue::Object(ObjectInput::Owned {
                     id: addr,
-                    bytes: vec![],
-                    type_tag: None,
+                    bytes,
+                    type_tag,
                     version: None,
                 }))
             } else if let Some(shared) = &obj.shared {
+                let _ = shared.mutable;
                 let addr = AccountAddress::from_hex_literal(&shared.id)
                     .context("Invalid shared object ID")?;
+                let (bytes, type_tag) = state.get_object_input(&shared.id)?;
                 Ok(InputValue::Object(ObjectInput::Shared {
                     id: addr,
-                    bytes: vec![],
-                    type_tag: None,
+                    bytes,
+                    type_tag,
                     version: None,
+                    mutable: shared.mutable,
                 }))
             } else {
                 Err(anyhow!(
@@ -340,8 +344,7 @@ fn parse_target(target: &str) -> Result<(AccountAddress, String, String)> {
 }
 
 fn parse_type_tag(s: &str) -> Result<TypeTag> {
-    sui_sandbox_core::types::parse_type_tag(s)
-        .map_err(|e| anyhow!("Invalid type tag '{}': {}", s, e))
+    parse_type_tag_string(s)
 }
 
 fn normalize_address(s: &str) -> Result<AccountAddress> {

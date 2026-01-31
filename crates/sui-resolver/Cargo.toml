@@ -6,6 +6,7 @@ description = "Package upgrade resolution and address normalization for Sui"
 
 [dependencies]
 anyhow.workspace = true
+hex.workspace = true
 move-core-types.workspace = true
 
 # Workspace crates
