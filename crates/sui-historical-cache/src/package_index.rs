@@ -68,8 +68,7 @@ impl FsPackageIndex {
         };
         let line = serde_json::to_string(&entry)
             .map_err(|e| anyhow!("Failed to serialize index entry: {}", e))?;
-        writeln!(file, "{}", line)
-            .map_err(|e| anyhow!("Failed to write index entry: {}", e))?;
+        writeln!(file, "{}", line).map_err(|e| anyhow!("Failed to write index entry: {}", e))?;
         Ok(())
     }
 
@@ -182,7 +181,8 @@ impl FsPackageIndex {
             match &best {
                 Some(current) => {
                     if entry.checkpoint > current.checkpoint
-                        || (entry.checkpoint == current.checkpoint && entry.version > current.version)
+                        || (entry.checkpoint == current.checkpoint
+                            && entry.version > current.version)
                     {
                         best = Some(entry);
                     }

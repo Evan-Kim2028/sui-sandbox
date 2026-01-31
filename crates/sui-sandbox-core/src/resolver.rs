@@ -62,11 +62,11 @@ use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
-use sui_sandbox_types::encoding::try_base64_decode;
 use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use sui_sandbox_types::encoding::try_base64_decode;
 use tracing::{debug, info, warn};
 
 // =============================================================================

@@ -54,7 +54,13 @@ impl FsDynamicFieldCache {
             .create(true)
             .append(true)
             .open(&path)
-            .map_err(|e| anyhow!("Failed to open dynamic field cache {}: {}", path.display(), e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to open dynamic field cache {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
 
         let line = serde_json::to_string(&entry)
             .map_err(|e| anyhow!("Failed to serialize dynamic field entry: {}", e))?;
@@ -72,8 +78,13 @@ impl FsDynamicFieldCache {
         if !path.exists() {
             return Ok(vec![]);
         }
-        let file = std::fs::File::open(&path)
-            .map_err(|e| anyhow!("Failed to open dynamic field cache {}: {}", path.display(), e))?;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            anyhow!(
+                "Failed to open dynamic field cache {}: {}",
+                path.display(),
+                e
+            )
+        })?;
         let reader = BufReader::new(file);
         let mut out = Vec::new();
         for line in reader.lines() {
@@ -102,8 +113,13 @@ impl FsDynamicFieldCache {
         if !path.exists() {
             return Ok(vec![]);
         }
-        let file = std::fs::File::open(&path)
-            .map_err(|e| anyhow!("Failed to open dynamic field cache {}: {}", path.display(), e))?;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            anyhow!(
+                "Failed to open dynamic field cache {}: {}",
+                path.display(),
+                e
+            )
+        })?;
         let reader = BufReader::new(file);
         let mut latest: std::collections::HashMap<String, DynamicFieldEntry> =
             std::collections::HashMap::new();

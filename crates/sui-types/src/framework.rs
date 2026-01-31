@@ -137,10 +137,7 @@ mod tests {
             SUI_FRAMEWORK,
             AccountAddress::from_hex_literal("0x2").unwrap()
         );
-        assert_eq!(
-            SUI_SYSTEM,
-            AccountAddress::from_hex_literal("0x3").unwrap()
-        );
+        assert_eq!(SUI_SYSTEM, AccountAddress::from_hex_literal("0x3").unwrap());
     }
 
     #[test]

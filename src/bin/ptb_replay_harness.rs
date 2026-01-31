@@ -254,8 +254,7 @@ fn main() -> Result<()> {
         let total = work_items.len();
         let worker_count = args.concurrency.max(1).min(total.max(1));
         let (task_tx, task_rx) = std::sync::mpsc::channel::<WorkItem>();
-        let (result_tx, result_rx) =
-            std::sync::mpsc::channel::<(WorkItem, ReplaySummary)>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<(WorkItem, ReplaySummary)>();
         let task_rx = Arc::new(Mutex::new(task_rx));
         let args = Arc::new(args);
         let sandbox_bin = Arc::new(sandbox_bin);

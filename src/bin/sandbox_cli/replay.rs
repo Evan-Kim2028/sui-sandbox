@@ -404,7 +404,10 @@ impl ReplayCmd {
                 }
                 let mut harness =
                     sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
-                harness.set_address_aliases_with_versions(pkg_aliases.aliases.clone(), versions_str.clone());
+                harness.set_address_aliases_with_versions(
+                    pkg_aliases.aliases.clone(),
+                    versions_str.clone(),
+                );
 
                 let max_version = version_map.values().copied().max().unwrap_or(0);
                 if self.fetch_strategy == FetchStrategy::Full {
@@ -414,7 +417,12 @@ impl ReplayCmd {
                     let synth_modules_for_fetcher = synth_modules.clone();
                     let self_heal_dynamic_fields = self.self_heal_dynamic_fields;
                     let fetcher = move |_parent: AccountAddress, child_id: AccountAddress| {
-                        fetch_child_object_shared(&provider_clone, child_id, checkpoint, max_version)
+                        fetch_child_object_shared(
+                            &provider_clone,
+                            child_id,
+                            checkpoint,
+                            max_version,
+                        )
                     };
                     harness.set_versioned_child_fetcher(Box::new(fetcher));
 
@@ -842,7 +850,7 @@ fn fetch_child_object_by_key(
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(250);
-            let exp = entry.count.saturating_sub(1).min(3) as u32;
+            let exp = entry.count.saturating_sub(1).min(3);
             let delay = backoff_ms.saturating_mul(1u64 << exp);
             if entry.last.elapsed().as_millis() < delay as u128 {
                 if debug_df {
@@ -1490,9 +1498,8 @@ fn fetch_child_object_by_key(
                     }
                 }
                 if let (Some(value_type), Some(value_bcs)) = (&df.value_type, &df.value_bcs) {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&value_bcs)
-                    {
-                        if let Ok(tag) = parse_type_tag(&value_type) {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(value_bcs) {
+                        if let Ok(tag) = parse_type_tag(value_type) {
                             return Some((tag, bytes));
                         }
                     }

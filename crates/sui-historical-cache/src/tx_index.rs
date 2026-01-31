@@ -65,4 +65,3 @@ impl FsTxDigestIndex {
         Ok(Some(entry.checkpoint))
     }
 }
-

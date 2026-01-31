@@ -780,22 +780,14 @@ impl CachedTransaction {
     pub fn add_package(&mut self, package_id: String, modules: Vec<(String, Vec<u8>)>) {
         let encoded: Vec<(String, String)> = modules
             .into_iter()
-            .map(|(name, bytes)| {
-                (
-                    name,
-                    base64_encode(&bytes),
-                )
-            })
+            .map(|(name, bytes)| (name, base64_encode(&bytes)))
             .collect();
         self.packages.insert(package_id, encoded);
     }
 
     /// Add object data to the cache.
     pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
-        self.objects.insert(
-            object_id,
-            base64_encode(&bytes),
-        );
+        self.objects.insert(object_id, base64_encode(&bytes));
     }
 
     /// Add object data with type information to the cache.
@@ -805,10 +797,8 @@ impl CachedTransaction {
         bytes: Vec<u8>,
         object_type: Option<String>,
     ) {
-        self.objects.insert(
-            object_id.clone(),
-            base64_encode(&bytes),
-        );
+        self.objects
+            .insert(object_id.clone(), base64_encode(&bytes));
         if let Some(type_str) = object_type {
             self.object_types.insert(object_id, type_str);
         }
@@ -819,9 +809,7 @@ impl CachedTransaction {
         self.packages.get(package_id).map(|modules| {
             modules
                 .iter()
-                .filter_map(|(name, b64)| {
-                    try_base64_decode(b64).map(|bytes| (name.clone(), bytes))
-                })
+                .filter_map(|(name, b64)| try_base64_decode(b64).map(|bytes| (name.clone(), bytes)))
                 .collect()
         })
     }
@@ -850,10 +838,8 @@ impl CachedTransaction {
 
     /// Add historical object data to the cache.
     pub fn add_historical_object(&mut self, object_id: String, bytes: Vec<u8>, version: u64) {
-        self.historical_objects.insert(
-            object_id.clone(),
-            base64_encode(&bytes),
-        );
+        self.historical_objects
+            .insert(object_id.clone(), base64_encode(&bytes));
         self.object_versions.insert(object_id, version);
     }
 

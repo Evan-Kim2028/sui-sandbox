@@ -30,7 +30,11 @@ fn test_simulation_config_unique_tx_hashes() {
     hashes.sort();
     hashes.dedup();
 
-    assert_eq!(hashes.len(), 100, "All 100 configs should have unique tx_hashes");
+    assert_eq!(
+        hashes.len(),
+        100,
+        "All 100 configs should have unique tx_hashes"
+    );
 }
 
 /// Test resolver can load and retrieve modules.

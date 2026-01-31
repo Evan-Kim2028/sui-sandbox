@@ -1339,7 +1339,12 @@ mod tests {
             address: None,
             version: Some(42),
         };
-        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Shared { initial_version: 42 }));
+        assert!(matches!(
+            GrpcOwner::from_proto(&proto),
+            GrpcOwner::Shared {
+                initial_version: 42
+            }
+        ));
 
         // Immutable variant
         let proto = proto::Owner {
@@ -1347,7 +1352,10 @@ mod tests {
             address: None,
             version: None,
         };
-        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Immutable));
+        assert!(matches!(
+            GrpcOwner::from_proto(&proto),
+            GrpcOwner::Immutable
+        ));
     }
 
     #[test]
@@ -1355,11 +1363,19 @@ mod tests {
         use proto::owner::OwnerKind;
 
         // Invalid kind -> Unknown
-        let proto = proto::Owner { kind: Some(999), address: None, version: None };
+        let proto = proto::Owner {
+            kind: Some(999),
+            address: None,
+            version: None,
+        };
         assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Unknown));
 
         // None kind -> Unknown
-        let proto = proto::Owner { kind: None, address: None, version: None };
+        let proto = proto::Owner {
+            kind: None,
+            address: None,
+            version: None,
+        };
         assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Unknown));
 
         // Address with missing address field -> empty string
@@ -1413,34 +1429,62 @@ mod tests {
         // Gas
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Gas as i32),
-            input: None, result: None, subresult: None,
+            input: None,
+            result: None,
+            subresult: None,
         };
-        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::GasCoin));
+        assert!(matches!(
+            GrpcArgument::from_proto(&proto),
+            GrpcArgument::GasCoin
+        ));
 
         // Input
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Input as i32),
-            input: Some(5), result: None, subresult: None,
+            input: Some(5),
+            result: None,
+            subresult: None,
         };
-        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::Input(5)));
+        assert!(matches!(
+            GrpcArgument::from_proto(&proto),
+            GrpcArgument::Input(5)
+        ));
 
         // Result
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Result as i32),
-            input: None, result: Some(3), subresult: None,
+            input: None,
+            result: Some(3),
+            subresult: None,
         };
-        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::Result(3)));
+        assert!(matches!(
+            GrpcArgument::from_proto(&proto),
+            GrpcArgument::Result(3)
+        ));
 
         // NestedResult (Result with subresult)
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Result as i32),
-            input: None, result: Some(2), subresult: Some(1),
+            input: None,
+            result: Some(2),
+            subresult: Some(1),
         };
-        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::NestedResult(2, 1)));
+        assert!(matches!(
+            GrpcArgument::from_proto(&proto),
+            GrpcArgument::NestedResult(2, 1)
+        ));
 
         // None kind defaults to Gas
-        let proto = proto::Argument { kind: None, input: None, result: None, subresult: None };
-        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::GasCoin));
+        let proto = proto::Argument {
+            kind: None,
+            input: None,
+            result: None,
+            subresult: None,
+        };
+        assert!(matches!(
+            GrpcArgument::from_proto(&proto),
+            GrpcArgument::GasCoin
+        ));
     }
 
     // =========================================================================
@@ -1457,7 +1501,9 @@ mod tests {
             pure: Some(vec![1, 2, 3]),
             ..Default::default()
         };
-        assert!(matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes == vec![1, 2, 3]));
+        assert!(
+            matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes == vec![1, 2, 3])
+        );
 
         // ImmutableOrOwned -> Object
         let proto = proto::Input {
@@ -1468,7 +1514,11 @@ mod tests {
             ..Default::default()
         };
         match GrpcInput::from_proto(&proto) {
-            GrpcInput::Object { object_id, version, digest } => {
+            GrpcInput::Object {
+                object_id,
+                version,
+                digest,
+            } => {
                 assert_eq!(object_id, "0xobj");
                 assert_eq!(version, 10);
                 assert_eq!(digest, "abc");
@@ -1485,7 +1535,11 @@ mod tests {
             ..Default::default()
         };
         match GrpcInput::from_proto(&proto) {
-            GrpcInput::SharedObject { object_id, initial_version, mutable } => {
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                mutable,
+            } => {
                 assert_eq!(object_id, "0xshared");
                 assert_eq!(initial_version, 5);
                 assert!(mutable);
@@ -1502,7 +1556,11 @@ mod tests {
             ..Default::default()
         };
         match GrpcInput::from_proto(&proto) {
-            GrpcInput::Receiving { object_id, version, digest } => {
+            GrpcInput::Receiving {
+                object_id,
+                version,
+                digest,
+            } => {
                 assert_eq!(object_id, "0xrecv");
                 assert_eq!(version, 7);
                 assert_eq!(digest, "def");
@@ -1512,7 +1570,9 @@ mod tests {
 
         // None kind defaults to Pure
         let proto = proto::Input::default();
-        assert!(matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes.is_empty()));
+        assert!(
+            matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes.is_empty())
+        );
     }
 
     // =========================================================================
@@ -1530,7 +1590,13 @@ mod tests {
             arguments: vec![GrpcArgument::Input(0)],
         };
         match cmd {
-            GrpcCommand::MoveCall { package, module, function, type_arguments, arguments } => {
+            GrpcCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => {
                 assert_eq!(package, "0x2");
                 assert_eq!(module, "coin");
                 assert_eq!(function, "value");
@@ -1545,13 +1611,17 @@ mod tests {
             coin: GrpcArgument::Input(0),
             amounts: vec![GrpcArgument::Input(1), GrpcArgument::Input(2)],
         };
-        assert!(matches!(cmd, GrpcCommand::SplitCoins { coin: GrpcArgument::Input(0), amounts } if amounts.len() == 2));
+        assert!(
+            matches!(cmd, GrpcCommand::SplitCoins { coin: GrpcArgument::Input(0), amounts } if amounts.len() == 2)
+        );
 
         // TransferObjects
         let cmd = GrpcCommand::TransferObjects {
             objects: vec![GrpcArgument::Result(0)],
             address: GrpcArgument::Input(1),
         };
-        assert!(matches!(cmd, GrpcCommand::TransferObjects { objects, address: GrpcArgument::Input(1) } if objects.len() == 1));
+        assert!(
+            matches!(cmd, GrpcCommand::TransferObjects { objects, address: GrpcArgument::Input(1) } if objects.len() == 1)
+        );
     }
 }

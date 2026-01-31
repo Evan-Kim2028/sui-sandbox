@@ -271,3 +271,31 @@ pub struct ConfigureInput {
     #[serde(default)]
     pub params: Option<Value>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct WalrusFetchInput {
+    /// Network (mainnet or testnet)
+    #[serde(default)]
+    pub network: Option<String>,
+    /// Explicit checkpoint list to fetch
+    #[serde(default)]
+    pub checkpoints: Option<Vec<u64>>,
+    /// Starting checkpoint (defaults to latest - count + 1)
+    #[serde(default)]
+    pub start_checkpoint: Option<u64>,
+    /// Number of checkpoints to fetch (default 1)
+    #[serde(default)]
+    pub count: Option<u64>,
+    /// Max bytes per aggregated blob fetch
+    #[serde(default)]
+    pub max_chunk_bytes: Option<u64>,
+    /// Max checkpoints per batch
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+    /// Dump checkpoint JSON files into this directory
+    #[serde(default)]
+    pub dump_dir: Option<String>,
+    /// Include per-checkpoint summary in response
+    #[serde(default)]
+    pub summary: Option<bool>,
+}

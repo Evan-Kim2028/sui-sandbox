@@ -51,7 +51,9 @@ pub fn decode_b64_no_pad(s: &str) -> Result<Vec<u8>> {
 
 /// Decode a base64 string, returning None on failure (no padding variant).
 pub fn decode_b64_no_pad_opt(s: &str) -> Option<Vec<u8>> {
-    base64::engine::general_purpose::STANDARD_NO_PAD.decode(s).ok()
+    base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(s)
+        .ok()
 }
 
 /// Encode bytes to a URL-safe base64 string (no padding).

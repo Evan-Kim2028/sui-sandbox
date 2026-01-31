@@ -25,7 +25,10 @@ use sha2::Digest;
 /// Returns error for empty strings or invalid hex.
 pub fn parse_address(addr: &str) -> Result<AccountAddress> {
     let trimmed = addr.trim();
-    let hex_str = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")).unwrap_or(trimmed);
+    let hex_str = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
 
     // Validate: not empty, only hex chars
     if hex_str.is_empty() {

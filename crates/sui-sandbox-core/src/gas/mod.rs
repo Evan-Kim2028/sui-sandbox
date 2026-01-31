@@ -93,10 +93,10 @@ pub use cost_table::*;
 pub use meter::*;
 pub use native_costs::*;
 pub use protocol::{
-    apply_gas_rounding, calculate_min_tx_cost, finalize_computation_cost, load_default_protocol_config,
-    load_protocol_config, load_protocol_config_arc, GasParameters, DEFAULT_GAS_BALANCE,
-    DEFAULT_GAS_BUDGET, DEFAULT_GAS_PRICE, DEFAULT_PROTOCOL_VERSION, DEFAULT_REFERENCE_GAS_PRICE,
-    GAS_ROUNDING_STEP,
+    apply_gas_rounding, calculate_min_tx_cost, finalize_computation_cost,
+    load_default_protocol_config, load_protocol_config, load_protocol_config_arc, GasParameters,
+    DEFAULT_GAS_BALANCE, DEFAULT_GAS_BUDGET, DEFAULT_GAS_PRICE, DEFAULT_PROTOCOL_VERSION,
+    DEFAULT_REFERENCE_GAS_PRICE, GAS_ROUNDING_STEP,
 };
 pub use storage::*;
 pub use summary::*;

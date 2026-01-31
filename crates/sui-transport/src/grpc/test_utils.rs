@@ -88,12 +88,7 @@ impl GrpcTransactionBuilder {
     }
 
     /// Add a MoveCall command.
-    pub fn with_move_call(
-        mut self,
-        package: &str,
-        module: &str,
-        function: &str,
-    ) -> Self {
+    pub fn with_move_call(mut self, package: &str, module: &str, function: &str) -> Self {
         self.commands.push(GrpcCommand::MoveCall {
             package: package.to_string(),
             module: module.to_string(),
@@ -125,7 +120,8 @@ impl GrpcTransactionBuilder {
 
     /// Add a SplitCoins command.
     pub fn with_split_coins(mut self, coin: GrpcArgument, amounts: Vec<GrpcArgument>) -> Self {
-        self.commands.push(GrpcCommand::SplitCoins { coin, amounts });
+        self.commands
+            .push(GrpcCommand::SplitCoins { coin, amounts });
         self
     }
 

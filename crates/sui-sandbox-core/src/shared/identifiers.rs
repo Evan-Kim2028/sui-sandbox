@@ -77,8 +77,9 @@ pub fn parse_move_target_with_default(
     match parts.len() {
         2 => {
             // module::function - use default package
-            let package = default_package
-                .ok_or_else(|| anyhow!("No default package. Use full target: 0xPKG::module::func"))?;
+            let package = default_package.ok_or_else(|| {
+                anyhow!("No default package. Use full target: 0xPKG::module::func")
+            })?;
             Ok((package, parts[0].to_string(), parts[1].to_string()))
         }
         3 => {
@@ -107,9 +108,11 @@ pub mod well_known {
     // Module names
     pub static COIN: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("coin").unwrap());
     pub static SUI: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("sui").unwrap());
-    pub static BALANCE: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("balance").unwrap());
+    pub static BALANCE: LazyLock<Identifier> =
+        LazyLock::new(|| Identifier::new("balance").unwrap());
     pub static OBJECT: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("object").unwrap());
-    pub static TRANSFER: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("transfer").unwrap());
+    pub static TRANSFER: LazyLock<Identifier> =
+        LazyLock::new(|| Identifier::new("transfer").unwrap());
     pub static TX_CONTEXT: LazyLock<Identifier> =
         LazyLock::new(|| Identifier::new("tx_context").unwrap());
     pub static CLOCK: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("clock").unwrap());
@@ -121,7 +124,8 @@ pub mod well_known {
     pub static OPTION: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("option").unwrap());
     pub static STRING: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("string").unwrap());
     pub static VECTOR: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("vector").unwrap());
-    pub static PACKAGE: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("package").unwrap());
+    pub static PACKAGE: LazyLock<Identifier> =
+        LazyLock::new(|| Identifier::new("package").unwrap());
 
     // Type/struct names (capitalized)
     pub static SUI_TYPE: LazyLock<Identifier> = LazyLock::new(|| Identifier::new("SUI").unwrap());

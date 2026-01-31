@@ -201,6 +201,17 @@ impl SandboxMcpServer {
     async fn configure(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
         self.dispatch_tool("configure", params).await
     }
+
+    #[tool(
+        name = "walrus_fetch_checkpoints",
+        description = "Fetch Walrus checkpoint JSON (single, range, or list) and optionally dump to disk"
+    )]
+    async fn walrus_fetch_checkpoints(
+        &self,
+        params: Parameters<Value>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("walrus_fetch_checkpoints", params).await
+    }
 }
 
 #[tool_handler]

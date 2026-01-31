@@ -53,8 +53,8 @@ pub use env_utils::{env_bool, env_bool_or, env_list, env_string_or, env_var, env
 // Re-export commonly used transaction types at crate root
 pub use transaction::{
     CachedDynamicField, CachedTransaction, DynamicFieldEntry, EffectsComparison,
-    FetchedTransaction, GasSummary, LocalVersionInfo, PtbArgument, PtbCommand,
-    ReplayResult, TransactionCache, TransactionDigest, TransactionEffectsSummary, TransactionInput,
+    FetchedTransaction, GasSummary, LocalVersionInfo, PtbArgument, PtbCommand, ReplayResult,
+    TransactionCache, TransactionDigest, TransactionEffectsSummary, TransactionInput,
     TransactionStatus, VersionMismatch, VersionMismatchType, VersionSummary,
 };
 

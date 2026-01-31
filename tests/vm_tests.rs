@@ -8,11 +8,14 @@
 //! - VMHarness: creation, execution, error handling, dynamic fields
 //! - PTBSession: persistent state across calls
 
+#![allow(deprecated)]
+
 mod common;
 
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 
+#[allow(deprecated)]
 use sui_sandbox_core::vm::{
     gas_costs, ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig,
     VMHarness,

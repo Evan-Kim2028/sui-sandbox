@@ -19,7 +19,9 @@ pub mod parsing;
 pub mod response;
 pub mod tools;
 
-pub use address::{format_address, format_address_short, parse_address, parse_address_or_zero, try_parse_address};
+pub use address::{
+    format_address, format_address_short, parse_address, parse_address_or_zero, try_parse_address,
+};
 pub use encoding::{decode_b64, decode_b64_no_pad_opt, decode_b64_opt, encode_b64};
 pub use identifiers::*;
 pub use parsing::*;

@@ -19,11 +19,11 @@ use sui_sandbox_types::encoding::{
 use crate::errors::{Phase, PhaseOptionExt, PhaseResultExt};
 use crate::fetcher::{FetchedObjectData, Fetcher};
 use crate::natives::EmittedEvent;
+use crate::ptb::{Command, InputValue, ObjectInput};
+use crate::resolver::LocalModuleResolver;
 use crate::sandbox_runtime::{
     ChildFetcherFn, KeyBasedChildFetcherFn, KeyTypeResolverFn, VersionedChildFetcherFn,
 };
-use crate::ptb::{Command, InputValue, ObjectInput};
-use crate::resolver::LocalModuleResolver;
 use crate::vm::VMHarness;
 use crate::well_known;
 
@@ -3955,14 +3955,10 @@ impl SimulationEnvironment {
             let owner = match obj.owner.as_deref() {
                 Some("shared") => Some(crate::sandbox_runtime::Owner::Shared),
                 Some("immutable") => Some(crate::sandbox_runtime::Owner::Immutable),
-                Some(s) if s.starts_with("address:") => {
-                    try_parse_address(&s["address:".len()..])
-                        .map(crate::sandbox_runtime::Owner::Address)
-                }
-                Some(s) if s.starts_with("object:") => {
-                    try_parse_address(&s["object:".len()..])
-                        .map(crate::sandbox_runtime::Owner::Object)
-                }
+                Some(s) if s.starts_with("address:") => try_parse_address(&s["address:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Address),
+                Some(s) if s.starts_with("object:") => try_parse_address(&s["object:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Object),
                 _ => None,
             };
 
@@ -3987,14 +3983,10 @@ impl SimulationEnvironment {
             let owner = match obj.owner.as_deref() {
                 Some("shared") => Some(crate::sandbox_runtime::Owner::Shared),
                 Some("immutable") => Some(crate::sandbox_runtime::Owner::Immutable),
-                Some(s) if s.starts_with("address:") => {
-                    try_parse_address(&s["address:".len()..])
-                        .map(crate::sandbox_runtime::Owner::Address)
-                }
-                Some(s) if s.starts_with("object:") => {
-                    try_parse_address(&s["object:".len()..])
-                        .map(crate::sandbox_runtime::Owner::Object)
-                }
+                Some(s) if s.starts_with("address:") => try_parse_address(&s["address:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Address),
+                Some(s) if s.starts_with("object:") => try_parse_address(&s["object:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Object),
                 _ => None,
             };
 

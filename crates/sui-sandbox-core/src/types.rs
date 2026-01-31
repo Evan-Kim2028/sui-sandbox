@@ -623,13 +623,12 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// ```
 pub fn normalize_address(addr: &str) -> Option<String> {
     // Use sui_resolver's checked variant for validation
-    sui_resolver::normalize_address_checked(addr)
-        .map(|_| {
-            // But return move-core-types short form for backward compatibility
-            let trimmed = addr.trim();
-            let addr = AccountAddress::from_hex_literal(trimmed).ok().unwrap();
-            addr.to_hex_literal()
-        })
+    sui_resolver::normalize_address_checked(addr).map(|_| {
+        // But return move-core-types short form for backward compatibility
+        let trimmed = addr.trim();
+        let addr = AccountAddress::from_hex_literal(trimmed).ok().unwrap();
+        addr.to_hex_literal()
+    })
 }
 
 /// Normalize an address to short form (no leading zeros except for special addresses).

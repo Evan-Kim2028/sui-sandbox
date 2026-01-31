@@ -167,10 +167,7 @@ fn convert_grpc_command(cmd: &GrpcCommand) -> Option<PtbCommand> {
             modules,
             dependencies,
         } => Some(PtbCommand::Publish {
-            modules: modules
-                .iter()
-                .map(|m| base64_encode(m))
-                .collect(),
+            modules: modules.iter().map(|m| base64_encode(m)).collect(),
             dependencies: dependencies.clone(),
         }),
         GrpcCommand::Upgrade {
@@ -179,10 +176,7 @@ fn convert_grpc_command(cmd: &GrpcCommand) -> Option<PtbCommand> {
             ticket,
             ..
         } => Some(PtbCommand::Upgrade {
-            modules: modules
-                .iter()
-                .map(|m| base64_encode(m))
-                .collect(),
+            modules: modules.iter().map(|m| base64_encode(m)).collect(),
             package: package.clone(),
             ticket: convert_grpc_argument(ticket),
         }),

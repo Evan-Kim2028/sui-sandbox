@@ -40,11 +40,11 @@ use crate::gas::{
     StorageTracker,
 };
 use crate::natives::{build_native_function_table, EmittedEvent, MockNativeState};
+use crate::resolver::LocalModuleResolver;
 use crate::sandbox_runtime::{
     ChildFetcherFn, ChildIdAliasMap, KeyBasedChildFetcherFn, KeyTypeResolverFn, ObjectRuntimeState,
     SharedObjectRuntime, VersionedChildFetcherFn,
 };
-use crate::resolver::LocalModuleResolver;
 use crate::sui_object_runtime;
 use sui_protocol_config::ProtocolConfig;
 

@@ -182,8 +182,7 @@ pub fn extract_input_with_context<T: serde::de::DeserializeOwned>(
     value: Value,
     context: &str,
 ) -> Result<T, ToolResponse> {
-    serde_json::from_value(value)
-        .map_err(|e| ToolResponse::error(format!("{}: {}", context, e)))
+    serde_json::from_value(value).map_err(|e| ToolResponse::error(format!("{}: {}", context, e)))
 }
 
 /// Metadata that can be attached to tool invocations.

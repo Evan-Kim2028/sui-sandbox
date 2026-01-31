@@ -87,9 +87,15 @@ impl ToolInput {
             ToolInput::Json(v) => v.clone(),
             ToolInput::Args { positional, named } => {
                 let mut map = serde_json::Map::new();
-                map.insert("_positional".to_string(), Value::Array(
-                    positional.iter().map(|s| Value::String(s.clone())).collect()
-                ));
+                map.insert(
+                    "_positional".to_string(),
+                    Value::Array(
+                        positional
+                            .iter()
+                            .map(|s| Value::String(s.clone()))
+                            .collect(),
+                    ),
+                );
                 for (k, v) in named {
                     map.insert(k.clone(), Value::String(v.clone()));
                 }

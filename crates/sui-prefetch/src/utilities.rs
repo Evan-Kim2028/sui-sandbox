@@ -79,12 +79,6 @@ pub fn type_string_to_bcs(type_str: &str) -> Option<Vec<u8>> {
     bcs::to_bytes(&type_tag).ok()
 }
 
-/// Create a Tokio runtime and connect to a gRPC endpoint.
-///
-/// Configuration via environment variables:
-///
-/// **Endpoint**:
-/// - `SUI_GRPC_ENDPOINT` - gRPC endpoint (default: `https://fullnode.mainnet.sui.io:443`)
 /// Collect historical object versions from a gRPC transaction.
 ///
 /// Aggregates version information from multiple sources in the gRPC response:

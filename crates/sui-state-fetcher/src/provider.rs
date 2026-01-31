@@ -45,14 +45,8 @@ use sui_transport::walrus::WalrusClient;
 use sui_types::move_package::MovePackage;
 
 use sui_historical_cache::{
-    DynamicFieldEntry,
-    FsDynamicFieldCache,
-    FsObjectIndex,
-    FsObjectStore,
-    FsPackageIndex,
-    FsTxDigestIndex,
-    ObjectMeta,
-    ObjectVersionStore,
+    DynamicFieldEntry, FsDynamicFieldCache, FsObjectIndex, FsObjectStore, FsPackageIndex,
+    FsTxDigestIndex, ObjectMeta, ObjectVersionStore,
 };
 
 use crate::cache::VersionedCache;
@@ -132,11 +126,7 @@ impl WalrusCheckpointPool {
         }
     }
 
-    async fn get(
-        &self,
-        walrus: &WalrusClient,
-        checkpoint: u64,
-    ) -> Option<Arc<Value>> {
+    async fn get(&self, walrus: &WalrusClient, checkpoint: u64) -> Option<Arc<Value>> {
         {
             let cache = self.cache.lock().await;
             if let Some(val) = cache.get(&checkpoint) {
@@ -162,8 +152,8 @@ impl WalrusCheckpointPool {
         }
 
         let walrus = walrus.clone();
-        let fetched = tokio::task::spawn_blocking(move || walrus.get_checkpoint_json(checkpoint))
-            .await;
+        let fetched =
+            tokio::task::spawn_blocking(move || walrus.get_checkpoint_json(checkpoint)).await;
 
         let value = match fetched {
             Ok(Ok(val)) => val,
@@ -247,15 +237,14 @@ fn walrus_store_enabled() -> bool {
 }
 
 fn walrus_store_full_ingest_enabled() -> bool {
-    match std::env::var("SUI_WALRUS_FULL_CHECKPOINT_INGEST")
-        .ok()
-        .as_deref()
-        .map(|v| v.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("0") | Some("false") | Some("no") | Some("off") => false,
-        _ => true,
-    }
+    !matches!(
+        std::env::var("SUI_WALRUS_FULL_CHECKPOINT_INGEST")
+            .ok()
+            .as_deref()
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
 }
 
 fn sandbox_home_dir() -> PathBuf {
@@ -705,7 +694,10 @@ impl HistoricalStateProvider {
                         }
                         None => (
                             checkpoint,
-                            Err(anyhow::anyhow!("Walrus checkpoint fetch failed: {}", checkpoint)),
+                            Err(anyhow::anyhow!(
+                                "Walrus checkpoint fetch failed: {}",
+                                checkpoint
+                            )),
                         ),
                     }
                 }
@@ -771,15 +763,14 @@ impl HistoricalStateProvider {
                 digest
             );
         }
-        let allow_remote = match std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
-            .ok()
-            .as_deref()
-            .map(|v| v.to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("0") | Some("false") | Some("no") | Some("off") => false,
-            _ => true,
-        };
+        let allow_remote = !matches!(
+            std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        );
         if !allow_remote {
             if debug_lookup {
                 eprintln!(
@@ -789,15 +780,14 @@ impl HistoricalStateProvider {
             }
             return None;
         }
-        let allow_graphql = match std::env::var("SUI_CHECKPOINT_LOOKUP_GRAPHQL")
-            .ok()
-            .as_deref()
-            .map(|v| v.to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("0") | Some("false") | Some("no") | Some("off") => false,
-            _ => true,
-        };
+        let allow_graphql = !matches!(
+            std::env::var("SUI_CHECKPOINT_LOOKUP_GRAPHQL")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        );
         if allow_graphql {
             match self.graphql.fetch_transaction_meta(digest) {
                 Ok(meta) => {
@@ -836,15 +826,14 @@ impl HistoricalStateProvider {
             );
         }
 
-        let allow_grpc = match std::env::var("SUI_CHECKPOINT_LOOKUP_GRPC")
-            .ok()
-            .as_deref()
-            .map(|v| v.to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("0") | Some("false") | Some("no") | Some("off") => false,
-            _ => true,
-        };
+        let allow_grpc = !matches!(
+            std::env::var("SUI_CHECKPOINT_LOOKUP_GRPC")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        );
         if allow_grpc {
             match self.grpc.get_transaction(digest).await {
                 Ok(Some(tx)) => {
@@ -1206,9 +1195,9 @@ impl HistoricalStateProvider {
                     let dynamic_fields = self.local_dynamic_fields.as_deref();
                     let package_index = self.local_package_index.as_deref();
                     if let Some(tx_index) = tx_index {
-                        ingest_walrus_checkpoint_tx_index(&checkpoint_json, tx_index, checkpoint);
+                        ingest_walrus_checkpoint_tx_index(checkpoint_json, tx_index, checkpoint);
                     }
-                    if let Some(tx_json) = find_walrus_tx_json(&checkpoint_json, digest) {
+                    if let Some(tx_json) = find_walrus_tx_json(checkpoint_json, digest) {
                         let ingested = ingest_walrus_tx_objects(
                             tx_json,
                             &self.cache,
@@ -1239,7 +1228,7 @@ impl HistoricalStateProvider {
                     }
                     if store.is_some() && walrus_store_full_ingest_enabled() {
                         let total = ingest_walrus_checkpoint_objects(
-                            &checkpoint_json,
+                            checkpoint_json,
                             store,
                             index,
                             package_index,
@@ -1255,7 +1244,7 @@ impl HistoricalStateProvider {
                     }
                     // Also ingest packages from this checkpoint for later use
                     let ingested_pkgs = ingest_walrus_checkpoint_packages(
-                        &checkpoint_json,
+                        checkpoint_json,
                         &self.cache,
                         package_index,
                         checkpoint,
@@ -1601,11 +1590,7 @@ impl HistoricalStateProvider {
                     break;
                 }
             }
-            let checkpoint_json = match self
-                .walrus_pool
-                .get(&walrus, checkpoint_for_tx)
-                .await
-            {
+            let checkpoint_json = match self.walrus_pool.get(walrus, checkpoint_for_tx).await {
                 Some(json) => json,
                 None => break,
             };
@@ -1630,7 +1615,8 @@ impl HistoricalStateProvider {
                 Some(checkpoint_for_tx),
             );
 
-            if let Ok(children) = df_cache.get_children_at_or_before(parent_addr, checkpoint_for_tx) {
+            if let Ok(children) = df_cache.get_children_at_or_before(parent_addr, checkpoint_for_tx)
+            {
                 if !children.is_empty() {
                     return true;
                 }
@@ -1676,12 +1662,11 @@ impl HistoricalStateProvider {
             visited.insert(parent_id.clone());
 
             // If we have a local dynamic field cache for this checkpoint, use it.
-            if let (Some(df_cache), Some(cp)) =
-                (self.local_dynamic_fields.as_deref(), checkpoint)
-            {
+            if let (Some(df_cache), Some(cp)) = (self.local_dynamic_fields.as_deref(), checkpoint) {
                 if let Ok(parent_addr) = parse_object_id(&parent_id) {
-                    let mut cached_children =
-                        df_cache.get_children_at_or_before(parent_addr, cp).unwrap_or_default();
+                    let mut cached_children = df_cache
+                        .get_children_at_or_before(parent_addr, cp)
+                        .unwrap_or_default();
 
                     if cached_children.is_empty() {
                         let parent_version = historical_versions.get(&parent_id).copied();
@@ -1693,8 +1678,9 @@ impl HistoricalStateProvider {
                             )
                             .await
                         {
-                            cached_children =
-                                df_cache.get_children_at_or_before(parent_addr, cp).unwrap_or_default();
+                            cached_children = df_cache
+                                .get_children_at_or_before(parent_addr, cp)
+                                .unwrap_or_default();
                         }
                     }
 
@@ -1729,27 +1715,26 @@ impl HistoricalStateProvider {
 
                             // Fallback to GraphQL fetch for this specific child
                             if bcs.is_none() {
-                                if let Ok(obj) = self
-                                    .graphql
-                                    .fetch_object_at_version(&child_id, version)
+                                if let Ok(obj) =
+                                    self.graphql.fetch_object_at_version(&child_id, version)
                                 {
                                     type_str = type_str.or(obj.type_string);
                                     if let Some(b64) = obj.bcs_base64 {
-                                        if let Ok(decoded) = base64::engine::general_purpose::STANDARD
-                                            .decode(&b64)
+                                        if let Ok(decoded) =
+                                            base64::engine::general_purpose::STANDARD.decode(&b64)
                                         {
                                             bcs = Some(decoded);
                                         }
                                     }
                                 } else if let Some(cp) = checkpoint {
-                                    if let Ok(obj) = self
-                                        .graphql
-                                        .fetch_object_at_checkpoint(&child_id, cp)
+                                    if let Ok(obj) =
+                                        self.graphql.fetch_object_at_checkpoint(&child_id, cp)
                                     {
                                         type_str = type_str.or(obj.type_string);
                                         if let Some(b64) = obj.bcs_base64 {
-                                            if let Ok(decoded) = base64::engine::general_purpose::STANDARD
-                                                .decode(&b64)
+                                            if let Ok(decoded) =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .decode(&b64)
                                             {
                                                 bcs = Some(decoded);
                                             }
@@ -1998,7 +1983,8 @@ impl HistoricalStateProvider {
                 for (id, version) in to_fetch {
                     match store.get(id, version) {
                         Ok(Some(cached)) => {
-                            let (is_shared, is_immutable) = match cached.meta.owner_kind.as_deref() {
+                            let (is_shared, is_immutable) = match cached.meta.owner_kind.as_deref()
+                            {
                                 Some("shared") => (true, false),
                                 Some("immutable") => (false, true),
                                 _ => (false, false),
@@ -2036,7 +2022,10 @@ impl HistoricalStateProvider {
                 let mut checkpoints = HashMap::new();
                 for (id, version) in &to_fetch {
                     if let Ok(Some(cp)) = index.get_checkpoint(*id, *version) {
-                        checkpoints.entry(cp).or_insert_with(Vec::new).push((*id, *version));
+                        checkpoints
+                            .entry(cp)
+                            .or_insert_with(Vec::new)
+                            .push((*id, *version));
                     }
                 }
                 if !checkpoints.is_empty() {
@@ -2059,22 +2048,19 @@ impl HistoricalStateProvider {
                         });
                     }
                     while let Some(res) = join_set.join_next().await {
-                        match res {
-                            Ok((cp, Some(checkpoint_json))) => {
-                                let store = self.local_object_store.as_deref();
-                                let index = self.local_object_index.as_deref();
-                                let dynamic_fields = self.local_dynamic_fields.as_deref();
-                                let package_index = self.local_package_index.as_deref();
-                                let _ = ingest_walrus_checkpoint_objects(
-                                    checkpoint_json.as_ref(),
-                                    store,
-                                    index,
-                                    package_index,
-                                    dynamic_fields,
-                                    Some(cp),
-                                );
-                            }
-                            _ => {}
+                        if let Ok((cp, Some(checkpoint_json))) = res {
+                            let store = self.local_object_store.as_deref();
+                            let index = self.local_object_index.as_deref();
+                            let dynamic_fields = self.local_dynamic_fields.as_deref();
+                            let package_index = self.local_package_index.as_deref();
+                            let _ = ingest_walrus_checkpoint_objects(
+                                checkpoint_json.as_ref(),
+                                store,
+                                index,
+                                package_index,
+                                dynamic_fields,
+                                Some(cp),
+                            );
                         }
                     }
                     if timing {
@@ -2253,8 +2239,14 @@ impl HistoricalStateProvider {
         package_versions: Option<&HashMap<AccountAddress, u64>>,
         checkpoint: Option<u64>,
     ) -> Result<HashMap<AccountAddress, PackageData>> {
-        self.fetch_packages_with_deps_internal(package_ids, package_versions, None, checkpoint, true)
-            .await
+        self.fetch_packages_with_deps_internal(
+            package_ids,
+            package_versions,
+            None,
+            checkpoint,
+            true,
+        )
+        .await
     }
 
     /// Fetch packages with full dependency resolution, with optional previous transaction hints.
@@ -2268,8 +2260,14 @@ impl HistoricalStateProvider {
         package_prev_txs: Option<&HashMap<AccountAddress, String>>,
         checkpoint: Option<u64>,
     ) -> Result<HashMap<AccountAddress, PackageData>> {
-        self.fetch_packages_with_deps_internal(package_ids, package_versions, package_prev_txs, checkpoint, true)
-            .await
+        self.fetch_packages_with_deps_internal(
+            package_ids,
+            package_versions,
+            package_prev_txs,
+            checkpoint,
+            true,
+        )
+        .await
     }
 
     /// Fetch packages with full dependency resolution without reading or writing cache.
@@ -2279,8 +2277,14 @@ impl HistoricalStateProvider {
         package_versions: Option<&HashMap<AccountAddress, u64>>,
         checkpoint: Option<u64>,
     ) -> Result<HashMap<AccountAddress, PackageData>> {
-        self.fetch_packages_with_deps_internal(package_ids, package_versions, None, checkpoint, false)
-            .await
+        self.fetch_packages_with_deps_internal(
+            package_ids,
+            package_versions,
+            None,
+            checkpoint,
+            false,
+        )
+        .await
     }
 
     async fn fetch_packages_with_deps_internal(
@@ -2342,12 +2346,10 @@ impl HistoricalStateProvider {
                         .as_deref()
                         != Some("0")
                     {
-                        if let Ok(Some(ver)) =
-                            self.graphql.fetch_package_version_at_checkpoint(
-                                &format!("0x{}", hex::encode(pkg_id.as_ref())),
-                                cp,
-                            )
-                        {
+                        if let Ok(Some(ver)) = self.graphql.fetch_package_version_at_checkpoint(
+                            &format!("0x{}", hex::encode(pkg_id.as_ref())),
+                            cp,
+                        ) {
                             version_hint = Some(ver);
                         }
                     }
@@ -2399,9 +2401,7 @@ impl HistoricalStateProvider {
                 }
                 if walrus_checkpoint.is_none() {
                     if let Some(cp) = checkpoint {
-                        if let Ok(Some(entry)) =
-                            pkg_index.get_at_or_before_checkpoint(pkg_id, cp)
-                        {
+                        if let Ok(Some(entry)) = pkg_index.get_at_or_before_checkpoint(pkg_id, cp) {
                             walrus_checkpoint = Some(entry.checkpoint);
                             if version_hint.is_none() {
                                 version_hint = Some(entry.version);
@@ -2417,15 +2417,17 @@ impl HistoricalStateProvider {
                 if walrus_checkpoint.is_none() {
                     if let Some(obj_index) = self.local_object_index.as_deref() {
                         let entry = if let Some(cp) = checkpoint {
-                            obj_index.get_at_or_before_checkpoint(pkg_id, cp).ok().flatten()
+                            obj_index
+                                .get_at_or_before_checkpoint(pkg_id, cp)
+                                .ok()
+                                .flatten()
                         } else {
                             obj_index.get_latest(pkg_id).ok().flatten()
                         };
                         if let Some(entry) = entry {
                             if let Some(tx_digest) = entry.tx_digest.clone() {
-                                if let Some(cp) = self
-                                    .resolve_checkpoint_for_tx_digest(&tx_digest)
-                                    .await
+                                if let Some(cp) =
+                                    self.resolve_checkpoint_for_tx_digest(&tx_digest).await
                                 {
                                     walrus_checkpoint = Some(cp);
                                     if version_hint.is_none() {
@@ -2454,17 +2456,19 @@ impl HistoricalStateProvider {
                             != Some("0")
                         {
                             let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
-                            if let Ok(Some(grpc_obj)) =
-                                self.grpc.get_object_at_version(&pkg_id_str, Some(ver)).await
+                            if let Ok(Some(grpc_obj)) = self
+                                .grpc
+                                .get_object_at_version(&pkg_id_str, Some(ver))
+                                .await
                             {
                                 if let Some(prev_tx) = grpc_obj.previous_transaction.as_ref() {
-                                    if let Some(cp) = self
-                                        .resolve_checkpoint_for_tx_digest(prev_tx)
-                                        .await
+                                    if let Some(cp) =
+                                        self.resolve_checkpoint_for_tx_digest(prev_tx).await
                                     {
                                         walrus_checkpoint = Some(cp);
                                     } else {
-                                        missing_reasons.push("checkpoint_lookup_failed".to_string());
+                                        missing_reasons
+                                            .push("checkpoint_lookup_failed".to_string());
                                         if debug_gaps {
                                             eprintln!(
                                                 "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=grpc_object",
@@ -2488,7 +2492,11 @@ impl HistoricalStateProvider {
                 if let Some(cp) = walrus_checkpoint {
                     if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
                         if let Some(tx_index) = self.local_tx_index.as_deref() {
-                            ingest_walrus_checkpoint_tx_index(checkpoint_json.as_ref(), tx_index, cp);
+                            ingest_walrus_checkpoint_tx_index(
+                                checkpoint_json.as_ref(),
+                                tx_index,
+                                cp,
+                            );
                         }
                         let _ = ingest_walrus_checkpoint_packages(
                             checkpoint_json.as_ref(),
@@ -2526,7 +2534,12 @@ impl HistoricalStateProvider {
                             } else if checkpoint.is_none() {
                                 if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
                                     cache_hits += 1;
-                                    log_package_linkage(&pkg, "walrus_cache_latest", version_hint, true);
+                                    log_package_linkage(
+                                        &pkg,
+                                        "walrus_cache_latest",
+                                        version_hint,
+                                        true,
+                                    );
                                     for dep_id in pkg.linkage.values() {
                                         if !processed.contains(dep_id) {
                                             to_process.push(*dep_id);
@@ -2542,8 +2555,7 @@ impl HistoricalStateProvider {
                                 }
                             }
                         }
-                        missing_reasons
-                            .push("package_missing_after_walrus_ingest".to_string());
+                        missing_reasons.push("package_missing_after_walrus_ingest".to_string());
                     } else {
                         missing_reasons.push("walrus_checkpoint_fetch_failed".to_string());
                     }
@@ -2557,8 +2569,8 @@ impl HistoricalStateProvider {
                     if let Some(cp) = self.resolve_checkpoint_for_tx_digest(prev_tx).await {
                         if linkage_debug_enabled() {
                             eprintln!(
-                                "[linkage] prev_tx_lookup pkg={} prev_tx={} checkpoint={}",
-                                format!("0x{}", hex::encode(pkg_id.as_ref())),
+                                "[linkage] prev_tx_lookup pkg=0x{} prev_tx={} checkpoint={}",
+                                hex::encode(pkg_id.as_ref()),
                                 prev_tx,
                                 cp
                             );
@@ -2566,7 +2578,11 @@ impl HistoricalStateProvider {
                         if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
                             // Ingest tx index entries from this checkpoint
                             if let Some(tx_idx) = self.local_tx_index.as_deref() {
-                                ingest_walrus_checkpoint_tx_index(checkpoint_json.as_ref(), tx_idx, cp);
+                                ingest_walrus_checkpoint_tx_index(
+                                    checkpoint_json.as_ref(),
+                                    tx_idx,
+                                    cp,
+                                );
                             }
                             // Ingest packages from this checkpoint
                             let _ = ingest_walrus_checkpoint_packages(
@@ -2589,7 +2605,12 @@ impl HistoricalStateProvider {
                                 if let Some(ver) = version_hint {
                                     if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
                                         cache_hits += 1;
-                                        log_package_linkage(&pkg, "walrus_prev_tx", version_hint, true);
+                                        log_package_linkage(
+                                            &pkg,
+                                            "walrus_prev_tx",
+                                            version_hint,
+                                            true,
+                                        );
                                         for dep_id in pkg.linkage.values() {
                                             if !processed.contains(dep_id) {
                                                 to_process.push(*dep_id);
@@ -2606,7 +2627,12 @@ impl HistoricalStateProvider {
                                 } else if checkpoint.is_none() {
                                     if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
                                         cache_hits += 1;
-                                        log_package_linkage(&pkg, "walrus_prev_tx_latest", version_hint, true);
+                                        log_package_linkage(
+                                            &pkg,
+                                            "walrus_prev_tx_latest",
+                                            version_hint,
+                                            true,
+                                        );
                                         for dep_id in pkg.linkage.values() {
                                             if !processed.contains(dep_id) {
                                                 to_process.push(*dep_id);
@@ -2637,8 +2663,8 @@ impl HistoricalStateProvider {
 
             if walrus_only {
                 eprintln!(
-                    "[walrus_package_only] missing package={} version_hint={:?} reasons={:?}",
-                    format!("0x{}", hex::encode(pkg_id.as_ref())),
+                    "[walrus_package_only] missing package=0x{} version_hint={:?} reasons={:?}",
+                    hex::encode(pkg_id.as_ref()),
                     version_hint,
                     missing_reasons
                 );
@@ -2721,11 +2747,16 @@ impl HistoricalStateProvider {
                     if let (Some(prev_tx), Some(walrus)) =
                         (grpc_obj.previous_transaction.as_ref(), self.walrus.as_ref())
                     {
-                        let checkpoint_for_tx = self.resolve_checkpoint_for_tx_digest(prev_tx).await;
+                        let checkpoint_for_tx =
+                            self.resolve_checkpoint_for_tx_digest(prev_tx).await;
                         if let Some(cp) = checkpoint_for_tx {
                             if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
                                 if let Some(tx_index) = self.local_tx_index.as_deref() {
-                                    ingest_walrus_checkpoint_tx_index(checkpoint_json.as_ref(), tx_index, cp);
+                                    ingest_walrus_checkpoint_tx_index(
+                                        checkpoint_json.as_ref(),
+                                        tx_index,
+                                        cp,
+                                    );
                                 }
                                 let _ = ingest_walrus_checkpoint_packages(
                                     checkpoint_json.as_ref(),
@@ -2746,13 +2777,20 @@ impl HistoricalStateProvider {
                                     if let Some(ver) = version_hint {
                                         if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
                                             cache_hits += 1;
-                                            log_package_linkage(&pkg, "walrus_prev_tx", version_hint, true);
+                                            log_package_linkage(
+                                                &pkg,
+                                                "walrus_prev_tx",
+                                                version_hint,
+                                                true,
+                                            );
                                             for dep_id in pkg.linkage.values() {
                                                 if !processed.contains(dep_id) {
                                                     to_process.push(*dep_id);
                                                 }
                                             }
-                                            for dep_id in extract_module_dependency_ids(&pkg.modules) {
+                                            for dep_id in
+                                                extract_module_dependency_ids(&pkg.modules)
+                                            {
                                                 if !processed.contains(&dep_id) {
                                                     to_process.push(dep_id);
                                                 }
@@ -2763,13 +2801,20 @@ impl HistoricalStateProvider {
                                     } else if checkpoint.is_none() {
                                         if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
                                             cache_hits += 1;
-                                            log_package_linkage(&pkg, "walrus_prev_tx_latest", version_hint, true);
+                                            log_package_linkage(
+                                                &pkg,
+                                                "walrus_prev_tx_latest",
+                                                version_hint,
+                                                true,
+                                            );
                                             for dep_id in pkg.linkage.values() {
                                                 if !processed.contains(dep_id) {
                                                     to_process.push(*dep_id);
                                                 }
                                             }
-                                            for dep_id in extract_module_dependency_ids(&pkg.modules) {
+                                            for dep_id in
+                                                extract_module_dependency_ids(&pkg.modules)
+                                            {
                                                 if !processed.contains(&dep_id) {
                                                     to_process.push(dep_id);
                                                 }
@@ -3377,6 +3422,7 @@ fn owner_kind_string(owner_json: &Value) -> Option<String> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ingest_walrus_objects(
     tx_json: &Value,
     cache: Option<&VersionedCache>,
@@ -3403,7 +3449,8 @@ fn ingest_walrus_objects(
                     if let Some(cache) = cache {
                         cache.put_package(pkg_data.clone());
                     }
-                    if let (Some(pkg_index), Some(checkpoint)) = (package_index, source_checkpoint) {
+                    if let (Some(pkg_index), Some(checkpoint)) = (package_index, source_checkpoint)
+                    {
                         let _ = pkg_index.put(
                             pkg_data.address,
                             pkg_data.version,
@@ -3412,10 +3459,8 @@ fn ingest_walrus_objects(
                         );
                     }
                     if let Some(historical_versions) = historical_versions.as_deref_mut() {
-                        let pkg_str =
-                            format!("0x{}", hex::encode(pkg_data.address.as_ref()));
-                        historical_versions
-                            .insert(normalize_address(&pkg_str), pkg_data.version);
+                        let pkg_str = format!("0x{}", hex::encode(pkg_data.address.as_ref()));
+                        historical_versions.insert(normalize_address(&pkg_str), pkg_data.version);
                     }
                     if cache.is_some() {
                         ingested += 1;
@@ -3505,6 +3550,7 @@ fn ingest_walrus_objects(
     ingested
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ingest_walrus_tx_objects(
     tx_json: &Value,
     cache: &VersionedCache,
@@ -3535,7 +3581,10 @@ fn ingest_walrus_checkpoint_objects(
     dynamic_fields: Option<&FsDynamicFieldCache>,
     source_checkpoint: Option<u64>,
 ) -> usize {
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return 0;
     };
     let mut total = 0usize;
@@ -3560,7 +3609,10 @@ fn ingest_walrus_checkpoint_packages(
     package_index: Option<&FsPackageIndex>,
     source_checkpoint: u64,
 ) -> usize {
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return 0;
     };
     let mut ingested = 0usize;
@@ -3614,7 +3666,10 @@ fn ingest_walrus_checkpoint_tx_index(
     tx_index: &FsTxDigestIndex,
     checkpoint: u64,
 ) {
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return;
     };
     for tx_json in transactions {
@@ -3770,7 +3825,6 @@ fn grpc_object_to_package(
             .and_then(|s| parse_object_id(s).ok()),
     })
 }
-
 
 /// Extract dependency package IDs from module bytecode.
 fn extract_module_dependency_ids(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {

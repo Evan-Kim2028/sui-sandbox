@@ -34,6 +34,7 @@ use sui_state_fetcher::{
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcObject, GrpcOwner};
+use sui_transport::walrus::WalrusClient;
 use sui_types::digests::TransactionDigest;
 
 // Import all input types from the inputs module
@@ -42,7 +43,7 @@ use super::inputs::{
     EditFileInput, ExecutePtbInput, FetchStrategy, GetInterfaceInput, GetStateInput,
     ListPackagesInput, ListProjectsInput, LoadFromMainnetInput, LoadPackageBytesInput,
     ProjectIdInput, PtbOptions, ReadFileInput, ReadObjectInput, ReplayInput, SearchInput,
-    SetActivePackageInput, TestProjectInput, UpgradeProjectInput,
+    SetActivePackageInput, TestProjectInput, UpgradeProjectInput, WalrusFetchInput,
 };
 
 impl ToolDispatcher {
@@ -277,7 +278,10 @@ impl ToolDispatcher {
             Some(provider.as_ref()),
             replay_state.checkpoint,
         );
-        env_guard.set_address_aliases_with_versions(pkg_aliases.aliases.clone(), pkg_aliases.versions.clone());
+        env_guard.set_address_aliases_with_versions(
+            pkg_aliases.aliases.clone(),
+            pkg_aliases.versions.clone(),
+        );
 
         let mut packages: Vec<&PackageData> = replay_state.packages.values().collect();
         packages.sort_by(|a, b| {
@@ -305,10 +309,7 @@ impl ToolDispatcher {
         let mut version_map: HashMap<String, u64> = HashMap::new();
         for (id, obj) in &replay_state.objects {
             let id_hex = id.to_hex_literal();
-            cached_objects.insert(
-                id_hex.clone(),
-                encode_b64(&obj.bcs_bytes),
-            );
+            cached_objects.insert(id_hex.clone(), encode_b64(&obj.bcs_bytes));
             version_map.insert(id_hex, obj.version);
         }
 
@@ -859,9 +860,7 @@ impl ToolDispatcher {
                     let specific_id = parsed
                         .object_id
                         .as_ref()
-                        .and_then(|id| {
-                            parse_address(id).ok()
-                        })
+                        .and_then(|id| parse_address(id).ok())
                         .map(|addr| addr.into_bytes());
                     let id = match env_guard.create_object_from_json(&type_tag, fields, specific_id)
                     {
@@ -1292,6 +1291,180 @@ impl ToolDispatcher {
             _ => ToolResponse::error(format!("Unknown configure action: {}", parsed.action)),
         }
     }
+
+    pub async fn walrus_fetch_checkpoints(&self, input: Value) -> ToolResponse {
+        let parsed: WalrusFetchInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let network = parsed
+            .network
+            .as_deref()
+            .unwrap_or("mainnet")
+            .to_ascii_lowercase();
+        let walrus = match network.as_str() {
+            "testnet" => WalrusClient::testnet(),
+            _ => WalrusClient::mainnet(),
+        };
+
+        let max_chunk_bytes = parsed.max_chunk_bytes.unwrap_or(8 * 1024 * 1024);
+        let batch_size = parsed.batch_size.unwrap_or(50).max(1);
+        let include_summary = parsed.summary.unwrap_or(true);
+
+        let latest = match walrus.get_latest_checkpoint() {
+            Ok(v) => v,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        let checkpoints: Vec<u64> = if let Some(list) = parsed.checkpoints.clone() {
+            list
+        } else {
+            let count = parsed.count.unwrap_or(1).max(1);
+            let start = parsed
+                .start_checkpoint
+                .unwrap_or_else(|| latest.saturating_sub(count - 1));
+            (start..start + count).collect()
+        };
+
+        let dump_dir = parsed.dump_dir.as_ref().map(PathBuf::from);
+        if let Some(dir) = dump_dir.as_ref() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                return ToolResponse::error(format!(
+                    "failed to create dump_dir {}: {}",
+                    dir.display(),
+                    e
+                ));
+            }
+        }
+
+        let mut summaries: Vec<Value> = Vec::new();
+        let mut fetched = 0usize;
+        let start = std::time::Instant::now();
+
+        for chunk in checkpoints.chunks(batch_size) {
+            let mut decoded: Vec<(u64, Value)> = Vec::with_capacity(chunk.len());
+            match walrus.get_checkpoints_batched(chunk, max_chunk_bytes) {
+                Ok(batch) => {
+                    for (cp, data) in batch {
+                        let value = match serde_json::to_value(&data) {
+                            Ok(v) => v,
+                            Err(e) => return ToolResponse::error(e.to_string()),
+                        };
+                        decoded.push((cp, value));
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[walrus] batched fetch failed ({}); falling back to per-checkpoint",
+                        e
+                    );
+                    for &cp in chunk {
+                        match walrus.get_checkpoint_json(cp) {
+                            Ok(value) => decoded.push((cp, value)),
+                            Err(err) => eprintln!(
+                                "[walrus] checkpoint {} failed in fallback: {}",
+                                cp, err
+                            ),
+                        }
+                    }
+                }
+            }
+
+            for (cp, value) in decoded {
+                if let Some(dir) = dump_dir.as_ref() {
+                    let path = dir.join(format!("checkpoint_{}.json", cp));
+                    if let Err(e) =
+                        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap_or_default())
+                    {
+                        return ToolResponse::error(format!(
+                            "failed to write {}: {}",
+                            path.display(),
+                            e
+                        ));
+                    }
+                }
+                if include_summary {
+                    let summary = summarize_checkpoint(&value);
+                    summaries.push(json!({
+                        "checkpoint": cp,
+                        "transactions": summary.transactions,
+                        "input_objects": summary.input_objects,
+                        "output_objects": summary.output_objects,
+                        "packages": summary.packages,
+                        "move_objects": summary.move_objects,
+                        "dynamic_fields": summary.dynamic_fields,
+                    }));
+                }
+                fetched += 1;
+            }
+        }
+
+        ToolResponse::ok(json!({
+            "network": network,
+            "latest_checkpoint": latest,
+            "requested": checkpoints.len(),
+            "fetched": fetched,
+            "dump_dir": dump_dir.as_ref().map(|d| d.display().to_string()),
+            "elapsed_ms": start.elapsed().as_millis(),
+            "summaries": summaries,
+        }))
+    }
+}
+
+#[derive(Default)]
+struct CheckpointSummary {
+    transactions: usize,
+    input_objects: usize,
+    output_objects: usize,
+    packages: usize,
+    move_objects: usize,
+    dynamic_fields: usize,
+}
+
+fn summarize_checkpoint(checkpoint_json: &Value) -> CheckpointSummary {
+    let mut summary = CheckpointSummary::default();
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
+        return summary;
+    };
+    summary.transactions = transactions.len();
+    for tx_json in transactions {
+        for key in ["input_objects", "output_objects"] {
+            let Some(arr) = tx_json.get(key).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            if key == "input_objects" {
+                summary.input_objects += arr.len();
+            } else {
+                summary.output_objects += arr.len();
+            }
+            for obj_json in arr {
+                if obj_json
+                    .get("data")
+                    .and_then(|d| d.get("Package"))
+                    .is_some()
+                {
+                    summary.packages += 1;
+                    continue;
+                }
+                if let Some(move_obj) = obj_json.get("data").and_then(|d| d.get("Move")) {
+                    summary.move_objects += 1;
+                    if move_obj
+                        .get("type_")
+                        .and_then(|t| t.as_str())
+                        .map(|t| t.contains("::dynamic_field::Field"))
+                        .unwrap_or(false)
+                    {
+                        summary.dynamic_fields += 1;
+                    }
+                }
+            }
+        }
+    }
+    summary
 }
 
 #[derive(Debug, Clone)]
@@ -1474,9 +1647,7 @@ fn parse_command(value: &Value) -> Result<PtbCommand> {
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str())
-                        .filter_map(|b64| {
-                            decode_b64_opt(b64)
-                        })
+                        .filter_map(decode_b64_opt)
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -1486,9 +1657,7 @@ fn parse_command(value: &Value) -> Result<PtbCommand> {
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str())
-                        .filter_map(|s| {
-                            parse_address(s).ok()
-                        })
+                        .filter_map(|s| parse_address(s).ok())
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -1504,9 +1673,7 @@ fn parse_command(value: &Value) -> Result<PtbCommand> {
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str())
-                        .filter_map(|b64| {
-                            decode_b64_opt(b64)
-                        })
+                        .filter_map(decode_b64_opt)
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -2031,6 +2198,7 @@ fn fetch_dependency_closure_mcp(
     Ok(fetched)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn replay_with_harness(
     env: &mut SimulationEnvironment,
     replay_state: &sui_state_fetcher::types::ReplayState,
@@ -2420,7 +2588,7 @@ fn fetch_child_object_by_key(
     if let (Some(cache), Some(key)) = (miss_cache, miss_key.as_ref()) {
         if let Some(entry) = cache.lock().get(key).cloned() {
             let backoff_ms: u64 = env_var_or("SUI_DF_MISS_BACKOFF_MS", 250);
-            let exp = entry.count.saturating_sub(1).min(3) as u32;
+            let exp = entry.count.saturating_sub(1).min(3);
             let delay = backoff_ms.saturating_mul(1u64 << exp);
             if entry.last.elapsed().as_millis() < delay as u128 {
                 if debug_df {
@@ -2568,9 +2736,7 @@ fn fetch_child_object_by_key(
                 if let Some(version) = df.version {
                     if let Ok(obj) = gql.fetch_object_at_version(object_id, version) {
                         if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
-                            if let Ok(bytes) =
-                                decode_b64(&bcs_b64)
-                            {
+                            if let Ok(bytes) = decode_b64(&bcs_b64) {
                                 if let Ok(tag) = parse_type_tag(&type_str) {
                                     if debug_df {
                                         eprintln!(
@@ -2595,9 +2761,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         if debug_df {
                                             eprintln!(
@@ -2615,9 +2779,7 @@ fn fetch_child_object_by_key(
                 if let Ok(obj) = gql.fetch_object(object_id) {
                     if obj.version <= max_version {
                         if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
-                            if let Ok(bytes) =
-                                decode_b64(&bcs_b64)
-                            {
+                            if let Ok(bytes) = decode_b64(&bcs_b64) {
                                 if let Ok(tag) = parse_type_tag(&type_str) {
                                     if debug_df {
                                         eprintln!(
@@ -2761,9 +2923,7 @@ fn fetch_child_object_by_key(
                 if let Some(version) = df.version {
                     if let Ok(obj) = gql.fetch_object_at_version(object_id, version) {
                         if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
-                            if let Ok(bytes) =
-                                decode_b64(&bcs_b64)
-                            {
+                            if let Ok(bytes) = decode_b64(&bcs_b64) {
                                 if let Ok(tag) = parse_type_tag(&type_str) {
                                     if debug_df {
                                         eprintln!(
@@ -2788,9 +2948,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         if debug_df {
                                             eprintln!(
@@ -2808,9 +2966,7 @@ fn fetch_child_object_by_key(
                 if let Ok(obj) = gql.fetch_object(object_id) {
                     if obj.version <= max_version {
                         if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
-                            if let Ok(bytes) =
-                                decode_b64(&bcs_b64)
-                            {
+                            if let Ok(bytes) = decode_b64(&bcs_b64) {
                                 if let Ok(tag) = parse_type_tag(&type_str) {
                                     if debug_df {
                                         eprintln!(
@@ -2873,9 +3029,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         return Some((tag, bytes));
                                     }
@@ -2894,9 +3048,7 @@ fn fetch_child_object_by_key(
                                 if let (Some(type_str), Some(bcs_b64)) =
                                     (obj.type_string, obj.bcs_base64)
                                 {
-                                    if let Ok(bytes) =
-                                        decode_b64(&bcs_b64)
-                                    {
+                                    if let Ok(bytes) = decode_b64(&bcs_b64) {
                                         if let Ok(tag) = parse_type_tag(&type_str) {
                                             return Some((tag, bytes));
                                         }
@@ -2910,9 +3062,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         return Some((tag, bytes));
                                     }
@@ -2966,9 +3116,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         return Some((tag, bytes));
                                     }
@@ -2987,9 +3135,7 @@ fn fetch_child_object_by_key(
                                 if let (Some(type_str), Some(bcs_b64)) =
                                     (obj.type_string, obj.bcs_base64)
                                 {
-                                    if let Ok(bytes) =
-                                        decode_b64(&bcs_b64)
-                                    {
+                                    if let Ok(bytes) = decode_b64(&bcs_b64) {
                                         if let Ok(tag) = parse_type_tag(&type_str) {
                                             return Some((tag, bytes));
                                         }
@@ -3003,9 +3149,7 @@ fn fetch_child_object_by_key(
                             if let (Some(type_str), Some(bcs_b64)) =
                                 (obj.type_string, obj.bcs_base64)
                             {
-                                if let Ok(bytes) =
-                                    decode_b64(&bcs_b64)
-                                {
+                                if let Ok(bytes) = decode_b64(&bcs_b64) {
                                     if let Ok(tag) = parse_type_tag(&type_str) {
                                         return Some((tag, bytes));
                                     }

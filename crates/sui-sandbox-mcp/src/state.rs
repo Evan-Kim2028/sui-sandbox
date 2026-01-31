@@ -258,6 +258,7 @@ impl ToolDispatcher {
             "search" => self.search(input).await,
             "get_state" => self.get_state(input).await,
             "configure" => self.configure(input).await,
+            "walrus_fetch_checkpoints" => self.walrus_fetch_checkpoints(input).await,
             _ => ToolResponse::error(format!("Unknown tool: {}", tool)),
         }
     }

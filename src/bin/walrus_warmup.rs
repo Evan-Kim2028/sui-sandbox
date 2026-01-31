@@ -14,14 +14,8 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use sui_historical_cache::{
-    DynamicFieldEntry,
-    FsDynamicFieldCache,
-    FsObjectIndex,
-    FsObjectStore,
-    FsPackageIndex,
-    FsTxDigestIndex,
-    ObjectMeta,
-    ObjectVersionStore,
+    DynamicFieldEntry, FsDynamicFieldCache, FsObjectIndex, FsObjectStore, FsPackageIndex,
+    FsTxDigestIndex, ObjectMeta, ObjectVersionStore,
 };
 use sui_transport::walrus::WalrusClient;
 use sui_types::move_package::MovePackage;
@@ -85,7 +79,11 @@ fn main() -> Result<()> {
 
     let store_dir = args
         .store_dir
-        .or_else(|| std::env::var("SUI_WALRUS_STORE_DIR").ok().map(PathBuf::from))
+        .or_else(|| {
+            std::env::var("SUI_WALRUS_STORE_DIR")
+                .ok()
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| default_store_dir(&args.network));
 
     let store = if args.no_ingest {
@@ -143,17 +141,36 @@ fn main() -> Result<()> {
 
     for chunk in checkpoints.chunks(args.batch_size) {
         let batch_start = Instant::now();
-        let decoded = walrus
-            .get_checkpoints_batched(chunk, args.max_chunk_bytes)
-            .context("walrus get_checkpoints_batched")?;
-        for (cp, data) in decoded {
-            let value = serde_json::to_value(&data)
-                .map_err(|e| anyhow!("serialize checkpoint {}: {}", cp, e))?;
+        let mut decoded: Vec<(u64, Value)> = Vec::with_capacity(chunk.len());
+        match walrus.get_checkpoints_batched(chunk, args.max_chunk_bytes) {
+            Ok(batch) => {
+                for (cp, data) in batch {
+                    let value = serde_json::to_value(&data)
+                        .map_err(|e| anyhow!("serialize checkpoint {}: {}", cp, e))?;
+                    decoded.push((cp, value));
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[warning] batched walrus fetch failed ({}); falling back to per-checkpoint",
+                    e
+                );
+                for &cp in chunk {
+                    match walrus.get_checkpoint_json(cp) {
+                        Ok(value) => decoded.push((cp, value)),
+                        Err(err) => eprintln!(
+                            "[warning] walrus checkpoint {} failed in fallback: {}",
+                            cp, err
+                        ),
+                    }
+                }
+            }
+        }
+        for (cp, value) in decoded {
             if let Some(dir) = &args.dump_dir {
                 let path = dir.join(format!("checkpoint_{}.json", cp));
-                std::fs::create_dir_all(dir).with_context(|| {
-                    format!("create dump dir {}", dir.display())
-                })?;
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("create dump dir {}", dir.display()))?;
                 std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap_or_default())
                     .with_context(|| format!("write checkpoint dump {}", path.display()))?;
             }
@@ -170,9 +187,19 @@ fn main() -> Result<()> {
                     summary.dynamic_fields,
                 );
             }
-            if let (Some(tx_index), Some(store), Some(index), Some(package_index), Some(dynamic_fields)) =
-                (tx_index.as_ref(), store.as_ref(), index.as_ref(), package_index.as_ref(), dynamic_fields.as_ref())
-            {
+            if let (
+                Some(tx_index),
+                Some(store),
+                Some(index),
+                Some(package_index),
+                Some(dynamic_fields),
+            ) = (
+                tx_index.as_ref(),
+                store.as_ref(),
+                index.as_ref(),
+                package_index.as_ref(),
+                dynamic_fields.as_ref(),
+            ) {
                 ingest_checkpoint_tx_index(&value, tx_index, cp);
                 let ingested = ingest_checkpoint_objects(
                     &value,
@@ -216,7 +243,10 @@ struct CheckpointSummary {
 
 fn summarize_checkpoint(checkpoint_json: &Value) -> CheckpointSummary {
     let mut summary = CheckpointSummary::default();
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return summary;
     };
     summary.transactions = transactions.len();
@@ -241,7 +271,8 @@ fn summarize_checkpoint(checkpoint_json: &Value) -> CheckpointSummary {
                 }
                 if let Some(move_obj) = obj_json.get("data").and_then(|d| d.get("Move")) {
                     summary.move_objects += 1;
-                    if move_obj.get("type_")
+                    if move_obj
+                        .get("type_")
                         .and_then(|t| t.as_str())
                         .map(|t| t.contains("::dynamic_field::Field"))
                         .unwrap_or(false)
@@ -274,7 +305,10 @@ fn ingest_checkpoint_objects(
     dynamic_fields: &FsDynamicFieldCache,
     checkpoint: u64,
 ) -> usize {
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return 0;
     };
     let mut total = 0usize;
@@ -377,8 +411,15 @@ fn ingest_objects_for_tx(
     ingested
 }
 
-fn ingest_checkpoint_tx_index(checkpoint_json: &Value, tx_index: &FsTxDigestIndex, checkpoint: u64) {
-    let Some(transactions) = checkpoint_json.get("transactions").and_then(|v| v.as_array()) else {
+fn ingest_checkpoint_tx_index(
+    checkpoint_json: &Value,
+    tx_index: &FsTxDigestIndex,
+    checkpoint: u64,
+) {
+    let Some(transactions) = checkpoint_json
+        .get("transactions")
+        .and_then(|v| v.as_array())
+    else {
         return;
     };
     for tx_json in transactions {

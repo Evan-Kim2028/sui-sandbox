@@ -196,8 +196,7 @@ pub fn parse_pure_from_json(value: &Value, type_hint: Option<&str>) -> Result<Ve
                     v.as_str()
                         .ok_or_else(|| anyhow!("Array element not a string"))
                         .and_then(|s| {
-                            AccountAddress::from_hex_literal(s)
-                                .context("Invalid address in array")
+                            AccountAddress::from_hex_literal(s).context("Invalid address in array")
                         })
                 })
                 .collect();

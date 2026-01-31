@@ -529,9 +529,7 @@ impl<F: PackageFetcher> HistoricalPackageResolver<F> {
                 let modules_b64: Vec<(String, String)> = pkg
                     .raw_modules
                     .iter()
-                    .map(|(name, bytes)| {
-                        (name.clone(), base64_encode(bytes))
-                    })
+                    .map(|(name, bytes)| (name.clone(), base64_encode(bytes)))
                     .collect();
                 (pkg_id.clone(), modules_b64)
             })

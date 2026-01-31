@@ -421,6 +421,7 @@ fn load_synthetic_object(
         package_modules: None,
         package_linkage: None,
         package_original_id: None,
+        previous_transaction: None,
     })
 }
 

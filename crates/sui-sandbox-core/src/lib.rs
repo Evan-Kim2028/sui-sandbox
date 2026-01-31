@@ -50,8 +50,8 @@ pub mod fetcher;
 pub mod gas;
 pub mod mm2;
 pub mod natives;
-pub mod sandbox_runtime;
 pub mod phases;
+pub mod sandbox_runtime;
 
 // Backward compatibility alias for renamed module
 #[deprecated(since = "0.11.0", note = "Use sandbox_runtime instead")]
@@ -85,13 +85,13 @@ pub mod shared;
 
 // Re-export main types at crate root for convenience
 pub use fetcher::{FetchedObjectData, Fetcher, GrpcFetcher, MockFetcher, NoopFetcher};
-pub use sandbox_runtime::{
-    ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
-    VersionedChildFetcherFn,
-};
 pub use predictive_prefetch::{
     PredictedAccessInfo, PredictionStats, PredictivePrefetchConfig, PredictivePrefetchResult,
     PredictivePrefetcher,
 };
 pub use resolver::LocalModuleResolver;
+pub use sandbox_runtime::{
+    ChildFetcherFn, ComputedChildInfo, KeyBasedChildFetcherFn, ObjectRuntime, SharedObjectRuntime,
+    VersionedChildFetcherFn,
+};
 pub use vm::{SimulationConfig, VMHarness};

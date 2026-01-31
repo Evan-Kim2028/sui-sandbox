@@ -489,8 +489,10 @@ impl GraphQLClient {
 
     fn default_timeouts() -> (Duration, Duration) {
         let timeout_secs: u64 = env_var_or("SUI_GRAPHQL_TIMEOUT_SECS", Self::DEFAULT_TIMEOUT_SECS);
-        let connect_secs: u64 =
-            env_var_or("SUI_GRAPHQL_CONNECT_TIMEOUT_SECS", Self::DEFAULT_CONNECT_TIMEOUT_SECS);
+        let connect_secs: u64 = env_var_or(
+            "SUI_GRAPHQL_CONNECT_TIMEOUT_SECS",
+            Self::DEFAULT_CONNECT_TIMEOUT_SECS,
+        );
         (
             Duration::from_secs(timeout_secs),
             Duration::from_secs(connect_secs),
