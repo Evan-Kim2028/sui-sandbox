@@ -3,13 +3,13 @@
 //! This module contains the core transaction types used throughout the sui-sandbox
 //! workspace for transaction replay and caching.
 
-use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Object ID type (32-byte address)
-pub type ObjectID = AccountAddress;
+use crate::encoding::{base64_encode, try_base64_decode};
+
+// Note: ObjectID is now canonically defined in fetched.rs and re-exported from lib.rs.
 
 /// Transaction digest (32 bytes, base58 encoded in JSON)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -484,9 +484,26 @@ impl EffectsComparison {
     ) {
         use std::collections::HashSet;
 
+        fn normalize_ids(ids: &[String]) -> Vec<String> {
+            ids.iter()
+                .map(|id| {
+                    AccountAddress::from_hex_literal(id)
+                        .map(|addr| addr.to_hex_literal())
+                        .unwrap_or_else(|_| id.clone())
+                })
+                .collect()
+        }
+
+        let on_chain_created_ids = normalize_ids(&on_chain.created);
+        let local_created_ids = normalize_ids(&local.created);
+        let on_chain_mutated_ids = normalize_ids(&on_chain.mutated);
+        let local_mutated_ids = normalize_ids(&local.mutated);
+        let on_chain_deleted_ids = normalize_ids(&on_chain.deleted);
+        let local_deleted_ids = normalize_ids(&local.deleted);
+
         // Created
-        let on_chain_created: HashSet<_> = on_chain.created.iter().cloned().collect();
-        let local_created: HashSet<_> = local.created.iter().cloned().collect();
+        let on_chain_created: HashSet<_> = on_chain_created_ids.into_iter().collect();
+        let local_created: HashSet<_> = local_created_ids.into_iter().collect();
         let created_missing: Vec<String> = on_chain_created
             .difference(&local_created)
             .cloned()
@@ -507,8 +524,8 @@ impl EffectsComparison {
         }
 
         // Mutated (allow extra on-chain mutations for gas)
-        let on_chain_mutated: HashSet<_> = on_chain.mutated.iter().cloned().collect();
-        let local_mutated: HashSet<_> = local.mutated.iter().cloned().collect();
+        let on_chain_mutated: HashSet<_> = on_chain_mutated_ids.into_iter().collect();
+        let local_mutated: HashSet<_> = local_mutated_ids.into_iter().collect();
         let mutated_missing: Vec<String> = local_mutated
             .difference(&on_chain_mutated)
             .cloned()
@@ -529,8 +546,8 @@ impl EffectsComparison {
         }
 
         // Deleted
-        let on_chain_deleted: HashSet<_> = on_chain.deleted.iter().cloned().collect();
-        let local_deleted: HashSet<_> = local.deleted.iter().cloned().collect();
+        let on_chain_deleted: HashSet<_> = on_chain_deleted_ids.into_iter().collect();
+        let local_deleted: HashSet<_> = local_deleted_ids.into_iter().collect();
         let deleted_missing: Vec<String> = on_chain_deleted
             .difference(&local_deleted)
             .cloned()
@@ -664,20 +681,14 @@ pub struct LocalVersionInfo {
     pub output_version: u64,
 }
 
-/// Full object data returned from RPC.
-#[derive(Debug, Clone)]
-pub struct FetchedObject {
-    /// BCS bytes of the object content.
-    pub bcs_bytes: Vec<u8>,
-    /// Type string (e.g., "0x2::coin::Coin<0x2::sui::SUI>").
-    pub type_string: Option<String>,
-    /// Whether the object is shared.
-    pub is_shared: bool,
-    /// Whether the object is immutable.
-    pub is_immutable: bool,
-    /// Object version.
-    pub version: u64,
-}
+// Note: FetchedObject is now defined in fetched.rs with a richer API.
+// The canonical type is crate::fetched::FetchedObject, re-exported from lib.rs.
+//
+// For legacy compatibility, code that only needs (bcs_bytes, type_string, is_shared,
+// is_immutable, version) can construct a FetchedObject with:
+//   FetchedObject::new(object_id, version, bcs_bytes)
+//       .with_type(type_string)
+//       .shared()  // or .immutable()
 
 /// Entry for a dynamic field child (from JSON-RPC `suix_getDynamicFields`).
 #[derive(Debug, Clone)]
@@ -772,7 +783,7 @@ impl CachedTransaction {
             .map(|(name, bytes)| {
                 (
                     name,
-                    base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    base64_encode(&bytes),
                 )
             })
             .collect();
@@ -783,7 +794,7 @@ impl CachedTransaction {
     pub fn add_object(&mut self, object_id: String, bytes: Vec<u8>) {
         self.objects.insert(
             object_id,
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            base64_encode(&bytes),
         );
     }
 
@@ -796,7 +807,7 @@ impl CachedTransaction {
     ) {
         self.objects.insert(
             object_id.clone(),
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            base64_encode(&bytes),
         );
         if let Some(type_str) = object_type {
             self.object_types.insert(object_id, type_str);
@@ -809,10 +820,7 @@ impl CachedTransaction {
             modules
                 .iter()
                 .filter_map(|(name, b64)| {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .ok()
-                        .map(|bytes| (name.clone(), bytes))
+                    try_base64_decode(b64).map(|bytes| (name.clone(), bytes))
                 })
                 .collect()
         })
@@ -822,7 +830,7 @@ impl CachedTransaction {
     pub fn get_object_bytes(&self, object_id: &str) -> Option<Vec<u8>> {
         self.objects
             .get(object_id)
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .and_then(|b64| try_base64_decode(b64))
     }
 
     /// Get historical object bytes (at transaction-time version).
@@ -832,7 +840,7 @@ impl CachedTransaction {
         self.historical_objects
             .get(object_id)
             .or_else(|| self.objects.get(object_id))
-            .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
+            .and_then(|b64| try_base64_decode(b64))
     }
 
     /// Get object version at transaction time.
@@ -844,7 +852,7 @@ impl CachedTransaction {
     pub fn add_historical_object(&mut self, object_id: String, bytes: Vec<u8>, version: u64) {
         self.historical_objects.insert(
             object_id.clone(),
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            base64_encode(&bytes),
         );
         self.object_versions.insert(object_id, version);
     }
@@ -863,7 +871,7 @@ impl CachedTransaction {
             CachedDynamicField {
                 parent_id,
                 type_string,
-                bcs_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                bcs_base64: base64_encode(&bytes),
                 version,
             },
         );
@@ -875,17 +883,14 @@ impl CachedTransaction {
         child_id: &str,
     ) -> Option<(String, String, Vec<u8>, u64)> {
         self.dynamic_field_children.get(child_id).and_then(|df| {
-            base64::engine::general_purpose::STANDARD
-                .decode(&df.bcs_base64)
-                .ok()
-                .map(|bytes| {
-                    (
-                        df.parent_id.clone(),
-                        df.type_string.clone(),
-                        bytes,
-                        df.version,
-                    )
-                })
+            try_base64_decode(&df.bcs_base64).map(|bytes| {
+                (
+                    df.parent_id.clone(),
+                    df.type_string.clone(),
+                    bytes,
+                    df.version,
+                )
+            })
         })
     }
 
@@ -898,9 +903,7 @@ impl CachedTransaction {
             .iter()
             .filter(|(_, df)| df.parent_id == parent_id)
             .filter_map(|(child_id, df)| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(&df.bcs_base64)
-                    .ok()
+                try_base64_decode(&df.bcs_base64)
                     .map(|bytes| (child_id.clone(), df.type_string.clone(), bytes, df.version))
             })
             .collect()
