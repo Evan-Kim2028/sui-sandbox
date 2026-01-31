@@ -43,6 +43,18 @@ pub fn object_meta_path(cache_root: &Path, id: &AccountAddress, version: u64) ->
         .join(format!("{}.meta.json", version))
 }
 
+/// Get the full filesystem path for an object's index file.
+pub fn object_index_path(cache_root: &Path, id: &AccountAddress) -> PathBuf {
+    let (aa, bb) = object_shard_path(id);
+    let normalized_id = normalize_object_id(id);
+    cache_root
+        .join("index")
+        .join("objects")
+        .join(&aa)
+        .join(&bb)
+        .join(format!("{}.jsonl", normalized_id))
+}
+
 /// Get the shard path component (aa) from a package ID.
 pub fn package_shard_path(id: &AccountAddress) -> String {
     let normalized = normalize_object_id(id);
@@ -57,6 +69,40 @@ pub fn package_path(cache_root: &Path, id: &AccountAddress) -> PathBuf {
         .join("packages")
         .join(&aa)
         .join(format!("{}.json", normalized_id))
+}
+
+/// Get the full filesystem path for a package index file.
+pub fn package_index_path(cache_root: &Path, id: &AccountAddress) -> PathBuf {
+    let aa = package_shard_path(id);
+    let normalized_id = normalize_object_id(id);
+    cache_root
+        .join("index")
+        .join("packages")
+        .join(&aa)
+        .join(format!("{}.jsonl", normalized_id))
+}
+
+/// Get the full filesystem path for a tx digest index file.
+pub fn tx_digest_index_path(cache_root: &Path, digest: &str) -> PathBuf {
+    let digest = digest.trim();
+    let aa = digest.chars().take(2).collect::<String>();
+    cache_root
+        .join("index")
+        .join("tx_digests")
+        .join(&aa)
+        .join(format!("{}.json", digest))
+}
+
+/// Get the full filesystem path for a dynamic field cache file.
+pub fn dynamic_field_cache_path(cache_root: &Path, parent: &AccountAddress) -> PathBuf {
+    let (aa, bb) = object_shard_path(parent);
+    let normalized_id = normalize_object_id(parent);
+    cache_root
+        .join("index")
+        .join("dynamic_fields")
+        .join(&aa)
+        .join(&bb)
+        .join(format!("{}.jsonl", normalized_id))
 }
 
 /// Get the progress state file path.
