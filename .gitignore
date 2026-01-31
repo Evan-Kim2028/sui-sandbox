@@ -54,3 +54,9 @@ test_recent_txs.rs
 **/build/
 Move.lock
 .batch-ptb-cache/
+
+# Local sandbox and cache directories
+.sui-sandbox/
+walrus-store/
+logs_local/
+sui-official/
