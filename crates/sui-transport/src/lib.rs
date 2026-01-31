@@ -28,6 +28,7 @@
 
 pub mod graphql;
 pub mod grpc;
+pub mod network;
 pub mod walrus;
 
 // Re-export main types for convenience

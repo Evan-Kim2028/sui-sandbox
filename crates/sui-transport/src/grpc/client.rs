@@ -1096,6 +1096,9 @@ pub struct GrpcObject {
     /// This is the storage_id of the first version of this package.
     /// For the first version, this equals the object_id.
     pub package_original_id: Option<String>,
+    /// The digest of the transaction that created or last mutated this object.
+    /// For packages, this is the publish transaction.
+    pub previous_transaction: Option<String>,
 }
 
 impl GrpcObject {
@@ -1172,6 +1175,7 @@ impl GrpcObject {
             package_modules,
             package_linkage,
             package_original_id,
+            previous_transaction: proto.previous_transaction.clone(),
         }
     }
 }
@@ -1303,317 +1307,159 @@ impl GrpcOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grpc::test_utils::GrpcTransactionBuilder;
 
     // =========================================================================
-    // GrpcOwner parsing tests
+    // GrpcOwner parsing tests (consolidated)
     // =========================================================================
 
     #[test]
-    fn test_grpc_owner_from_proto_address() {
+    fn test_grpc_owner_variants() {
         use proto::owner::OwnerKind;
+
+        // Address variant
         let proto = proto::Owner {
             kind: Some(OwnerKind::Address as i32),
             address: Some("0x1234".to_string()),
             version: None,
         };
-        let owner = GrpcOwner::from_proto(&proto);
-        match owner {
-            GrpcOwner::Address(addr) => assert_eq!(addr, "0x1234"),
-            _ => panic!("Expected Address owner"),
-        }
-    }
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Address(a) if a == "0x1234"));
 
-    #[test]
-    fn test_grpc_owner_from_proto_object() {
-        use proto::owner::OwnerKind;
+        // Object variant
         let proto = proto::Owner {
             kind: Some(OwnerKind::Object as i32),
             address: Some("0xparent".to_string()),
             version: None,
         };
-        let owner = GrpcOwner::from_proto(&proto);
-        match owner {
-            GrpcOwner::Object(parent) => assert_eq!(parent, "0xparent"),
-            _ => panic!("Expected Object owner"),
-        }
-    }
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Object(p) if p == "0xparent"));
 
-    #[test]
-    fn test_grpc_owner_from_proto_shared() {
-        use proto::owner::OwnerKind;
+        // Shared variant
         let proto = proto::Owner {
             kind: Some(OwnerKind::Shared as i32),
             address: None,
             version: Some(42),
         };
-        let owner = GrpcOwner::from_proto(&proto);
-        match owner {
-            GrpcOwner::Shared { initial_version } => assert_eq!(initial_version, 42),
-            _ => panic!("Expected Shared owner"),
-        }
-    }
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Shared { initial_version: 42 }));
 
-    #[test]
-    fn test_grpc_owner_from_proto_immutable() {
-        use proto::owner::OwnerKind;
+        // Immutable variant
         let proto = proto::Owner {
             kind: Some(OwnerKind::Immutable as i32),
             address: None,
             version: None,
         };
-        let owner = GrpcOwner::from_proto(&proto);
-        assert!(matches!(owner, GrpcOwner::Immutable));
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Immutable));
     }
 
     #[test]
-    fn test_grpc_owner_from_proto_unknown_kind() {
-        let proto = proto::Owner {
-            kind: Some(999), // Invalid kind
-            address: None,
-            version: None,
-        };
-        let owner = GrpcOwner::from_proto(&proto);
-        assert!(matches!(owner, GrpcOwner::Unknown));
-    }
-
-    #[test]
-    fn test_grpc_owner_from_proto_none_kind() {
-        let proto = proto::Owner {
-            kind: None,
-            address: None,
-            version: None,
-        };
-        let owner = GrpcOwner::from_proto(&proto);
-        // None defaults to 0 which is not a valid OwnerKind
-        assert!(matches!(owner, GrpcOwner::Unknown));
-    }
-
-    #[test]
-    fn test_grpc_owner_address_missing_defaults_empty() {
+    fn test_grpc_owner_edge_cases() {
         use proto::owner::OwnerKind;
+
+        // Invalid kind -> Unknown
+        let proto = proto::Owner { kind: Some(999), address: None, version: None };
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Unknown));
+
+        // None kind -> Unknown
+        let proto = proto::Owner { kind: None, address: None, version: None };
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Unknown));
+
+        // Address with missing address field -> empty string
         let proto = proto::Owner {
             kind: Some(OwnerKind::Address as i32),
-            address: None, // Missing address
+            address: None,
             version: None,
         };
-        let owner = GrpcOwner::from_proto(&proto);
-        match owner {
-            GrpcOwner::Address(addr) => assert!(addr.is_empty()),
-            _ => panic!("Expected Address owner"),
-        }
+        assert!(matches!(GrpcOwner::from_proto(&proto), GrpcOwner::Address(a) if a.is_empty()));
     }
 
     // =========================================================================
-    // GrpcTransaction is_ptb tests
+    // GrpcTransaction is_ptb tests (using builder)
     // =========================================================================
 
     #[test]
-    fn test_grpc_transaction_is_ptb_with_commands() {
-        // Transaction with commands and sender - is a PTB
-        let tx = GrpcTransaction {
-            digest: "test".to_string(),
-            sender: "0x1".to_string(),
-            gas_budget: Some(1000),
-            gas_price: Some(1),
-            checkpoint: None,
-            timestamp_ms: None,
-            epoch: None,
-            inputs: vec![],
-            commands: vec![GrpcCommand::MoveCall {
-                package: "0x2".to_string(),
-                module: "coin".to_string(),
-                function: "value".to_string(),
-                type_arguments: vec![],
-                arguments: vec![],
-            }],
-            status: None,
-            objects: vec![],
-            execution_error: None,
-            unchanged_loaded_runtime_objects: vec![],
-            changed_objects: vec![],
-            created_objects: vec![],
-            unchanged_consensus_objects: vec![],
-        };
-        assert!(tx.is_ptb(), "Transaction with MoveCall command is a PTB");
-    }
+    fn test_grpc_transaction_is_ptb() {
+        // With commands and sender -> PTB
+        let tx = GrpcTransactionBuilder::new()
+            .with_move_call("0x2", "coin", "value")
+            .build();
+        assert!(tx.is_ptb(), "Transaction with MoveCall is a PTB");
 
-    #[test]
-    fn test_grpc_transaction_is_ptb_with_gas_budget_only() {
-        // Transaction with gas budget but no commands - still a PTB
-        let tx = GrpcTransaction {
-            digest: "test".to_string(),
-            sender: "0x1".to_string(),
-            gas_budget: Some(1000),
-            gas_price: Some(1),
-            checkpoint: None,
-            timestamp_ms: None,
-            epoch: None,
-            inputs: vec![],
-            execution_error: None,
-            commands: vec![],
-            status: None,
-            objects: vec![],
-            unchanged_loaded_runtime_objects: vec![],
-            changed_objects: vec![],
-            created_objects: vec![],
-            unchanged_consensus_objects: vec![],
-        };
+        // With gas budget only -> PTB
+        let tx = GrpcTransactionBuilder::new().build();
         assert!(tx.is_ptb(), "Transaction with gas budget is a PTB");
     }
 
     #[test]
-    fn test_grpc_transaction_is_not_ptb_empty_sender() {
-        // Empty sender - not a PTB (system transaction)
-        let tx = GrpcTransaction {
-            digest: "test".to_string(),
-            sender: "".to_string(), // Empty sender
-            gas_budget: Some(1000),
-            gas_price: Some(1),
-            checkpoint: None,
-            timestamp_ms: None,
-            epoch: None,
-            inputs: vec![],
-            commands: vec![],
-            status: None,
-            objects: vec![],
-            execution_error: None,
-            unchanged_loaded_runtime_objects: vec![],
-            changed_objects: vec![],
-            created_objects: vec![],
-            unchanged_consensus_objects: vec![],
-        };
-        assert!(!tx.is_ptb(), "Transaction without sender is not a PTB");
-    }
+    fn test_grpc_transaction_is_not_ptb() {
+        // Empty sender -> not PTB (system transaction)
+        let tx = GrpcTransactionBuilder::new().sender("").build();
+        assert!(!tx.is_ptb(), "Empty sender is not a PTB");
 
-    #[test]
-    fn test_grpc_transaction_is_not_ptb_no_commands_no_gas() {
-        // No commands and no gas budget - not a PTB
-        let tx = GrpcTransaction {
-            digest: "test".to_string(),
-            sender: "0x1".to_string(),
-            gas_budget: None,
-            gas_price: None,
-            checkpoint: None,
-            timestamp_ms: None,
-            epoch: None,
-            inputs: vec![],
-            commands: vec![],
-            status: None,
-            objects: vec![],
-            execution_error: None,
-            unchanged_loaded_runtime_objects: vec![],
-            changed_objects: vec![],
-            created_objects: vec![],
-            unchanged_consensus_objects: vec![],
-        };
-        assert!(
-            !tx.is_ptb(),
-            "Transaction without commands and gas budget is not a PTB"
-        );
+        // No commands and no gas budget -> not PTB
+        let tx = GrpcTransactionBuilder::minimal()
+            .sender("0x1")
+            .gas_budget(None)
+            .build();
+        assert!(!tx.is_ptb(), "No commands and no gas is not a PTB");
     }
 
     // =========================================================================
-    // GrpcArgument parsing tests
+    // GrpcArgument parsing tests (consolidated)
     // =========================================================================
 
     #[test]
-    fn test_grpc_argument_from_proto_gas() {
+    fn test_grpc_argument_variants() {
         use proto::argument::ArgumentKind;
+
+        // Gas
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Gas as i32),
-            input: None,
-            result: None,
-            subresult: None,
+            input: None, result: None, subresult: None,
         };
-        let arg = GrpcArgument::from_proto(&proto);
-        assert!(matches!(arg, GrpcArgument::GasCoin));
-    }
+        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::GasCoin));
 
-    #[test]
-    fn test_grpc_argument_from_proto_input() {
-        use proto::argument::ArgumentKind;
+        // Input
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Input as i32),
-            input: Some(5),
-            result: None,
-            subresult: None,
+            input: Some(5), result: None, subresult: None,
         };
-        let arg = GrpcArgument::from_proto(&proto);
-        match arg {
-            GrpcArgument::Input(idx) => assert_eq!(idx, 5),
-            _ => panic!("Expected Input argument"),
-        }
-    }
+        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::Input(5)));
 
-    #[test]
-    fn test_grpc_argument_from_proto_result() {
-        use proto::argument::ArgumentKind;
+        // Result
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Result as i32),
-            input: None,
-            result: Some(3),
-            subresult: None,
+            input: None, result: Some(3), subresult: None,
         };
-        let arg = GrpcArgument::from_proto(&proto);
-        match arg {
-            GrpcArgument::Result(cmd) => assert_eq!(cmd, 3),
-            _ => panic!("Expected Result argument"),
-        }
-    }
+        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::Result(3)));
 
-    #[test]
-    fn test_grpc_argument_from_proto_nested_result() {
-        use proto::argument::ArgumentKind;
+        // NestedResult (Result with subresult)
         let proto = proto::Argument {
             kind: Some(ArgumentKind::Result as i32),
-            input: None,
-            result: Some(2),
-            subresult: Some(1), // Having subresult makes it a NestedResult
+            input: None, result: Some(2), subresult: Some(1),
         };
-        let arg = GrpcArgument::from_proto(&proto);
-        match arg {
-            GrpcArgument::NestedResult(cmd, sub) => {
-                assert_eq!(cmd, 2);
-                assert_eq!(sub, 1);
-            }
-            _ => panic!("Expected NestedResult argument"),
-        }
-    }
+        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::NestedResult(2, 1)));
 
-    #[test]
-    fn test_grpc_argument_from_proto_none_kind_defaults_to_gas() {
-        let proto = proto::Argument {
-            kind: None,
-            input: None,
-            result: None,
-            subresult: None,
-        };
-        let arg = GrpcArgument::from_proto(&proto);
-        assert!(matches!(arg, GrpcArgument::GasCoin));
+        // None kind defaults to Gas
+        let proto = proto::Argument { kind: None, input: None, result: None, subresult: None };
+        assert!(matches!(GrpcArgument::from_proto(&proto), GrpcArgument::GasCoin));
     }
 
     // =========================================================================
-    // GrpcInput parsing tests
+    // GrpcInput parsing tests (consolidated)
     // =========================================================================
 
     #[test]
-    fn test_grpc_input_from_proto_pure() {
+    fn test_grpc_input_variants() {
         use proto::input::InputKind;
+
+        // Pure
         let proto = proto::Input {
             kind: Some(InputKind::Pure as i32),
             pure: Some(vec![1, 2, 3]),
             ..Default::default()
         };
-        let input = GrpcInput::from_proto(&proto);
-        match input {
-            GrpcInput::Pure { bytes } => assert_eq!(bytes, vec![1, 2, 3]),
-            _ => panic!("Expected Pure input"),
-        }
-    }
+        assert!(matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes == vec![1, 2, 3]));
 
-    #[test]
-    fn test_grpc_input_from_proto_immutable_or_owned() {
-        use proto::input::InputKind;
+        // ImmutableOrOwned -> Object
         let proto = proto::Input {
             kind: Some(InputKind::ImmutableOrOwned as i32),
             object_id: Some("0xobj".to_string()),
@@ -1621,24 +1467,16 @@ mod tests {
             digest: Some("abc".to_string()),
             ..Default::default()
         };
-        let input = GrpcInput::from_proto(&proto);
-        match input {
-            GrpcInput::Object {
-                object_id,
-                version,
-                digest,
-            } => {
+        match GrpcInput::from_proto(&proto) {
+            GrpcInput::Object { object_id, version, digest } => {
                 assert_eq!(object_id, "0xobj");
                 assert_eq!(version, 10);
                 assert_eq!(digest, "abc");
             }
             _ => panic!("Expected Object input"),
         }
-    }
 
-    #[test]
-    fn test_grpc_input_from_proto_shared() {
-        use proto::input::InputKind;
+        // Shared
         let proto = proto::Input {
             kind: Some(InputKind::Shared as i32),
             object_id: Some("0xshared".to_string()),
@@ -1646,24 +1484,16 @@ mod tests {
             mutable: Some(true),
             ..Default::default()
         };
-        let input = GrpcInput::from_proto(&proto);
-        match input {
-            GrpcInput::SharedObject {
-                object_id,
-                initial_version,
-                mutable,
-            } => {
+        match GrpcInput::from_proto(&proto) {
+            GrpcInput::SharedObject { object_id, initial_version, mutable } => {
                 assert_eq!(object_id, "0xshared");
                 assert_eq!(initial_version, 5);
                 assert!(mutable);
             }
             _ => panic!("Expected SharedObject input"),
         }
-    }
 
-    #[test]
-    fn test_grpc_input_from_proto_receiving() {
-        use proto::input::InputKind;
+        // Receiving
         let proto = proto::Input {
             kind: Some(InputKind::Receiving as i32),
             object_id: Some("0xrecv".to_string()),
@@ -1671,37 +1501,27 @@ mod tests {
             digest: Some("def".to_string()),
             ..Default::default()
         };
-        let input = GrpcInput::from_proto(&proto);
-        match input {
-            GrpcInput::Receiving {
-                object_id,
-                version,
-                digest,
-            } => {
+        match GrpcInput::from_proto(&proto) {
+            GrpcInput::Receiving { object_id, version, digest } => {
                 assert_eq!(object_id, "0xrecv");
                 assert_eq!(version, 7);
                 assert_eq!(digest, "def");
             }
             _ => panic!("Expected Receiving input"),
         }
-    }
 
-    #[test]
-    fn test_grpc_input_from_proto_none_kind_defaults_to_pure() {
+        // None kind defaults to Pure
         let proto = proto::Input::default();
-        let input = GrpcInput::from_proto(&proto);
-        match input {
-            GrpcInput::Pure { bytes } => assert!(bytes.is_empty()),
-            _ => panic!("Expected Pure input for None kind"),
-        }
+        assert!(matches!(GrpcInput::from_proto(&proto), GrpcInput::Pure { bytes } if bytes.is_empty()));
     }
 
     // =========================================================================
-    // GrpcCommand variant tests
+    // GrpcCommand variant tests (consolidated)
     // =========================================================================
 
     #[test]
-    fn test_grpc_command_move_call_creation() {
+    fn test_grpc_command_variants() {
+        // MoveCall
         let cmd = GrpcCommand::MoveCall {
             package: "0x2".to_string(),
             module: "coin".to_string(),
@@ -1710,50 +1530,28 @@ mod tests {
             arguments: vec![GrpcArgument::Input(0)],
         };
         match cmd {
-            GrpcCommand::MoveCall {
-                package,
-                module,
-                function,
-                type_arguments,
-                arguments,
-            } => {
+            GrpcCommand::MoveCall { package, module, function, type_arguments, arguments } => {
                 assert_eq!(package, "0x2");
                 assert_eq!(module, "coin");
                 assert_eq!(function, "value");
                 assert_eq!(type_arguments.len(), 1);
                 assert_eq!(arguments.len(), 1);
             }
-            _ => panic!("Expected MoveCall command"),
+            _ => panic!("Expected MoveCall"),
         }
-    }
 
-    #[test]
-    fn test_grpc_command_split_coins_creation() {
+        // SplitCoins
         let cmd = GrpcCommand::SplitCoins {
             coin: GrpcArgument::Input(0),
             amounts: vec![GrpcArgument::Input(1), GrpcArgument::Input(2)],
         };
-        match cmd {
-            GrpcCommand::SplitCoins { coin, amounts } => {
-                assert!(matches!(coin, GrpcArgument::Input(0)));
-                assert_eq!(amounts.len(), 2);
-            }
-            _ => panic!("Expected SplitCoins command"),
-        }
-    }
+        assert!(matches!(cmd, GrpcCommand::SplitCoins { coin: GrpcArgument::Input(0), amounts } if amounts.len() == 2));
 
-    #[test]
-    fn test_grpc_command_transfer_objects_creation() {
+        // TransferObjects
         let cmd = GrpcCommand::TransferObjects {
             objects: vec![GrpcArgument::Result(0)],
             address: GrpcArgument::Input(1),
         };
-        match cmd {
-            GrpcCommand::TransferObjects { objects, address } => {
-                assert_eq!(objects.len(), 1);
-                assert!(matches!(address, GrpcArgument::Input(1)));
-            }
-            _ => panic!("Expected TransferObjects command"),
-        }
+        assert!(matches!(cmd, GrpcCommand::TransferObjects { objects, address: GrpcArgument::Input(1) } if objects.len() == 1));
     }
 }

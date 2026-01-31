@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::str::FromStr;
-use sui_storage::blob::Blob;
+pub use sui_storage::blob::Blob;
 use sui_types::base_types::{MoveObjectType, ObjectID, SequenceNumber, SuiAddress};
 use sui_types::digests::TransactionDigest;
 use sui_types::full_checkpoint_content::CheckpointData;

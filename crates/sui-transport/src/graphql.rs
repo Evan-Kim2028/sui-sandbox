@@ -37,7 +37,16 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::str::FromStr;
 use std::time::Duration;
+
+/// Parse an environment variable with a default value.
+fn env_var_or<T: FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 /// Maximum items per GraphQL page (Sui's server limit).
 const MAX_PAGE_SIZE: usize = 50;
@@ -373,6 +382,14 @@ pub struct GraphQLTransaction {
     pub effects: Option<GraphQLEffects>,
 }
 
+/// Lightweight transaction metadata for replay (checkpoint + timestamp).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphQLTransactionMeta {
+    pub digest: String,
+    pub checkpoint: Option<u64>,
+    pub timestamp_ms: Option<u64>,
+}
+
 /// Transaction input (Pure, Object, SharedObject, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GraphQLTransactionInput {
@@ -471,14 +488,9 @@ impl GraphQLClient {
     const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 
     fn default_timeouts() -> (Duration, Duration) {
-        let timeout_secs = std::env::var("SUI_GRAPHQL_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(Self::DEFAULT_TIMEOUT_SECS);
-        let connect_secs = std::env::var("SUI_GRAPHQL_CONNECT_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(Self::DEFAULT_CONNECT_TIMEOUT_SECS);
+        let timeout_secs: u64 = env_var_or("SUI_GRAPHQL_TIMEOUT_SECS", Self::DEFAULT_TIMEOUT_SECS);
+        let connect_secs: u64 =
+            env_var_or("SUI_GRAPHQL_CONNECT_TIMEOUT_SECS", Self::DEFAULT_CONNECT_TIMEOUT_SECS);
         (
             Duration::from_secs(timeout_secs),
             Duration::from_secs(connect_secs),
@@ -1055,39 +1067,177 @@ impl GraphQLClient {
         address: &str,
         checkpoint: u64,
     ) -> Result<GraphQLPackage> {
-        let query = r#"
-            query GetPackageAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
-                checkpoint(sequenceNumber: $checkpoint) {
-                    sequenceNumber
-                }
-                object(address: $address, version: null) @snapshot(at: $checkpoint) {
-                    address
-                    version
-                    asMovePackage {
-                        modules(first: 50) {
-                            nodes {
-                                name
-                                bytes
-                            }
+        let mut all_modules: Vec<GraphQLModule> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pkg_address = address.to_string();
+        let mut pkg_version = 1u64;
+
+        loop {
+            let after_clause = cursor
+                .as_ref()
+                .map(|c| format!(", after: \"{}\"", c))
+                .unwrap_or_default();
+
+            let query = format!(
+                r#"
+                query GetPackageAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {{
+                    checkpoint(sequenceNumber: $checkpoint) {{
+                        sequenceNumber
+                    }}
+                    object(address: $address, version: null) @snapshot(at: $checkpoint) {{
+                        address
+                        version
+                        asMovePackage {{
+                            modules(first: 50{}) {{
+                                nodes {{
+                                    name
+                                    bytes
+                                }}
+                                pageInfo {{
+                                    hasNextPage
+                                    endCursor
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                "#,
+                after_clause
+            );
+
+            // Try alternative query format if @snapshot doesn't work
+            let alt_query = format!(
+                r#"
+                query GetPackageAtCheckpoint($address: SuiAddress!) {{
+                    object(address: $address) {{
+                        address
+                        version
+                        asMovePackage {{
+                            modules(first: 50{}) {{
+                                nodes {{
+                                    name
+                                    bytes
+                                }}
+                                pageInfo {{
+                                    hasNextPage
+                                    endCursor
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                "#,
+                after_clause
+            );
+
+            let variables = serde_json::json!({
+                "address": address,
+                "checkpoint": checkpoint
+            });
+
+            let data = match self.query(&query, Some(variables.clone())) {
+                Ok(d) => d,
+                Err(_) => {
+                    let simple_vars = serde_json::json!({ "address": address });
+                    match self.query(&alt_query, Some(simple_vars)) {
+                        Ok(d) => d,
+                        Err(_) => {
+                            // Fallback to latest with full pagination.
+                            return self.fetch_package(address);
                         }
                     }
                 }
-            }
-        "#;
+            };
 
-        // Try alternative query format if @snapshot doesn't work
-        let alt_query = r#"
-            query GetPackageAtCheckpoint($address: SuiAddress!) {
-                object(address: $address) {
+            let obj = data.get("object").ok_or_else(|| {
+                anyhow!(
+                    "Package not found at checkpoint {}: {}",
+                    checkpoint,
                     address
+                )
+            })?;
+
+            if obj.is_null() {
+                return Err(anyhow!(
+                    "Package not found at checkpoint {}: {}",
+                    checkpoint,
+                    address
+                ));
+            }
+
+            if cursor.is_none() {
+                pkg_address = obj
+                    .get("address")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or(address)
+                    .to_string();
+                pkg_version = obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+            }
+
+            let pkg = obj
+                .get("asMovePackage")
+                .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
+
+            let modules_data = pkg
+                .get("modules")
+                .ok_or_else(|| anyhow!("No modules field in package: {}", address))?;
+
+            let modules_nodes = modules_data
+                .get("nodes")
+                .and_then(|n| n.as_array())
+                .map(|arr| arr.to_vec())
+                .unwrap_or_default();
+
+            for m in modules_nodes {
+                all_modules.push(GraphQLModule {
+                    name: m
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    bytecode_base64: m
+                        .get("bytes")
+                        .and_then(|b| b.as_str())
+                        .map(|s| s.to_string()),
+                });
+            }
+
+            let page_info = modules_data.get("pageInfo");
+            let has_next = page_info
+                .and_then(|p| p.get("hasNextPage"))
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+            if !has_next {
+                break;
+            }
+            cursor = page_info
+                .and_then(|p| p.get("endCursor"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+        }
+
+        Ok(GraphQLPackage {
+            address: pkg_address,
+            version: pkg_version,
+            modules: all_modules,
+        })
+    }
+
+    /// Fetch only the package version at a specific checkpoint.
+    ///
+    /// This avoids loading module bytes and can be used to map package version
+    /// for historical replay without heavy GraphQL payloads.
+    pub fn fetch_package_version_at_checkpoint(
+        &self,
+        address: &str,
+        checkpoint: u64,
+    ) -> Result<Option<u64>> {
+        let query = r#"
+            query GetPackageVersionAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
+                object(address: $address, version: null) @snapshot(at: $checkpoint) {
                     version
                     asMovePackage {
-                        modules(first: 50) {
-                            nodes {
-                                name
-                                bytes
-                            }
-                        }
+                        address
                     }
                 }
             }
@@ -1098,67 +1248,18 @@ impl GraphQLClient {
             "checkpoint": checkpoint
         });
 
-        // Try with checkpoint first, fall back to current if not supported
-        let data = match self.query(query, Some(variables.clone())) {
-            Ok(d) => d,
-            Err(_) => {
-                // Fallback to simple query (no checkpoint support)
-                let simple_vars = serde_json::json!({ "address": address });
-                self.query(alt_query, Some(simple_vars))?
-            }
+        let data = self.query(query, Some(variables))?;
+        let obj = match data.get("object") {
+            Some(v) => v,
+            None => return Ok(None),
         };
-
-        let obj = data.get("object").ok_or_else(|| {
-            anyhow!(
-                "Package not found at checkpoint {}: {}",
-                checkpoint,
-                address
-            )
-        })?;
-
         if obj.is_null() {
-            return Err(anyhow!(
-                "Package not found at checkpoint {}: {}",
-                checkpoint,
-                address
-            ));
+            return Ok(None);
         }
-
-        let pkg = obj
-            .get("asMovePackage")
-            .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
-
-        let modules_nodes = pkg
-            .get("modules")
-            .and_then(|m| m.get("nodes"))
-            .and_then(|n| n.as_array())
-            .map(|arr| arr.to_vec())
-            .unwrap_or_default();
-
-        let modules: Vec<GraphQLModule> = modules_nodes
-            .iter()
-            .map(|m| GraphQLModule {
-                name: m
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                bytecode_base64: m
-                    .get("bytes")
-                    .and_then(|b| b.as_str())
-                    .map(|s| s.to_string()),
-            })
-            .collect();
-
-        Ok(GraphQLPackage {
-            address: obj
-                .get("address")
-                .and_then(|a| a.as_str())
-                .unwrap_or(address)
-                .to_string(),
-            version: obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1),
-            modules,
-        })
+        if obj.get("asMovePackage").is_none() {
+            return Ok(None);
+        }
+        Ok(obj.get("version").and_then(|v| v.as_u64()))
     }
 
     /// Fetch a transaction by digest with full PTB details.
@@ -1270,6 +1371,63 @@ impl GraphQLClient {
             inputs,
             commands,
             effects,
+        })
+    }
+
+    /// Fetch minimal transaction metadata (checkpoint + timestamp) by digest.
+    pub fn fetch_transaction_meta(&self, digest: &str) -> Result<GraphQLTransactionMeta> {
+        let query = r#"
+            query GetTransactionMeta($digest: String!) {
+                transaction(digest: $digest) {
+                    digest
+                    effects {
+                        checkpoint { sequenceNumber }
+                        timestamp
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "digest": digest
+        });
+
+        let data = self.query(query, Some(variables))?;
+
+        let tx = data
+            .get("transaction")
+            .ok_or_else(|| anyhow!("Transaction not found: {}", digest))?;
+
+        if tx.is_null() {
+            return Err(anyhow!("Transaction not found: {}", digest));
+        }
+
+        let digest_str = tx
+            .get("digest")
+            .and_then(|d| d.as_str())
+            .unwrap_or(digest)
+            .to_string();
+
+        let checkpoint = tx
+            .get("effects")
+            .and_then(|e| e.get("checkpoint"))
+            .and_then(|c| c.get("sequenceNumber"))
+            .and_then(|s| s.as_u64());
+
+        let timestamp_ms = tx
+            .get("effects")
+            .and_then(|e| e.get("timestamp"))
+            .and_then(|t| t.as_str())
+            .and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| dt.timestamp_millis() as u64)
+            });
+
+        Ok(GraphQLTransactionMeta {
+            digest: digest_str,
+            checkpoint,
+            timestamp_ms,
         })
     }
 
@@ -2409,6 +2567,137 @@ impl GraphQLClient {
             .and_then(|df| if df.is_null() { None } else { Some(df) });
 
         Ok(node.and_then(parse_dynamic_field_info))
+    }
+
+    /// Fetch a dynamic field by name at a specific checkpoint (for historical replay).
+    /// Falls back to the latest state if snapshot queries are unsupported.
+    pub fn fetch_dynamic_field_by_name_at_checkpoint(
+        &self,
+        parent_address: &str,
+        name_type: &str,
+        name_bcs: &[u8],
+        checkpoint: u64,
+    ) -> Result<Option<DynamicFieldInfo>> {
+        let name_bcs_b64 = base64::engine::general_purpose::STANDARD.encode(name_bcs);
+
+        let query = r#"
+            query GetDynamicFieldByNameAtCheckpoint(
+                $address: SuiAddress!,
+                $checkpoint: UInt53!,
+                $nameType: String!,
+                $nameBcs: Base64!
+            ) {
+                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                    dynamicField(name: { type: $nameType, bcs: $nameBcs }) {
+                        name {
+                            type { repr }
+                            bcs
+                            json
+                        }
+                        value {
+                            __typename
+                            ... on MoveObject {
+                                address
+                                version
+                                digest
+                                contents {
+                                    type { repr }
+                                    bcs
+                                    json
+                                }
+                            }
+                            ... on MoveValue {
+                                type { repr }
+                                bcs
+                                json
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": parent_address,
+            "checkpoint": checkpoint,
+            "nameType": name_type,
+            "nameBcs": name_bcs_b64,
+        });
+
+        let data = match self.query(query, Some(variables)) {
+            Ok(data) => data,
+            Err(_) => {
+                return self.fetch_dynamic_field_by_name(parent_address, name_type, name_bcs);
+            }
+        };
+        let node = data
+            .get("object")
+            .and_then(|o| o.get("dynamicField"))
+            .and_then(|df| if df.is_null() { None } else { Some(df) });
+
+        Ok(node.and_then(parse_dynamic_field_info))
+    }
+
+    /// Find a dynamic field by key BCS, scanning pages until a match is found.
+    ///
+    /// This avoids full enumeration when the key is known but the type is not.
+    fn b64_matches_bytes(encoded: &str, expected: &[u8]) -> bool {
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+            return decoded == expected;
+        }
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded) {
+            return decoded == expected;
+        }
+        false
+    }
+
+    pub fn find_dynamic_field_by_bcs(
+        &self,
+        parent_address: &str,
+        key_bcs: &[u8],
+        checkpoint: Option<u64>,
+        limit: usize,
+    ) -> Result<Option<DynamicFieldInfo>> {
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bcs);
+        let mut cursor: Option<String> = None;
+        let mut fetched = 0usize;
+
+        while fetched < limit {
+            let remaining = limit - fetched;
+            let page_size = remaining.min(MAX_PAGE_SIZE);
+            let (items, page_info) = match checkpoint {
+                Some(cp) => self.fetch_dynamic_fields_page_at_checkpoint(
+                    parent_address,
+                    cursor.as_deref(),
+                    page_size,
+                    cp,
+                )?,
+                None => {
+                    self.fetch_dynamic_fields_page(parent_address, cursor.as_deref(), page_size)?
+                }
+            };
+
+            let count = items.len();
+            for item in items {
+                if let Some(name_bcs) = item.name_bcs.as_deref() {
+                    if name_bcs == key_b64.as_str() || Self::b64_matches_bytes(name_bcs, key_bcs) {
+                        return Ok(Some(item));
+                    }
+                }
+            }
+
+            fetched += page_size.min(count);
+
+            if !page_info.has_next_page {
+                break;
+            }
+            cursor = page_info.end_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(None)
     }
 
     /// Fetch a single page of dynamic fields (internal helper).

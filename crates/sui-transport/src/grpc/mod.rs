@@ -56,4 +56,7 @@ pub mod google {
 
 mod client;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use client::*;
