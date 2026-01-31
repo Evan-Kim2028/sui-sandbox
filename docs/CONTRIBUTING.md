@@ -52,6 +52,39 @@ cargo clippy
 cargo test
 ```
 
+### Focused Test Runs
+
+```bash
+# CLI tool parity tests (offline)
+cargo test --test cli_tool_tests
+
+# CLI/MCP parity fixture harness
+cargo test --test parity_harness_tests
+
+# MCP-related unit tests
+cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
+```
+
+### CI Harness (Parity + Logging)
+
+Suggested CI steps to validate CLI/MCP parity and logging behavior:
+
+```bash
+# Enforce formatting
+cargo fmt --all -- --check
+
+# Lint all targets
+cargo clippy --all-targets --all-features
+
+# Core regression suite
+cargo test --test cli_tool_tests
+cargo test --test parity_harness_tests
+cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
+```
+
+Tip: set `SUI_SANDBOX_HOME` to a temp directory in CI so cache/logs/projects stay isolated.
+      For multi-network CI, use separate `SUI_SANDBOX_HOME` values per network.
+
 ### Testing Philosophy
 
 - Prefer unit tests for:
@@ -78,6 +111,7 @@ Key variables:
 
 - `SUI_GRPC_ENDPOINT` - gRPC endpoint for mainnet data
 - `SUI_GRPC_API_KEY` - API key for gRPC (if required by your provider)
+- `SUI_SANDBOX_HOME` - Override default sandbox home (cache, projects, logs)
 - `OPENROUTER_API_KEY` - For LLM-based features (optional)
 - `SMI_SENDER` - Public address for dry-run simulation
 

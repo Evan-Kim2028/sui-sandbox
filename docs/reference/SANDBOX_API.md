@@ -255,7 +255,8 @@ Execute a Programmable Transaction Block.
   "action": "execute_ptb",
   "inputs": [
     {"Pure": {"value": 1000, "value_type": "u64"}},
-    {"Object": {"object_id": "0x...", "mode": "mutable"}}
+    {"Object": {"object_id": "0x...", "mode": "mutable"}},
+    {"Object": {"object_id": "0x...", "mode": "shared", "mutable": false}}
   ],
   "commands": [
     {
@@ -276,7 +277,7 @@ Execute a Programmable Transaction Block.
 | Type | Format |
 |------|--------|
 | Pure | `{"Pure": {"value": <json>, "value_type": "<type>"}}` |
-| Object | `{"Object": {"object_id": "0x...", "mode": "mutable\|immutable\|receiving"}}` |
+| Object | `{"Object": {"object_id": "0x...", "mode": "mutable\|immutable\|receiving\|shared", "mutable": true|false}}` |
 | Gas | `{"Gas": {"budget": 10000000}}` |
 | Witness | `{"Witness": {"witness_type": "0x...::Type"}}` |
 

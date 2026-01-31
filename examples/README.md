@@ -4,23 +4,59 @@ This is the best way to learn the sui-sandbox library. Work through these exampl
 
 ## Learning Path
 
-### Level 1: CLI Exploration (Minimal Setup)
+### Level 1: MCP Tool + CLI Exploration (Minimal Setup)
+
+```bash
+# Run the MCP tool workflow (recommended)
+./examples/mcp_cli_workflow.sh
+```
+
+This shell script walks you through the MCP tool interface (via `sui-sandbox tool`)
+without any compilation. You'll learn:
+
+- Exploring framework modules (`get_interface`)
+- Creating/building/deploying a Move package
+- Executing simple functions via `call_function`
+- Using JSON output for scripting
+
+**Prerequisites**: None beyond the `sui-sandbox` binary
+
+If you want the classic CLI walkthrough that uses `view`, `publish`, and `run`,
+use the legacy script below:
 
 ```bash
 # First, build the test fixture (requires Sui CLI)
 cd tests/fixture && sui move build && cd ../..
 
-# Then run the CLI workflow
+# Then run the classic CLI workflow
 ./examples/cli_workflow.sh
 ```
 
-This shell script walks you through the `sui-sandbox` CLI without any compilation. You'll learn:
+### New: CLI + MCP Example Suite (Parity with Rust examples)
 
-- Exploring framework modules (`view modules`, `view module`)
-- Executing simple functions
-- Using JSON output for scripting
+For CLI equivalents of the Rust examples (with MCP tool parity and replay verification),
+see:
 
-**Prerequisites**: Sui CLI (`sui`) for building the fixture
+```
+./examples/cli_mcp/README.md
+```
+
+### New: Self-Heal Replay (Testing Only)
+
+Demonstrates self-healing replay when historical data is incomplete by synthesizing
+placeholder inputs and dynamic-field values:
+
+```
+./examples/self_heal/README.md
+```
+
+### New: Package Analysis (CLI)
+
+Fetch a package, inspect modules, and attempt to run entry functions that need no arguments:
+
+```
+./examples/package_analysis/README.md
+```
 
 ---
 
@@ -135,7 +171,8 @@ Advanced replay with complex state:
 
 | Example | Level | API Key | Description |
 |---------|-------|---------|-------------|
-| `cli_workflow.sh` | 1 | No | Interactive CLI walkthrough |
+| `mcp_cli_workflow.sh` | 1 | No | MCP tool workflow (recommended) |
+| `cli_workflow.sh` | 1 | No | Classic CLI walkthrough |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 | `fork_state` | 3 | Yes | Fork mainnet state locally |
 | `cetus_position_fees` | 3.5 | Yes | Cetus position fee fetch (live + synthetic objects) |

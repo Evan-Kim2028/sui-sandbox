@@ -40,7 +40,7 @@ Arguments are represented as single-key objects.
 | `bool` | Boolean | `{ "bool": true }` |
 | `address` | Address | `{ "address": "0x123..." }` |
 | `imm_or_owned_object` | Object | `{ "imm_or_owned_object": "0xABC..." }` |
-| `shared_object` | Shared Object | `{ "shared_object": { "id": "0x...", "mutable": true } }` |
+| `shared_object` | Shared Object | `{ "shared_object": { "id": "0x...", "mutable": true } }` (set `mutable:false` for read-only shared access) |
 | `vector_u8_utf8` | `vector<u8>` | `{ "vector_u8_utf8": "hello" }` |
 | `vector_u8_hex` | `vector<u8>` | `{ "vector_u8_hex": "0xDEADBEEF" }` |
 | `vector_<kind>` | `vector<T>` | `{ "vector_u64": [1, 2] }` |

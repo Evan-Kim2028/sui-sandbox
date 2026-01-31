@@ -883,7 +883,6 @@ pub fn create_key_based_child_fetcher(
     cached_objects: Option<CachedObjectIndex>,
 ) -> KeyBasedChildFetcherFn {
     let prefetched_arc = Arc::new(prefetched);
-    let discovery_cache = discovery_cache;
     let graphql = graphql.map(Arc::new);
 
     Box::new(

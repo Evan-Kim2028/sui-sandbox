@@ -86,7 +86,12 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
         rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
     let state: ReplayState = rt.block_on(async {
         provider
-            .fetch_replay_state_with_config(tx_digest, false, 0, 0)
+            .replay_state_builder()
+            .prefetch_dynamic_fields(false)
+            .dynamic_field_depth(0)
+            .dynamic_field_limit(0)
+            .auto_system_objects(true)
+            .build(tx_digest)
             .await
     })?;
 

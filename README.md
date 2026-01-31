@@ -1,6 +1,6 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.10.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.11.0-green.svg)](Cargo.toml)
 [![Sui](https://img.shields.io/badge/sui-mainnet--v1.63.4-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.
@@ -23,6 +23,7 @@ cargo build --release
 # Set up gRPC configuration
 cp .env.example .env
 # Edit .env with your endpoint (default: https://fullnode.mainnet.sui.io:443)
+# If your endpoint requires auth, set SUI_GRPC_API_KEY in .env
 
 # Build the test fixture (required for CLI workflow example)
 cd tests/fixture && sui move build && cd ../..
@@ -43,9 +44,52 @@ sui-sandbox publish ./my_package              # Deploy your code
 sui-sandbox run 0x100::module::func --arg 42  # Call a function
 sui-sandbox replay <TX_DIGEST> --compare      # Replay and verify
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
+sui-sandbox tool create_move_project --input '{"name":"demo"}' # MCP tool parity
 ```
 
 See [CLI Reference](docs/reference/CLI_REFERENCE.md) for all commands.
+
+## MCP (LLM Tools)
+
+You can use the MCP surface in two ways:
+
+1. **CLI tool mode** (JSON in/out) — best for scripts and quick parity checks.
+2. **MCP server (stdio)** — for MCP clients (Claude/GPT/etc.) to invoke tools directly.
+
+```bash
+# Build MCP server binary
+cargo build --release --bin sui-sandbox-mcp
+
+# Run MCP server over stdio (connect from your MCP client)
+./target/release/sui-sandbox-mcp
+```
+
+Example tool invocation via CLI (no server required):
+
+```bash
+sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","function":"zero","type_args":["0x2::sui::SUI"],"args":[]}'
+```
+
+### Cache + Logs
+
+CLI and MCP share the same cache/log roots via `SUI_SANDBOX_HOME` (default: `~/.sui-sandbox`):
+
+```
+~/.sui-sandbox/
+├── cache/      # Global cache (shared across CLI + MCP, per-network)
+├── projects/   # MCP project workspace
+└── logs/mcp/   # MCP JSONL logs (inputs/outputs, llm_reason, tags)
+```
+
+Add optional LLM metadata to any tool input:
+
+```json
+{
+  "_meta": { "reason": "Inspect interface before PTB", "tags": ["analysis"] },
+  "package": "0x2",
+  "module": "coin"
+}
+```
 
 ## Start Here: Examples
 
@@ -73,6 +117,9 @@ cargo run --example cetus_swap
 # See MM2 predictive prefetch in action
 cargo run --example scallop_deposit
 ```
+
+For CLI+MCP parity examples, see **[examples/cli_mcp](examples/cli_mcp)**.
+For self-healing replay demos (testing only), see **[examples/self_heal](examples/self_heal)**.
 
 See **[examples/README.md](examples/README.md)** for detailed documentation on each example.
 
@@ -139,6 +186,20 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 | **Understand the system** | [Architecture](docs/ARCHITECTURE.md) |
 | **Debug failures** | [Limitations](docs/reference/LIMITATIONS.md) |
 | **CLI commands** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
+| **MCP server** | [MCP Reference](docs/reference/MCP_REFERENCE.md) |
+| **Testing** | [Contributing](docs/CONTRIBUTING.md) |
+
+## Testing
+
+```bash
+# Run unit + integration tests
+cargo test
+
+# CLI integration tests only
+cargo test -p sui-sandbox --test sandbox_cli_tests
+```
+
+Tip: set `SUI_SANDBOX_HOME` to isolate cache/logs/projects during tests.
 
 ## Project Structure
 

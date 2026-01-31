@@ -959,7 +959,7 @@ fn process_with_ground_truth_prefetch(
 
     // Process objects from ground truth
     for (obj_id, obj) in &prefetch_result.objects {
-        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs);
+        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes);
         objects.insert(obj_id.clone(), bcs_b64);
         historical_versions.insert(obj_id.clone(), obj.version);
         if let Some(type_str) = &obj.type_string {
@@ -972,7 +972,7 @@ fn process_with_ground_truth_prefetch(
                 obj_id,
                 obj.version,
                 obj.type_string.clone(),
-                Some(obj.bcs.clone()),
+                Some(obj.bcs_bytes.clone()),
             );
         }
     }
@@ -1005,7 +1005,7 @@ fn process_with_ground_truth_prefetch(
 
     // Process supplemental objects (if any)
     for (obj_id, obj) in &prefetch_result.supplemental_objects {
-        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs);
+        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes);
         objects.insert(obj_id.clone(), bcs_b64);
         historical_versions.insert(obj_id.clone(), obj.version);
         if let Some(type_str) = &obj.type_string {
@@ -1086,7 +1086,7 @@ fn process_with_mm2_predictive_prefetch(
 
     // Process objects from ground truth
     for (obj_id, obj) in &prefetch_result.base_result.objects {
-        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs);
+        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes);
         objects.insert(obj_id.clone(), bcs_b64);
         historical_versions.insert(obj_id.clone(), obj.version);
         if let Some(type_str) = &obj.type_string {
@@ -1099,7 +1099,7 @@ fn process_with_mm2_predictive_prefetch(
                 obj_id,
                 obj.version,
                 obj.type_string.clone(),
-                Some(obj.bcs.clone()),
+                Some(obj.bcs_bytes.clone()),
             );
         }
     }
@@ -1132,7 +1132,7 @@ fn process_with_mm2_predictive_prefetch(
 
     // Process supplemental objects (if any)
     for (obj_id, obj) in &prefetch_result.base_result.supplemental_objects {
-        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs);
+        let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes);
         objects.insert(obj_id.clone(), bcs_b64);
         historical_versions.insert(obj_id.clone(), obj.version);
         if let Some(type_str) = &obj.type_string {

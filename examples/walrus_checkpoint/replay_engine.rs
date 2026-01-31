@@ -793,7 +793,7 @@ impl<'a> ReplayEngine<'a> {
                                                 id,
                                                 obj.version,
                                                 ObjectEntry {
-                                                    bytes: obj.bcs.clone(),
+                                                    bytes: obj.bcs_bytes.clone(),
                                                     type_tag: tt,
                                                     version: obj.version,
                                                 },
@@ -1571,7 +1571,7 @@ impl<'a> ReplayEngine<'a> {
         let fetcher = Arc::clone(fetcher);
         match self.rt.block_on(async {
             fetcher
-                .fetch_replay_state_with_config(&digest, false, 5, 500)
+                .fetch_replay_state_with_config(&digest, false, 5, 500, true)
                 .await
         }) {
             Ok(state) => {
@@ -1724,6 +1724,7 @@ fn preload_objects_from_inputs(
                 bytes,
                 type_tag,
                 version,
+                ..
             } => (*id, bytes.clone(), type_tag.clone(), *version, true, false),
             ObjectInput::Receiving {
                 id,

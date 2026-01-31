@@ -389,6 +389,7 @@ fn parse_inputs(
                     bytes: data.bcs_bytes.clone(),
                     type_tag: Some(data.type_tag.clone()),
                     version: Some(data.version),
+                    mutable: true,
                 },
                 WalrusObjectMode::Receiving => ObjectInput::Receiving {
                     id,

@@ -614,6 +614,7 @@ fn push_object_input(
             bytes,
             type_tag,
             version,
+            mutable: true,
         },
         _ => ObjectInput::ImmRef {
             id,
