@@ -64,6 +64,7 @@ pub mod session;
 pub mod simulation;
 pub mod state_source;
 pub mod sui_object_runtime;
+mod tx_hash;
 pub mod tx_replay;
 pub mod types;
 pub mod validator;
