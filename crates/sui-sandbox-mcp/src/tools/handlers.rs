@@ -1,24 +1,27 @@
 //! MCP tool handler implementations.
 
 use crate::state::{ProviderConfig, ToolDispatcher, ToolResponse};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
+use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::Mutex;
 use sui_sandbox_types::{env_bool, env_var_or};
 
+use crate::paths::default_paths;
 use sui_prefetch::compute_dynamic_field_id;
 use sui_resolver::normalize_address;
 use sui_sandbox_core::mm2::{TypeModel, TypeSynthesizer};
 use sui_sandbox_core::ptb::{Argument, Command as PtbCommand, InputValue, ObjectInput};
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::shared::parsing::{parse_pure_value, parse_type_tag_string};
 use sui_sandbox_core::shared::{
     decode_b64, decode_b64_no_pad_opt, decode_b64_opt, encode_b64, extract_input, parse_address,
 };
@@ -39,12 +42,62 @@ use sui_types::digests::TransactionDigest;
 
 // Import all input types from the inputs module
 use super::inputs::{
-    CachePolicy, CallFunctionInput, ConfigureInput, CreateAssetInput, CreateProjectInput,
-    EditFileInput, ExecutePtbInput, FetchStrategy, GetInterfaceInput, GetStateInput,
-    ListPackagesInput, ListProjectsInput, LoadFromMainnetInput, LoadPackageBytesInput,
-    ProjectIdInput, PtbOptions, ReadFileInput, ReadObjectInput, ReplayInput, SearchInput,
-    SetActivePackageInput, TestProjectInput, UpgradeProjectInput, WalrusFetchInput,
+    BridgeInput,
+    CachePolicy,
+    CallFunctionInput,
+    CleanInput,
+    ConfigureInput,
+    CreateAssetInput,
+    CreateProjectInput,
+    EditFileInput,
+    ExecutePtbInput,
+    FetchStrategy,
+    FileEdit,
+    GetInterfaceInput,
+    GetStateInput,
+    ListPackagesInput,
+    ListProjectsInput,
+    LoadFromMainnetInput,
+    LoadPackageBytesInput,
+    NamedAddressInput,
+    ProjectIdInput,
+    PtbCliArgReference,
+    PtbCliArgSpec,
+    PtbCliInput,
+    PtbCliInputSpec,
+    PtbCliObjectInputSpec,
+    PtbCliPureValue,
+    PtbOptions,
+    PublishInput,
+    ReadFileInput,
+    ReadObjectInput,
+    ReplayInput,
+    RunInput,
+    SearchInput,
+    SetActivePackageInput,
+    StatusInput,
+    TestProjectInput,
+    UpgradeProjectInput,
+    ViewInput,
+    WalrusFetchInput,
+    // World inputs
+    WorldBuildInput,
+    WorldCloseInput,
+    WorldCommitInput,
+    WorldCreateInput,
+    WorldDeleteInput,
+    WorldDeployInput,
+    WorldListInput,
+    WorldLogInput,
+    WorldOpenInput,
+    WorldReadFileInput,
+    WorldRestoreInput,
+    WorldSnapshotInput,
+    WorldStatusInput,
+    WorldWriteFileInput,
 };
+use crate::transaction_history::{TransactionEvent, TransactionRecordBuilder};
+use crate::world::{Network, WorldConfig};
 
 impl ToolDispatcher {
     pub async fn call_function(&self, input: Value) -> ToolResponse {
@@ -134,6 +187,7 @@ impl ToolDispatcher {
         let (old_sender, old_config) = capture_env_state(&mut env_guard);
         apply_ptb_options(&mut env_guard, parsed.options.as_ref());
 
+        let sender = env_guard.sender();
         let exec = env_guard.execute_ptb_with_gas_budget(
             inputs,
             vec![command],
@@ -142,6 +196,29 @@ impl ToolDispatcher {
 
         restore_env_state(&mut env_guard, old_sender, old_config);
         drop(env_guard);
+
+        // Record transaction in history
+        let description = parsed
+            .options
+            .as_ref()
+            .and_then(|o| o.description.clone())
+            .unwrap_or_else(|| {
+                format!("{}::{}::{}", parsed.package, parsed.module, parsed.function)
+            });
+        self.record_execution_to_history(
+            &exec,
+            &sender.to_hex_literal(),
+            &description,
+            &parsed.args,
+            &[json!({
+                "move_call": {
+                    "package": parsed.package,
+                    "module": parsed.module,
+                    "function": parsed.function,
+                    "type_args": parsed.type_args,
+                }
+            })],
+        );
 
         ToolResponse::ok(exec_to_json(self, &exec))
     }
@@ -214,11 +291,25 @@ impl ToolDispatcher {
         let mut env_guard = self.env.lock();
         let (old_sender, old_config) = capture_env_state(&mut env_guard);
         apply_ptb_options(&mut env_guard, Some(&options));
+        let sender = env_guard.sender();
 
         let exec = env_guard.execute_ptb_with_gas_budget(inputs, commands, options.gas_budget);
 
         restore_env_state(&mut env_guard, old_sender, old_config);
         drop(env_guard);
+
+        // Record transaction in history
+        let description = options
+            .description
+            .clone()
+            .unwrap_or_else(|| "PTB execution".to_string());
+        self.record_execution_to_history(
+            &exec,
+            &sender.to_hex_literal(),
+            &description,
+            &parsed.inputs,
+            &parsed.commands,
+        );
 
         ToolResponse::ok(exec_to_json(self, &exec))
     }
@@ -1120,6 +1211,67 @@ impl ToolDispatcher {
         ToolResponse::ok(response)
     }
 
+    pub async fn status(&self, input: Value) -> ToolResponse {
+        let parsed: StatusInput = serde_json::from_value(input).unwrap_or_default();
+        let include_packages = parsed.include_packages.unwrap_or(true);
+
+        let provider = self.provider_config().await;
+
+        let (summary, packages) = {
+            let env_guard = self.env.lock();
+            let summary = env_guard.get_state_summary();
+            let packages = if include_packages {
+                Some(
+                    env_guard
+                        .list_available_packages()
+                        .into_iter()
+                        .map(|(addr, modules)| {
+                            json!({
+                                "package_id": addr.to_hex_literal(),
+                                "modules": modules,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+            (summary, packages)
+        };
+
+        ToolResponse::ok(json!({
+            "summary": {
+                "object_count": summary.object_count,
+                "loaded_packages": summary.loaded_packages,
+                "loaded_modules": summary.loaded_modules,
+                "sender": summary.sender,
+                "timestamp_ms": summary.timestamp_ms,
+            },
+            "packages": packages,
+            "provider": {
+                "network": provider.network,
+                "grpc_endpoint": provider.grpc_endpoint,
+                "graphql_endpoint": provider.graphql_endpoint,
+            },
+            "active_world": self.worlds.active_id(),
+        }))
+    }
+
+    pub async fn clean(&self, input: Value) -> ToolResponse {
+        let _parsed: CleanInput = serde_json::from_value(input).unwrap_or_default();
+        let mut env_guard = self.env.lock();
+        if let Err(e) = env_guard.reset() {
+            return ToolResponse::error(format!("Failed to reset sandbox state: {}", e));
+        }
+        drop(env_guard);
+        self.clear_object_refs();
+
+        ToolResponse::ok(json!({
+            "reset": true,
+            "message": "Sandbox state reset (framework packages retained)",
+        }))
+    }
+
     pub async fn configure(&self, input: Value) -> ToolResponse {
         let parsed: ConfigureInput = match extract_input(input) {
             Ok(v) => v,
@@ -1362,10 +1514,9 @@ impl ToolDispatcher {
                     for &cp in chunk {
                         match walrus.get_checkpoint_json(cp) {
                             Ok(value) => decoded.push((cp, value)),
-                            Err(err) => eprintln!(
-                                "[walrus] checkpoint {} failed in fallback: {}",
-                                cp, err
-                            ),
+                            Err(err) => {
+                                eprintln!("[walrus] checkpoint {} failed in fallback: {}", cp, err)
+                            }
                         }
                     }
                 }
@@ -1409,6 +1560,313 @@ impl ToolDispatcher {
             "elapsed_ms": start.elapsed().as_millis(),
             "summaries": summaries,
         }))
+    }
+
+    pub async fn publish(&self, input: Value) -> ToolResponse {
+        let parsed: PublishInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let package_path = match PathBuf::from(&parsed.path).canonicalize() {
+            Ok(p) => p,
+            Err(e) => return ToolResponse::error(format!("Invalid package path: {}", e)),
+        };
+
+        let bytecode_only = parsed.bytecode_only.unwrap_or(false);
+        let dry_run = parsed.dry_run.unwrap_or(false);
+
+        let bytecode_dir = if bytecode_only {
+            let direct = package_path.join("bytecode_modules");
+            if direct.exists() {
+                direct
+            } else {
+                let build_dir = package_path.join("build");
+                if build_dir.exists() {
+                    match find_bytecode_dir(&build_dir) {
+                        Ok(dir) => dir,
+                        Err(e) => return ToolResponse::error(e.to_string()),
+                    }
+                } else {
+                    return ToolResponse::error(
+                        "No bytecode_modules directory found. Run 'sui move build' first or remove bytecode_only".to_string(),
+                    );
+                }
+            }
+        } else {
+            if let Err(e) = compile_package(&package_path, &parsed.addresses) {
+                return ToolResponse::error(e.to_string());
+            }
+            let build_dir = package_path.join("build");
+            match find_bytecode_dir(&build_dir) {
+                Ok(dir) => dir,
+                Err(e) => return ToolResponse::error(e.to_string()),
+            }
+        };
+
+        let modules = match load_bytecode_modules(&bytecode_dir) {
+            Ok(m) => m,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+        if modules.is_empty() {
+            return ToolResponse::error(format!("No modules found in {}", bytecode_dir.display()));
+        }
+
+        let assigned_addr = parsed.assign_address.clone();
+        let inferred_addr = match &assigned_addr {
+            Some(addr) => match AccountAddress::from_hex_literal(addr) {
+                Ok(a) => a,
+                Err(e) => {
+                    return ToolResponse::error(format!("Invalid assign_address: {}", e));
+                }
+            },
+            None => {
+                let first = match CompiledModule::deserialize_with_defaults(&modules[0].1) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        return ToolResponse::error(format!("Failed to deserialize module: {}", e))
+                    }
+                };
+                *first.self_id().address()
+            }
+        };
+
+        let package_id = if dry_run {
+            inferred_addr
+        } else {
+            let mut env_guard = self.env.lock();
+            let result = if let Some(addr) = assigned_addr {
+                env_guard.deploy_package_at_address(&addr, modules.clone())
+            } else {
+                env_guard.deploy_package(modules.clone())
+            };
+            match result {
+                Ok(addr) => addr,
+                Err(e) => return ToolResponse::error(e.to_string()),
+            }
+        };
+
+        let module_names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
+
+        ToolResponse::ok(json!({
+            "package_id": package_id.to_hex_literal(),
+            "modules": module_names,
+            "bytecode_dir": bytecode_dir.to_string_lossy(),
+            "compiled": !bytecode_only,
+            "dry_run": dry_run,
+        }))
+    }
+
+    pub async fn run(&self, input: Value) -> ToolResponse {
+        let parsed: RunInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let active_world = self.worlds.active();
+        let (package, module, function) =
+            match parse_run_target(&parsed.target, active_world.as_ref()) {
+                Ok(v) => v,
+                Err(e) => return ToolResponse::error(e.to_string()),
+            };
+
+        let type_args: Vec<TypeTag> = match parsed
+            .type_args
+            .iter()
+            .map(|s| parse_type_tag_string(s))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(v) => v,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        let mut inputs: Vec<InputValue> = Vec::new();
+        for arg in &parsed.args {
+            match parse_pure_value(arg) {
+                Ok(bytes) => inputs.push(InputValue::Pure(bytes)),
+                Err(e) => return ToolResponse::error(e.to_string()),
+            }
+        }
+        let args: Vec<Argument> = (0..inputs.len())
+            .map(|i| Argument::Input(i as u16))
+            .collect();
+
+        let command = match build_move_call_command(
+            &package.to_hex_literal(),
+            &module,
+            &function,
+            &type_args.iter().map(format_type_tag).collect::<Vec<_>>(),
+            args,
+        ) {
+            Ok(cmd) => cmd,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        let gas_budget = match parsed.gas_budget {
+            Some(0) | None => None,
+            Some(v) => Some(v),
+        };
+
+        let mut env_guard = self.env.lock();
+        let (old_sender, old_config) = capture_env_state(&mut env_guard);
+
+        if let Some(sender) = parsed.sender.as_ref() {
+            match AccountAddress::from_hex_literal(sender) {
+                Ok(addr) => env_guard.set_sender(addr),
+                Err(e) => {
+                    restore_env_state(&mut env_guard, old_sender, old_config);
+                    return ToolResponse::error(format!("Invalid sender address: {}", e));
+                }
+            }
+        }
+
+        let exec = env_guard.execute_ptb_with_gas_budget(inputs, vec![command], gas_budget);
+        restore_env_state(&mut env_guard, old_sender, old_config);
+        drop(env_guard);
+
+        ToolResponse::ok(exec_to_json(self, &exec))
+    }
+
+    pub async fn ptb(&self, input: Value) -> ToolResponse {
+        if let Value::Object(map) = &input {
+            if !map.contains_key("calls") {
+                return self.execute_ptb(input).await;
+            }
+        }
+
+        let parsed: PtbCliInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let mut env_guard = self.env.lock();
+        let (inputs, commands) = match convert_cli_spec(&parsed, &env_guard) {
+            Ok(v) => v,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        let (old_sender, old_config) = capture_env_state(&mut env_guard);
+        if let Some(sender) = parsed.sender.as_ref() {
+            match AccountAddress::from_hex_literal(sender) {
+                Ok(addr) => env_guard.set_sender(addr),
+                Err(e) => {
+                    restore_env_state(&mut env_guard, old_sender, old_config);
+                    return ToolResponse::error(format!("Invalid sender address: {}", e));
+                }
+            }
+        }
+
+        let gas_budget = parsed.gas_budget.or(Some(10_000_000));
+        let exec = env_guard.execute_ptb_with_gas_budget(inputs, commands, gas_budget);
+        restore_env_state(&mut env_guard, old_sender, old_config);
+        drop(env_guard);
+
+        ToolResponse::ok(exec_to_json(self, &exec))
+    }
+
+    pub async fn view(&self, input: Value) -> ToolResponse {
+        let parsed: ViewInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        match parsed.kind.as_str() {
+            "module" => {
+                let module_path = match parsed.module.as_ref() {
+                    Some(m) => m,
+                    None => return ToolResponse::error("view module requires module".to_string()),
+                };
+                let (package, module) =
+                    match parse_module_path(module_path, self.worlds.active().as_ref()) {
+                        Ok(v) => v,
+                        Err(e) => return ToolResponse::error(e.to_string()),
+                    };
+                self.get_interface(json!({
+                    "package": package.to_hex_literal(),
+                    "module": module,
+                }))
+                .await
+            }
+            "object" => {
+                let object_id = match parsed.object_id.as_ref() {
+                    Some(o) => o,
+                    None => {
+                        return ToolResponse::error("view object requires object_id".to_string())
+                    }
+                };
+                self.read_object(json!({ "object_id": object_id })).await
+            }
+            "packages" => self.list_packages(json!({})).await,
+            "modules" => {
+                let package = match parsed.package.as_ref() {
+                    Some(p) => p,
+                    None => {
+                        return ToolResponse::error("view modules requires package".to_string())
+                    }
+                };
+                let pkg = normalize_address(package);
+                let env_guard = self.env.lock();
+                let modules: Vec<String> = env_guard
+                    .list_modules()
+                    .into_iter()
+                    .filter(|m| m.starts_with(&format!("{}::", pkg)))
+                    .collect();
+                ToolResponse::ok(json!({
+                    "package": pkg,
+                    "modules": modules,
+                }))
+            }
+            other => ToolResponse::error(format!(
+                "Unknown view kind '{}'. Use module, object, packages, or modules.",
+                other
+            )),
+        }
+    }
+
+    pub async fn bridge(&self, input: Value) -> ToolResponse {
+        let parsed: BridgeInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        match parsed.kind.as_str() {
+            "publish" => {
+                let path = parsed.path.unwrap_or_else(|| ".".to_string());
+                let gas_budget = parsed.gas_budget.unwrap_or(DEFAULT_PUBLISH_GAS_BUDGET);
+                let output =
+                    bridge_publish_output(&path, gas_budget, parsed.quiet.unwrap_or(false));
+                ToolResponse::ok(output)
+            }
+            "call" => {
+                let target = match parsed.target.as_ref() {
+                    Some(t) => t,
+                    None => return ToolResponse::error("bridge call requires target".to_string()),
+                };
+                let gas_budget = parsed.gas_budget.unwrap_or(DEFAULT_CALL_GAS_BUDGET);
+                let output = bridge_call_output(
+                    target,
+                    &parsed.args,
+                    &parsed.type_args,
+                    gas_budget,
+                    parsed.quiet.unwrap_or(false),
+                );
+                ToolResponse::ok(output)
+            }
+            "ptb" => {
+                let path = parsed.path.unwrap_or_else(|| "ptb.json".to_string());
+                let gas_budget = parsed.gas_budget.unwrap_or(DEFAULT_CALL_GAS_BUDGET);
+                let output = bridge_ptb_output(&path, gas_budget, parsed.quiet.unwrap_or(false));
+                ToolResponse::ok(output)
+            }
+            "info" => {
+                let output = bridge_info_output(parsed.verbose.unwrap_or(false));
+                ToolResponse::ok(output)
+            }
+            other => ToolResponse::error(format!(
+                "Unknown bridge kind '{}'. Use publish, call, ptb, or info.",
+                other
+            )),
+        }
     }
 }
 
@@ -3253,6 +3711,556 @@ fn resolve_project_file(project_root: &Path, file: &str) -> Result<PathBuf> {
     }
 }
 
+fn resolve_world_file(world_root: &Path, file: &str) -> Result<PathBuf> {
+    if std::path::Path::new(file).is_absolute() || file.contains("..") {
+        return Err(anyhow!("File path must be relative to world root"));
+    }
+    let root = world_root.canonicalize()?;
+    let candidate = root.join(file);
+    if candidate.exists() {
+        let canonical = candidate.canonicalize()?;
+        if !canonical.starts_with(&root) {
+            return Err(anyhow!("File path escapes world root"));
+        }
+        Ok(canonical)
+    } else {
+        if !candidate.starts_with(&root) {
+            return Err(anyhow!("File path escapes world root"));
+        }
+        Ok(candidate)
+    }
+}
+
+fn parse_move_toml_addresses(path: &Path) -> Result<HashMap<String, String>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut addresses = HashMap::new();
+    let mut in_addresses = false;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_addresses = line == "[addresses]";
+            continue;
+        }
+        if !in_addresses {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim().to_string();
+            let mut value = value.trim().to_string();
+            if let Some((left, _)) = value.split_once('#') {
+                value = left.trim().to_string();
+            }
+            let value = value.trim_matches('"').to_string();
+            if !key.is_empty() {
+                addresses.insert(key, value);
+            }
+        }
+    }
+
+    Ok(addresses)
+}
+
+fn extract_module_address_aliases(sources_dir: &Path) -> Result<HashSet<String>> {
+    let mut aliases = HashSet::new();
+    if !sources_dir.exists() {
+        return Ok(aliases);
+    }
+    for entry in std::fs::read_dir(sources_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("move") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)?;
+        for raw_line in content.lines() {
+            let line = raw_line.split("//").next().unwrap_or("").trim();
+            if !line.starts_with("module ") {
+                continue;
+            }
+            let remainder = line.trim_start_matches("module ").trim();
+            if let Some((addr, _)) = remainder.split_once("::") {
+                let addr = addr.trim();
+                if !addr.is_empty() && !addr.starts_with("0x") {
+                    aliases.insert(addr.to_string());
+                }
+            }
+        }
+    }
+    Ok(aliases)
+}
+
+fn validate_world_addresses(world_path: &Path) -> Result<(), String> {
+    let move_toml_path = world_path.join("Move.toml");
+    let addresses = parse_move_toml_addresses(&move_toml_path)
+        .map_err(|e| format!("Failed to read Move.toml: {}", e))?;
+    let sources_dir = world_path.join("sources");
+    let module_aliases = extract_module_address_aliases(&sources_dir)
+        .map_err(|e| format!("Failed to parse modules in sources/: {}", e))?;
+
+    let mut missing: Vec<String> = module_aliases
+        .into_iter()
+        .filter(|alias| !addresses.contains_key(alias))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Move.toml [addresses] is missing entries for: {}. Add entries like `<alias> = \"0x0\"` or update module declarations to match.",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+// =============================================================================
+// CLI parity helpers
+// =============================================================================
+
+const DEFAULT_PUBLISH_GAS_BUDGET: u64 = 100_000_000;
+const DEFAULT_CALL_GAS_BUDGET: u64 = 10_000_000;
+
+fn compile_package(package_path: &PathBuf, addresses: &[NamedAddressInput]) -> Result<()> {
+    let mut cmd = Command::new("sui");
+    cmd.args(["move", "build"]);
+    cmd.arg("--path");
+    cmd.arg(package_path);
+
+    for addr in addresses {
+        cmd.arg("--named-address");
+        cmd.arg(format!("{}={}", addr.name, addr.address));
+    }
+
+    let output = cmd.output().context("Failed to run 'sui move build'")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(anyhow!("Compilation failed:\n{}\n{}", stdout, stderr));
+    }
+
+    Ok(())
+}
+
+fn find_bytecode_dir(build_dir: &PathBuf) -> Result<PathBuf> {
+    for entry in std::fs::read_dir(build_dir).context("Failed to read build directory")? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let bytecode_dir = path.join("bytecode_modules");
+            if bytecode_dir.exists() {
+                return Ok(bytecode_dir);
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "No bytecode_modules directory found in {}",
+        build_dir.display()
+    ))
+}
+
+fn load_bytecode_modules(bytecode_dir: &PathBuf) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut modules = Vec::new();
+
+    for entry in std::fs::read_dir(bytecode_dir).context("Failed to read bytecode directory")? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().map(|e| e == "mv").unwrap_or(false) {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            modules.push((name, bytes));
+        }
+    }
+
+    modules.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(modules)
+}
+
+fn parse_run_target(
+    target: &str,
+    active_world: Option<&crate::world::World>,
+) -> Result<(AccountAddress, String, String)> {
+    let parts: Vec<&str> = target.split("::").collect();
+    match parts.len() {
+        2 => {
+            let Some(world) = active_world else {
+                return Err(anyhow!(
+                    "No active world. Use full target: 0xPKG::module::function"
+                ));
+            };
+            let Some(deployment) = world.latest_deployment() else {
+                return Err(anyhow!(
+                    "No deployments found in active world. Use full target format."
+                ));
+            };
+            let package = AccountAddress::from_hex_literal(&deployment.package_id)
+                .context("Invalid package address in deployment")?;
+            Ok((package, parts[0].to_string(), parts[1].to_string()))
+        }
+        3 => {
+            let package = AccountAddress::from_hex_literal(parts[0])
+                .context("Invalid package address in target")?;
+            Ok((package, parts[1].to_string(), parts[2].to_string()))
+        }
+        _ => Err(anyhow!(
+            "Invalid target format. Expected '0xPKG::module::function' or 'module::function'"
+        )),
+    }
+}
+
+fn parse_module_path(
+    module_path: &str,
+    active_world: Option<&crate::world::World>,
+) -> Result<(AccountAddress, String)> {
+    let parts: Vec<&str> = module_path.split("::").collect();
+    match parts.len() {
+        1 => {
+            let Some(world) = active_world else {
+                return Err(anyhow!(
+                    "No active world. Use full module path: 0xPKG::module"
+                ));
+            };
+            let Some(deployment) = world.latest_deployment() else {
+                return Err(anyhow!(
+                    "No deployments found in active world. Use full module path."
+                ));
+            };
+            let package = AccountAddress::from_hex_literal(&deployment.package_id)
+                .context("Invalid package address in deployment")?;
+            Ok((package, parts[0].to_string()))
+        }
+        2 => {
+            let package = AccountAddress::from_hex_literal(parts[0])
+                .context("Invalid package address in module path")?;
+            Ok((package, parts[1].to_string()))
+        }
+        _ => Err(anyhow!(
+            "Invalid module path. Expected '0xPKG::module' or 'module'"
+        )),
+    }
+}
+
+fn convert_cli_spec(
+    spec: &PtbCliInput,
+    env: &SimulationEnvironment,
+) -> Result<(Vec<InputValue>, Vec<PtbCommand>)> {
+    let mut inputs = Vec::new();
+    let mut commands = Vec::new();
+
+    for input_spec in &spec.inputs {
+        inputs.push(convert_cli_input_spec(input_spec, env)?);
+    }
+
+    let mut next_input_idx = inputs.len() as u16;
+
+    for call in &spec.calls {
+        let (package, module, function) = parse_cli_target(&call.target)?;
+
+        let type_args = call
+            .type_args
+            .iter()
+            .map(|s| parse_type_tag_string(s))
+            .collect::<Result<Vec<TypeTag>, _>>()?;
+
+        let mut args = Vec::new();
+        for arg_spec in &call.args {
+            match arg_spec {
+                PtbCliArgSpec::Inline(inline) => {
+                    inputs.push(convert_cli_pure_value(&inline.value)?);
+                    args.push(Argument::Input(next_input_idx));
+                    next_input_idx += 1;
+                }
+                PtbCliArgSpec::Reference(reference) => {
+                    args.push(convert_cli_arg_reference(reference)?);
+                }
+            }
+        }
+
+        commands.push(PtbCommand::MoveCall {
+            package,
+            module: Identifier::new(module).context("Invalid module name")?,
+            function: Identifier::new(function).context("Invalid function name")?,
+            type_args,
+            args,
+        });
+    }
+
+    Ok((inputs, commands))
+}
+
+fn convert_cli_input_spec(
+    spec: &PtbCliInputSpec,
+    env: &SimulationEnvironment,
+) -> Result<InputValue> {
+    match spec {
+        PtbCliInputSpec::Pure(pure) => convert_cli_pure_value(&pure.value),
+        PtbCliInputSpec::Object(obj) => convert_cli_object_input(obj, env),
+    }
+}
+
+fn convert_cli_object_input(
+    obj: &PtbCliObjectInputSpec,
+    env: &SimulationEnvironment,
+) -> Result<InputValue> {
+    if let Some(id) = &obj.imm_or_owned {
+        let input = env.get_object_for_ptb_with_mode(id, Some("owned"))?;
+        Ok(InputValue::Object(input))
+    } else if let Some(shared) = &obj.shared {
+        let mut input = env.get_object_for_ptb_with_mode(&shared.id, Some("shared"))?;
+        if let ObjectInput::Shared { mutable, .. } = &mut input {
+            *mutable = shared.mutable;
+        }
+        Ok(InputValue::Object(input))
+    } else {
+        Err(anyhow!(
+            "Object input must specify imm_or_owned_object or shared_object"
+        ))
+    }
+}
+
+fn convert_cli_pure_value(value: &PtbCliPureValue) -> Result<InputValue> {
+    let bytes = match value {
+        PtbCliPureValue::U8(n) => bcs::to_bytes(n)?,
+        PtbCliPureValue::U16(n) => bcs::to_bytes(n)?,
+        PtbCliPureValue::U32(n) => bcs::to_bytes(n)?,
+        PtbCliPureValue::U64(n) => bcs::to_bytes(n)?,
+        PtbCliPureValue::U128(n) => bcs::to_bytes(n)?,
+        PtbCliPureValue::Bool(b) => bcs::to_bytes(b)?,
+        PtbCliPureValue::Address(s) => {
+            let addr = parse_address(s)?;
+            bcs::to_bytes(&addr)?
+        }
+        PtbCliPureValue::VectorU8Utf8(s) => bcs::to_bytes(&s.as_bytes().to_vec())?,
+        PtbCliPureValue::VectorU8Hex(s) => {
+            let s = s.strip_prefix("0x").unwrap_or(s);
+            let bytes = hex::decode(s).context("Invalid hex in vector_u8_hex")?;
+            bcs::to_bytes(&bytes)?
+        }
+        PtbCliPureValue::VectorAddress(addrs) => {
+            let addresses: Result<Vec<AccountAddress>> =
+                addrs.iter().map(|s| parse_address(s)).collect();
+            bcs::to_bytes(&addresses?)?
+        }
+        PtbCliPureValue::VectorU64(nums) => bcs::to_bytes(nums)?,
+    };
+
+    Ok(InputValue::Pure(bytes))
+}
+
+fn convert_cli_arg_reference(reference: &PtbCliArgReference) -> Result<Argument> {
+    if let Some(idx) = reference.input {
+        Ok(Argument::Input(idx))
+    } else if let Some(idx) = reference.result {
+        Ok(Argument::Result(idx))
+    } else if let Some([cmd, res]) = reference.nested_result {
+        Ok(Argument::NestedResult(cmd, res))
+    } else if reference.gas_coin == Some(true) {
+        Ok(Argument::Input(0))
+    } else {
+        Err(anyhow!("Invalid argument reference"))
+    }
+}
+
+fn parse_cli_target(target: &str) -> Result<(AccountAddress, String, String)> {
+    let parts: Vec<&str> = target.split("::").collect();
+    if parts.len() != 3 {
+        return Err(anyhow!(
+            "Invalid target '{}'. Expected '0xADDR::module::function'",
+            target
+        ));
+    }
+    let package =
+        AccountAddress::from_hex_literal(parts[0]).context("Invalid package address in target")?;
+    Ok((package, parts[1].to_string(), parts[2].to_string()))
+}
+
+fn shell_escape(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+fn is_sandbox_address(addr: &str) -> bool {
+    addr.starts_with("0xaa") || addr.starts_with("0xAA")
+}
+
+fn format_arg_for_sui_client(arg: &str) -> String {
+    // These cases don't need quoting: hex addresses, already-quoted strings, numbers, booleans
+    let needs_quoting = !(arg.starts_with("0x")
+        || (arg.starts_with('\"') && arg.ends_with('\"'))
+        || arg.parse::<u64>().is_ok()
+        || arg == "true"
+        || arg == "false");
+
+    if needs_quoting {
+        format!("\"{}\"", arg)
+    } else {
+        arg.to_string()
+    }
+}
+
+fn parse_function_target(target: &str) -> Result<(String, String, String)> {
+    let parts: Vec<&str> = target.split("::").collect();
+    if parts.len() != 3 {
+        return Err(anyhow!(
+            "Invalid target '{}'. Expected '0xADDR::module::function'",
+            target
+        ));
+    }
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
+}
+
+fn bridge_publish_output(path: &str, gas_budget: u64, quiet: bool) -> Value {
+    let command = format!(
+        "sui client publish {} --gas-budget {}",
+        shell_escape(path),
+        gas_budget
+    );
+    let mut prerequisites = vec![
+        "sui client switch --env <testnet|mainnet>".to_string(),
+        "sui client faucet  # (testnet only, if needed)".to_string(),
+    ];
+    if quiet {
+        prerequisites.clear();
+    }
+    json!({
+        "command": command,
+        "prerequisites": prerequisites,
+        "notes": vec![
+            "Ensure your package compiles: sui move build".to_string(),
+            format!(
+                "Gas budget: {} MIST ({:.4} SUI)",
+                gas_budget,
+                gas_budget as f64 / 1_000_000_000.0
+            ),
+        ],
+    })
+}
+
+fn bridge_call_output(
+    target: &str,
+    args: &[String],
+    type_args: &[String],
+    gas_budget: u64,
+    quiet: bool,
+) -> Value {
+    let (package, module, function) = match parse_function_target(target) {
+        Ok(v) => v,
+        Err(e) => {
+            return json!({ "error": e.to_string() });
+        }
+    };
+
+    let mut cmd_parts = vec![
+        "sui client call".to_string(),
+        format!("--package {}", package),
+        format!("--module {}", module),
+        format!("--function {}", function),
+    ];
+
+    if !type_args.is_empty() {
+        cmd_parts.push(format!("--type-args {}", type_args.join(" ")));
+    }
+
+    if !args.is_empty() {
+        let formatted_args: Vec<String> =
+            args.iter().map(|a| format_arg_for_sui_client(a)).collect();
+        cmd_parts.push(format!("--args {}", formatted_args.join(" ")));
+    }
+
+    cmd_parts.push(format!("--gas-budget {}", gas_budget));
+    let command = cmd_parts.join(" \\\n  ");
+
+    let mut notes = vec![format!(
+        "Gas budget: {} MIST ({:.4} SUI)",
+        gas_budget,
+        gas_budget as f64 / 1_000_000_000.0
+    )];
+    if is_sandbox_address(&package) {
+        notes.push(format!(
+            "Note: {} looks like a sandbox address. Replace with your deployed package ID.",
+            package
+        ));
+    }
+
+    let mut prerequisites = vec!["sui client switch --env <testnet|mainnet>".to_string()];
+    if quiet {
+        prerequisites.clear();
+    }
+
+    json!({
+        "command": command,
+        "prerequisites": prerequisites,
+        "notes": notes,
+        "package": package,
+        "module": module,
+        "function": function,
+    })
+}
+
+fn bridge_ptb_output(path: &str, gas_budget: u64, quiet: bool) -> Value {
+    let command = format!(
+        "sui client ptb --spec {} --gas-budget {}",
+        shell_escape(path),
+        gas_budget
+    );
+    let mut prerequisites = vec!["sui client switch --env <testnet|mainnet>".to_string()];
+    if quiet {
+        prerequisites.clear();
+    }
+    json!({
+        "command": command,
+        "prerequisites": prerequisites,
+        "notes": vec![format!(
+            "Gas budget: {} MIST ({:.4} SUI)",
+            gas_budget,
+            gas_budget as f64 / 1_000_000_000.0
+        )],
+    })
+}
+
+fn bridge_info_output(verbose: bool) -> Value {
+    if !verbose {
+        return json!({
+            "message": "Use bridge publish/call/ptb to generate sui client commands.",
+            "hint": "Pass verbose=true for a full transition checklist.",
+        });
+    }
+    json!({
+        "steps": vec![
+            "sui client switch --env <testnet|mainnet>",
+            "sui client active-address",
+            "sui client faucet  # (testnet only)",
+            "sui move build",
+            "sui client publish <path> --gas-budget <amount>",
+        ],
+        "notes": vec![
+            "Replace sandbox package IDs with deployed IDs",
+            "Set appropriate gas budgets for publish/call/ptb",
+        ],
+    })
+}
+
 impl ToolDispatcher {
     async fn resolve_object_input(
         &self,
@@ -3496,4 +4504,1048 @@ fn grpc_to_versioned(grpc_obj: GrpcObject) -> Result<VersionedObject> {
         is_shared,
         is_immutable,
     })
+}
+
+// ============================================================================
+// World Management Tool Handlers
+// ============================================================================
+
+impl ToolDispatcher {
+    /// Create a new world
+    pub async fn world_create(&self, input: Value) -> ToolResponse {
+        use crate::world::WorldTemplate;
+
+        let parsed: WorldCreateInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let sandbox_home = default_paths().base_dir();
+        let network = match parsed.network.as_deref() {
+            Some("mainnet") => Network::Mainnet,
+            Some("testnet") => Network::Testnet,
+            Some("local") | None => Network::Local,
+            Some(other) => return ToolResponse::error(format!("Unknown network: {}", other)),
+        };
+
+        // Parse template
+        let template = match parsed.template.as_deref() {
+            Some(t) => match WorldTemplate::parse(t) {
+                Some(tmpl) => tmpl,
+                None => {
+                    return ToolResponse::error(format!(
+                        "Unknown template: '{}'. Available: {}",
+                        t,
+                        WorldTemplate::all().join(", ")
+                    ))
+                }
+            },
+            None => WorldTemplate::Blank,
+        };
+
+        let config = WorldConfig {
+            network,
+            default_sender: parsed.default_sender.unwrap_or_else(|| "0x0".to_string()),
+            auto_commit: false,
+            auto_snapshot: true,
+        };
+
+        match self.worlds.create_with_template(
+            &parsed.name,
+            parsed.description,
+            Some(config),
+            template,
+        ) {
+            Ok(world) => {
+                // Set as active world
+                let _ = self.worlds.set_active(&world.id);
+
+                ToolResponse::ok(json!({
+                    "world": {
+                        "id": world.id,
+                        "name": world.name,
+                        "path": world.path,
+                        "created_at": world.created_at.to_rfc3339(),
+                        "network": world.config.network.to_string(),
+                        "template": format!("{:?}", template).to_lowercase(),
+                    },
+                    "sandbox_home": sandbox_home.to_string_lossy(),
+                    "message": format!(
+                        "World '{}' created at {} (template: {})",
+                        world.name,
+                        world.path,
+                        template.description()
+                    ),
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Open an existing world
+    pub async fn world_open(&self, input: Value) -> ToolResponse {
+        let parsed: WorldOpenInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let sandbox_home = default_paths().base_dir();
+        match self.worlds.open(&parsed.name_or_id) {
+            Ok(world) => {
+                // Load world state using recovery-aware loader
+                let state_loaded = match self.worlds.load_world_state(&world.id) {
+                    Ok(Some(data)) => {
+                        let mut env = self.env.lock();
+                        env.load_state_from_bytes(&data).is_ok()
+                    }
+                    Ok(None) => false,
+                    Err(_) => false,
+                };
+
+                ToolResponse::ok(json!({
+                    "world": {
+                        "id": world.id,
+                        "name": world.name,
+                        "path": world.path,
+                        "updated_at": world.updated_at.to_rfc3339(),
+                        "network": world.config.network.to_string(),
+                    },
+                    "sandbox_home": sandbox_home.to_string_lossy(),
+                    "state_loaded": state_loaded,
+                    "deployments": world.deployments.len(),
+                    "snapshots": world.snapshots.len(),
+                    "latest_deployment": world.latest_deployment().map(|d| json!({
+                        "package_id": d.package_id,
+                        "deployed_at": d.deployed_at.to_rfc3339(),
+                        "modules": d.modules,
+                    })),
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Close the active world
+    pub async fn world_close(&self, input: Value) -> ToolResponse {
+        let parsed: WorldCloseInput =
+            serde_json::from_value(input).unwrap_or(WorldCloseInput { save: Some(true) });
+
+        let save = parsed.save.unwrap_or(true);
+
+        // Get active world before closing
+        let active = self.worlds.active();
+
+        if let Some(world) = &active {
+            if save {
+                // Save current state using write-ahead pattern for crash safety
+                let env = self.env.lock();
+                if let Ok(state_bytes) = env.save_state_to_bytes() {
+                    if let Err(e) = self.worlds.save_world_state(&world.id, &state_bytes) {
+                        return ToolResponse::error(format!("Failed to save world state: {}", e));
+                    }
+                }
+            }
+        }
+
+        match self.worlds.close() {
+            Ok(Some(world)) => ToolResponse::ok(json!({
+                "closed": world.name,
+                "saved": save,
+                "message": format!("World '{}' closed", world.name),
+            })),
+            Ok(None) => ToolResponse::ok(json!({
+                "closed": null,
+                "message": "No active world to close",
+            })),
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// List all worlds
+    pub async fn world_list(&self, input: Value) -> ToolResponse {
+        let parsed: WorldListInput = serde_json::from_value(input).unwrap_or_default();
+        let include_details = parsed.include_details.unwrap_or(false);
+
+        let worlds = self.worlds.list();
+        let sandbox_home = default_paths().base_dir();
+
+        ToolResponse::ok(json!({
+            "worlds": worlds.iter().map(|w| {
+                if include_details {
+                    if let Some(world) = self.worlds.get(&w.id) {
+                        json!({
+                            "id": world.id,
+                            "name": world.name,
+                            "path": world.path,
+                            "updated_at": world.updated_at.to_rfc3339(),
+                            "deployments": world.deployments.len(),
+                            "snapshots": world.snapshots.len(),
+                            "is_active": w.is_active,
+                            "description": world.description,
+                        })
+                    } else {
+                        json!({
+                            "id": w.id,
+                            "name": w.name,
+                            "updated_at": w.updated_at.to_rfc3339(),
+                            "deployments": w.deployment_count,
+                            "snapshots": w.snapshot_count,
+                            "is_active": w.is_active,
+                            "description": w.description,
+                        })
+                    }
+                } else {
+                    json!({
+                        "id": w.id,
+                        "name": w.name,
+                        "updated_at": w.updated_at.to_rfc3339(),
+                        "deployments": w.deployment_count,
+                        "snapshots": w.snapshot_count,
+                        "is_active": w.is_active,
+                        "description": w.description,
+                    })
+                }
+            }).collect::<Vec<_>>(),
+            "count": worlds.len(),
+            "active": self.worlds.active_id(),
+            "sandbox_home": sandbox_home.to_string_lossy(),
+        }))
+    }
+
+    /// Get status of the active world
+    pub async fn world_status(&self, input: Value) -> ToolResponse {
+        let _parsed: WorldStatusInput = serde_json::from_value(input).unwrap_or_default();
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+        let sandbox_home = default_paths().base_dir();
+
+        // Get env state summary
+        let env = self.env.lock();
+        let object_count = env.object_count();
+        let package_count = env.package_count();
+        drop(env);
+
+        // Get git status
+        let git_status = self.worlds.git_status(&world.id).ok();
+
+        ToolResponse::ok(json!({
+            "world": {
+                "id": world.id,
+                "name": world.name,
+                "path": world.path,
+                "created_at": world.created_at.to_rfc3339(),
+                "updated_at": world.updated_at.to_rfc3339(),
+                "description": world.description,
+            },
+            "sandbox_home": sandbox_home.to_string_lossy(),
+            "config": {
+                "network": world.config.network.to_string(),
+                "default_sender": world.config.default_sender,
+                "auto_commit": world.config.auto_commit,
+                "auto_snapshot": world.config.auto_snapshot,
+            },
+            "git": git_status.map(|s| json!({
+                "branch": s.branch,
+                "uncommitted_changes": s.uncommitted_changes,
+                "last_commit": s.last_commit,
+            })),
+            "state": {
+                "objects": object_count,
+                "packages": package_count,
+            },
+            "deployments": world.deployments.iter().map(|d| json!({
+                "package_id": d.package_id,
+                "deployed_at": d.deployed_at.to_rfc3339(),
+                "modules": d.modules,
+                "notes": d.notes,
+            })).collect::<Vec<_>>(),
+            "snapshots": world.snapshots.iter().map(|s| json!({
+                "name": s.name,
+                "created_at": s.created_at.to_rfc3339(),
+                "description": s.description,
+            })).collect::<Vec<_>>(),
+            "active_snapshot": world.active_snapshot,
+        }))
+    }
+
+    /// Read a file from the active world
+    pub async fn world_read_file(&self, input: Value) -> ToolResponse {
+        let parsed: WorldReadFileInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+        let world_path = PathBuf::from(&world.path);
+        let file_path = match resolve_world_file(&world_path, &parsed.file) {
+            Ok(p) => p,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+        let content = match std::fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        ToolResponse::ok(json!({
+            "file_path": file_path.to_string_lossy(),
+            "content": content,
+        }))
+    }
+
+    /// Write or edit a file in the active world
+    pub async fn world_write_file(&self, input: Value) -> ToolResponse {
+        let parsed: WorldWriteFileInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+        let world_path = PathBuf::from(&world.path);
+        let file_path = match resolve_world_file(&world_path, &parsed.file) {
+            Ok(p) => p,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        let create_parents = parsed.create_parents.unwrap_or(true);
+        if create_parents {
+            if let Some(parent) = file_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return ToolResponse::error(e.to_string());
+                }
+            }
+        }
+
+        let existed = file_path.exists();
+        if let Some(content) = parsed.content {
+            if let Err(e) = std::fs::write(&file_path, &content) {
+                return ToolResponse::error(e.to_string());
+            }
+            if let Err(e) = self.worlds.update(&world) {
+                return ToolResponse::error(e.to_string());
+            }
+            return ToolResponse::ok(json!({
+                "file_path": file_path.to_string_lossy(),
+                "bytes": content.len(),
+                "created": !existed,
+                "edits_applied": 0,
+            }));
+        }
+
+        let edits: Vec<FileEdit> = parsed.edits.unwrap_or_default();
+        if edits.is_empty() {
+            return ToolResponse::error("No content or edits provided".to_string());
+        }
+
+        let mut content = match std::fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+        let mut applied = 0usize;
+        for edit in edits {
+            if content.contains(&edit.find) {
+                content = content.replace(&edit.find, &edit.replace);
+                applied += 1;
+            }
+        }
+        if let Err(e) = std::fs::write(&file_path, &content) {
+            return ToolResponse::error(e.to_string());
+        }
+        if let Err(e) = self.worlds.update(&world) {
+            return ToolResponse::error(e.to_string());
+        }
+
+        ToolResponse::ok(json!({
+            "file_path": file_path.to_string_lossy(),
+            "bytes": content.len(),
+            "created": !existed,
+            "edits_applied": applied,
+        }))
+    }
+
+    /// Delete a world
+    pub async fn world_delete(&self, input: Value) -> ToolResponse {
+        let parsed: WorldDeleteInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let force = parsed.force.unwrap_or(false);
+
+        match self.worlds.delete(&parsed.name_or_id, force) {
+            Ok(_) => ToolResponse::ok(json!({
+                "deleted": parsed.name_or_id,
+                "message": format!("World '{}' deleted", parsed.name_or_id),
+            })),
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Create a snapshot of the current state
+    pub async fn world_snapshot(&self, input: Value) -> ToolResponse {
+        let parsed: WorldSnapshotInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        // Serialize current state
+        let env = self.env.lock();
+        let state_bytes = match env.save_state_to_bytes() {
+            Ok(bytes) => bytes,
+            Err(e) => return ToolResponse::error(format!("Failed to serialize state: {}", e)),
+        };
+        drop(env);
+
+        match self
+            .worlds
+            .create_snapshot(&world.id, &parsed.name, parsed.description, &state_bytes)
+        {
+            Ok(snapshot) => ToolResponse::ok(json!({
+                "snapshot": {
+                    "name": snapshot.name,
+                    "created_at": snapshot.created_at.to_rfc3339(),
+                    "description": snapshot.description,
+                },
+                "size_bytes": state_bytes.len(),
+                "message": format!("Snapshot '{}' created", snapshot.name),
+            })),
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Restore a snapshot
+    pub async fn world_restore(&self, input: Value) -> ToolResponse {
+        let parsed: WorldRestoreInput = match extract_input(input) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        // Load snapshot data
+        let state_bytes = match self.worlds.get_snapshot_data(&world.id, &parsed.snapshot) {
+            Ok(bytes) => bytes,
+            Err(e) => return ToolResponse::error(e.to_string()),
+        };
+
+        // Restore state
+        let mut env = self.env.lock();
+        match env.load_state_from_bytes(&state_bytes) {
+            Ok(_) => {
+                // Update active snapshot in world
+                let mut updated_world = world.clone();
+                updated_world.active_snapshot = Some(parsed.snapshot.clone());
+                let _ = self.worlds.update(&updated_world);
+
+                ToolResponse::ok(json!({
+                    "restored": parsed.snapshot,
+                    "message": format!("Restored snapshot '{}'", parsed.snapshot),
+                }))
+            }
+            Err(e) => ToolResponse::error(format!("Failed to restore state: {}", e)),
+        }
+    }
+
+    /// Build the active world's Move package
+    pub async fn world_build(&self, input: Value) -> ToolResponse {
+        let parsed: WorldBuildInput =
+            serde_json::from_value(input).unwrap_or(WorldBuildInput { auto_commit: None });
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        let world_path = PathBuf::from(&world.path);
+        if let Err(message) = validate_world_addresses(&world_path) {
+            return ToolResponse::error(message);
+        }
+
+        // Compile
+        let env = self.env.lock();
+        let result = env.compile_source(&world_path);
+        drop(env);
+
+        match result {
+            Ok(compile_result) => {
+                let module_names: Vec<String> = compile_result
+                    .modules
+                    .iter()
+                    .filter_map(|p| p.file_stem())
+                    .map(|s| s.to_string_lossy().to_string())
+                    .collect();
+
+                // Auto-commit on success if configured
+                let auto_commit = parsed.auto_commit.unwrap_or(world.config.auto_commit);
+                let commit_hash = if auto_commit {
+                    let message = format!("build: compile {} modules", module_names.len());
+                    self.worlds.git_commit(&world.id, &message).ok().flatten()
+                } else {
+                    None
+                };
+
+                ToolResponse::ok(json!({
+                    "success": true,
+                    "modules": module_names,
+                    "warnings": compile_result.warnings,
+                    "commit": commit_hash,
+                }))
+            }
+            Err(compile_error) => ToolResponse::ok(json!({
+                "success": false,
+                "errors": compile_error.errors.iter().map(|e| json!({
+                    "file": e.file,
+                    "line": e.line,
+                    "column": e.column,
+                    "message": e.message,
+                })).collect::<Vec<_>>(),
+                "raw_output": compile_error.raw_output,
+            })),
+        }
+    }
+
+    /// Deploy the active world's Move package
+    pub async fn world_deploy(&self, input: Value) -> ToolResponse {
+        let parsed: WorldDeployInput = serde_json::from_value(input).unwrap_or(WorldDeployInput {
+            notes: None,
+            auto_snapshot: None,
+        });
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        let world_path = PathBuf::from(&world.path);
+        if let Err(message) = validate_world_addresses(&world_path) {
+            return ToolResponse::error(message);
+        }
+
+        // Compile and deploy
+        let mut env = self.env.lock();
+        let result = env.compile_and_deploy(&world_path);
+        drop(env);
+
+        match result {
+            Ok((package_id, modules)) => {
+                let package_id_str = package_id.to_hex_literal();
+
+                // Record deployment
+                let deployment = self.worlds.record_deployment(
+                    &world.id,
+                    &package_id_str,
+                    modules.clone(),
+                    parsed.notes,
+                );
+
+                // Auto-snapshot if configured
+                let auto_snapshot = parsed.auto_snapshot.unwrap_or(world.config.auto_snapshot);
+                let snapshot_name = if auto_snapshot {
+                    let name = format!("deploy-v{}", world.deployment_count());
+                    let env = self.env.lock();
+                    if let Ok(state_bytes) = env.save_state_to_bytes() {
+                        drop(env);
+                        let _ = self.worlds.create_snapshot(
+                            &world.id,
+                            &name,
+                            Some(format!("Auto-snapshot for deployment {}", package_id_str)),
+                            &state_bytes,
+                        );
+                        Some(name)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                ToolResponse::ok(json!({
+                    "package_id": package_id_str,
+                    "modules": modules,
+                    "deployment": deployment.ok().map(|d| json!({
+                        "deployed_at": d.deployed_at.to_rfc3339(),
+                        "modules": d.modules,
+                    })),
+                    "snapshot": snapshot_name,
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Create a git commit in the active world
+    pub async fn world_commit(&self, input: Value) -> ToolResponse {
+        let parsed: WorldCommitInput =
+            serde_json::from_value(input).unwrap_or(WorldCommitInput { message: None });
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        let message = parsed
+            .message
+            .unwrap_or_else(|| "Update sources".to_string());
+
+        match self.worlds.git_commit(&world.id, &message) {
+            Ok(Some(hash)) => ToolResponse::ok(json!({
+                "committed": true,
+                "hash": hash,
+                "message": message,
+            })),
+            Ok(None) => ToolResponse::ok(json!({
+                "committed": false,
+                "message": "Nothing to commit (working tree clean)",
+            })),
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// View git log for the active world
+    pub async fn world_log(&self, input: Value) -> ToolResponse {
+        let parsed: WorldLogInput = serde_json::from_value(input).unwrap_or_default();
+
+        let world = match self.worlds.active() {
+            Some(w) => w,
+            None => {
+                return ToolResponse::error("No active world. Use world_open first.".to_string())
+            }
+        };
+
+        let limit = parsed.limit.unwrap_or(10);
+
+        match self.worlds.git_log(&world.id, limit) {
+            Ok(entries) => {
+                // Correlate with deployments
+                let deployment_hashes: std::collections::HashSet<String> = world
+                    .deployments
+                    .iter()
+                    .filter_map(|d| d.commit_hash.clone())
+                    .collect();
+
+                let commits: Vec<_> = entries
+                    .iter()
+                    .map(|e| {
+                        let is_deploy = deployment_hashes.contains(&e.hash);
+                        json!({
+                            "hash": e.hash,
+                            "message": e.message,
+                            "author": e.author,
+                            "date": e.date,
+                            "is_deployment": is_deploy,
+                        })
+                    })
+                    .collect();
+
+                ToolResponse::ok(json!({
+                    "commits": commits,
+                    "count": entries.len(),
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// List available world templates
+    pub async fn world_templates(&self, _input: Value) -> ToolResponse {
+        use crate::world::WorldTemplate;
+
+        let templates: Vec<_> = [
+            WorldTemplate::Blank,
+            WorldTemplate::Token,
+            WorldTemplate::Nft,
+            WorldTemplate::Defi,
+        ]
+        .iter()
+        .map(|t| {
+            json!({
+                "name": format!("{:?}", t).to_lowercase(),
+                "description": t.description(),
+            })
+        })
+        .collect();
+
+        ToolResponse::ok(json!({
+            "templates": templates,
+            "usage": "Use world_create with template parameter, e.g. {\"name\": \"my_amm\", \"template\": \"defi\"}",
+        }))
+    }
+
+    /// Export a world as a portable archive (tar.gz)
+    pub async fn world_export(&self, input: Value) -> ToolResponse {
+        use crate::tools::inputs::WorldExportInput;
+        use std::process::Command;
+
+        let parsed: WorldExportInput = serde_json::from_value(input).unwrap_or(WorldExportInput {
+            name_or_id: None,
+            format: None,
+        });
+
+        // Get world (active or specified)
+        let world = match &parsed.name_or_id {
+            Some(id) => match self.worlds.open(id) {
+                Ok(w) => w,
+                Err(e) => return ToolResponse::error(e.to_string()),
+            },
+            None => match self.worlds.active() {
+                Some(w) => w,
+                None => {
+                    return ToolResponse::error(
+                        "No active world. Specify name_or_id or open a world first.".to_string(),
+                    )
+                }
+            },
+        };
+
+        let world_path = std::path::PathBuf::from(&world.path);
+        let export_name = format!("{}-export.tar.gz", world.name);
+        let export_path = world_path
+            .parent()
+            .unwrap_or(&world_path)
+            .join(&export_name);
+
+        // Use tar to create archive, excluding state and .git
+        let output = Command::new("tar")
+            .args([
+                "-czvf",
+                export_path.to_str().unwrap_or("export.tar.gz"),
+                "--exclude=state",
+                "--exclude=.git",
+                "-C",
+                world_path
+                    .parent()
+                    .unwrap_or(&world_path)
+                    .to_str()
+                    .unwrap_or("."),
+                world_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_str()
+                    .unwrap_or(""),
+            ])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => ToolResponse::ok(json!({
+                "exported": export_path.to_string_lossy(),
+                "world": world.name,
+                "note": "State and .git directories excluded. Extract with: tar -xzvf <file>",
+            })),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                ToolResponse::error(format!("tar failed: {}", stderr))
+            }
+            Err(e) => ToolResponse::error(format!("Failed to run tar: {}", e)),
+        }
+    }
+
+    // ========================================================================
+    // Transaction History Tools
+    // ========================================================================
+
+    /// List recent transactions from the active world's history
+    pub async fn history_list(&self, input: Value) -> ToolResponse {
+        #[derive(Debug, Deserialize, Default)]
+        struct HistoryListInput {
+            #[serde(default)]
+            limit: Option<usize>,
+            #[serde(default)]
+            offset: Option<u64>,
+        }
+
+        let parsed: HistoryListInput = serde_json::from_value(input).unwrap_or_default();
+        let limit = parsed.limit.unwrap_or(20);
+        let offset = parsed.offset.unwrap_or(0);
+
+        match self.worlds.list_transactions(offset, limit) {
+            Ok(transactions) => {
+                let summary = self.worlds.transaction_summary();
+                let items: Vec<Value> = transactions
+                    .iter()
+                    .map(|tx| {
+                        json!({
+                            "tx_id": tx.tx_id,
+                            "sequence": tx.sequence,
+                            "timestamp": tx.timestamp.to_rfc3339(),
+                            "success": tx.success,
+                            "description": tx.description,
+                            "gas_used": tx.gas_used,
+                            "objects_created": tx.objects_created.len(),
+                            "objects_mutated": tx.objects_mutated.len(),
+                            "error": tx.error,
+                        })
+                    })
+                    .collect();
+
+                ToolResponse::ok(json!({
+                    "transactions": items,
+                    "offset": offset,
+                    "limit": limit,
+                    "summary": summary,
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Get detailed information about a specific transaction
+    pub async fn history_get(&self, input: Value) -> ToolResponse {
+        #[derive(Debug, Deserialize)]
+        struct HistoryGetInput {
+            #[serde(default)]
+            tx_id: Option<String>,
+            #[serde(default)]
+            sequence: Option<u64>,
+        }
+
+        let parsed: HistoryGetInput = match serde_json::from_value(input) {
+            Ok(v) => v,
+            Err(e) => return ToolResponse::error(format!("Invalid input: {}", e)),
+        };
+
+        let result = if let Some(tx_id) = parsed.tx_id {
+            self.worlds.get_transaction(&tx_id)
+        } else if let Some(sequence) = parsed.sequence {
+            self.worlds.get_transaction_by_sequence(sequence)
+        } else {
+            return ToolResponse::error("Either tx_id or sequence is required".to_string());
+        };
+
+        match result {
+            Ok(Some(tx)) => ToolResponse::ok(json!({
+                "transaction": tx,
+            })),
+            Ok(None) => ToolResponse::error("Transaction not found".to_string()),
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Search transactions by criteria
+    pub async fn history_search(&self, input: Value) -> ToolResponse {
+        #[derive(Debug, Deserialize, Default)]
+        struct HistorySearchInput {
+            #[serde(default)]
+            success: Option<bool>,
+            #[serde(default)]
+            sender: Option<String>,
+            #[serde(default)]
+            tag: Option<String>,
+            #[serde(default)]
+            description_contains: Option<String>,
+            #[serde(default)]
+            involves_object: Option<String>,
+            #[serde(default)]
+            limit: Option<usize>,
+        }
+
+        let parsed: HistorySearchInput = serde_json::from_value(input).unwrap_or_default();
+
+        let mut criteria = crate::transaction_history::SearchCriteria::new();
+        if let Some(success) = parsed.success {
+            criteria = criteria.success(success);
+        }
+        if let Some(sender) = parsed.sender {
+            criteria = criteria.sender(sender);
+        }
+        if let Some(tag) = parsed.tag {
+            criteria = criteria.tag(tag);
+        }
+        if let Some(text) = parsed.description_contains {
+            criteria.description_contains = Some(text);
+        }
+        if let Some(obj_id) = parsed.involves_object {
+            criteria.involves_object = Some(obj_id);
+        }
+        if let Some(limit) = parsed.limit {
+            criteria = criteria.limit(limit);
+        }
+
+        match self.worlds.search_transactions(&criteria) {
+            Ok(transactions) => {
+                let items: Vec<Value> = transactions
+                    .iter()
+                    .map(|tx| {
+                        json!({
+                            "tx_id": tx.tx_id,
+                            "sequence": tx.sequence,
+                            "timestamp": tx.timestamp.to_rfc3339(),
+                            "success": tx.success,
+                            "description": tx.description,
+                            "gas_used": tx.gas_used,
+                            "tags": tx.tags,
+                        })
+                    })
+                    .collect();
+
+                ToolResponse::ok(json!({
+                    "results": items,
+                    "count": items.len(),
+                }))
+            }
+            Err(e) => ToolResponse::error(e.to_string()),
+        }
+    }
+
+    /// Get transaction history summary for the active world
+    pub async fn history_summary(&self, _input: Value) -> ToolResponse {
+        match self.worlds.transaction_summary() {
+            Some(summary) => ToolResponse::ok(json!({
+                "summary": summary,
+            })),
+            None => ToolResponse::ok(json!({
+                "summary": null,
+                "message": "No active world or history not initialized",
+            })),
+        }
+    }
+
+    /// Configure transaction history settings
+    pub async fn history_configure(&self, input: Value) -> ToolResponse {
+        #[derive(Debug, Deserialize, Default)]
+        struct HistoryConfigureInput {
+            #[serde(default)]
+            enabled: Option<bool>,
+            #[serde(default)]
+            clear: Option<bool>,
+        }
+
+        let parsed: HistoryConfigureInput = serde_json::from_value(input).unwrap_or_default();
+
+        if let Some(enabled) = parsed.enabled {
+            if let Err(e) = self.worlds.set_history_enabled(enabled) {
+                return ToolResponse::error(e.to_string());
+            }
+        }
+
+        if parsed.clear.unwrap_or(false) {
+            if let Err(e) = self.worlds.clear_transaction_history() {
+                return ToolResponse::error(e.to_string());
+            }
+        }
+
+        let config = self.worlds.history_config();
+        ToolResponse::ok(json!({
+            "config": config,
+            "message": "History configuration updated",
+        }))
+    }
+
+    // ========================================================================
+    // Helper Methods
+    // ========================================================================
+
+    /// Record an execution result to the transaction history
+    fn record_execution_to_history(
+        &self,
+        exec: &sui_sandbox_core::simulation::ExecutionResult,
+        sender: &str,
+        description: &str,
+        inputs: &[Value],
+        commands: &[Value],
+    ) {
+        let mut builder = TransactionRecordBuilder::new()
+            .sender(sender)
+            .success(exec.success)
+            .description(description)
+            .inputs(json!(inputs))
+            .commands(json!(commands));
+
+        if let Some(ref effects) = exec.effects {
+            builder = builder
+                .gas_used(effects.gas_used)
+                .objects_created(
+                    effects
+                        .created
+                        .iter()
+                        .map(|id| id.to_hex_literal())
+                        .collect(),
+                )
+                .objects_mutated(
+                    effects
+                        .mutated
+                        .iter()
+                        .map(|id| id.to_hex_literal())
+                        .collect(),
+                )
+                .objects_deleted(
+                    effects
+                        .deleted
+                        .iter()
+                        .map(|id| id.to_hex_literal())
+                        .collect(),
+                );
+
+            // Convert events
+            let events: Vec<TransactionEvent> = effects
+                .events
+                .iter()
+                .map(|e| TransactionEvent {
+                    event_type: e.type_tag.clone(),
+                    sequence: e.sequence,
+                    data: json!(encode_b64(&e.data)),
+                })
+                .collect();
+            builder = builder.events(events);
+
+            // Convert return values
+            let return_values: Vec<Value> = effects
+                .return_values
+                .iter()
+                .map(|vals| {
+                    json!(vals
+                        .iter()
+                        .map(|bytes| encode_b64(bytes))
+                        .collect::<Vec<_>>())
+                })
+                .collect();
+            builder = builder.return_values(return_values);
+        }
+
+        if let Some(ref error) = exec.error {
+            builder = builder.error(error.to_string());
+        }
+
+        if let Some(ref raw_error) = exec.raw_error {
+            builder = builder.error_context(raw_error.clone());
+        }
+
+        if let Some(idx) = exec.failed_command_index {
+            builder = builder.failed_command(idx);
+        }
+
+        let record = builder.build();
+        let _ = self.worlds.record_transaction(record);
+    }
 }

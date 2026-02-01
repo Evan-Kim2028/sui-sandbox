@@ -1,6 +1,7 @@
 use crate::logging::{redact_sensitive, LogConfig, LogRecord, McpLogger};
 use crate::paths::default_paths;
 use crate::project::ProjectManager;
+use crate::world::WorldManager;
 use anyhow::Result;
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -85,6 +86,7 @@ pub struct DispatcherConfig {
 pub struct ToolDispatcher {
     pub env: Arc<Mutex<SimulationEnvironment>>,
     pub projects: ProjectManager,
+    pub worlds: WorldManager,
     pub logger: McpLogger,
     cache_root: PathBuf,
     caches: Mutex<HashMap<String, Arc<VersionedCache>>>,
@@ -95,9 +97,9 @@ pub struct ToolDispatcher {
 
 impl ToolDispatcher {
     pub fn new() -> Result<Self> {
-        let env = SimulationEnvironment::new()?;
-        let env = Arc::new(Mutex::new(env));
+        let mut env = SimulationEnvironment::new()?;
         let projects = ProjectManager::new(None)?;
+        let worlds = WorldManager::new(None)?;
         let logger = McpLogger::new(LogConfig::default());
         let cache_root = default_paths().cache_dir();
         let provider = ProviderState {
@@ -108,9 +110,22 @@ impl ToolDispatcher {
             },
             provider: None,
         };
+
+        // Auto-resume: if there's an active world with saved state, load it
+        if let Some(world_id) = worlds.active_id() {
+            if let Ok(Some(state_data)) = worlds.load_world_state(&world_id) {
+                if let Err(e) = env.load_state_from_bytes(&state_data) {
+                    eprintln!("Warning: failed to restore world state: {}", e);
+                }
+            }
+        }
+
+        let env = Arc::new(Mutex::new(env));
+
         Ok(Self {
             env,
             projects,
+            worlds,
             logger,
             cache_root,
             caches: Mutex::new(HashMap::new()),
@@ -122,6 +137,12 @@ impl ToolDispatcher {
 
     pub fn logger(&self) -> &McpLogger {
         &self.logger
+    }
+
+    pub(crate) fn clear_object_refs(&self) {
+        let mut refs = self.object_refs.lock();
+        refs.counter = 0;
+        refs.refs.clear();
     }
 
     pub async fn set_provider_config(&self, config: ProviderConfig) {
@@ -198,12 +219,36 @@ impl ToolDispatcher {
             .map(|h| h.id.clone())
     }
 
+    pub fn reset_object_refs(&self) {
+        let mut refs = self.object_refs.lock();
+        refs.counter = 0;
+        refs.refs.clear();
+    }
+
     pub fn set_fork_anchor(&self, anchor: Option<Value>) {
         self.config.lock().fork_anchor = anchor;
     }
 
     pub fn fork_anchor(&self) -> Option<Value> {
         self.config.lock().fork_anchor.clone()
+    }
+
+    /// Graceful shutdown - saves active world state and session
+    pub fn shutdown(&self) -> Result<()> {
+        // Save active world state if any
+        if let Some(world) = self.worlds.active() {
+            let env = self.env.lock();
+            if let Ok(state_bytes) = env.save_state_to_bytes() {
+                let _ = self.worlds.save_world_state(&world.id, &state_bytes);
+            }
+        }
+        // Save session state
+        self.worlds.shutdown()
+    }
+
+    /// Get the current session info
+    pub fn session_info(&self) -> crate::world::Session {
+        self.worlds.get_session()
     }
 
     pub async fn dispatch(&self, tool: &str, input: Value) -> ToolResponse {
@@ -214,7 +259,9 @@ impl ToolDispatcher {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let start = Instant::now();
 
-        let result = self.dispatch_inner(tool, clean_input.clone()).await;
+        let mut result = self.dispatch_inner(tool, clean_input.clone()).await;
+        let state_file = default_paths().base_dir().join("mcp-state.json");
+        result.state_file = Some(state_file.to_string_lossy().to_string());
 
         let duration_ms = start.elapsed().as_millis();
         let record = LogRecord {
@@ -237,9 +284,21 @@ impl ToolDispatcher {
 
     async fn dispatch_inner(&self, tool: &str, input: Value) -> ToolResponse {
         match tool {
+            // Execution tools
             "call_function" => self.call_function(input).await,
             "execute_ptb" => self.execute_ptb(input).await,
             "replay_transaction" => self.replay_transaction(input).await,
+            "publish" => self.publish(input).await,
+            "run" => self.run(input).await,
+            "ptb" => self.ptb(input).await,
+            "fetch" => self.load_from_mainnet(input).await,
+            "replay" => self.replay_transaction(input).await,
+            "view" => self.view(input).await,
+            "bridge" => self.bridge(input).await,
+            "status" => self.status(input).await,
+            "clean" => self.clean(input).await,
+
+            // Legacy project tools (still supported)
             "create_move_project" => self.create_move_project(input).await,
             "read_move_file" => self.read_move_file(input).await,
             "edit_move_file" => self.edit_move_file(input).await,
@@ -250,6 +309,26 @@ impl ToolDispatcher {
             "list_packages" => self.list_packages(input).await,
             "set_active_package" => self.set_active_package(input).await,
             "upgrade_project" => self.upgrade_project(input).await,
+
+            // World management tools
+            "world_create" => self.world_create(input).await,
+            "world_open" => self.world_open(input).await,
+            "world_close" => self.world_close(input).await,
+            "world_list" => self.world_list(input).await,
+            "world_status" => self.world_status(input).await,
+            "world_delete" => self.world_delete(input).await,
+            "world_snapshot" => self.world_snapshot(input).await,
+            "world_restore" => self.world_restore(input).await,
+            "world_build" => self.world_build(input).await,
+            "world_deploy" => self.world_deploy(input).await,
+            "world_commit" => self.world_commit(input).await,
+            "world_log" => self.world_log(input).await,
+            "world_templates" => self.world_templates(input).await,
+            "world_export" => self.world_export(input).await,
+            "world_read_file" => self.world_read_file(input).await,
+            "world_write_file" => self.world_write_file(input).await,
+
+            // State/object tools
             "read_object" => self.read_object(input).await,
             "create_asset" => self.create_asset(input).await,
             "load_from_mainnet" => self.load_from_mainnet(input).await,
@@ -259,6 +338,14 @@ impl ToolDispatcher {
             "get_state" => self.get_state(input).await,
             "configure" => self.configure(input).await,
             "walrus_fetch_checkpoints" => self.walrus_fetch_checkpoints(input).await,
+
+            // Transaction history tools
+            "history_list" => self.history_list(input).await,
+            "history_get" => self.history_get(input).await,
+            "history_search" => self.history_search(input).await,
+            "history_summary" => self.history_summary(input).await,
+            "history_configure" => self.history_configure(input).await,
+
             _ => ToolResponse::error(format!("Unknown tool: {}", tool)),
         }
     }

@@ -30,6 +30,9 @@ move-binary-format.workspace = true
 
 rmcp = { version = "0.8", features = ["server", "transport-io"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lib]
 name = "sui_sandbox_mcp"
 path = "src/lib.rs"
@@ -37,3 +40,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "sui-sandbox-mcp"
 path = "src/main.rs"
+
+[[example]]
+name = "perp_dex_example"
+path = "examples/perp_dex_example.rs"

@@ -243,10 +243,12 @@ fn render_move_toml(name: &str, dependencies: &[String]) -> Result<String> {
     lines.push(String::new());
 
     lines.push("[dependencies]".to_string());
-    if dependencies
-        .iter()
-        .any(|dep| dep.eq_ignore_ascii_case("sui"))
-    {
+    // Include Sui framework by default (when dependencies is empty or explicitly contains "sui")
+    let include_sui = dependencies.is_empty()
+        || dependencies
+            .iter()
+            .any(|dep| dep.eq_ignore_ascii_case("sui"));
+    if include_sui {
         let framework = resolve_sui_framework_path()?;
         let path = framework.to_string_lossy().replace('\\', "/");
         lines.push(format!("Sui = {{ local = \"{}\" }}", path));
@@ -293,7 +295,30 @@ fn find_sui_framework_path() -> Option<PathBuf> {
 
 fn default_module_template(package_name: &str, module_name: &str) -> String {
     format!(
-        "module {pkg}::{mod_name} {{\n    public fun add(a: u64, b: u64): u64 {{\n        a + b\n    }}\n}}\n",
+        r#"module {pkg}::{mod_name} {{
+    use sui::object::{{Self, UID}};
+    use sui::tx_context::TxContext;
+
+    /// Example struct with key ability for on-chain storage
+    public struct Example has key {{
+        id: UID,
+        value: u64,
+    }}
+
+    /// Create a new Example object
+    public fun new(value: u64, ctx: &mut TxContext): Example {{
+        Example {{
+            id: object::new(ctx),
+            value,
+        }}
+    }}
+
+    /// Get the value
+    public fun value(self: &Example): u64 {{
+        self.value
+    }}
+}}
+"#,
         pkg = package_name,
         mod_name = module_name
     )

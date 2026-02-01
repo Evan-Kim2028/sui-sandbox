@@ -60,6 +60,22 @@ impl SandboxMcpServer {
     }
 
     #[tool(
+        name = "run",
+        description = "Run a single Move function call (CLI-style)"
+    )]
+    async fn run(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("run", params).await
+    }
+
+    #[tool(
+        name = "ptb",
+        description = "Execute a PTB spec (CLI-style or MCP format)"
+    )]
+    async fn ptb(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("ptb", params).await
+    }
+
+    #[tool(
         name = "replay_transaction",
         description = "Replay a historical mainnet transaction"
     )]
@@ -68,6 +84,27 @@ impl SandboxMcpServer {
         params: Parameters<Value>,
     ) -> Result<CallToolResult, McpError> {
         self.dispatch_tool("replay_transaction", params).await
+    }
+
+    #[tool(
+        name = "replay",
+        description = "Replay a historical mainnet transaction"
+    )]
+    async fn replay(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("replay", params).await
+    }
+
+    #[tool(
+        name = "publish",
+        description = "Compile and publish a Move package locally"
+    )]
+    async fn publish(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("publish", params).await
+    }
+
+    #[tool(name = "fetch", description = "Fetch package or object from mainnet")]
+    async fn fetch(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("fetch", params).await
     }
 
     #[tool(
@@ -141,6 +178,104 @@ impl SandboxMcpServer {
         self.dispatch_tool("upgrade_project", params).await
     }
 
+    #[tool(name = "world_create", description = "Create a new world")]
+    async fn world_create(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_create", params).await
+    }
+
+    #[tool(name = "world_open", description = "Open an existing world")]
+    async fn world_open(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_open", params).await
+    }
+
+    #[tool(name = "world_close", description = "Close the active world")]
+    async fn world_close(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_close", params).await
+    }
+
+    #[tool(name = "world_list", description = "List all worlds")]
+    async fn world_list(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_list", params).await
+    }
+
+    #[tool(name = "world_status", description = "Get status of the active world")]
+    async fn world_status(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_status", params).await
+    }
+
+    #[tool(
+        name = "world_read_file",
+        description = "Read a file from the active world"
+    )]
+    async fn world_read_file(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_read_file", params).await
+    }
+
+    #[tool(
+        name = "world_write_file",
+        description = "Write or edit a file in the active world"
+    )]
+    async fn world_write_file(
+        &self,
+        params: Parameters<Value>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_write_file", params).await
+    }
+
+    #[tool(name = "world_delete", description = "Delete a world")]
+    async fn world_delete(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_delete", params).await
+    }
+
+    #[tool(
+        name = "world_snapshot",
+        description = "Create a snapshot of the active world"
+    )]
+    async fn world_snapshot(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_snapshot", params).await
+    }
+
+    #[tool(name = "world_restore", description = "Restore a world snapshot")]
+    async fn world_restore(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_restore", params).await
+    }
+
+    #[tool(name = "world_build", description = "Build the active world package")]
+    async fn world_build(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_build", params).await
+    }
+
+    #[tool(name = "world_deploy", description = "Deploy the active world package")]
+    async fn world_deploy(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_deploy", params).await
+    }
+
+    #[tool(
+        name = "world_commit",
+        description = "Create a git commit in the active world"
+    )]
+    async fn world_commit(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_commit", params).await
+    }
+
+    #[tool(name = "world_log", description = "View git log for the active world")]
+    async fn world_log(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_log", params).await
+    }
+
+    #[tool(
+        name = "world_templates",
+        description = "List available world templates"
+    )]
+    async fn world_templates(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_templates", params).await
+    }
+
+    #[tool(name = "world_export", description = "Export a world archive")]
+    async fn world_export(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("world_export", params).await
+    }
+
     #[tool(name = "read_object", description = "Read an object from the sandbox")]
     async fn read_object(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
         self.dispatch_tool("read_object", params).await
@@ -192,6 +327,35 @@ impl SandboxMcpServer {
     #[tool(name = "get_state", description = "Get sandbox state summary")]
     async fn get_state(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
         self.dispatch_tool("get_state", params).await
+    }
+
+    #[tool(
+        name = "status",
+        description = "Get session status (packages + sender)"
+    )]
+    async fn status(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("status", params).await
+    }
+
+    #[tool(
+        name = "clean",
+        description = "Reset sandbox state (framework retained)"
+    )]
+    async fn clean(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("clean", params).await
+    }
+
+    #[tool(name = "view", description = "View modules, objects, or packages")]
+    async fn view(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("view", params).await
+    }
+
+    #[tool(
+        name = "bridge",
+        description = "Generate sui client commands for deployment"
+    )]
+    async fn bridge(&self, params: Parameters<Value>) -> Result<CallToolResult, McpError> {
+        self.dispatch_tool("bridge", params).await
     }
 
     #[tool(
