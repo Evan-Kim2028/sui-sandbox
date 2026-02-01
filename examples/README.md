@@ -173,6 +173,8 @@ Advanced replay with complex state:
 |---------|-------|---------|-------------|
 | `mcp_cli_workflow.sh` | 1 | No | MCP tool workflow (recommended) |
 | `cli_workflow.sh` | 1 | No | Classic CLI walkthrough |
+| `cli_mcp/12_convertible_debt.sh` | 1 | No | Convertible debt demo (CLI + shared objects) |
+| `convertible_simulator` | 1 | No | Convertible vs ETH vs stable APY simulator |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 | `fork_state` | 3 | Yes | Fork mainnet state locally |
 | `cetus_position_fees` | 3.5 | Yes | Cetus position fee fetch (live + synthetic objects) |

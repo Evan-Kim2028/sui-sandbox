@@ -61,8 +61,8 @@ use tokio::runtime::Runtime;
 use anyhow::Result;
 use base64::Engine;
 use std::str::FromStr;
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
@@ -457,7 +457,7 @@ pub use sui_transport::graphql::GraphQLClient;
 
 use move_core_types::language_storage::TypeTag;
 use sui_prefetch::{DynamicFieldKey, PrefetchedChild};
-use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
+use sui_sandbox_core::sandbox_runtime::KeyBasedChildFetcherFn;
 
 type CachedObjectIndex = Arc<HashMap<String, (String, Vec<u8>)>>;
 /// Dynamic discovery cache for child objects discovered during execution.

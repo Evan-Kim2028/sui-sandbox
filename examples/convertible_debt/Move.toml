@@ -1,0 +1,11 @@
+[package]
+name = "convertible_debt"
+edition = "2024.beta"
+version = "0.0.1"
+
+test = false
+
+[dependencies]
+
+[addresses]
+convertible_debt = "0x0"
