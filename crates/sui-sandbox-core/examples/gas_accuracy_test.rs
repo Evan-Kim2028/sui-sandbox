@@ -28,8 +28,8 @@ use std::sync::Arc;
 use sui_sandbox_core::gas::{
     calculate_min_tx_cost, finalize_computation_cost, load_protocol_config, GasParameters,
 };
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::tx_replay::{
     build_address_aliases_for_test, grpc_to_fetched_transaction, replay_with_version_tracking,
     CachedTransaction,

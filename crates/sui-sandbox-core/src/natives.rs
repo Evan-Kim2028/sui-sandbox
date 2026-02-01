@@ -482,17 +482,9 @@ impl Default for MockNativeState {
 }
 
 impl MockNativeState {
-    /// Generate a random tx_hash for uniqueness
+    /// Generate a unique tx_hash for object ID derivation
     fn generate_tx_hash() -> [u8; 32] {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let mut tx_hash = [0u8; 32];
-        tx_hash[0..16].copy_from_slice(&nanos.to_le_bytes());
-        tx_hash[16..32].copy_from_slice(&(nanos.wrapping_mul(31337)).to_le_bytes());
-        tx_hash
+        crate::tx_hash::generate_tx_hash()
     }
 
     pub fn new() -> Self {

@@ -2,11 +2,12 @@
 //!
 //! This module provides tools to:
 //! 1. Scaffold new Move packages (generate Move.toml, directory structure)
-//! 2. Compile Move source to bytecode using sui-move-build
-//! 3. Handle compilation errors for LLM iteration
+//! 2. Write source templates for LLM iteration
 //!
-//! These capabilities enable an LLM to write Move source code and
-//! compile it to bytecode for deployment in the sandbox.
+//! **Note:** Compilation via `sui-move-build` is currently disabled due to
+//! upstream API changes. The `compile()` and `build_from_source()` methods are
+//! deprecated and will always error. Use pre-compiled bytecode or fetch from
+//! network instead.
 //!
 //! ## Framework Caching
 //!
@@ -22,8 +23,8 @@ use std::process::Command;
 // NOTE: sui_move_build API changed significantly in v1.63.4
 // use sui_move_build::BuildConfig;
 
-/// Sui framework version we're targeting
-pub const FRAMEWORK_VERSION: &str = "mainnet-v1.62.1";
+/// Sui framework version we're targeting (must match Cargo.toml workspace dependencies)
+pub const FRAMEWORK_VERSION: &str = "mainnet-v1.64.2";
 
 /// Default cache directory for framework
 pub const DEFAULT_CACHE_DIR: &str = ".sui-framework-cache";
@@ -372,6 +373,7 @@ impl PackageBuilder {
         since = "0.10.0",
         note = "Package compilation is disabled. Use pre-compiled bytecode or fetch from network."
     )]
+    #[doc(hidden)]
     pub fn compile(&self, _package_dir: &Path) -> Result<CompilationResult> {
         Err(anyhow!(
             "Package compilation is permanently disabled (sui-move-build API removed in v1.63.4). \
@@ -392,6 +394,7 @@ impl PackageBuilder {
         note = "Package compilation is disabled. Use pre-compiled bytecode or fetch from network."
     )]
     #[allow(deprecated)]
+    #[doc(hidden)]
     pub fn build_from_source(
         &self,
         package_name: &str,

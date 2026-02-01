@@ -1682,6 +1682,12 @@ impl SimulationEnvironment {
     ) -> ExecutionResult {
         use crate::ptb::ObjectInput;
 
+        // Rotate tx_hash per transaction to avoid object ID collisions.
+        // Preserve configured tx_hash when replaying historical transactions.
+        if self.config.replay_checkpoint.is_none() {
+            self.config.tx_hash = crate::vm::SimulationConfig::default().tx_hash;
+        }
+
         // Extract shared objects from inputs and acquire locks
         let shared_objects: Vec<(AccountAddress, bool)> = inputs
             .iter()
@@ -3003,9 +3009,11 @@ impl SimulationEnvironment {
         }
 
         // Run sui move build
+        // Note: We set current_dir to ensure git dependency resolution works correctly.
+        // Without this, git operations for fetching external dependencies may fail.
         let output = Command::new("sui")
-            .args(["move", "build", "--path"])
-            .arg(project_path)
+            .args(["move", "build"])
+            .current_dir(project_path)
             .output();
 
         let output = match output {
@@ -3485,6 +3493,72 @@ impl SimulationEnvironment {
     /// Get the count of objects in the store.
     pub fn object_count(&self) -> usize {
         self.objects.len()
+    }
+
+    /// Get the count of packages loaded in the resolver.
+    pub fn package_count(&self) -> usize {
+        self.resolver.list_packages().len()
+    }
+
+    /// Save state to bytes (JSON).
+    pub fn save_state_to_bytes(&self) -> Result<Vec<u8>> {
+        let state = self.export_state();
+        let json = serde_json::to_string_pretty(&state)
+            .map_err(|e| anyhow!("Failed to serialize state: {}", e))?;
+        Ok(json.into_bytes())
+    }
+
+    /// Load state from bytes (JSON).
+    pub fn load_state_from_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        let json = std::str::from_utf8(bytes)
+            .map_err(|e| anyhow!("Invalid UTF-8 in state data: {}", e))?;
+        let state: PersistentState =
+            serde_json::from_str(json).map_err(|e| anyhow!("Failed to parse state JSON: {}", e))?;
+
+        // Check version compatibility
+        if state.version > PersistentState::CURRENT_VERSION {
+            return Err(anyhow!(
+                "State version {} is newer than supported version {}",
+                state.version,
+                PersistentState::CURRENT_VERSION
+            ));
+        }
+
+        // Load modules
+        for module in &state.modules {
+            let bytes = base64_decode(&module.bytecode_b64, &format!("module {}", module.id))?;
+            self.resolver.add_module_bytes(bytes)?;
+        }
+
+        // Load objects
+        for obj in &state.objects {
+            let id = parse_address(&obj.id, "object ID")?;
+            let type_tag = crate::types::parse_type_tag(&obj.type_tag)
+                .map_err(|e| anyhow!("Invalid type tag {}: {}", obj.type_tag, e))?;
+            let bcs_bytes = base64_decode(&obj.bcs_bytes_b64, &format!("object {}", obj.id))?;
+            let owner = match obj.owner.as_deref() {
+                Some("shared") => Some(crate::sandbox_runtime::Owner::Shared),
+                Some("immutable") => Some(crate::sandbox_runtime::Owner::Immutable),
+                Some(s) if s.starts_with("address:") => try_parse_address(&s["address:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Address),
+                Some(s) if s.starts_with("object:") => try_parse_address(&s["object:".len()..])
+                    .map(crate::sandbox_runtime::Owner::Object),
+                _ => None,
+            };
+
+            let sim_obj = SimulatedObject {
+                id,
+                type_tag,
+                bcs_bytes,
+                is_shared: obj.is_shared,
+                is_immutable: obj.is_immutable,
+                version: obj.version,
+                owner,
+            };
+            self.objects.insert(id, sim_obj);
+        }
+
+        Ok(())
     }
 
     /// Create a gas coin (Coin<SUI>) with the given balance.

@@ -37,6 +37,10 @@ pub struct ToolResponse {
     /// Execution duration in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+
+    /// State file path used for this tool invocation (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_file: Option<String>,
 }
 
 impl ToolResponse {
@@ -50,6 +54,7 @@ impl ToolResponse {
             warnings: Vec::new(),
             cache_hit: None,
             duration_ms: None,
+            state_file: None,
         }
     }
 
@@ -68,6 +73,7 @@ impl ToolResponse {
             warnings: Vec::new(),
             cache_hit: None,
             duration_ms: None,
+            state_file: None,
         }
     }
 

@@ -5798,6 +5798,108 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_ptb_multiple_errors() {
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("foo").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(5)], // Input out of bounds
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("bar").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Result(3)], // Forward reference
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 2);
+        assert!(result
+            .errors
+            .iter()
+            .any(|err| err.kind == ValidationErrorKind::InputOutOfBounds));
+        assert!(result
+            .errors
+            .iter()
+            .any(|err| err.kind == ValidationErrorKind::ForwardReference));
+    }
+
+    #[test]
+    fn test_validate_ptb_unused_result_warning() {
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("a").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("b").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("c").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+        ];
+
+        let result = validate_ptb(&commands, 1);
+        assert!(result.valid);
+        assert_eq!(result.warnings.len(), 2);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Command 0 result is never used")));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("Command 1 result is never used")));
+    }
+
+    #[test]
+    fn test_validate_ptb_transfer_objects_skip_warning() {
+        let commands = vec![
+            Command::TransferObjects {
+                objects: vec![Argument::Input(0)],
+                address: Argument::Input(1),
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("a").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+            Command::MoveCall {
+                package: AccountAddress::ZERO,
+                module: Identifier::new("test").unwrap(),
+                function: Identifier::new("b").unwrap(),
+                type_args: vec![],
+                args: vec![Argument::Input(0)],
+            },
+        ];
+
+        let result = validate_ptb(&commands, 2);
+        assert!(result.valid);
+        assert!(result
+            .warnings
+            .iter()
+            .all(|w| !w.contains("Command 0 result is never used")));
+    }
+
+    #[test]
     fn test_compute_dependency_graph() {
         let commands = vec![
             Command::MoveCall {

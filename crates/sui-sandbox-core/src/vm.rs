@@ -280,16 +280,8 @@ pub const DEFAULT_STORAGE_PRICE: u64 = 76;
 
 impl Default for SimulationConfig {
     fn default() -> Self {
-        // Generate a random tx_hash for each new config to ensure unique object IDs
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let mut tx_hash = [0u8; 32];
-        // Use time-based entropy for uniqueness
-        tx_hash[0..16].copy_from_slice(&nanos.to_le_bytes());
-        tx_hash[16..32].copy_from_slice(&(nanos.wrapping_mul(31337)).to_le_bytes());
+        // Generate a unique tx_hash for each new config to avoid ID collisions
+        let tx_hash = crate::tx_hash::generate_tx_hash();
 
         Self {
             mock_crypto_pass: true,
@@ -304,7 +296,7 @@ impl Default for SimulationConfig {
             gas_budget: Some(DEFAULT_GAS_BUDGET), // Enable gas metering by default for Sui parity
             enforce_immutability: false,          // Backwards compatible default
             use_sui_natives: false,               // Use custom natives by default
-            tx_hash,                              // Random per instance for unique IDs
+            tx_hash,                              // Unique per instance for unique IDs
             reference_gas_price: DEFAULT_REFERENCE_GAS_PRICE,
             gas_price: DEFAULT_REFERENCE_GAS_PRICE, // No tip by default
             protocol_version: DEFAULT_PROTOCOL_VERSION,
