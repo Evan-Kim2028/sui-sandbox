@@ -1,3 +1,4 @@
+#![cfg(feature = "network-tests")]
 #![allow(unused_imports, deprecated)]
 //! gRPC + Sandbox Integration Tests
 //!
@@ -15,15 +16,25 @@
 //!   export SUI_GRPC_ENDPOINT="https://your-endpoint:9000"
 //!
 //! Run with:
-//!   cargo test --test grpc_sandbox_integration_tests -- --ignored --nocapture
-
-mod common;
+//!   cargo test -p sui-sandbox-integration-tests --features network-tests --test grpc_sandbox_integration_tests -- --ignored --nocapture
 
 use std::time::Duration;
 
 use sui_sandbox::data_fetcher::DataFetcher;
 use sui_sandbox::graphql::GraphQLClient;
 use sui_sandbox::grpc::{GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction};
+
+macro_rules! require_grpc {
+    () => {
+        match std::env::var("SUI_GRPC_ENDPOINT") {
+            Ok(endpoint) if !endpoint.is_empty() => endpoint,
+            _ => {
+                eprintln!("Skipping {}: SUI_GRPC_ENDPOINT not set", module_path!());
+                return;
+            }
+        }
+    };
+}
 
 // =============================================================================
 // Data Format Consistency Tests

@@ -1,3 +1,4 @@
+#![cfg(feature = "network-tests")]
 #![allow(unused_imports)]
 #![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //! GraphQL Integration Tests
@@ -11,7 +12,7 @@
 //!
 //! To run all network tests:
 //! ```sh
-//! cargo test --test graphql_tests -- --ignored
+//! cargo test -p sui-sandbox-integration-tests --features network-tests --test graphql_tests -- --ignored
 //! ```
 //!
 //! Note: Tests that silently pass when network is unavailable provide false confidence.

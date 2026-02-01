@@ -11,7 +11,7 @@
 //! - Error recovery and self-healing workflows
 //!
 //! Run with:
-//!   cargo test --test sandbox_replay_integration_tests -- --nocapture
+//!   cargo test -p sui-sandbox-integration-tests --test sandbox_replay_integration_tests -- --nocapture
 
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput};

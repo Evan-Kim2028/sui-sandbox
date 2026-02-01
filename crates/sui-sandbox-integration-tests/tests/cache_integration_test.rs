@@ -1,3 +1,4 @@
+#![cfg(feature = "network-tests")]
 #![allow(deprecated)]
 //! Integration tests for the unified cache architecture.
 //!

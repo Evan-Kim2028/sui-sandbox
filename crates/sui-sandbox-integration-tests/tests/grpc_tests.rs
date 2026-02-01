@@ -1,6 +1,7 @@
 //! gRPC Integration Tests
 //!
 //! These tests validate the gRPC client against a Sui gRPC endpoint.
+#![cfg(feature = "network-tests")]
 #![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //!
 //! ## Requirements
@@ -14,7 +15,7 @@
 //! Set the environment variable before running:
 //! ```sh
 //! export SUI_GRPC_ENDPOINT="https://your-endpoint.sui-mainnet.quiknode.pro:9000"
-//! cargo test --test grpc_tests -- --ignored --nocapture
+//! cargo test -p sui-sandbox-integration-tests --features network-tests --test grpc_tests -- --ignored --nocapture
 //! ```
 //!
 //! ## Test Organization
@@ -25,11 +26,21 @@
 //! Note: These tests use `panic!()` for failures because they're explicitly
 //! testing network connectivity when the environment is properly configured.
 
-mod common;
-
 use std::time::Duration;
 use sui_sandbox::data_fetcher::DataFetcher;
 use sui_sandbox::grpc::{GrpcClient, GrpcCommand};
+
+macro_rules! require_grpc {
+    () => {
+        match std::env::var("SUI_GRPC_ENDPOINT") {
+            Ok(endpoint) if !endpoint.is_empty() => endpoint,
+            _ => {
+                eprintln!("Skipping {}: SUI_GRPC_ENDPOINT not set", module_path!());
+                return;
+            }
+        }
+    };
+}
 
 // =============================================================================
 // GrpcClient Unit Tests (no network required)
