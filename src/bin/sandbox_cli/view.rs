@@ -86,7 +86,7 @@ fn view_object(state: &SandboxState, object_id: &str, json_output: bool) -> Resu
     let _addr = AccountAddress::from_hex_literal(object_id).context("Invalid object ID")?;
 
     // Check if object is in persisted state
-    if let Some((type_tag, _bytes_b64)) = state.persisted.objects.get(object_id) {
+    if let Some(type_tag) = state.object_type_tag(object_id) {
         if json_output {
             #[derive(Serialize)]
             struct ObjectView {

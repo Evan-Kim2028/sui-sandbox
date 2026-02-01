@@ -58,7 +58,7 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// State file for session persistence (legacy CLI uses ~/.sui-sandbox/state.bin; MCP tool uses ~/.sui-sandbox/mcp-state.json)
+    /// State file for session persistence (shared JSON for CLI + MCP)
     #[arg(long, global = true)]
     state_file: Option<std::path::PathBuf>,
 
@@ -121,19 +121,15 @@ async fn main() -> Result<()> {
         json,
         verbose,
     } = Cli::parse();
+    let base = sandbox_cli::network::sandbox_home();
+    let state_file = state_file.unwrap_or_else(|| base.join("mcp-state.json"));
 
     match command {
         Commands::Tool(cmd) => {
-            let base = sandbox_cli::network::sandbox_home();
-            let tool_state_file = state_file.unwrap_or_else(|| base.join("mcp-state.json"));
-            cmd.execute(json, Some(tool_state_file.as_path()), &rpc_url)
+            cmd.execute(json, Some(state_file.as_path()), &rpc_url)
                 .await
         }
         command => {
-            // Determine state file path for legacy CLI commands
-            let base = sandbox_cli::network::sandbox_home();
-            let state_file = state_file.unwrap_or_else(|| base.join("state.bin"));
-
             // Load or create session state
             let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
 

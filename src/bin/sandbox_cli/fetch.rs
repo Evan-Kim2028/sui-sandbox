@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use super::network::{cache_dir, infer_network, resolve_graphql_endpoint};
 use super::output::format_error;
+use super::state::ObjectMetadata;
 use super::SandboxState;
 use std::collections::HashMap;
 use sui_state_fetcher::types::{PackageData, VersionedObject};
@@ -382,15 +383,29 @@ fn fetch_object(
     }
 
     if let Some(bcs_base64) = &object_data.bcs_base64 {
-        state.add_object(object_id, object_data.type_string.as_deref(), bcs_base64)?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(bcs_base64)
             .context("Failed to decode object BCS")?;
-        let (is_shared, is_immutable) = match &object_data.owner {
-            ObjectOwner::Shared { .. } => (true, false),
-            ObjectOwner::Immutable => (false, true),
-            _ => (false, false),
+        let (is_shared, is_immutable, owner) = match &object_data.owner {
+            ObjectOwner::Shared { .. } => (true, false, Some("shared".to_string())),
+            ObjectOwner::Immutable => (false, true, Some("immutable".to_string())),
+            ObjectOwner::Address(addr) => (false, false, Some(format!("address:{}", addr))),
+            ObjectOwner::Parent(parent) => (false, false, Some(format!("object:{}", parent))),
+            ObjectOwner::Unknown => (false, false, None),
         };
+
+        if let Some(type_tag) = object_data.type_string.as_deref() {
+            let meta = ObjectMetadata {
+                version: object_data.version,
+                is_shared,
+                is_immutable,
+                owner: owner.clone(),
+            };
+            state.add_object_with_metadata(object_id, Some(type_tag), bcs_base64, meta)?;
+        } else if verbose {
+            eprintln!("  Warning: object missing type tag; not loaded into session");
+        }
+
         let id = AccountAddress::from_hex_literal(object_id)?;
         let versioned = VersionedObject {
             id,

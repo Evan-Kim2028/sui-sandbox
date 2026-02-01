@@ -74,7 +74,10 @@ impl ToolCmd {
                     .with_context(|| format!("Failed to load MCP state: {}", path.display()))?;
             }
         }
-        let response = dispatcher.dispatch(&self.name, input_value).await;
+        let mut response = dispatcher.dispatch(&self.name, input_value).await;
+        if let Some(path) = state_file {
+            response.state_file = Some(path.to_string_lossy().to_string());
+        }
 
         if response.success {
             if let Some(path) = state_file {

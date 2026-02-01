@@ -248,7 +248,7 @@ pub fn print_status(state: &SandboxState, json_output: bool) {
         let status = StatusJson {
             packages_loaded: packages.len(),
             packages,
-            last_sender: state.persisted.last_sender.clone(),
+            last_sender: state.last_sender_hex(),
             rpc_url: state.rpc_url.clone(),
         };
 
@@ -260,7 +260,7 @@ pub fn print_status(state: &SandboxState, json_output: bool) {
         println!("\x1b[1mSui Sandbox Status\x1b[0m\n");
         println!("RPC URL: {}", state.rpc_url);
 
-        if let Some(sender) = &state.persisted.last_sender {
+        if let Some(sender) = state.last_sender_hex() {
             println!("Last sender: {}", sender);
         }
 
@@ -278,10 +278,10 @@ pub fn print_status(state: &SandboxState, json_output: bool) {
             }
         }
 
-        if let Some(created) = &state.persisted.metadata.created_at {
+        if let Some(created) = state.metadata_created_at() {
             println!("\nSession created: {}", created);
         }
-        if let Some(modified) = &state.persisted.metadata.last_modified {
+        if let Some(modified) = state.metadata_modified_at() {
             println!("Last modified: {}", modified);
         }
     }
@@ -303,7 +303,15 @@ pub fn format_error(error: &anyhow::Error, json_output: bool) -> String {
         };
         serde_json::to_string_pretty(&err).unwrap_or_else(|_| "{}".to_string())
     } else {
-        format!("\x1b[31mError:\x1b[0m {}\n", error)
+        let mut out = format!("\x1b[31mError:\x1b[0m {}\n", error);
+        let mut causes = error.chain().skip(1).peekable();
+        if causes.peek().is_some() {
+            out.push_str("Caused by:\n");
+            for (idx, cause) in causes.enumerate() {
+                out.push_str(&format!("  {}: {}\n", idx + 1, cause));
+            }
+        }
+        out
     }
 }
 
