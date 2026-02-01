@@ -37,7 +37,7 @@ init_context() {
 
   SCRIPT_NAME="$(basename "$0" .sh)"
   STATE_FILE="${STATE_DIR}/${SCRIPT_NAME}.json"
-  LEGACY_STATE_FILE="${STATE_DIR}/${SCRIPT_NAME}.bin"
+  LEGACY_STATE_FILE="${STATE_DIR}/${SCRIPT_NAME}.legacy.json"
 
   OUT_DIR="${STATE_DIR}/outputs"
   mkdir -p "$OUT_DIR"

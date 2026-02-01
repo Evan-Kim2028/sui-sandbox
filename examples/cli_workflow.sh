@@ -29,7 +29,7 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SUI_SANDBOX="${PROJECT_ROOT}/target/release/sui-sandbox"
-STATE_FILE="/tmp/sui-sandbox-example/state.bin"
+STATE_FILE="/tmp/sui-sandbox-example/state.json"
 FIXTURE_DIR="${PROJECT_ROOT}/tests/fixture/build/fixture"
 
 # Colors for output

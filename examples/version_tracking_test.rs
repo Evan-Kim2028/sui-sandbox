@@ -23,9 +23,9 @@ use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, PTBExecutor};
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::simulation::SimulationEnvironment;
 use sui_sandbox_core::tx_replay::{
     build_address_aliases_for_test, grpc_to_fetched_transaction, replay_with_version_tracking,

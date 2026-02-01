@@ -24,7 +24,7 @@
 //! # Compare ground-truth vs legacy prefetch strategies
 //! cargo run --example batch_ptb --release -- --compare
 //!
-//! # Use legacy GraphQL-first prefetch strategy
+//! # Use legacy GraphQL-first prefetch strategy (comparison/regression only)
 //! cargo run --example batch_ptb --release -- --legacy
 //! ```
 

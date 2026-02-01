@@ -9,8 +9,9 @@
 //! signatures remain the same for backwards compatibility, but the `SuiClient`
 //! parameter is now ignored in favor of direct GraphQL queries.
 //!
-//! For new code, prefer using [`DataFetcher`](crate::data_fetcher::DataFetcher)
-//! directly, which provides a unified interface with caching support.
+//! For new code, prefer using `sui_transport::graphql::GraphQLClient` directly
+//! (current state queries) or `sui_state_fetcher::HistoricalStateProvider` for
+//! historical replay. `DataFetcher` is deprecated and kept for compatibility.
 
 use crate::args::RetryConfig;
 use crate::bytecode::build_bytecode_interface_value_from_compiled_modules;

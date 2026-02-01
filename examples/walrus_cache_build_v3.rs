@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sui_transport::walrus::Blob;
+use sui_transport::blob::Blob;
 use sui_types::full_checkpoint_content::CheckpointData;
 
 /// Build a filesystem cache from Walrus checkpoint blobs (v3 - high performance).

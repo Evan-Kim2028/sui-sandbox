@@ -1,4 +1,6 @@
-//! **DEPRECATED**: Use [`sui_state_fetcher::HistoricalStateProvider`] instead.
+//! **DEPRECATED**: Prefer `sui_state_fetcher::HistoricalStateProvider` for replay,
+//! or `sui_transport::graphql::GraphQLClient` / `sui_transport::grpc::GrpcClient`
+//! for current-state queries and streaming.
 #![allow(deprecated)] // This module is deprecated but still functional for backwards compatibility
 //!
 //! This module is deprecated in favor of the `sui-state-fetcher` crate which provides:

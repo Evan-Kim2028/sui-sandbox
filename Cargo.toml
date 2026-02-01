@@ -1,6 +1,6 @@
 [package]
 name = "sui-sandbox"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 
 [workspace]
@@ -14,11 +14,13 @@ members = [
     "crates/sui-sandbox-core",
     "crates/sui-historical-cache",
     "crates/sui-sandbox-mcp",
+    "crates/sui-sandbox-integration-tests",
 ]
 
 [features]
 # Forward debug-native logging to the core VM implementation.
 debug-natives = ["sui-sandbox-core/debug-natives"]
+network-tests = []
 
 # Centralized dependency versions for the workspace
 # Member crates use: dep = { workspace = true }
@@ -54,7 +56,8 @@ async-trait = "0.1"
 ureq = { version = "2.9", features = ["json"] }
 clap = { version = "4", features = ["derive"] }
 
-# gRPC
+# gRPC - prost matches MystenLabs mainnet-v1.64.2
+# Note: tonic stays at 0.12 because 0.14 requires regenerating all proto code
 tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 prost = "0.13"
 prost-types = "0.13"
@@ -245,3 +248,27 @@ path = "examples/walrus_cache_build.rs"
 [[bin]]
 name = "sui-sandbox"
 path = "src/bin/sui_sandbox.rs"
+
+# Release profile - optimized for small binary size
+[profile.release]
+# Strip all symbols for smallest binary
+strip = true
+# Exit process with SIGABRT when any thread panics (smaller binary, no unwinding)
+panic = 'abort'
+
+# Release with debug info - for profiling/debugging production issues
+[profile.release-debug]
+inherits = "release"
+# Line tables only for stack traces
+debug = 1
+# Keep debug info in separate file
+split-debuginfo = 'packed'
+strip = 'debuginfo'
+
+# Maximum optimization (slower build, smaller/faster binary)
+[profile.release-lto]
+inherits = "release"
+# Enable Link Time Optimization
+lto = true
+# Single codegen unit for better optimization
+codegen-units = 1

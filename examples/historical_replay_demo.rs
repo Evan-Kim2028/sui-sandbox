@@ -46,8 +46,8 @@ use base64::Engine;
 use common::{build_replay_config_from_grpc, extract_package_ids_from_type, parse_type_tag_simple};
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
 use sui_sandbox_core::utilities::{
     grpc_object_to_package_data, CallbackPackageFetcher, HistoricalPackageResolver,

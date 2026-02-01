@@ -171,7 +171,7 @@ This MCP workflow mirrored the classic CLI example using:
   - tool call_function  (execute Move)
 
 Because all MCP tools share a single JSON state file, this script preserves
-state across invocations just like the legacy CLI.
+state across invocations just like the CLI.
 SUMMARY
 
 print_note "See examples/cli_workflow.sh for the classic CLI flow."

@@ -31,9 +31,9 @@ use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
 use sui_prefetch::{ground_truth_prefetch_for_transaction, GroundTruthPrefetchConfig};
-use sui_sandbox_core::object_runtime::VersionedChildFetcherFn;
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::VersionedChildFetcherFn;
 use sui_sandbox_core::tx_replay::{grpc_to_fetched_transaction, CachedTransaction};
 use sui_sandbox_core::utilities::bcs_scanner::{
     extract_addresses_from_bytecode_constants, extract_addresses_from_type_params,

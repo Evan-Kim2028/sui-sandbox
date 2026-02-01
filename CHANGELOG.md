@@ -2,6 +2,61 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.13.0] - 2026-02-01
+
+### Added
+
+#### World Management System
+- **World abstraction**: New unified container for sandbox development that ties together source code, deployed state, transaction history, and configuration
+- **Session persistence**: Automatic session tracking across MCP restarts with active world restoration
+- **World templates**: Pre-built templates for common patterns: `blank`, `token`, `nft`, `defi`
+- **Snapshot/restore**: Create named snapshots of world state and restore to previous points
+- **Git integration**: Optional auto-commit on build success for version-controlled development
+
+#### Transaction History Tracking
+- **Append-only transaction log**: Every PTB execution is recorded with inputs, commands, effects, and events
+- **Rich metadata**: Transaction records include sender, gas used, objects created/mutated/deleted, and return values
+- **Search and filtering**: Query history by sender, success/failure, tags, or date range
+- **Replay support**: Transaction records can be replayed for debugging and audit trails
+
+#### CLI-Parity MCP Tools
+- **`publish`**: Deploy Move packages from source or pre-compiled bytecode
+- **`run`**: Execute Move functions with auto-parsed arguments
+- **`status`**: Get sandbox state summary including loaded packages and provider config
+- **`clean`**: Reset sandbox state while retaining framework packages
+- **`view`**: Inspect module interfaces and object state
+- **`bridge`**: Generate `sui client ptb` commands from sandbox PTB specs
+
+#### New Integration Test Crate
+- **`sui-sandbox-integration-tests`**: Dedicated crate for heavy network-dependent tests (gRPC, GraphQL, replay)
+- Speeds up default test suite by isolating slow integration tests
+
+#### Enhanced PTB Support
+- **MCP-style PTB specs**: CLI now accepts MCP-format PTB specifications for interoperability
+- **PTB validation**: Pre-execution validation with detailed error messages
+- **Transaction hash generation**: Deterministic tx hash generation for sandbox executions
+
+#### Convertible Debt Example
+- **DeFi example**: New Move package demonstrating convertible debt instruments
+- **Simulator**: Standalone simulator for convertible note payoff scenarios
+- **CLI workflow**: End-to-end example script for convertible debt operations
+
+#### Documentation
+- **Golden Flow guide**: Recommended CLI workflow for local development
+- **Updated reference docs**: CLI, MCP, PTB schema, and API documentation refreshed
+
+### Changed
+
+- **State persistence format**: Migrated from bincode to JSON format with backwards-compatible legacy migration
+- **Default Sui dependency**: Projects now include Sui framework by default when dependencies list is empty
+- **Blob module visibility**: `sui_transport::blob` is now public for external use
+- **Resilient state loading**: Invalid module bytecode is now logged and skipped rather than failing load
+
+### Fixed
+
+- **Clippy warnings**: Resolved all clippy warnings including identical if-else branches and trait naming conflicts
+- **Test reliability**: Fixed state roundtrip test that failed on invalid mock bytecode
+
 ## [0.11.0] - 2026-01-29
 
 ### Added

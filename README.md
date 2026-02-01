@@ -181,7 +181,9 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 | What you want | Where to look |
 |---------------|---------------|
+| **Docs index** | [docs/README.md](docs/README.md) |
 | **Get started** | [examples/README.md](examples/README.md) |
+| **Golden flow (CLI)** | [Golden Flow Guide](docs/guides/GOLDEN_FLOW.md) |
 | **Replay transactions** | [Transaction Replay Guide](docs/guides/TRANSACTION_REPLAY.md) |
 | **Understand the system** | [Architecture](docs/ARCHITECTURE.md) |
 | **Debug failures** | [Limitations](docs/reference/LIMITATIONS.md) |
@@ -192,11 +194,20 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 ## Testing
 
 ```bash
-# Run unit + integration tests
+# Run unit + integration tests (core)
 cargo test
+
+# Fast CLI smoke tests
+cargo test -p sui-sandbox --test fast_suite
 
 # CLI integration tests only
 cargo test -p sui-sandbox --test sandbox_cli_tests
+
+# Heavier integration tests (offline)
+cargo test -p sui-sandbox-integration-tests
+
+# Network tests (opt-in)
+cargo test -p sui-sandbox-integration-tests --features network-tests -- --ignored --nocapture
 ```
 
 Tip: set `SUI_SANDBOX_HOME` to isolate cache/logs/projects during tests.
