@@ -8,7 +8,8 @@ use sui_sandbox_mcp::paths::SandboxPaths;
 use sui_sandbox_mcp::project::ProjectManager;
 
 #[test]
-fn creates_project_without_sui_dependency() {
+fn creates_project_with_default_sui_dependency() {
+    // When dependencies is empty, Sui framework is included by default
     let temp = TempDir::new().expect("tempdir");
     let paths = SandboxPaths::from_base(temp.path().join("root"));
     let manager = ProjectManager::new(Some(paths.projects_dir())).expect("project manager");
@@ -23,7 +24,8 @@ fn creates_project_without_sui_dependency() {
     let move_toml =
         fs::read_to_string(PathBuf::from(&info.path).join("Move.toml")).expect("read Move.toml");
     assert!(move_toml.contains("name = \"demo\""));
-    assert!(!move_toml.contains("Sui = { local ="));
+    // Empty dependencies = Sui included by default
+    assert!(move_toml.contains("Sui = { local ="));
 }
 
 #[test]

@@ -85,7 +85,7 @@ fn test_view_help() {
 #[test]
 fn test_clean_nonexistent_state() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -99,7 +99,7 @@ fn test_clean_nonexistent_state() {
 #[test]
 fn test_status_empty_session() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -113,7 +113,7 @@ fn test_status_empty_session() {
 #[test]
 fn test_status_json_output() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     let output = sandbox_cmd()
         .arg("--state-file")
@@ -139,7 +139,7 @@ fn test_status_json_output() {
 #[test]
 fn test_publish_bytecode_only() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     // Publish using pre-compiled bytecode
@@ -159,7 +159,7 @@ fn test_publish_bytecode_only() {
 #[test]
 fn test_publish_creates_state_file() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("subdir/state.bin");
+    let state_file = temp_dir.path().join("subdir/state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     sandbox_cmd()
@@ -180,7 +180,7 @@ fn test_publish_creates_state_file() {
 #[test]
 fn test_publish_json_output() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     let output = sandbox_cmd()
@@ -210,7 +210,7 @@ fn test_publish_json_output() {
 #[test]
 fn test_view_packages_empty() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -225,7 +225,7 @@ fn test_view_packages_empty() {
 #[test]
 fn test_view_packages_after_publish() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     // First publish
@@ -253,10 +253,11 @@ fn test_view_packages_after_publish() {
 }
 
 #[test]
+#[cfg(feature = "network-tests")]
 #[ignore = "requires network access - may be rate limited"]
 fn test_view_module_framework() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     // Framework modules should be available
     sandbox_cmd()
@@ -272,10 +273,11 @@ fn test_view_module_framework() {
 }
 
 #[test]
+#[cfg(feature = "network-tests")]
 #[ignore = "requires network access to fetch Sui framework - module not bundled in state"]
 fn test_view_module_json() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     let output = sandbox_cmd()
         .arg("--state-file")
@@ -297,10 +299,11 @@ fn test_view_module_json() {
 }
 
 #[test]
+#[cfg(feature = "network-tests")]
 #[ignore = "requires network access to fetch Sui framework - may be rate limited"]
 fn test_view_modules_in_framework_package() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -321,7 +324,7 @@ fn test_view_modules_in_framework_package() {
 #[test]
 fn test_run_invalid_target() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -335,7 +338,7 @@ fn test_run_invalid_target() {
 #[test]
 fn test_run_module_not_found() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -353,7 +356,7 @@ fn test_run_module_not_found() {
 #[test]
 fn test_ptb_missing_spec() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -370,7 +373,7 @@ fn test_ptb_missing_spec() {
 #[test]
 fn test_ptb_invalid_json() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     // Create invalid JSON spec
     let spec_file = temp_dir.path().join("spec.json");
@@ -391,7 +394,7 @@ fn test_ptb_invalid_json() {
 #[test]
 fn test_ptb_valid_spec_empty_calls() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     // Create valid but empty spec
     let spec_file = temp_dir.path().join("spec.json");
@@ -416,7 +419,7 @@ fn test_ptb_valid_spec_empty_calls() {
 #[test]
 fn test_view_object_not_in_session() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -432,7 +435,7 @@ fn test_view_object_not_in_session() {
 #[test]
 fn test_view_object_invalid_id() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -451,7 +454,7 @@ fn test_view_object_invalid_id() {
 #[test]
 fn test_fetch_package_invalid_id() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -466,7 +469,7 @@ fn test_fetch_package_invalid_id() {
 #[test]
 fn test_fetch_object_invalid_id() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -485,7 +488,7 @@ fn test_fetch_object_invalid_id() {
 #[test]
 fn test_replay_invalid_digest() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     // This will fail because we can't fetch from mainnet in tests,
     // but it validates the command structure
@@ -505,7 +508,7 @@ fn test_replay_invalid_digest() {
 #[test]
 fn test_session_persistence_across_commands() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     // Publish a package
@@ -555,7 +558,7 @@ fn test_session_persistence_across_commands() {
 #[test]
 fn test_verbose_flag() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     // Verbose should not cause any errors
     sandbox_cmd()
@@ -570,7 +573,7 @@ fn test_verbose_flag() {
 #[test]
 fn test_rpc_url_option() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
 
     sandbox_cmd()
         .arg("--state-file")
@@ -994,7 +997,7 @@ fn test_bridge_ptb_with_result_chaining() {
 #[test]
 fn test_bridge_e2e_workflow_sandbox_to_bridge() {
     let temp_dir = TempDir::new().unwrap();
-    let state_file = temp_dir.path().join("state.bin");
+    let state_file = temp_dir.path().join("state.json");
     let fixture = fixture_dir().join("build/fixture");
 
     // Step 1: Publish in sandbox

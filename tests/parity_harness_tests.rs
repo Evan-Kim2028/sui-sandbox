@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-//! Parity harness between legacy CLI workflow and MCP tool workflow.
+//! Parity harness between CLI workflow and MCP tool workflow.
 
 use assert_cmd::Command;
 use base64::Engine;
@@ -88,13 +88,13 @@ fn test_replay_parity_dynamic_field_filtering() {
     let sandbox_home = temp_dir.path().join("home");
     fs::create_dir_all(&sandbox_home).unwrap();
 
-    let legacy_state = sandbox_home.join("state.bin");
+    let cli_state = sandbox_home.join("cli-state.json");
     let mcp_state = sandbox_home.join("mcp-state.json");
 
     let cli_output = sandbox_cmd()
         .env("SUI_SANDBOX_HOME", &sandbox_home)
         .arg("--state-file")
-        .arg(&legacy_state)
+        .arg(&cli_state)
         .arg("--json")
         .arg("replay")
         .arg(digest)
@@ -164,7 +164,7 @@ fn test_cli_mcp_parity_fixture_workflow() {
     let sandbox_home = temp_dir.path().join("home");
     fs::create_dir_all(&sandbox_home).unwrap();
 
-    let legacy_state = sandbox_home.join("state.bin");
+    let cli_state = sandbox_home.join("cli-state.json");
     let mcp_state = sandbox_home.join("mcp-state.json");
 
     let fixture = fixture_dir().join("build/fixture");
@@ -172,7 +172,7 @@ fn test_cli_mcp_parity_fixture_workflow() {
     let publish_output = sandbox_cmd()
         .env("SUI_SANDBOX_HOME", &sandbox_home)
         .arg("--state-file")
-        .arg(&legacy_state)
+        .arg(&cli_state)
         .arg("--json")
         .arg("publish")
         .arg(&fixture)
@@ -194,7 +194,7 @@ fn test_cli_mcp_parity_fixture_workflow() {
     let run_output = sandbox_cmd()
         .env("SUI_SANDBOX_HOME", &sandbox_home)
         .arg("--state-file")
-        .arg(&legacy_state)
+        .arg(&cli_state)
         .arg("--json")
         .arg("run")
         .arg(format!("{}::test_module::simple_func", package_address))

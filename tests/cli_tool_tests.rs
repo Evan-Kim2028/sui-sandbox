@@ -167,3 +167,17 @@ fn cli_tool_persists_provider_config() {
     assert_eq!(json["graphql_endpoint"], "https://example.test/graphql");
     assert_eq!(json["grpc_endpoint"], "https://grpc.example.test:443");
 }
+
+#[test]
+fn cli_tool_status_includes_state_file() {
+    let temp = TempDir::new().expect("tempdir");
+    let home = temp.path().join("home");
+    fs::create_dir_all(&home).expect("home dir");
+    let state_file = temp.path().join("mcp-state.json");
+
+    let status = run_tool(&home, &state_file, "status", &serde_json::json!({}));
+    assert!(status["success"].as_bool().unwrap_or(false));
+
+    let state_path = status["state_file"].as_str().unwrap_or("");
+    assert_eq!(state_path, state_file.to_string_lossy());
+}

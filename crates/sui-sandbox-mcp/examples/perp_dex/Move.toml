@@ -1,0 +1,10 @@
+[package]
+name = "perp_dex"
+edition = "2024.beta"
+version = "0.0.1"
+
+[dependencies]
+deepbook = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/deepbook", rev = "main" }
+
+[addresses]
+perp_dex = "0x0"
