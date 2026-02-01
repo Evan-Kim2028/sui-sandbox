@@ -212,8 +212,14 @@ impl BridgePtbCmd {
         let spec_content = std::fs::read_to_string(&self.spec)
             .map_err(|e| anyhow!("Failed to read PTB spec: {}", e))?;
 
-        let spec: SandboxPtbSpec = serde_json::from_str(&spec_content)
+        let spec_value: serde_json::Value = serde_json::from_str(&spec_content)
             .map_err(|e| anyhow!("Failed to parse PTB spec: {}", e))?;
+        let spec = if spec_value.get("commands").is_some() {
+            parse_mcp_ptb_spec(&spec_value)?
+        } else {
+            serde_json::from_value(spec_value)
+                .map_err(|e| anyhow!("Failed to parse PTB spec: {}", e))?
+        };
 
         // Convert to sui client ptb commands
         let mut ptb_parts: Vec<String> = vec!["sui client ptb".to_string()];
@@ -629,10 +635,71 @@ struct SandboxPtbSpec {
 #[derive(serde::Deserialize, Debug)]
 struct SandboxPtbCall {
     target: String,
-    #[serde(default)]
+    #[serde(default, alias = "type_args")]
     type_arguments: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, alias = "args")]
     arguments: Option<Vec<serde_json::Value>>,
+}
+
+fn parse_mcp_ptb_spec(value: &serde_json::Value) -> Result<SandboxPtbSpec> {
+    let commands = value
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("MCP PTB spec missing 'commands' array"))?;
+
+    if commands.is_empty() {
+        return Err(anyhow!("MCP PTB spec has no commands"));
+    }
+
+    let mut calls = Vec::new();
+
+    for (idx, cmd) in commands.iter().enumerate() {
+        let (kind, inner) = if let Some(inner) = cmd.get("MoveCall") {
+            ("MoveCall", inner)
+        } else if let Some(kind) = cmd.get("kind").and_then(|v| v.as_str()) {
+            (kind, cmd)
+        } else {
+            return Err(anyhow!("Command {} missing kind", idx));
+        };
+
+        if !matches!(kind, "MoveCall" | "move_call") {
+            return Err(anyhow!(
+                "bridge ptb only supports MoveCall commands (found {})",
+                kind
+            ));
+        }
+
+        let package = inner
+            .get("package")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("MoveCall requires package"))?;
+        let module = inner
+            .get("module")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("MoveCall requires module"))?;
+        let function = inner
+            .get("function")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("MoveCall requires function"))?;
+        let type_arguments = inner
+            .get("type_args")
+            .or_else(|| inner.get("type_arguments"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            });
+        let arguments = inner.get("args").and_then(|v| v.as_array()).cloned();
+
+        calls.push(SandboxPtbCall {
+            target: format!("{}::{}::{}", package, module, function),
+            type_arguments,
+            arguments,
+        });
+    }
+
+    Ok(SandboxPtbSpec { calls })
 }
 
 // =============================================================================
@@ -695,27 +762,71 @@ fn format_arg_for_sui_client(arg: &str) -> String {
 fn convert_ptb_argument(arg: &serde_json::Value, result_vars: &[String]) -> Result<String> {
     match arg {
         serde_json::Value::Object(obj) => {
-            if let Some(result_idx) = obj.get("Result") {
+            if let Some(result_idx) = obj.get("result") {
                 let idx = result_idx
                     .as_u64()
-                    .ok_or_else(|| anyhow!("Result index must be a number"))?
+                    .ok_or_else(|| anyhow!("result index must be a number"))?
                     as usize;
                 if idx < result_vars.len() {
                     Ok(result_vars[idx].clone())
                 } else {
                     Ok(format!("result_{}", idx))
                 }
-            } else if let Some(input_idx) = obj.get("Input") {
+            } else if let Some(input_idx) = obj.get("input") {
                 let idx = input_idx
                     .as_u64()
-                    .ok_or_else(|| anyhow!("Input index must be a number"))?;
+                    .ok_or_else(|| anyhow!("input index must be a number"))?;
                 Ok(format!("@input_{}", idx))
+            } else if let Some(nested) = obj.get("nested_result") {
+                if let Some(arr) = nested.as_array() {
+                    if arr.len() == 2 {
+                        let cmd = arr[0].as_u64().unwrap_or(0);
+                        let idx = arr[1].as_u64().unwrap_or(0);
+                        if idx == 0 {
+                            return Ok(format!("result_{}", cmd));
+                        }
+                        return Ok(format!("result_{}_{}", cmd, idx));
+                    }
+                }
+                Ok("<nested_result>".to_string())
+            } else if let Some(result_idx) = obj.get("Result") {
+                if let Some(idx) = result_idx.as_u64() {
+                    let idx = idx as usize;
+                    if idx < result_vars.len() {
+                        Ok(result_vars[idx].clone())
+                    } else {
+                        Ok(format!("result_{}", idx))
+                    }
+                } else if let Some(res) = result_idx.as_object() {
+                    let cmd = res.get("cmd").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let idx = res.get("idx").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if idx == 0 {
+                        Ok(format!("result_{}", cmd))
+                    } else {
+                        Ok(format!("result_{}_{}", cmd, idx))
+                    }
+                } else {
+                    Ok("<result>".to_string())
+                }
+            } else if let Some(input_idx) = obj.get("Input") {
+                if let Some(idx) = input_idx.as_u64() {
+                    Ok(format!("@input_{}", idx))
+                } else if let Some(idx) = input_idx.get("index").and_then(|v| v.as_u64()) {
+                    Ok(format!("@input_{}", idx))
+                } else {
+                    Ok("@input_0".to_string())
+                }
             } else if obj.contains_key("Pure") {
                 // Pure value - extract the value
                 if let Some(pure_obj) = obj.get("Pure").and_then(|p| p.as_object()) {
                     if let Some(val) = pure_obj.get("value") {
                         return Ok(format_json_value(val));
                     }
+                }
+                Ok("<pure_value>".to_string())
+            } else if obj.get("kind").and_then(|v| v.as_str()) == Some("pure") {
+                if let Some(val) = obj.get("value") {
+                    return Ok(format_json_value(val));
                 }
                 Ok("<pure_value>".to_string())
             } else {
