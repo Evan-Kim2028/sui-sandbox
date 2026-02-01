@@ -28,5 +28,5 @@ prost-types.workspace = true
 move-core-types.workspace = true
 sui-types.workspace = true
 sui-protocol-config.workspace = true
-sui-storage.workspace = true
 bcs.workspace = true
+num_enum = "0.7"

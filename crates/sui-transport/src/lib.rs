@@ -26,6 +26,7 @@
 //! let checkpoint = walrus.get_checkpoint(12345)?;
 //! ```
 
+pub mod blob;
 pub mod graphql;
 pub mod grpc;
 pub mod network;

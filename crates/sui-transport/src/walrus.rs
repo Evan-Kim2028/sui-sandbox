@@ -18,13 +18,13 @@
 //! let checkpoint = client.get_checkpoint(12345).await?;
 //! ```
 
+use crate::blob::Blob;
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::str::FromStr;
-pub use sui_storage::blob::Blob;
 use sui_types::base_types::{MoveObjectType, ObjectID, SequenceNumber, SuiAddress};
 use sui_types::digests::TransactionDigest;
 use sui_types::full_checkpoint_content::CheckpointData;
