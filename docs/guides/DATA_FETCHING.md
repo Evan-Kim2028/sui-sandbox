@@ -7,8 +7,13 @@ This guide covers how to fetch on-chain data (objects, packages, transactions) f
 | Use Case | Recommended API | Why |
 |----------|-----------------|-----|
 | **Historical transaction replay** | `sui_state_fetcher::HistoricalStateProvider` | Versioned cache, fetches objects at exact historical versions |
-| Current state queries | `DataFetcher` | Simple API for latest objects/packages |
-| Real-time streaming | `DataFetcher` with gRPC | Push-based checkpoint streaming |
+| Current state queries | `sui_transport::graphql::GraphQLClient` | Direct GraphQL access; DataFetcher is legacy |
+| Real-time streaming | `sui_transport::grpc::GrpcClient` | Native streaming client; DataFetcher is legacy |
+
+> **Note:** `DataFetcher` is deprecated and kept for backwards compatibility. It is suitable for
+> **current state** queries and streaming but is not version-aware and should not be used for
+> historical replay. Prefer `HistoricalStateProvider` for replay and the transport clients for
+> new code.
 
 ## Historical Transaction Replay
 
@@ -47,9 +52,10 @@ See the `sui-state-fetcher` crate documentation for full API details.
 
 ---
 
-## DataFetcher API (Current State)
+## DataFetcher API (Legacy Current State)
 
-The `DataFetcher` is suitable for querying **current state** (latest versions). It provides a unified interface with two backends:
+The `DataFetcher` is suitable for querying **current state** (latest versions) but is deprecated.
+It provides a unified interface with two backends:
 
 | Backend | Best For | Tradeoff |
 |---------|----------|----------|
@@ -92,9 +98,9 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-## DataFetcher API
+### DataFetcher API Details
 
-### Creating a Fetcher
+#### Creating a Fetcher
 
 ```rust
 // For mainnet (uses GraphQL)
@@ -107,7 +113,7 @@ let fetcher = DataFetcher::testnet();
 let fetcher = DataFetcher::new("https://graphql.mainnet.sui.io/graphql");
 ```
 
-### Fetching Objects
+#### Fetching Objects
 
 ```rust
 let obj = fetcher.fetch_object("0x...")?;
@@ -122,7 +128,7 @@ let obj = fetcher.fetch_object("0x...")?;
 // - source: DataSource (GraphQL, Grpc, or Cache)
 ```
 
-### Fetching Packages
+#### Fetching Packages
 
 ```rust
 let pkg = fetcher.fetch_package("0x2")?;
@@ -324,9 +330,10 @@ fn fetch_data() -> Result<()> {
 | Object BCS | ✅ Available |
 | Historical data | ✅ Good |
 
-**Recommendation:** Use `DataFetcher` which uses GraphQL for all queries.
+**Recommendation:** Use `sui_transport::graphql::GraphQLClient` for new code.
+`DataFetcher` is a legacy convenience wrapper.
 
-## Example: Analyzing Recent Transactions
+## Example: Analyzing Recent Transactions (Legacy DataFetcher)
 
 ```rust
 use sui_sandbox::data_fetcher::{DataFetcher, GraphQLCommand};

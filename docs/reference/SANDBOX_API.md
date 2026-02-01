@@ -272,6 +272,9 @@ Execute a Programmable Transaction Block.
 }
 ```
 
+Note: The MCP tool also accepts a compact variant where inputs/commands use a
+`kind` field (e.g., `{"kind":"pure","value":...}` and `{"kind":"move_call", ...}`).
+
 #### Input Types
 
 | Type | Format |

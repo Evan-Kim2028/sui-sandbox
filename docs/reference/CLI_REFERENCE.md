@@ -2,6 +2,7 @@
 
 The `sui-sandbox` CLI is the primary interface for local Move/Sui development.
 For MCP server usage and tool input details, see **[MCP Reference](MCP_REFERENCE.md)**.
+For a full docs map, see **[docs/README.md](../README.md)**.
 
 ## Quick Reference
 
@@ -53,7 +54,7 @@ cargo build --release --bin sui-sandbox
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/state.bin` (legacy); `~/.sui-sandbox/mcp-state.json` for `tool` |
+| `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/mcp-state.json` |
 | `--rpc-url <URL>` | RPC URL for mainnet fetching | `https://fullnode.mainnet.sui.io:443` |
 | `--json` | Output as JSON instead of human-readable | `false` |
 | `-v, --verbose` | Show execution traces | `false` |
@@ -64,7 +65,7 @@ cargo build --release --bin sui-sandbox
 |----------|-------------|
 | `SUI_GRPC_API_KEY` | API key for authenticated gRPC endpoints (used with `--rpc-url`) |
 | `SUI_SANDBOX_HOME` | Override sandbox home for MCP cache/projects/logs (default: `~/.sui-sandbox`) |
-| `SUI_GRAPHQL_ENDPOINT` | Default GraphQL endpoint for MCP tools and legacy `fetch`/`replay` (overridden by `--graphql-url`) |
+| `SUI_GRAPHQL_ENDPOINT` | Default GraphQL endpoint for MCP tools and `fetch`/`replay` (overridden by `--graphql-url`) |
 | `SUI_DEBUG_LINKAGE` | Set to `1` to log package linkage/version resolution during replay and fetch |
 | `SUI_DEBUG_MUTATIONS` | Set to `1` to log mutation tracking details during replay |
 | `SUI_WALRUS_ENABLED` | Set to `true` to enable Walrus checkpoint hydration (input/output objects) |
@@ -174,6 +175,9 @@ sui-sandbox ptb --spec tx.json --sender 0x1 --gas-budget 10000000
   ]
 }
 ```
+
+The CLI accepts **either** the compact `calls` spec or the MCP-style
+`inputs` + `commands` format. See `docs/reference/PTB_SCHEMA.md` for both.
 
 #### `fetch` - Import Mainnet State
 
@@ -292,7 +296,7 @@ sui-sandbox bridge ptb --spec my_transaction.json
 |------------|-------------|
 | `publish <PATH>` | Generate `sui client publish` command |
 | `call <TARGET>` | Generate `sui client call` command |
-| `ptb --spec <FILE>` | Convert sandbox PTB spec to `sui client ptb` command |
+| `ptb --spec <FILE>` | Convert PTB spec (CLI or MCP) to `sui client ptb` command |
 | `info` | Show transition workflow and deployment guide |
 
 **Options:**
@@ -302,6 +306,8 @@ sui-sandbox bridge ptb --spec my_transaction.json
 | `--gas-budget <MIST>` | Gas budget for the transaction | 100M (publish), 10M (call/ptb) |
 | `--quiet` | Skip prerequisites and notes, show only command | `false` |
 | `-v, --verbose` | Show advanced info (protocol version, error handling tips) | `false` |
+
+Note: `bridge ptb` currently supports **MoveCall-only** PTBs.
 
 **Example Workflow:**
 
@@ -373,8 +379,8 @@ sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","functi
 
 **Notes:**
 
-- The tool command uses a separate state file by default: `~/.sui-sandbox/mcp-state.json`
-- Use `--state-file` to override the state location (shared across tool invocations)
+- The CLI and tool commands share the same JSON state file by default: `~/.sui-sandbox/mcp-state.json`
+- Use `--state-file` to override the state location (shared across invocations)
 - If `SUI_SANDBOX_HOME` is set, default state files live under that directory
 - MCP tool logs are written as JSONL under `$SUI_SANDBOX_HOME/logs/mcp`
 - Mainnet fetch/replay uses a shared cache under `$SUI_SANDBOX_HOME/cache/<network>`
@@ -411,8 +417,11 @@ The `sui-sandbox` maintains session state across commands:
 - **Fetched objects** are cached locally
 - **Last sender** is remembered for convenience
 
-State is stored in `~/.sui-sandbox/state.bin` by default for legacy commands. The `tool`
-command uses `~/.sui-sandbox/mcp-state.json` unless overridden with `--state-file`.
+State is stored in `~/.sui-sandbox/mcp-state.json` by default for all commands unless
+overridden with `--state-file`.
+
+If you have an older binary state file (`state.bin`), it will be read and
+automatically migrated to JSON on the next successful run.
 
 ### Workflow Example
 

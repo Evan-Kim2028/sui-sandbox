@@ -86,14 +86,43 @@ Optional environment variables:
 - `execute_ptb`: programmable transaction block
 - `replay_transaction`: replay a mainnet transaction (uses cache + state provider)
 
-### 3) State + introspection
+### 3) CLI parity tools (aliases)
+
+These mirror the `sui-sandbox` CLI commands and are easier for agents to use.
+
+- `publish`: deploy a local Move package (CLI `publish`)
+- `run`: execute `package::module::function` (CLI `run`)
+- `ptb`: execute a PTB from CLI-style spec or MCP-style `execute_ptb` input
+- `fetch`: alias for `load_from_mainnet`
+- `replay`: alias for `replay_transaction`
+- `view`: lightweight view of a module/object/packages list
+- `bridge`: generate `sui client` commands (publish/call/ptb/info)
+- `status`: summarize session state (packages, provider, active world)
+- `clean`: reset the environment and clear object refs
+
+Example (view a module interface):
+
+```json
+{"kind":"module","module":"0x2::coin"}
+```
+
+### 4) World workflow
+
+- `world_create`, `world_open`, `world_close`, `world_status`
+- `world_read_file`, `world_write_file` (paths are relative to the world root; traversal is blocked)
+- `world_list`, `world_build`, `world_deploy`
+- `world_snapshot`, `world_restore`
+- `world_commit`, `world_log`
+- `world_templates`, `world_export`, `world_delete`
+
+### 5) State + introspection
 
 - `get_interface`, `search`, `get_state`, `list_packages`, `read_object`
 - `load_from_mainnet`: fetch object/package into the environment
 - `load_package_bytes`: load local compiled bytecode into the env
 - `create_asset`: create synthetic objects/coins for testing
 
-### 4) Configuration
+### 6) Configuration
 
 Use `configure` to update runtime settings:
 
@@ -193,10 +222,25 @@ Every tool call is logged to JSONL with inputs/outputs plus optional `_meta`:
 $SUI_SANDBOX_HOME/logs/mcp/*.jsonl
 ```
 
+## Response metadata
+
+Every tool response includes a `state_file` field so callers can see where
+session state is stored:
+
+- MCP server: `$SUI_SANDBOX_HOME/mcp-state.json`
+- CLI tool mode: the path passed via `--state-file`
+
 ## CLI Bridge (1:1 parity)
 
 All MCP tools are callable via `sui-sandbox tool ...`:
 
 ```bash
 sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","function":"zero","type_args":["0x2::sui::SUI"],"args":[]}'
+```
+
+CLI parity tools are also available through `tool`, e.g.:
+
+```bash
+sui-sandbox tool status --input '{}'
+sui-sandbox tool publish --input '{"path":"./my_pkg"}'
 ```

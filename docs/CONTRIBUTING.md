@@ -31,7 +31,8 @@
 ├── crates/
 │   └── pyo3-bindings/   # Python bindings (optional)
 ├── docs/                # Documentation
-├── tests/               # Integration tests
+├── tests/               # Core tests + fast suite
+├── crates/sui-sandbox-integration-tests/ # Heavier + network-gated tests
 ├── examples/            # Example programs
 └── .env.example         # Environment template
 ```
@@ -55,6 +56,9 @@ cargo test
 ### Focused Test Runs
 
 ```bash
+# Fast CLI smoke tests
+cargo test -p sui-sandbox --test fast_suite
+
 # CLI tool parity tests (offline)
 cargo test --test cli_tool_tests
 
@@ -63,6 +67,12 @@ cargo test --test parity_harness_tests
 
 # MCP-related unit tests
 cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
+
+# Heavier integration tests (offline)
+cargo test -p sui-sandbox-integration-tests
+
+# Network tests (opt-in)
+cargo test -p sui-sandbox-integration-tests --features network-tests -- --ignored --nocapture
 ```
 
 ### CI Harness (Parity + Logging)
@@ -80,6 +90,9 @@ cargo clippy --all-targets --all-features
 cargo test --test cli_tool_tests
 cargo test --test parity_harness_tests
 cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
+
+# Optional (slower) integration suite
+cargo test -p sui-sandbox-integration-tests
 ```
 
 Tip: set `SUI_SANDBOX_HOME` to a temp directory in CI so cache/logs/projects stay isolated.
@@ -91,7 +104,7 @@ Tip: set `SUI_SANDBOX_HOME` to a temp directory in CI so cache/logs/projects sta
   - Type normalization
   - Comparator behavior (match/mismatch)
   - Address normalization/stability rules
-- Avoid network tests in CI by default. If a networked integration test is added, gate it behind an env var.
+- Avoid network tests in CI by default. Gate networked tests behind the `network-tests` feature and `#[ignore]`.
 
 ## Style
 
