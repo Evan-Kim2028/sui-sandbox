@@ -1,0 +1,59 @@
+{
+  "checkpoint": 238000000,
+  "description": "SUI/USDC margin position - Day 9 snapshot (~Jan 26, 2026)",
+  "query_source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "generated_at": "2026-02-02",
+  "margin_manager_id": "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60",
+  "pool_type": "SUI/USDC",
+  "notes": {
+    "position_created": 235510810,
+    "days_since_creation": "~9 days"
+  },
+  "objects": {
+    "0x0000000000000000000000000000000000000000000000000000000000000006": {
+      "name": "Clock",
+      "version": 707199820,
+      "checkpoint_found": 238000000
+    },
+    "0x6": {
+      "name": "Clock (short)",
+      "version": 707199820,
+      "checkpoint_found": 238000000
+    },
+    "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {
+      "name": "DeepBook_Pool",
+      "version": 762377637,
+      "checkpoint_found": 237999996
+    },
+    "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {
+      "name": "Margin_Registry",
+      "version": 762356961,
+      "checkpoint_found": 237985634
+    },
+    "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {
+      "name": "Base_Margin_Pool",
+      "version": 762376012,
+      "checkpoint_found": 237999178
+    },
+    "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {
+      "name": "Quote_Margin_Pool",
+      "version": 762370980,
+      "checkpoint_found": 237996866
+    },
+    "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {
+      "name": "SUI_Pyth_Oracle",
+      "version": 762377416,
+      "checkpoint_found": 237999897
+    },
+    "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {
+      "name": "USDC_Pyth_Oracle",
+      "version": 762377416,
+      "checkpoint_found": 237999897
+    },
+    "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60": {
+      "name": "Margin_Manager",
+      "version": 760921405,
+      "checkpoint_found": 237335780
+    }
+  }
+}

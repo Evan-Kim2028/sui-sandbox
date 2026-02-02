@@ -59,11 +59,30 @@ This approach uses:
 ```
 deepbook_margin_state/
 ├── main.rs                              # Rust example source
+├── common.rs                            # Shared utilities for examples
 ├── README.md                            # This file
 └── data/
-    ├── deepbook_versions_240732600.json # Earlier snapshot (~190 checkpoints after position creation)
-    └── deepbook_versions_240733000.json # Later snapshot (~400 checkpoints later)
+    ├── deepbook_versions_240732600.json # Position A: Earlier snapshot (~190 checkpoints after creation)
+    ├── deepbook_versions_240733000.json # Position A: Later snapshot (~400 checkpoints later)
+    ├── timeseries_236000000.json        # Position B: Day 1 (Jan 18, 2026)
+    ├── timeseries_238000000.json        # Position B: Day 9 (Jan 26, 2026)
+    └── timeseries_239600000.json        # Position B: Day 14 (Jan 31, 2026)
 ```
+
+### Time Series Data
+
+The `timeseries_*.json` files track a **second margin position** (`0xbcb8ee...`) over ~2 weeks:
+
+| Checkpoint | Date | Days Active | Description |
+|------------|------|-------------|-------------|
+| 236000000 | Jan 18 | ~1-2 | Position created, initial state |
+| 238000000 | Jan 26 | ~9 | Mid-period snapshot |
+| 239600000 | Jan 31 | ~14 | Later snapshot with accumulated history |
+
+This demonstrates the power of historical tracking - you can reconstruct portfolio state at any point in time to analyze:
+- How positions evolved over time
+- Historical risk ratios and collateral values
+- Oracle price movements affecting margin health
 
 ### JSON Manifest Format
 
