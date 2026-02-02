@@ -11,6 +11,8 @@
     {
       "day": 1,
       "checkpoint": 235510810,
+      "timestamp_ms": 1768654458267,
+      "datetime_utc": "2026-01-17T12:54:18Z",
       "description": "Position creation - Day 1",
       "objects": {
         "0x6": {"name": "Clock", "version": 700518833, "checkpoint_found": 235510810},
@@ -27,6 +29,8 @@
     {
       "day": 2,
       "checkpoint": 235859237,
+      "timestamp_ms": 1768744520393,
+      "datetime_utc": "2026-01-18T13:55:20Z",
       "description": "Day 2",
       "objects": {
         "0x6": {"name": "Clock", "version": 701372733, "checkpoint_found": 235859237},
@@ -43,6 +47,8 @@
     {
       "day": 3,
       "checkpoint": 236134228,
+      "timestamp_ms": 1768816281722,
+      "datetime_utc": "2026-01-19T09:51:21Z",
       "description": "Day 3",
       "objects": {
         "0x6": {"name": "Clock", "version": 702080784, "checkpoint_found": 236134228},
@@ -59,6 +65,8 @@
     {
       "day": 4,
       "checkpoint": 236289445,
+      "timestamp_ms": 1768856967055,
+      "datetime_utc": "2026-01-19T21:09:27Z",
       "description": "Day 4",
       "objects": {
         "0x6": {"name": "Clock", "version": 702496152, "checkpoint_found": 236289445},
@@ -75,6 +83,8 @@
     {
       "day": 5,
       "checkpoint": 236527001,
+      "timestamp_ms": 1768919019270,
+      "datetime_utc": "2026-01-20T14:23:39Z",
       "description": "Day 5",
       "objects": {
         "0x6": {"name": "Clock", "version": 703107811, "checkpoint_found": 236527001},
@@ -91,6 +101,8 @@
     {
       "day": 6,
       "checkpoint": 236926043,
+      "timestamp_ms": 1769021320580,
+      "datetime_utc": "2026-01-21T18:48:40Z",
       "description": "Day 6",
       "objects": {
         "0x6": {"name": "Clock", "version": 704198619, "checkpoint_found": 236926043},
@@ -107,6 +119,8 @@
     {
       "day": 7,
       "checkpoint": 237137954,
+      "timestamp_ms": 1769074590163,
+      "datetime_utc": "2026-01-22T09:36:30Z",
       "description": "Day 7",
       "objects": {
         "0x6": {"name": "Clock", "version": 704793487, "checkpoint_found": 237137954},
@@ -123,6 +137,8 @@
     {
       "day": 8,
       "checkpoint": 237335780,
+      "timestamp_ms": 1769124491149,
+      "datetime_utc": "2026-01-22T23:28:11Z",
       "description": "Day 8",
       "objects": {
         "0x6": {"name": "Clock", "version": 705350084, "checkpoint_found": 237335780},
