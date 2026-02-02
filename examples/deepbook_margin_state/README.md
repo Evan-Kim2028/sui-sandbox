@@ -62,27 +62,31 @@ deepbook_margin_state/
 ├── common.rs                            # Shared utilities for examples
 ├── README.md                            # This file
 └── data/
-    ├── deepbook_versions_240732600.json # Position A: Earlier snapshot (~190 checkpoints after creation)
-    ├── deepbook_versions_240733000.json # Position A: Later snapshot (~400 checkpoints later)
-    ├── timeseries_236000000.json        # Position B: Day 1 (Jan 18, 2026)
-    ├── timeseries_238000000.json        # Position B: Day 9 (Jan 26, 2026)
-    └── timeseries_239600000.json        # Position B: Day 14 (Jan 31, 2026)
+    ├── deepbook_versions_240732600.json # Position A: Earlier snapshot
+    ├── deepbook_versions_240733000.json # Position A: Later snapshot
+    └── position_b_daily_timeseries.json # Position B: 8 daily snapshots (Days 1-8)
 ```
 
-### Time Series Data
+### Daily Time Series Data
 
-The `timeseries_*.json` files track a **second margin position** (`0xbcb8ee...`) over ~2 weeks:
+The `position_b_daily_timeseries.json` file contains **8 consecutive daily snapshots** for position `0xbcb8ee...` (SUI/USDC):
 
-| Checkpoint | Date | Days Active | Description |
-|------------|------|-------------|-------------|
-| 236000000 | Jan 18 | ~1-2 | Position created, initial state |
-| 238000000 | Jan 26 | ~9 | Mid-period snapshot |
-| 239600000 | Jan 31 | ~14 | Later snapshot with accumulated history |
+| Day | Checkpoint | Margin Manager Version | Description |
+|-----|------------|------------------------|-------------|
+| 1 | 235510810 | v755845885 | Position creation |
+| 2 | 235859237 | v756400242 | First activity day |
+| 3 | 236134228 | v757472086 | Continued trading |
+| 4 | 236289445 | v757848631 | Position growth |
+| 5 | 236527001 | v758456911 | Mid-week |
+| 6 | 236790859 | v759259607 | Active trading |
+| 7 | 237019020 | v760195988 | Approaching week end |
+| 8 | 237335780 | v760921405 | Week 1 complete |
 
 This demonstrates the power of historical tracking - you can reconstruct portfolio state at any point in time to analyze:
-- How positions evolved over time
+- How margin positions evolved day-over-day
 - Historical risk ratios and collateral values
 - Oracle price movements affecting margin health
+- P&L trajectory over the position's lifetime
 
 ### JSON Manifest Format
 
