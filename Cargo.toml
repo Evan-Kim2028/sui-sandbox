@@ -241,6 +241,10 @@ path = "examples/walrus_checkpoint_replay.rs"
 name = "walrus_cache_build"
 path = "examples/walrus_cache_build.rs"
 
+[[example]]
+name = "deepbook_margin_state"
+path = "examples/deepbook_margin_state.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"

@@ -676,6 +676,333 @@ struct BlobListResponse {
     next_cursor: Option<i64>,
 }
 
+/// Extract object versions from checkpoint data.
+///
+/// This is useful for historical replay - when you need to know what version
+/// each object was at during a specific checkpoint.
+///
+/// Returns a map of object_id -> (version, digest) for all objects that were
+/// read or modified in the checkpoint's transactions.
+pub fn extract_object_versions_from_checkpoint(
+    checkpoint: &CheckpointData,
+) -> HashMap<String, (u64, Option<String>)> {
+    use sui_types::effects::TransactionEffectsAPI;
+
+    let mut versions: HashMap<String, (u64, Option<String>)> = HashMap::new();
+
+    for tx in &checkpoint.transactions {
+        let effects = &tx.effects;
+
+        // Use the public TransactionEffectsAPI trait methods
+
+        // Created objects
+        for (obj_ref, _owner) in effects.created() {
+            let obj_id = obj_ref.0.to_hex_literal();
+            let version = obj_ref.1.value();
+            let digest = Some(obj_ref.2.to_string());
+            versions.insert(obj_id, (version, digest));
+        }
+
+        // Mutated objects
+        for (obj_ref, _owner) in effects.mutated() {
+            let obj_id = obj_ref.0.to_hex_literal();
+            let version = obj_ref.1.value();
+            let digest = Some(obj_ref.2.to_string());
+            versions.insert(obj_id, (version, digest));
+        }
+
+        // All changed objects (created + mutated + unwrapped)
+        for (obj_ref, _owner, _kind) in effects.all_changed_objects() {
+            let obj_id = obj_ref.0.to_hex_literal();
+            let version = obj_ref.1.value();
+            let digest = Some(obj_ref.2.to_string());
+            versions.insert(obj_id, (version, digest));
+        }
+
+        // Modified at versions (includes shared object input versions)
+        for (obj_id, version) in effects.modified_at_versions() {
+            let obj_id_str = obj_id.to_hex_literal();
+            versions.entry(obj_id_str).or_insert((version.value(), None));
+        }
+    }
+
+    // Also extract from input_objects which contains pre-transaction state
+    for tx in &checkpoint.transactions {
+        for obj in &tx.input_objects {
+            let obj_id = obj.id().to_hex_literal();
+            let version = obj.version().value();
+            let digest = Some(obj.digest().to_string());
+            versions.insert(obj_id, (version, digest));
+        }
+    }
+
+    versions
+}
+
+/// Extract input objects from checkpoint data.
+///
+/// The input_objects field in CheckpointTransaction contains the pre-transaction
+/// state of all objects used in the transaction. This is exactly what you need
+/// for historical replay.
+///
+/// Returns a map of object_id -> Object for all input objects.
+pub fn extract_input_objects_from_checkpoint(
+    checkpoint: &CheckpointData,
+) -> HashMap<ObjectID, Object> {
+    let mut objects = HashMap::new();
+
+    for tx in &checkpoint.transactions {
+        for obj in &tx.input_objects {
+            objects.insert(obj.id(), obj.clone());
+        }
+    }
+
+    objects
+}
+
+/// Get a specific object's version at a checkpoint.
+///
+/// Searches the checkpoint's transaction effects to find what version
+/// the specified object was at during this checkpoint.
+pub fn get_object_version_at_checkpoint(
+    checkpoint: &CheckpointData,
+    object_id: &str,
+) -> Option<u64> {
+    let versions = extract_object_versions_from_checkpoint(checkpoint);
+    versions.get(object_id).map(|(v, _)| *v)
+}
+
+/// Checkpoint→Version Index for historical object lookups.
+///
+/// This index maps object IDs to their versions at specific checkpoints,
+/// enabling accurate historical state reconstruction.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointVersionIndex {
+    /// Map of object_id -> version at the target checkpoint
+    pub versions: HashMap<String, u64>,
+    /// Target checkpoint this index was built for
+    pub target_checkpoint: u64,
+    /// Number of checkpoints scanned to build this index
+    pub checkpoints_scanned: u64,
+    /// Objects that were not found in any scanned checkpoint
+    pub not_found: Vec<String>,
+}
+
+impl CheckpointVersionIndex {
+    /// Get the version of an object at the target checkpoint.
+    pub fn get_version(&self, object_id: &str) -> Option<u64> {
+        self.versions.get(object_id).copied()
+    }
+
+    /// Check if an object was found in the index.
+    pub fn contains(&self, object_id: &str) -> bool {
+        self.versions.contains_key(object_id)
+    }
+}
+
+impl WalrusClient {
+    /// Build a checkpoint→version index for specific objects.
+    ///
+    /// Scans backwards from the target checkpoint to find the version of each
+    /// object at that point in time. This enables accurate historical state
+    /// reconstruction even when objects weren't modified in the exact target
+    /// checkpoint.
+    ///
+    /// # Arguments
+    /// * `target_checkpoint` - The checkpoint to build the index for
+    /// * `object_ids` - List of object IDs to find versions for
+    /// * `max_scan_checkpoints` - Maximum number of checkpoints to scan backwards
+    ///
+    /// # Returns
+    /// A `CheckpointVersionIndex` containing the version of each object at the
+    /// target checkpoint, or the most recent version before it.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = WalrusClient::mainnet();
+    /// let objects = vec!["0xabc...", "0xdef..."];
+    /// let index = client.build_version_index(239615000, &objects, 1000)?;
+    ///
+    /// if let Some(version) = index.get_version("0xabc...") {
+    ///     println!("Object was at version {} at checkpoint 239615000", version);
+    /// }
+    /// ```
+    pub fn build_version_index(
+        &self,
+        target_checkpoint: u64,
+        object_ids: &[&str],
+        max_scan_checkpoints: u64,
+    ) -> Result<CheckpointVersionIndex> {
+        let mut index = CheckpointVersionIndex {
+            versions: HashMap::new(),
+            target_checkpoint,
+            checkpoints_scanned: 0,
+            not_found: Vec::new(),
+        };
+
+        // Convert to set for faster lookup
+        let mut remaining: std::collections::HashSet<String> = object_ids
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Scan backwards from target checkpoint
+        let start_checkpoint = target_checkpoint;
+        let end_checkpoint = target_checkpoint.saturating_sub(max_scan_checkpoints);
+
+        for cp_num in (end_checkpoint..=start_checkpoint).rev() {
+            if remaining.is_empty() {
+                break;
+            }
+
+            // Fetch checkpoint
+            let checkpoint = match self.get_checkpoint(cp_num) {
+                Ok(cp) => cp,
+                Err(_) => continue, // Skip failed fetches
+            };
+
+            index.checkpoints_scanned += 1;
+
+            // Extract versions from this checkpoint
+            let versions = extract_object_versions_from_checkpoint(&checkpoint);
+
+            // Check for any remaining objects
+            for obj_id in remaining.clone() {
+                if let Some((version, _)) = versions.get(&obj_id) {
+                    index.versions.insert(obj_id.clone(), *version);
+                    remaining.remove(&obj_id);
+                }
+            }
+        }
+
+        // Record objects that weren't found
+        index.not_found = remaining.into_iter().collect();
+
+        Ok(index)
+    }
+
+    /// Build a version index with progress callback.
+    ///
+    /// Same as `build_version_index` but calls a callback with progress updates.
+    pub fn build_version_index_with_progress<F>(
+        &self,
+        target_checkpoint: u64,
+        object_ids: &[&str],
+        max_scan_checkpoints: u64,
+        mut progress: F,
+    ) -> Result<CheckpointVersionIndex>
+    where
+        F: FnMut(u64, usize, usize), // (checkpoints_scanned, found_count, remaining_count)
+    {
+        let mut index = CheckpointVersionIndex {
+            versions: HashMap::new(),
+            target_checkpoint,
+            checkpoints_scanned: 0,
+            not_found: Vec::new(),
+        };
+
+        let mut remaining: std::collections::HashSet<String> = object_ids
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let start_checkpoint = target_checkpoint;
+        let end_checkpoint = target_checkpoint.saturating_sub(max_scan_checkpoints);
+
+        for cp_num in (end_checkpoint..=start_checkpoint).rev() {
+            if remaining.is_empty() {
+                break;
+            }
+
+            let checkpoint = match self.get_checkpoint(cp_num) {
+                Ok(cp) => cp,
+                Err(_) => continue,
+            };
+
+            index.checkpoints_scanned += 1;
+
+            let versions = extract_object_versions_from_checkpoint(&checkpoint);
+
+            for obj_id in remaining.clone() {
+                if let Some((version, _)) = versions.get(&obj_id) {
+                    index.versions.insert(obj_id.clone(), *version);
+                    remaining.remove(&obj_id);
+                }
+            }
+
+            // Report progress
+            progress(
+                index.checkpoints_scanned,
+                index.versions.len(),
+                remaining.len(),
+            );
+        }
+
+        index.not_found = remaining.into_iter().collect();
+
+        Ok(index)
+    }
+
+    /// Build a version index using batched checkpoint fetches for efficiency.
+    ///
+    /// This is more efficient for large scans as it batches checkpoint fetches.
+    pub fn build_version_index_batched(
+        &self,
+        target_checkpoint: u64,
+        object_ids: &[&str],
+        max_scan_checkpoints: u64,
+        batch_size: usize,
+    ) -> Result<CheckpointVersionIndex> {
+        let mut index = CheckpointVersionIndex {
+            versions: HashMap::new(),
+            target_checkpoint,
+            checkpoints_scanned: 0,
+            not_found: Vec::new(),
+        };
+
+        let mut remaining: std::collections::HashSet<String> = object_ids
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let start_checkpoint = target_checkpoint;
+        let end_checkpoint = target_checkpoint.saturating_sub(max_scan_checkpoints);
+
+        // Process in batches
+        let mut current = start_checkpoint;
+        while current >= end_checkpoint && !remaining.is_empty() {
+            let batch_end = current.saturating_sub(batch_size as u64 - 1).max(end_checkpoint);
+            let batch: Vec<u64> = (batch_end..=current).rev().collect();
+
+            // Fetch batch of checkpoints
+            let checkpoints = self.get_checkpoints_batched(&batch, 64 * 1024 * 1024)?;
+
+            for (_cp_num, checkpoint) in checkpoints {
+                if remaining.is_empty() {
+                    break;
+                }
+
+                index.checkpoints_scanned += 1;
+
+                let versions = extract_object_versions_from_checkpoint(&checkpoint);
+
+                for obj_id in remaining.clone() {
+                    if let Some((version, _)) = versions.get(&obj_id) {
+                        index.versions.insert(obj_id.clone(), *version);
+                        remaining.remove(&obj_id);
+                    }
+                }
+            }
+
+            current = batch_end.saturating_sub(1);
+        }
+
+        index.not_found = remaining.into_iter().collect();
+
+        Ok(index)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +1014,28 @@ mod tests {
         let latest = client.get_latest_checkpoint().unwrap();
         println!("Latest checkpoint: {}", latest);
         assert!(latest > 0);
+    }
+
+    #[test]
+    #[ignore] // Requires network access
+    fn test_extract_object_versions() {
+        let client = WalrusClient::mainnet();
+        let latest = client.get_latest_checkpoint().unwrap();
+        let checkpoint = client.get_checkpoint(latest).unwrap();
+
+        let versions = extract_object_versions_from_checkpoint(&checkpoint);
+        println!(
+            "Checkpoint {} has {} object versions",
+            latest,
+            versions.len()
+        );
+
+        // Print first 10 objects
+        for (obj_id, (version, digest)) in versions.iter().take(10) {
+            println!("  {} v{} digest={:?}", obj_id, version, digest);
+        }
+
+        assert!(!versions.is_empty());
     }
 
     #[test]
