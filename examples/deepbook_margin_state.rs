@@ -27,10 +27,24 @@
 //! VERSIONS_FILE=./data/deepbook_versions_240733000.json cargo run --example deepbook_margin_state
 //! ```
 //!
+//! ## Pre-computed Snapshots
+//!
+//! Two historical snapshots are included for the same margin position:
+//!
+//! | Checkpoint | File | Margin Manager Version | Description |
+//! |------------|------|------------------------|-------------|
+//! | 240732600 | `deepbook_versions_240732600.json` | v771528097 | Earlier state (~190 checkpoints after creation) |
+//! | 240733000 | `deepbook_versions_240733000.json` | v771531876 | Later state (~400 checkpoints later) |
+//!
+//! The margin manager was created at checkpoint 240732410.
+//!
 //! ## All Run Modes
 //!
 //! ```bash
-//! # Mode 1: Historical state with pre-computed versions (RECOMMENDED)
+//! # Mode 1a: Earlier historical state (closer to position creation)
+//! VERSIONS_FILE=./data/deepbook_versions_240732600.json cargo run --example deepbook_margin_state
+//!
+//! # Mode 1b: Later historical state
 //! VERSIONS_FILE=./data/deepbook_versions_240733000.json cargo run --example deepbook_margin_state
 //!
 //! # Mode 2: Current/latest state (no versions file)
