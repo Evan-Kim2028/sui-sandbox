@@ -58,7 +58,8 @@ This approach uses:
 
 ```
 deepbook_margin_state/
-├── main.rs                              # Rust example source
+├── main.rs                              # Position A example (single snapshot)
+├── timeseries.rs                        # Position B example (8-day time series)
 ├── common.rs                            # Shared utilities for examples
 ├── README.md                            # This file
 └── data/
@@ -66,6 +67,39 @@ deepbook_margin_state/
     ├── deepbook_versions_240733000.json # Position A: Later snapshot
     └── position_b_daily_timeseries.json # Position B: 8 daily snapshots (Days 1-8)
 ```
+
+## Examples
+
+### Position A: Single Snapshot Query (`deepbook_margin_state`)
+
+Query a margin position at a specific checkpoint:
+
+```bash
+# Use pre-computed versions from Snowflake
+VERSIONS_FILE=./examples/deepbook_margin_state/data/deepbook_versions_240733000.json \
+  cargo run --example deepbook_margin_state
+
+# Fully decentralized (Walrus + no gRPC)
+VERSIONS_FILE=./examples/deepbook_margin_state/data/deepbook_versions_240732600.json \
+  WALRUS_MODE=1 cargo run --example deepbook_margin_state
+```
+
+### Position B: 8-Day Time Series (`deepbook_timeseries`)
+
+Track margin position evolution across 8 consecutive daily snapshots:
+
+```bash
+# Run with default time series file
+cargo run --example deepbook_timeseries
+
+# Fully decentralized mode
+WALRUS_MODE=1 cargo run --example deepbook_timeseries
+```
+
+This example iterates through all 8 daily checkpoints and outputs a summary table showing:
+- Execution status for each day
+- Gas usage per query
+- Success rate across the time series
 
 ### Daily Time Series Data
 
