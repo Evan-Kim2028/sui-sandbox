@@ -41,17 +41,51 @@
 //! ## All Run Modes
 //!
 //! ```bash
-//! # Mode 1a: Earlier historical state (closer to position creation)
+//! # Mode 1a: Snowflake + gRPC (default) - earlier historical state
 //! VERSIONS_FILE=./data/deepbook_versions_240732600.json cargo run --example deepbook_margin_state
 //!
-//! # Mode 1b: Later historical state
+//! # Mode 1b: Snowflake + gRPC - later historical state
 //! VERSIONS_FILE=./data/deepbook_versions_240733000.json cargo run --example deepbook_margin_state
 //!
-//! # Mode 2: Current/latest state (no versions file)
+//! # Mode 2: Snowflake + Walrus (NO gRPC!) - fully decentralized
+//! VERSIONS_FILE=./data/deepbook_versions_240732600.json WALRUS_MODE=1 cargo run --example deepbook_margin_state
+//!
+//! # Mode 3: Current/latest state (no versions file)
 //! cargo run --example deepbook_margin_state
 //!
-//! # Mode 3: Historical state via Walrus checkpoint scanning (slow fallback)
+//! # Mode 4: Historical state via Walrus checkpoint scanning (slow fallback)
 //! CHECKPOINT=240733000 cargo run --example deepbook_margin_state
+//! ```
+//!
+//! ## Walrus Mode (Fully Decentralized)
+//!
+//! When `WALRUS_MODE=1` is set, objects are fetched directly from Walrus checkpoints
+//! instead of gRPC. The JSON file's `checkpoint_found` field tells us which checkpoint
+//! contains each object's state:
+//!
+//! ```
+//! ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+//! │   Snowflake     │────▶│  versions.json  │────▶│  Walrus HTTP    │
+//! │  (object_id →   │     │  (checkpoint +  │     │  (fetch specific│
+//! │   version +     │     │   checkpoint_   │     │   checkpoints)  │
+//! │   checkpoint)   │     │   found)        │     │                 │
+//! └─────────────────┘     └─────────────────┘     └────────┬────────┘
+//!                                                          │
+//!                                                 ┌────────▼────────┐
+//!                                                 │   Local Move VM │
+//!                                                 │  (execute PTB)  │
+//!                                                 └─────────────────┘
+//! ```
+//!
+//! **Important: Walrus Archival Lag**
+//!
+//! The Walrus archival service typically has a lag of several days before new
+//! checkpoints are archived. If you see 404 errors, the checkpoints are too recent.
+//! Use gRPC mode for recent checkpoints, or wait for archival to complete.
+//!
+//! Check if a checkpoint is archived:
+//! ```bash
+//! curl "https://walrus-sui-archival.mainnet.walrus.space/v1/app_checkpoint?checkpoint=239600000"
 //! ```
 //!
 //! ## Required Setup
@@ -122,7 +156,10 @@ use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, ObjectID
 use sui_sandbox_core::simulation::{FetcherConfig, SimulationEnvironment};
 use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::grpc::GrpcOwner;
-use sui_transport::walrus::{extract_object_versions_from_checkpoint, WalrusClient};
+use sui_transport::walrus::{
+    extract_object_bcs, extract_object_versions_from_checkpoint, get_object_from_checkpoint,
+    WalrusClient,
+};
 
 mod common;
 use common::create_child_fetcher;
@@ -179,6 +216,9 @@ fn main() -> Result<()> {
 
     // Check for historical mode via VERSIONS_FILE (Snowflake-generated) or CHECKPOINT (Walrus scan)
     let versions_file = std::env::var("VERSIONS_FILE").ok();
+    let walrus_mode = std::env::var("WALRUS_MODE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
     let checkpoint: Option<u64> = if versions_file.is_some() {
         None // VERSIONS_FILE takes precedence, checkpoint will be read from file
     } else {
@@ -195,27 +235,49 @@ fn main() -> Result<()> {
         .unwrap_or(100); // Default to scanning 100 checkpoints
 
     // Load historical versions either from Snowflake JSON file or Walrus checkpoint scanning
-    let (historical_versions, effective_checkpoint): (HashMap<String, u64>, Option<u64>) =
-        if let Some(ref path) = versions_file {
-            println!("  📂 SNOWFLAKE MODE: Loading versions from {}", path);
+    // Also track full version info (including checkpoint_found) for Walrus mode
+    let (historical_versions, version_info, effective_checkpoint): (
+        HashMap<String, u64>,
+        HashMap<String, ObjectVersionInfo>,
+        Option<u64>,
+    ) = if let Some(ref path) = versions_file {
+        let mode_str = if walrus_mode {
+            "SNOWFLAKE + WALRUS (no gRPC)"
+        } else {
+            "SNOWFLAKE + gRPC"
+        };
+        println!("  📂 {} MODE: Loading versions from {}", mode_str, path);
 
-            match load_versions_from_json(path) {
-                Ok((versions, cp)) => {
-                    println!("     ✓ Loaded {} object versions at checkpoint {}", versions.len(), cp);
-                    for (obj_id, ver) in &versions {
-                        let short_id = &obj_id[..std::cmp::min(20, obj_id.len())];
-                        println!("       - {}... = v{}", short_id, ver);
+        match load_versions_from_json(path) {
+            Ok((info_map, cp)) => {
+                println!(
+                    "     ✓ Loaded {} object versions at checkpoint {}",
+                    info_map.len(),
+                    cp
+                );
+                for (obj_id, info) in &info_map {
+                    let short_id = &obj_id[..std::cmp::min(20, obj_id.len())];
+                    if let Some(cp_found) = info.checkpoint_found {
+                        println!("       - {}... = v{} (cp {})", short_id, info.version, cp_found);
+                    } else {
+                        println!("       - {}... = v{}", short_id, info.version);
                     }
-                    println!();
-                    (versions, Some(cp))
                 }
-                Err(e) => {
-                    println!("     ⚠ Failed to load versions file: {}", e);
-                    println!("     Falling back to current state\n");
-                    (HashMap::new(), None)
-                }
+                println!();
+                // Extract just versions for backwards compatibility
+                let versions: HashMap<String, u64> = info_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.version))
+                    .collect();
+                (versions, info_map, Some(cp))
             }
-        } else if let Some(cp) = checkpoint {
+            Err(e) => {
+                println!("     ⚠ Failed to load versions file: {}", e);
+                println!("     Falling back to current state\n");
+                (HashMap::new(), HashMap::new(), None)
+            }
+        }
+    } else if let Some(cp) = checkpoint {
             println!("  ⏱️  WALRUS MODE: Checkpoint {}", cp);
             println!("     Scanning up to {} checkpoints for object versions...", scan_checkpoints);
 
@@ -294,10 +356,11 @@ fn main() -> Result<()> {
             }
 
             println!("     ✓ Total {} historical versions found\n", versions.len());
-            (versions, Some(cp))
+            // No checkpoint_found info in this mode, use empty version_info
+            (versions, HashMap::new(), Some(cp))
         } else {
             println!("  📍 CURRENT MODE: Latest state\n");
-            (HashMap::new(), None)
+            (HashMap::new(), HashMap::new(), None)
         };
 
     // Use effective_checkpoint for the rest of the code
@@ -394,7 +457,11 @@ fn main() -> Result<()> {
     // STEP 3: Fetch required shared objects
     // =========================================================================
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("STEP 3: Fetching shared objects");
+    if walrus_mode {
+        println!("STEP 3: Fetching shared objects from WALRUS (no gRPC)");
+    } else {
+        println!("STEP 3: Fetching shared objects");
+    }
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let grpc = provider.grpc();
@@ -412,39 +479,85 @@ fn main() -> Result<()> {
 
     let mut fetched_objects: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
 
-    // For historical mode, get the checkpoint timestamp to find matching object versions
-    let checkpoint_timestamp_ms: Option<u64> = if let Some(cp) = checkpoint {
-        rt.block_on(async { grpc.get_checkpoint(cp).await })
-            .ok()
-            .flatten()
-            .and_then(|c| c.timestamp_ms)
+    // WALRUS MODE: Fetch objects directly from Walrus checkpoints (no gRPC!)
+    if walrus_mode && !version_info.is_empty() {
+        println!("  🌊 WALRUS MODE: Fetching objects from Walrus checkpoints");
+        let walrus = WalrusClient::mainnet();
+        fetched_objects = fetch_objects_from_walrus(&walrus, &objects_to_fetch, &version_info);
+        println!("  ✓ Fetched {} objects from Walrus", fetched_objects.len());
+
+        // Fallback to gRPC for any objects not found in Walrus (archival lag)
+        let missing_count = objects_to_fetch.len() - fetched_objects.len();
+        if missing_count > 0 {
+            println!("  ⚠ {} objects not in Walrus (archival lag?), falling back to gRPC...", missing_count);
+            for (obj_id, name) in &objects_to_fetch {
+                if fetched_objects.contains_key(*obj_id) {
+                    continue;
+                }
+                let historical_version = historical_versions.get(*obj_id).copied();
+                let result = if let Some(version) = historical_version {
+                    rt.block_on(async { grpc.get_object_at_version(obj_id, Some(version)).await })
+                        .ok()
+                        .flatten()
+                        .and_then(|obj| {
+                            let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+                            let bcs = obj.bcs?;
+                            Some((bcs, obj.type_string, obj.version, is_shared))
+                        })
+                } else {
+                    rt.block_on(async { grpc.get_object(obj_id).await })
+                        .ok()
+                        .flatten()
+                        .and_then(|obj| {
+                            let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+                            let bcs = obj.bcs?;
+                            Some((bcs, obj.type_string, obj.version, is_shared))
+                        })
+                };
+                if let Some((bcs, type_str, version, is_shared)) = result {
+                    println!("    ✓ {} (v{}) [gRPC fallback]", name, version);
+                    fetched_objects.insert(obj_id.to_string(), (bcs, type_str, version, is_shared));
+                } else {
+                    println!("    ✗ {} - not found", name);
+                }
+            }
+        }
+        println!();
     } else {
-        None
-    };
-
-    if let Some(ts) = checkpoint_timestamp_ms {
-        println!("  Checkpoint {} timestamp: {} ms", checkpoint.unwrap(), ts);
-    }
-
-    for (obj_id, name) in &objects_to_fetch {
-        // Check if we have a historical version from Walrus checkpoint data
-        let historical_version = historical_versions.get(*obj_id).copied();
-
-        let result = if let Some(version) = historical_version {
-            // Fetch at specific historical version
-            rt.block_on(async { grpc.get_object_at_version(obj_id, Some(version)).await })
+        // gRPC MODE: Fetch objects via gRPC at historical versions
+        // For historical mode, get the checkpoint timestamp to find matching object versions
+        let checkpoint_timestamp_ms: Option<u64> = if let Some(cp) = checkpoint {
+            rt.block_on(async { grpc.get_checkpoint(cp).await })
                 .ok()
                 .flatten()
-                .and_then(|obj| {
-                    let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
-                    let bcs = obj.bcs?;
-                    Some((bcs, obj.type_string, obj.version, is_shared))
-                })
+                .and_then(|c| c.timestamp_ms)
         } else {
-            // Fetch latest version
-            rt.block_on(async { grpc.get_object(obj_id).await })
-                .ok()
-                .flatten()
+            None
+        };
+
+        if let Some(ts) = checkpoint_timestamp_ms {
+            println!("  Checkpoint {} timestamp: {} ms", checkpoint.unwrap(), ts);
+        }
+
+        for (obj_id, name) in &objects_to_fetch {
+            // Check if we have a historical version from Walrus checkpoint data
+            let historical_version = historical_versions.get(*obj_id).copied();
+
+            let result = if let Some(version) = historical_version {
+                // Fetch at specific historical version
+                rt.block_on(async { grpc.get_object_at_version(obj_id, Some(version)).await })
+                    .ok()
+                    .flatten()
+                    .and_then(|obj| {
+                        let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+                        let bcs = obj.bcs?;
+                        Some((bcs, obj.type_string, obj.version, is_shared))
+                    })
+            } else {
+                // Fetch latest version
+                rt.block_on(async { grpc.get_object(obj_id).await })
+                    .ok()
+                    .flatten()
                 .and_then(|obj| {
                     let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
                     let bcs = obj.bcs?;
@@ -466,7 +579,8 @@ fn main() -> Result<()> {
             }
             None => println!("  ✗ {} - not found or no BCS data", name),
         }
-    }
+        }
+    } // end gRPC mode
 
     // =========================================================================
     // STEP 4: Create SimulationEnvironment and load packages with linkage
@@ -800,6 +914,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Object version info loaded from JSON file.
+#[derive(Debug, Clone)]
+struct ObjectVersionInfo {
+    version: u64,
+    checkpoint_found: Option<u64>,
+}
+
 /// Load object versions from a JSON file generated by Snowflake queries.
 ///
 /// Expected format:
@@ -807,11 +928,13 @@ fn main() -> Result<()> {
 /// {
 ///   "checkpoint": 240733000,
 ///   "objects": {
-///     "0x...": { "name": "...", "version": 123456 }
+///     "0x...": { "name": "...", "version": 123456, "checkpoint_found": 240732519 }
 ///   }
 /// }
 /// ```
-fn load_versions_from_json(path: &str) -> Result<(HashMap<String, u64>, u64)> {
+///
+/// Returns (object_id -> ObjectVersionInfo, target_checkpoint)
+fn load_versions_from_json(path: &str) -> Result<(HashMap<String, ObjectVersionInfo>, u64)> {
     let content = std::fs::read_to_string(path)?;
     let json: serde_json::Value = serde_json::from_str(&content)?;
 
@@ -826,11 +949,84 @@ fn load_versions_from_json(path: &str) -> Result<(HashMap<String, u64>, u64)> {
     let mut versions = HashMap::new();
     for (obj_id, obj_data) in objects {
         if let Some(version) = obj_data["version"].as_u64() {
-            versions.insert(obj_id.clone(), version);
+            let checkpoint_found = obj_data["checkpoint_found"].as_u64();
+            versions.insert(
+                obj_id.clone(),
+                ObjectVersionInfo {
+                    version,
+                    checkpoint_found,
+                },
+            );
         }
     }
 
     Ok((versions, checkpoint))
+}
+
+/// Fetch objects from Walrus checkpoints using checkpoint_found mapping.
+///
+/// Groups objects by their checkpoint_found, fetches each checkpoint once,
+/// and extracts object BCS data from the checkpoint's output_objects.
+fn fetch_objects_from_walrus(
+    walrus: &WalrusClient,
+    objects_to_fetch: &[(&str, &str)], // (object_id, name)
+    version_info: &HashMap<String, ObjectVersionInfo>,
+) -> HashMap<String, (Vec<u8>, Option<String>, u64, bool)> {
+    use sui_types::base_types::ObjectID as SuiObjectID;
+    use std::str::FromStr;
+
+    let mut fetched_objects: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
+
+    // Group objects by checkpoint_found
+    let mut by_checkpoint: HashMap<u64, Vec<(&str, &str)>> = HashMap::new();
+    for (obj_id, name) in objects_to_fetch {
+        if let Some(info) = version_info.get(*obj_id) {
+            if let Some(cp) = info.checkpoint_found {
+                by_checkpoint.entry(cp).or_default().push((*obj_id, *name));
+            }
+        }
+    }
+
+    println!("     Grouped into {} unique checkpoints to fetch", by_checkpoint.len());
+
+    // Fetch each checkpoint and extract objects
+    for (checkpoint_num, objects) in &by_checkpoint {
+        println!("     Fetching checkpoint {}...", checkpoint_num);
+        match walrus.get_checkpoint(*checkpoint_num) {
+            Ok(checkpoint_data) => {
+                for (obj_id, name) in objects {
+                    // Parse object ID
+                    let sui_obj_id = match SuiObjectID::from_str(obj_id) {
+                        Ok(id) => id,
+                        Err(_) => {
+                            println!("       ✗ {} - invalid object ID", name);
+                            continue;
+                        }
+                    };
+
+                    // Try to find object in checkpoint
+                    if let Some(obj) = get_object_from_checkpoint(&checkpoint_data, &sui_obj_id) {
+                        if let Some((type_str, bcs, version, is_shared)) = extract_object_bcs(&obj) {
+                            println!("       ✓ {} (v{}) from checkpoint {}", name, version, checkpoint_num);
+                            fetched_objects.insert(
+                                obj_id.to_string(),
+                                (bcs, Some(type_str), version, is_shared),
+                            );
+                        } else {
+                            println!("       ✗ {} - no BCS data in object", name);
+                        }
+                    } else {
+                        println!("       ✗ {} - not found in checkpoint {}", name, checkpoint_num);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("     ⚠ Failed to fetch checkpoint {}: {}", checkpoint_num, e);
+            }
+        }
+    }
+
+    fetched_objects
 }
 
 fn print_header() {

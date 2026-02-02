@@ -760,6 +760,77 @@ pub fn extract_input_objects_from_checkpoint(
     objects
 }
 
+/// Extract output objects from checkpoint data.
+///
+/// The output_objects field in CheckpointTransaction contains the post-transaction
+/// state of all objects created or mutated in the transaction. This gives you
+/// the object state AFTER the checkpoint's transactions were applied.
+///
+/// Returns a map of object_id -> Object for all output objects.
+pub fn extract_output_objects_from_checkpoint(
+    checkpoint: &CheckpointData,
+) -> HashMap<ObjectID, Object> {
+    let mut objects = HashMap::new();
+
+    for tx in &checkpoint.transactions {
+        for obj in &tx.output_objects {
+            objects.insert(obj.id(), obj.clone());
+        }
+    }
+
+    objects
+}
+
+/// Extract a specific object from checkpoint data by ID.
+///
+/// Searches both output_objects (preferred - post-transaction state) and
+/// input_objects (pre-transaction state) for the specified object.
+///
+/// Returns the Object if found, preferring output_objects.
+pub fn get_object_from_checkpoint(
+    checkpoint: &CheckpointData,
+    object_id: &ObjectID,
+) -> Option<Object> {
+    // First check output_objects (post-transaction state)
+    for tx in &checkpoint.transactions {
+        for obj in &tx.output_objects {
+            if &obj.id() == object_id {
+                return Some(obj.clone());
+            }
+        }
+    }
+
+    // Fall back to input_objects (pre-transaction state)
+    for tx in &checkpoint.transactions {
+        for obj in &tx.input_objects {
+            if &obj.id() == object_id {
+                return Some(obj.clone());
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract BCS data from a Sui Object.
+///
+/// Returns (type_string, bcs_bytes, version, is_shared) if the object has Move data.
+pub fn extract_object_bcs(obj: &Object) -> Option<(String, Vec<u8>, u64, bool)> {
+    use sui_types::object::Data;
+
+    let version = obj.version().value();
+    let is_shared = obj.is_shared();
+
+    match &obj.data {
+        Data::Move(move_obj) => {
+            let type_string = move_obj.type_().to_string();
+            let bcs = move_obj.contents().to_vec();
+            Some((type_string, bcs, version, is_shared))
+        }
+        Data::Package(_) => None, // Packages handled separately
+    }
+}
+
 /// Get a specific object's version at a checkpoint.
 ///
 /// Searches the checkpoint's transaction effects to find what version
