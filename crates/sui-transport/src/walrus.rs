@@ -722,7 +722,9 @@ pub fn extract_object_versions_from_checkpoint(
         // Modified at versions (includes shared object input versions)
         for (obj_id, version) in effects.modified_at_versions() {
             let obj_id_str = obj_id.to_hex_literal();
-            versions.entry(obj_id_str).or_insert((version.value(), None));
+            versions
+                .entry(obj_id_str)
+                .or_insert((version.value(), None));
         }
     }
 
@@ -912,10 +914,8 @@ impl WalrusClient {
         };
 
         // Convert to set for faster lookup
-        let mut remaining: std::collections::HashSet<String> = object_ids
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let mut remaining: std::collections::HashSet<String> =
+            object_ids.iter().map(|s| s.to_string()).collect();
 
         // Scan backwards from target checkpoint
         let start_checkpoint = target_checkpoint;
@@ -972,10 +972,8 @@ impl WalrusClient {
             not_found: Vec::new(),
         };
 
-        let mut remaining: std::collections::HashSet<String> = object_ids
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let mut remaining: std::collections::HashSet<String> =
+            object_ids.iter().map(|s| s.to_string()).collect();
 
         let start_checkpoint = target_checkpoint;
         let end_checkpoint = target_checkpoint.saturating_sub(max_scan_checkpoints);
@@ -1031,10 +1029,8 @@ impl WalrusClient {
             not_found: Vec::new(),
         };
 
-        let mut remaining: std::collections::HashSet<String> = object_ids
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let mut remaining: std::collections::HashSet<String> =
+            object_ids.iter().map(|s| s.to_string()).collect();
 
         let start_checkpoint = target_checkpoint;
         let end_checkpoint = target_checkpoint.saturating_sub(max_scan_checkpoints);
@@ -1042,7 +1038,9 @@ impl WalrusClient {
         // Process in batches
         let mut current = start_checkpoint;
         while current >= end_checkpoint && !remaining.is_empty() {
-            let batch_end = current.saturating_sub(batch_size as u64 - 1).max(end_checkpoint);
+            let batch_end = current
+                .saturating_sub(batch_size as u64 - 1)
+                .max(end_checkpoint);
             let batch: Vec<u64> = (batch_end..=current).rev().collect();
 
             // Fetch batch of checkpoints

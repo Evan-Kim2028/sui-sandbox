@@ -29,6 +29,11 @@ use sui_sandbox_core::types::{format_type_tag, is_system_package_address, parse_
 use sui_sandbox_core::utilities::historical_state::HistoricalStateReconstructor;
 use sui_sandbox_core::utilities::rewrite_type_tag;
 use sui_sandbox_core::vm::SimulationConfig;
+use sui_sandbox_types::{
+    normalize_address as normalize_address_shared, FetchedTransaction, GasSummary, PtbArgument,
+    PtbCommand, TransactionDigest as SandboxTransactionDigest, TransactionEffectsSummary,
+    TransactionInput, TransactionStatus, CLOCK_OBJECT_ID, RANDOM_OBJECT_ID,
+};
 use sui_state_fetcher::{
     build_aliases as build_aliases_shared, fetch_child_object as fetch_child_object_shared,
     fetch_object_via_grpc as fetch_object_via_grpc_shared, HistoricalStateProvider, PackageData,
@@ -45,12 +50,6 @@ use sui_types::transaction::{
     TransactionData, TransactionDataAPI, TransactionKind,
 };
 use sui_types::type_input::TypeInput;
-use sui_sandbox_types::{
-    normalize_address as normalize_address_shared, FetchedTransaction, GasSummary,
-    PtbArgument, PtbCommand, TransactionDigest as SandboxTransactionDigest,
-    TransactionEffectsSummary, TransactionInput, TransactionStatus, CLOCK_OBJECT_ID,
-    RANDOM_OBJECT_ID,
-};
 
 #[derive(Parser, Debug)]
 pub struct ReplayCmd {
@@ -219,19 +218,19 @@ impl ReplayCmd {
                 dotenv
                     .get("SUI_GRPC_ENDPOINT")
                     .cloned()
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .or_else(|_| {
                 dotenv
                     .get("SUI_GRPC_ARCHIVE_ENDPOINT")
                     .cloned()
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .or_else(|_| {
                 dotenv
                     .get("SUI_GRPC_HISTORICAL_ENDPOINT")
                     .cloned()
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_else(|_| state.rpc_url.clone());
         if verbose && grpc_endpoint != state.rpc_url {
@@ -247,8 +246,7 @@ impl ReplayCmd {
         );
 
         let enable_dynamic_fields = self.hybrid || self.fetch_strategy == FetchStrategy::Full;
-        let strict_df_checkpoint =
-            env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.hybrid);
+        let strict_df_checkpoint = env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.hybrid);
         if strict_df_checkpoint {
             std::env::set_var("SUI_DF_STRICT_CHECKPOINT", "1");
         }
@@ -843,14 +841,15 @@ impl ReplayCmd {
         let explicit_path = self.igloo_config.clone();
         if let Some(path) = explicit_path.as_ref() {
             if !path.exists() {
-                return Err(anyhow!(
-                    "Igloo config not found: {}",
-                    path.display()
-                ));
+                return Err(anyhow!("Igloo config not found: {}", path.display()));
             }
         }
         let config_path = explicit_path
-            .or_else(|| std::env::var("IGLOO_MCP_SERVICE_CONFIG").ok().map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("IGLOO_MCP_SERVICE_CONFIG")
+                    .ok()
+                    .map(PathBuf::from)
+            })
             .or_else(|| std::env::var("IGLOO_MCP_CONFIG").ok().map(PathBuf::from))
             .or_else(|| find_mcp_service_config(&std::env::current_dir().unwrap_or_default()));
 
@@ -868,8 +867,8 @@ impl ReplayCmd {
             config.command = cmd.clone();
         }
 
-        config.command = resolve_igloo_command(&config.command)
-            .unwrap_or_else(|| config.command.clone());
+        config.command =
+            resolve_igloo_command(&config.command).unwrap_or_else(|| config.command.clone());
         apply_snowflake_config(&mut config);
 
         Ok(config)
@@ -1429,12 +1428,9 @@ impl IglooMcpClient {
 }
 
 fn env_bool_opt(key: &str) -> Option<bool> {
-    std::env::var(key).ok().map(|v| {
-        matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    std::env::var(key)
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 fn find_mcp_service_config(start: &Path) -> Option<PathBuf> {
@@ -1577,7 +1573,11 @@ fn apply_snowflake_config(config: &mut IglooConfig) {
     );
     set_env_if_missing(&mut config.env, "SNOWFLAKE_DATABASE", sf.database.as_ref());
     set_env_if_missing(&mut config.env, "SNOWFLAKE_SCHEMA", sf.schema.as_ref());
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_WAREHOUSE", sf.warehouse.as_ref());
+    set_env_if_missing(
+        &mut config.env,
+        "SNOWFLAKE_WAREHOUSE",
+        sf.warehouse.as_ref(),
+    );
     set_env_if_missing(&mut config.env, "SNOWFLAKE_ROLE", sf.role.as_ref());
 }
 
@@ -1695,9 +1695,7 @@ fn value_as_u64(value: &Value) -> Option<u64> {
 
 fn parse_effects_value(value: &Value) -> Result<Value> {
     match value {
-        Value::String(text) => {
-            serde_json::from_str(text).context("Failed to parse EFFECTS_JSON")
-        }
+        Value::String(text) => serde_json::from_str(text).context("Failed to parse EFFECTS_JSON"),
         Value::Object(_) | Value::Array(_) => Ok(value.clone()),
         _ => Err(anyhow!("Unexpected EFFECTS_JSON format")),
     }
@@ -1731,7 +1729,7 @@ fn parse_effects_versions(effects: &Value) -> HashMap<String, u64> {
                 .get("ReadOnlyRoot")
                 .or_else(|| info.get("ReadOnly"))
                 .and_then(|v| v.as_array())
-                .and_then(|arr| arr.get(0))
+                .and_then(|arr| arr.first())
                 .and_then(value_as_u64);
             if let Some(ver) = version {
                 versions.insert(normalize_address_shared(id_str), ver);
@@ -1745,8 +1743,8 @@ fn parse_effects_versions(effects: &Value) -> HashMap<String, u64> {
 fn extract_version_from_input_state(input_state: &Value) -> Option<u64> {
     let exist = input_state.get("Exist")?;
     let arr = exist.as_array()?;
-    let version_entry = arr.get(0)?.as_array()?;
-    value_as_u64(version_entry.get(0)?)
+    let version_entry = arr.first()?.as_array()?;
+    value_as_u64(version_entry.first()?)
 }
 
 fn extract_executed_epoch(effects: &Value) -> Option<u64> {
@@ -1901,8 +1899,14 @@ fn build_transaction_inputs(
     specs
         .iter()
         .map(|spec| match spec {
-            InputSpec::Pure(bytes) => TransactionInput::Pure { bytes: bytes.clone() },
-            InputSpec::ImmOrOwned { id, version, digest } => {
+            InputSpec::Pure(bytes) => TransactionInput::Pure {
+                bytes: bytes.clone(),
+            },
+            InputSpec::ImmOrOwned {
+                id,
+                version,
+                digest,
+            } => {
                 let is_immutable = matches!(owner_map.get(id), Some(GrpcOwner::Immutable));
                 if is_immutable {
                     TransactionInput::ImmutableObject {
@@ -1918,7 +1922,11 @@ fn build_transaction_inputs(
                     }
                 }
             }
-            InputSpec::Receiving { id, version, digest } => TransactionInput::Receiving {
+            InputSpec::Receiving {
+                id,
+                version,
+                digest,
+            } => TransactionInput::Receiving {
                 object_id: id.to_hex_literal(),
                 version: *version,
                 digest: digest.clone(),
@@ -1957,10 +1965,8 @@ fn collect_package_ids_from_commands(commands: &[SuiCommand]) -> HashSet<Account
                     packages.insert(AccountAddress::from(*dep));
                 }
             }
-            SuiCommand::MakeMoveVec(type_arg, _) => {
-                if let Some(tag) = type_arg {
-                    collect_packages_from_type_input(tag, &mut packages);
-                }
+            SuiCommand::MakeMoveVec(Some(tag), _) => {
+                collect_packages_from_type_input(tag, &mut packages);
             }
             _ => {}
         }
@@ -2069,8 +2075,7 @@ fn decode_move_package_bcs(bcs_str: &str) -> Result<PackageData> {
             return Ok(package_data_from_move_package(pkg));
         }
     }
-    let pkg: MovePackage =
-        bcs::from_bytes(&bytes).context("Failed to parse package BCS")?;
+    let pkg: MovePackage = bcs::from_bytes(&bytes).context("Failed to parse package BCS")?;
     Ok(package_data_from_move_package(&pkg))
 }
 

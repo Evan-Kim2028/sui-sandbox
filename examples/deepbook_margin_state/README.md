@@ -265,24 +265,26 @@ let commands = vec![Command::MoveCall {
 
 ### Step 4: Parse Return Values
 
-The `manager_state` function returns 14 values:
+The `manager_state<B, Q>` function returns 14 values:
 
 | Index | Name | Type | Description |
 |-------|------|------|-------------|
-| 0 | risk_ratio | u64 | Current risk ratio (scaled) |
-| 1 | collateral_value_usd | u64 | Total collateral in USD |
-| 2 | unsettled_usdc_value | u64 | Unsettled USDC balance |
-| 3 | loan_value_usd | u64 | Total debt in USD |
-| 4 | base_balance | u64 | Base asset balance (SUI) |
-| 5 | base_debt | u64 | Base asset debt |
-| 6 | base_oracle_price | u64 | Current SUI price |
-| 7 | quote_balance | u64 | Quote asset balance (USDC) |
-| 8 | quote_debt | u64 | Quote asset debt |
-| 9 | quote_oracle_price | u64 | Current USDC price |
-| 10 | margin_call_price | u64 | Price triggering margin call |
-| 11 | liquidation_price | u64 | Price triggering liquidation |
-| 12 | margin_call_trigger | bool | Is margin call active? |
-| 13 | liquidation_trigger | bool | Is liquidation triggered? |
+| 0 | manager_id | address | Margin manager object ID |
+| 1 | deepbook_pool_id | address | Associated DeepBook pool |
+| 2 | risk_ratio | u64 | Health factor (assets/debt), scaled by 1e9 |
+| 3 | base_asset | u64 | Base asset balance with locked (MIST, 1e9 = 1 SUI) |
+| 4 | quote_asset | u64 | Quote asset balance (scaled by 1e6) |
+| 5 | base_debt | u64 | Borrowed base amount (MIST) |
+| 6 | quote_debt | u64 | Borrowed quote amount (scaled by 1e6) |
+| 7 | base_pyth_price | u64 | Pyth oracle price for base asset |
+| 8 | base_pyth_decimals | u64 | Base price decimals |
+| 9 | quote_pyth_price | u64 | Pyth oracle price for quote asset |
+| 10 | quote_pyth_decimals | u64 | Quote price decimals |
+| 11 | current_price | u64 | Calculated base/quote price (scaled by 1e9) |
+| 12 | lowest_trigger_above | u64 | TP/SL trigger for longs (u64::MAX if not set) |
+| 13 | highest_trigger_below | u64 | TP/SL trigger for shorts (0 if not set) |
+
+**Note:** The risk_ratio of 100000% (1e12 scaled) indicates no debt / fully collateralized position.
 
 ## Important Notes
 

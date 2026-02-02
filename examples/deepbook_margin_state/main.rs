@@ -152,7 +152,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 use sui_sandbox_core::fetcher::GrpcFetcher;
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, ObjectID};
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectID, ObjectInput};
 use sui_sandbox_core::simulation::{FetcherConfig, SimulationEnvironment};
 use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::grpc::GrpcOwner;
@@ -197,15 +197,22 @@ const DEEPBOOK_POOL: &str = "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08
 
 // Margin pools
 const BASE_MARGIN_POOL: &str = "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344"; // SUI pool
-const QUOTE_MARGIN_POOL: &str = "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f"; // USDC pool
+const QUOTE_MARGIN_POOL: &str =
+    "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f"; // USDC pool
 
 // Pyth Price Info Objects (from SDK mainnetCoins)
-const SUI_PYTH_PRICE_INFO: &str = "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37";
-const USDC_PYTH_PRICE_INFO: &str = "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab";
+const SUI_PYTH_PRICE_INFO: &str =
+    "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37";
+const USDC_PYTH_PRICE_INFO: &str =
+    "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab";
 
 // Asset types
 const SUI_TYPE: &str = "0x2::sui::SUI";
-const USDC_TYPE: &str = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+const USDC_TYPE: &str =
+    "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+
+// Type alias for fetched object data: (bcs_bytes, type_string, version, is_shared)
+type FetchedObjectData = (Vec<u8>, Option<String>, u64, bool);
 
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
@@ -258,7 +265,10 @@ fn main() -> Result<()> {
                 for (obj_id, info) in &info_map {
                     let short_id = &obj_id[..std::cmp::min(20, obj_id.len())];
                     if let Some(cp_found) = info.checkpoint_found {
-                        println!("       - {}... = v{} (cp {})", short_id, info.version, cp_found);
+                        println!(
+                            "       - {}... = v{} (cp {})",
+                            short_id, info.version, cp_found
+                        );
                     } else {
                         println!("       - {}... = v{}", short_id, info.version);
                     }
@@ -278,90 +288,116 @@ fn main() -> Result<()> {
             }
         }
     } else if let Some(cp) = checkpoint {
-            println!("  ⏱️  WALRUS MODE: Checkpoint {}", cp);
-            println!("     Scanning up to {} checkpoints for object versions...", scan_checkpoints);
+        println!("  ⏱️  WALRUS MODE: Checkpoint {}", cp);
+        println!(
+            "     Scanning up to {} checkpoints for object versions...",
+            scan_checkpoints
+        );
 
-            let walrus = WalrusClient::mainnet();
+        let walrus = WalrusClient::mainnet();
 
-            // First, get versions from the target checkpoint
-            let mut versions: HashMap<String, u64> = match walrus.get_checkpoint(cp) {
-                Ok(cp_data) => {
-                    let v = extract_object_versions_from_checkpoint(&cp_data);
-                    v.into_iter().map(|(k, (ver, _))| (k, ver)).collect()
+        // First, get versions from the target checkpoint
+        let mut versions: HashMap<String, u64> = match walrus.get_checkpoint(cp) {
+            Ok(cp_data) => {
+                let v = extract_object_versions_from_checkpoint(&cp_data);
+                v.into_iter().map(|(k, (ver, _))| (k, ver)).collect()
+            }
+            Err(e) => {
+                println!("     ⚠ Failed to fetch target checkpoint: {}", e);
+                HashMap::new()
+            }
+        };
+
+        println!(
+            "     Found {} versions in target checkpoint",
+            versions.len()
+        );
+
+        // Build list of objects we need to find versions for
+        let objects_to_find: Vec<&str> = vec![
+            TARGET_MARGIN_MANAGER,
+            MARGIN_REGISTRY,
+            DEEPBOOK_POOL,
+            BASE_MARGIN_POOL,
+            QUOTE_MARGIN_POOL,
+            SUI_PYTH_PRICE_INFO,
+            USDC_PYTH_PRICE_INFO,
+            CLOCK,
+        ];
+
+        // Check which objects are missing from target checkpoint
+        let missing: Vec<&str> = objects_to_find
+            .iter()
+            .filter(|obj_id| !versions.contains_key(**obj_id))
+            .copied()
+            .collect();
+
+        if !missing.is_empty() && scan_checkpoints > 1 {
+            println!(
+                "     {} objects not in target checkpoint, scanning backwards...",
+                missing.len()
+            );
+
+            // Build version index for missing objects
+            match walrus.build_version_index_with_progress(
+                cp.saturating_sub(1), // Start from checkpoint before target
+                &missing,
+                scan_checkpoints - 1,
+                |scanned, found, remaining| {
+                    if scanned % 10 == 0 || remaining == 0 {
+                        print!(
+                            "\r     Scanned {} checkpoints, found {}/{} objects...",
+                            scanned,
+                            found,
+                            missing.len()
+                        );
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    }
+                },
+            ) {
+                Ok(index) => {
+                    println!(
+                        "\n     ✓ Version index built: scanned {} checkpoints",
+                        index.checkpoints_scanned
+                    );
+
+                    // Merge found versions into our map
+                    for (obj_id, version) in index.versions {
+                        versions.insert(obj_id, version);
+                    }
+
+                    if !index.not_found.is_empty() {
+                        println!(
+                            "     ⚠ {} objects not found (will use latest):",
+                            index.not_found.len()
+                        );
+                        for obj_id in &index.not_found {
+                            let short_id = if obj_id.len() > 20 {
+                                &obj_id[..20]
+                            } else {
+                                obj_id
+                            };
+                            println!("        - {}...", short_id);
+                        }
+                    }
                 }
                 Err(e) => {
-                    println!("     ⚠ Failed to fetch target checkpoint: {}", e);
-                    HashMap::new()
-                }
-            };
-
-            println!("     Found {} versions in target checkpoint", versions.len());
-
-            // Build list of objects we need to find versions for
-            let objects_to_find: Vec<&str> = vec![
-                TARGET_MARGIN_MANAGER,
-                MARGIN_REGISTRY,
-                DEEPBOOK_POOL,
-                BASE_MARGIN_POOL,
-                QUOTE_MARGIN_POOL,
-                SUI_PYTH_PRICE_INFO,
-                USDC_PYTH_PRICE_INFO,
-                CLOCK,
-            ];
-
-            // Check which objects are missing from target checkpoint
-            let missing: Vec<&str> = objects_to_find
-                .iter()
-                .filter(|obj_id| !versions.contains_key(**obj_id))
-                .copied()
-                .collect();
-
-            if !missing.is_empty() && scan_checkpoints > 1 {
-                println!("     {} objects not in target checkpoint, scanning backwards...", missing.len());
-
-                // Build version index for missing objects
-                match walrus.build_version_index_with_progress(
-                    cp.saturating_sub(1), // Start from checkpoint before target
-                    &missing,
-                    scan_checkpoints - 1,
-                    |scanned, found, remaining| {
-                        if scanned % 10 == 0 || remaining == 0 {
-                            print!("\r     Scanned {} checkpoints, found {}/{} objects...",
-                                scanned, found, missing.len());
-                            use std::io::Write;
-                            std::io::stdout().flush().ok();
-                        }
-                    },
-                ) {
-                    Ok(index) => {
-                        println!("\n     ✓ Version index built: scanned {} checkpoints", index.checkpoints_scanned);
-
-                        // Merge found versions into our map
-                        for (obj_id, version) in index.versions {
-                            versions.insert(obj_id, version);
-                        }
-
-                        if !index.not_found.is_empty() {
-                            println!("     ⚠ {} objects not found (will use latest):", index.not_found.len());
-                            for obj_id in &index.not_found {
-                                let short_id = if obj_id.len() > 20 { &obj_id[..20] } else { obj_id };
-                                println!("        - {}...", short_id);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("\n     ⚠ Failed to build version index: {}", e);
-                    }
+                    println!("\n     ⚠ Failed to build version index: {}", e);
                 }
             }
+        }
 
-            println!("     ✓ Total {} historical versions found\n", versions.len());
-            // No checkpoint_found info in this mode, use empty version_info
-            (versions, HashMap::new(), Some(cp))
-        } else {
-            println!("  📍 CURRENT MODE: Latest state\n");
-            (HashMap::new(), HashMap::new(), None)
-        };
+        println!(
+            "     ✓ Total {} historical versions found\n",
+            versions.len()
+        );
+        // No checkpoint_found info in this mode, use empty version_info
+        (versions, HashMap::new(), Some(cp))
+    } else {
+        println!("  📍 CURRENT MODE: Latest state\n");
+        (HashMap::new(), HashMap::new(), None)
+    };
 
     // Use effective_checkpoint for the rest of the code
     let checkpoint = effective_checkpoint;
@@ -394,8 +430,8 @@ fn main() -> Result<()> {
     ];
 
     println!("  Fetching packages with transitive dependencies...");
-    if checkpoint.is_some() {
-        println!("  (at checkpoint {})", checkpoint.unwrap());
+    if let Some(cp) = checkpoint {
+        println!("  (at checkpoint {})", cp);
     }
     let packages = rt.block_on(async {
         provider
@@ -421,7 +457,8 @@ fn main() -> Result<()> {
 
     // Debug: Show all packages' linkage tables and check for missing deps
     println!("\n  Package linkage tables:");
-    let mut all_linked_packages: std::collections::HashSet<AccountAddress> = std::collections::HashSet::new();
+    let mut all_linked_packages: std::collections::HashSet<AccountAddress> =
+        std::collections::HashSet::new();
     for (addr, pkg) in &packages {
         if !pkg.linkage.is_empty() {
             println!("    0x{}... links to:", hex::encode(&addr.as_ref()[..4]));
@@ -477,7 +514,7 @@ fn main() -> Result<()> {
         (CLOCK, "Clock"),
     ];
 
-    let mut fetched_objects: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
+    let mut fetched_objects: HashMap<String, FetchedObjectData> = HashMap::new();
 
     // WALRUS MODE: Fetch objects directly from Walrus checkpoints (no gRPC!)
     if walrus_mode && !version_info.is_empty() {
@@ -489,7 +526,10 @@ fn main() -> Result<()> {
         // Fallback to gRPC for any objects not found in Walrus (archival lag)
         let missing_count = objects_to_fetch.len() - fetched_objects.len();
         if missing_count > 0 {
-            println!("  ⚠ {} objects not in Walrus (archival lag?), falling back to gRPC...", missing_count);
+            println!(
+                "  ⚠ {} objects not in Walrus (archival lag?), falling back to gRPC...",
+                missing_count
+            );
             for (obj_id, name) in &objects_to_fetch {
                 if fetched_objects.contains_key(*obj_id) {
                     continue;
@@ -558,27 +598,27 @@ fn main() -> Result<()> {
                 rt.block_on(async { grpc.get_object(obj_id).await })
                     .ok()
                     .flatten()
-                .and_then(|obj| {
-                    let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
-                    let bcs = obj.bcs?;
-                    Some((bcs, obj.type_string, obj.version, is_shared))
-                })
-        };
+                    .and_then(|obj| {
+                        let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+                        let bcs = obj.bcs?;
+                        Some((bcs, obj.type_string, obj.version, is_shared))
+                    })
+            };
 
-        match result {
-            Some((bcs, type_str, version, is_shared)) => {
-                let mode = if historical_version.is_some() {
-                    " [historical]"
-                } else if checkpoint.is_some() {
-                    " [latest-fallback]"
-                } else {
-                    ""
-                };
-                println!("  ✓ {} (v{}){}", name, version, mode);
-                fetched_objects.insert(obj_id.to_string(), (bcs, type_str, version, is_shared));
+            match result {
+                Some((bcs, type_str, version, is_shared)) => {
+                    let mode = if historical_version.is_some() {
+                        " [historical]"
+                    } else if checkpoint.is_some() {
+                        " [latest-fallback]"
+                    } else {
+                        ""
+                    };
+                    println!("  ✓ {} (v{}){}", name, version, mode);
+                    fetched_objects.insert(obj_id.to_string(), (bcs, type_str, version, is_shared));
+                }
+                None => println!("  ✗ {} - not found or no BCS data", name),
             }
-            None => println!("  ✗ {} - not found or no BCS data", name),
-        }
         }
     } // end gRPC mode
 
@@ -593,8 +633,8 @@ fn main() -> Result<()> {
 
     // Enable on-demand fetching for dynamic fields and missing objects
     // This uses the surflux historical gRPC endpoint
-    let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .unwrap_or_else(|_| "grpc.surflux.dev:443".to_string());
+    let grpc_endpoint =
+        std::env::var("SUI_GRPC_ENDPOINT").unwrap_or_else(|_| "grpc.surflux.dev:443".to_string());
     println!("  Setting up on-demand fetcher: {}", grpc_endpoint);
     let fetcher = Box::new(GrpcFetcher::custom(&grpc_endpoint));
     let fetcher_config = FetcherConfig {
@@ -602,7 +642,6 @@ fn main() -> Result<()> {
         network: Some("mainnet".to_string()),
         endpoint: Some(grpc_endpoint.clone()),
         use_archive: true,
-        ..Default::default()
     };
     env = env.with_fetcher(fetcher, fetcher_config);
     println!("  ✓ On-demand fetching enabled");
@@ -626,9 +665,14 @@ fn main() -> Result<()> {
                 let grpc_result = rt.block_on(async {
                     let client = sui_transport::grpc::GrpcClient::with_api_key(
                         &grpc_endpoint_clone,
-                        api_key.clone()
-                    ).await.ok()?;
-                    client.get_object_at_version(&child_id_str, version).await.ok()?
+                        api_key.clone(),
+                    )
+                    .await
+                    .ok()?;
+                    client
+                        .get_object_at_version(&child_id_str, version)
+                        .await
+                        .ok()?
                 })?;
 
                 let type_str = grpc_result.type_string.as_ref()?;
@@ -667,7 +711,7 @@ fn main() -> Result<()> {
     // Build a mapping of original -> upgraded from all linkage tables
     // This tells us which packages have been upgraded
     let mut upgrade_map: HashMap<AccountAddress, AccountAddress> = HashMap::new();
-    for (_addr, pkg) in &packages {
+    for pkg in packages.values() {
         for (original, upgraded) in &pkg.linkage {
             // If original != upgraded, this is an upgrade relationship
             if original != upgraded {
@@ -720,14 +764,20 @@ fn main() -> Result<()> {
             })
             .collect();
 
-        match env.register_package_with_linkage(*addr, pkg.version, original_id, pkg.modules.clone(), linkage) {
+        match env.register_package_with_linkage(
+            *addr,
+            pkg.version,
+            original_id,
+            pkg.modules.clone(),
+            linkage,
+        ) {
             Ok(()) => {
-                if original_id.is_some() {
+                if let Some(orig) = original_id {
                     println!(
                         "    Loaded 0x{}... (v{}, upgrade of 0x{}...)",
                         hex::encode(&addr.as_ref()[..4]),
                         pkg.version,
-                        hex::encode(&original_id.unwrap().as_ref()[..4])
+                        hex::encode(&orig.as_ref()[..4])
                     );
                 }
                 loaded_count += 1;
@@ -739,7 +789,10 @@ fn main() -> Result<()> {
             ),
         }
     }
-    println!("  ✓ Loaded {} packages with linkage into environment", loaded_count);
+    println!(
+        "  ✓ Loaded {} packages with linkage into environment",
+        loaded_count
+    );
 
     // Load objects
     for (obj_id, (bcs, type_str, version, is_shared)) in &fetched_objects {
@@ -752,7 +805,10 @@ fn main() -> Result<()> {
             *version,
         )?;
     }
-    println!("  ✓ Loaded {} objects into environment", fetched_objects.len());
+    println!(
+        "  ✓ Loaded {} objects into environment",
+        fetched_objects.len()
+    );
 
     // Fetch dynamic fields for versioned objects (Pool uses Versioned which stores inner data as DF)
     println!("\n  Fetching dynamic fields for versioned objects...");
@@ -830,7 +886,7 @@ fn main() -> Result<()> {
     // Helper to create shared object input
     fn make_shared_input(
         obj_id: &str,
-        fetched: &HashMap<String, (Vec<u8>, Option<String>, u64, bool)>,
+        fetched: &HashMap<String, FetchedObjectData>,
     ) -> Result<InputValue> {
         let (bcs, type_str, version, _) = fetched
             .get(obj_id)
@@ -896,13 +952,21 @@ fn main() -> Result<()> {
         }
 
         // Provide context for the expected error
-        if result.raw_error.as_ref().map_or(false, |e| e.contains("dynamic_field")) {
-            println!("\n  ℹ️  This error is expected for DeepBook pools which use Versioned objects.");
+        if result
+            .raw_error
+            .as_ref()
+            .is_some_and(|e| e.contains("dynamic_field"))
+        {
+            println!(
+                "\n  ℹ️  This error is expected for DeepBook pools which use Versioned objects."
+            );
             println!("     Versioned objects store their inner data in dynamic fields that need");
             println!("     to be fetched separately. Solutions:");
             println!("     1. Use fullnode's simulate_transaction API (recommended)");
             println!("     2. Implement on-demand dynamic field fetching");
-            println!("     3. Pre-fetch dynamic field objects using graphql.fetch_dynamic_fields()");
+            println!(
+                "     3. Pre-fetch dynamic field objects using graphql.fetch_dynamic_fields()"
+            );
         }
     }
 
@@ -971,11 +1035,11 @@ fn fetch_objects_from_walrus(
     walrus: &WalrusClient,
     objects_to_fetch: &[(&str, &str)], // (object_id, name)
     version_info: &HashMap<String, ObjectVersionInfo>,
-) -> HashMap<String, (Vec<u8>, Option<String>, u64, bool)> {
-    use sui_types::base_types::ObjectID as SuiObjectID;
+) -> HashMap<String, FetchedObjectData> {
     use std::str::FromStr;
+    use sui_types::base_types::ObjectID as SuiObjectID;
 
-    let mut fetched_objects: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
+    let mut fetched_objects: HashMap<String, FetchedObjectData> = HashMap::new();
 
     // Group objects by checkpoint_found
     let mut by_checkpoint: HashMap<u64, Vec<(&str, &str)>> = HashMap::new();
@@ -987,7 +1051,10 @@ fn fetch_objects_from_walrus(
         }
     }
 
-    println!("     Grouped into {} unique checkpoints to fetch", by_checkpoint.len());
+    println!(
+        "     Grouped into {} unique checkpoints to fetch",
+        by_checkpoint.len()
+    );
 
     // Fetch each checkpoint and extract objects
     for (checkpoint_num, objects) in &by_checkpoint {
@@ -1006,8 +1073,12 @@ fn fetch_objects_from_walrus(
 
                     // Try to find object in checkpoint
                     if let Some(obj) = get_object_from_checkpoint(&checkpoint_data, &sui_obj_id) {
-                        if let Some((type_str, bcs, version, is_shared)) = extract_object_bcs(&obj) {
-                            println!("       ✓ {} (v{}) from checkpoint {}", name, version, checkpoint_num);
+                        if let Some((type_str, bcs, version, is_shared)) = extract_object_bcs(&obj)
+                        {
+                            println!(
+                                "       ✓ {} (v{}) from checkpoint {}",
+                                name, version, checkpoint_num
+                            );
                             fetched_objects.insert(
                                 obj_id.to_string(),
                                 (bcs, Some(type_str), version, is_shared),
@@ -1016,12 +1087,18 @@ fn fetch_objects_from_walrus(
                             println!("       ✗ {} - no BCS data in object", name);
                         }
                     } else {
-                        println!("       ✗ {} - not found in checkpoint {}", name, checkpoint_num);
+                        println!(
+                            "       ✗ {} - not found in checkpoint {}",
+                            name, checkpoint_num
+                        );
                     }
                 }
             }
             Err(e) => {
-                println!("     ⚠ Failed to fetch checkpoint {}: {}", checkpoint_num, e);
+                println!(
+                    "     ⚠ Failed to fetch checkpoint {}: {}",
+                    checkpoint_num, e
+                );
             }
         }
     }

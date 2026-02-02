@@ -44,13 +44,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 use sui_sandbox_core::fetcher::GrpcFetcher;
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, ObjectID};
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectID, ObjectInput};
 use sui_sandbox_core::simulation::{FetcherConfig, SimulationEnvironment};
 use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::grpc::GrpcOwner;
-use sui_transport::walrus::{
-    extract_object_bcs, get_object_from_checkpoint, WalrusClient,
-};
+use sui_transport::walrus::{extract_object_bcs, get_object_from_checkpoint, WalrusClient};
 
 mod common;
 
@@ -67,16 +65,24 @@ const MARGIN_REGISTRY: &str = "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980
 const CLOCK: &str = "0x6";
 const DEEPBOOK_POOL: &str = "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407";
 const BASE_MARGIN_POOL: &str = "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344";
-const QUOTE_MARGIN_POOL: &str = "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f";
-const SUI_PYTH_PRICE_INFO: &str = "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37";
-const USDC_PYTH_PRICE_INFO: &str = "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab";
+const QUOTE_MARGIN_POOL: &str =
+    "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f";
+const SUI_PYTH_PRICE_INFO: &str =
+    "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37";
+const USDC_PYTH_PRICE_INFO: &str =
+    "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab";
 
 // Asset types
 const SUI_TYPE: &str = "0x2::sui::SUI";
-const USDC_TYPE: &str = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+const USDC_TYPE: &str =
+    "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 
 // Default time series file path
-const DEFAULT_TIMESERIES_FILE: &str = "./examples/deepbook_margin_state/data/position_b_daily_timeseries.json";
+const DEFAULT_TIMESERIES_FILE: &str =
+    "./examples/deepbook_margin_state/data/position_b_daily_timeseries.json";
+
+// Type alias for fetched object data: (bcs_bytes, type_string, version, is_shared)
+type FetchedObjectData = (Vec<u8>, Option<String>, u64, bool);
 
 // ============================================================================
 // JSON Schema for Time Series Data
@@ -115,6 +121,106 @@ struct DayResult {
     success: bool,
     gas_used: u64,
     error: Option<String>,
+    /// Margin state from manager_state return values
+    margin_state: Option<MarginState>,
+}
+
+/// Decoded margin state from manager_state return values
+/// The function returns 14 values in this order (matching main.rs):
+/// (manager_id, deepbook_pool_id, risk_ratio, base_asset, quote_asset,
+///  base_debt, quote_debt, base_pyth_price, base_pyth_decimals,
+///  quote_pyth_price, quote_pyth_decimals, current_price,
+///  lowest_trigger_above, highest_trigger_below)
+#[derive(Debug, Clone, Default)]
+struct MarginState {
+    // Note: Return values 0-1 are manager_id and pool_id (object IDs) - skipped
+    /// Risk ratio / health factor (scaled by 1e9)
+    risk_ratio: u64,
+    /// Base asset (SUI) balance including locked (in MIST, 1e9 = 1 SUI)
+    base_asset: u64,
+    /// Quote asset (USDC) balance (scaled by 1e6)
+    quote_asset: u64,
+    /// Base asset debt (in MIST)
+    base_debt: u64,
+    /// Quote asset debt (scaled by 1e6)
+    quote_debt: u64,
+    /// Base Pyth oracle price (scaled)
+    base_pyth_price: u64,
+    /// Base price decimals
+    base_pyth_decimals: u64,
+    /// Quote Pyth oracle price (scaled)
+    quote_pyth_price: u64,
+    /// Quote price decimals
+    quote_pyth_decimals: u64,
+    /// Current calculated price (base/quote)
+    current_price: u64,
+    /// Lowest trigger price above (for TP/SL on longs)
+    lowest_trigger_above: u64,
+    /// Highest trigger price below (for TP/SL on shorts)
+    highest_trigger_below: u64,
+}
+
+impl MarginState {
+    /// Decode margin state from BCS-encoded return values
+    fn from_return_values(return_values: &[Vec<u8>]) -> Option<Self> {
+        if return_values.len() < 14 {
+            return None;
+        }
+
+        fn decode_u64(bytes: &[u8]) -> u64 {
+            if bytes.len() >= 8 {
+                u64::from_le_bytes(bytes[0..8].try_into().unwrap_or([0; 8]))
+            } else {
+                0
+            }
+        }
+
+        // Skip return_values[0] (manager_id) and [1] (pool_id) - they're object IDs
+        Some(MarginState {
+            risk_ratio: decode_u64(&return_values[2]),
+            base_asset: decode_u64(&return_values[3]),
+            quote_asset: decode_u64(&return_values[4]),
+            base_debt: decode_u64(&return_values[5]),
+            quote_debt: decode_u64(&return_values[6]),
+            base_pyth_price: decode_u64(&return_values[7]),
+            base_pyth_decimals: decode_u64(&return_values[8]),
+            quote_pyth_price: decode_u64(&return_values[9]),
+            quote_pyth_decimals: decode_u64(&return_values[10]),
+            current_price: decode_u64(&return_values[11]),
+            lowest_trigger_above: decode_u64(&return_values[12]),
+            highest_trigger_below: decode_u64(&return_values[13]),
+        })
+    }
+
+    /// Get risk ratio as a percentage (divide by 1e9 then * 100)
+    fn risk_ratio_percent(&self) -> f64 {
+        self.risk_ratio as f64 / 1e9 * 100.0
+    }
+
+    /// Get base asset balance in SUI
+    fn base_asset_sui(&self) -> f64 {
+        self.base_asset as f64 / 1e9
+    }
+
+    /// Get quote asset balance in USDC
+    fn quote_asset_usdc(&self) -> f64 {
+        self.quote_asset as f64 / 1e6
+    }
+
+    /// Get base debt in SUI
+    fn base_debt_sui(&self) -> f64 {
+        self.base_debt as f64 / 1e9
+    }
+
+    /// Get quote debt in USDC
+    fn quote_debt_usdc(&self) -> f64 {
+        self.quote_debt as f64 / 1e6
+    }
+
+    /// Get current price (base/quote) - typically scaled by 1e9
+    fn current_price_display(&self) -> f64 {
+        self.current_price as f64 / 1e9
+    }
 }
 
 fn main() -> Result<()> {
@@ -125,8 +231,8 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
 
     // Load time series data
-    let timeseries_file = std::env::var("TIMESERIES_FILE")
-        .unwrap_or_else(|_| DEFAULT_TIMESERIES_FILE.to_string());
+    let timeseries_file =
+        std::env::var("TIMESERIES_FILE").unwrap_or_else(|_| DEFAULT_TIMESERIES_FILE.to_string());
 
     let walrus_mode = std::env::var("WALRUS_MODE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
@@ -136,8 +242,15 @@ fn main() -> Result<()> {
     let timeseries = load_timeseries(&timeseries_file)?;
 
     println!("  ✓ {}", timeseries.description);
-    println!("  📊 Pool: {} | Snapshots: {}", timeseries.pool_type, timeseries.daily_snapshots.len());
-    println!("  📍 Margin Manager: {}...", &timeseries.margin_manager_id[..20]);
+    println!(
+        "  📊 Pool: {} | Snapshots: {}",
+        timeseries.pool_type,
+        timeseries.daily_snapshots.len()
+    );
+    println!(
+        "  📍 Margin Manager: {}...",
+        &timeseries.margin_manager_id[..20]
+    );
     if let Some(created_cp) = timeseries.position_created_checkpoint {
         println!("  🕐 Position created at checkpoint: {}", created_cp);
     }
@@ -175,7 +288,7 @@ fn main() -> Result<()> {
         .collect();
 
     let mut upgrade_map: HashMap<AccountAddress, AccountAddress> = HashMap::new();
-    for (_addr, pkg) in &packages {
+    for pkg in packages.values() {
         for (original, upgraded) in &pkg.linkage {
             if original != upgraded {
                 upgrade_map.insert(*original, *upgraded);
@@ -192,7 +305,10 @@ fn main() -> Result<()> {
     // Process each day's snapshot
     // =========================================================================
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("PROCESSING: {} Daily Snapshots", timeseries.daily_snapshots.len());
+    println!(
+        "PROCESSING: {} Daily Snapshots",
+        timeseries.daily_snapshots.len()
+    );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let mut results: Vec<DayResult> = Vec::new();
@@ -201,7 +317,10 @@ fn main() -> Result<()> {
 
     for snapshot in &timeseries.daily_snapshots {
         println!("┌─────────────────────────────────────────────────────────────────────┐");
-        println!("│  Day {}: {} (Checkpoint {})", snapshot.day, snapshot.description, snapshot.checkpoint);
+        println!(
+            "│  Day {}: {} (Checkpoint {})",
+            snapshot.day, snapshot.description, snapshot.checkpoint
+        );
         println!("└─────────────────────────────────────────────────────────────────────┘");
 
         let mut day_result = DayResult {
@@ -211,12 +330,14 @@ fn main() -> Result<()> {
         };
 
         // Convert snapshot objects to version maps
-        let historical_versions: HashMap<String, u64> = snapshot.objects
+        let historical_versions: HashMap<String, u64> = snapshot
+            .objects
             .iter()
             .map(|(id, info)| (id.clone(), info.version))
             .collect();
 
-        let version_info: HashMap<String, ObjectVersionInfo> = snapshot.objects
+        let version_info: HashMap<String, ObjectVersionInfo> = snapshot
+            .objects
             .iter()
             .map(|(id, info)| (id.clone(), info.clone()))
             .collect();
@@ -241,21 +362,26 @@ fn main() -> Result<()> {
             // Fallback to gRPC for missing objects
             let missing_count = objects_to_fetch.len() - fetched.len();
             if missing_count > 0 {
-                println!("  ⚠ {} objects not in Walrus, falling back to gRPC...", missing_count);
+                println!(
+                    "  ⚠ {} objects not in Walrus, falling back to gRPC...",
+                    missing_count
+                );
                 for (obj_id, name) in &objects_to_fetch {
                     if fetched.contains_key(*obj_id) {
                         continue;
                     }
                     let historical_version = historical_versions.get(*obj_id).copied();
                     let result = if let Some(version) = historical_version {
-                        rt.block_on(async { grpc.get_object_at_version(obj_id, Some(version)).await })
-                            .ok()
-                            .flatten()
-                            .and_then(|obj| {
-                                let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
-                                let bcs = obj.bcs?;
-                                Some((bcs, obj.type_string, obj.version, is_shared))
-                            })
+                        rt.block_on(async {
+                            grpc.get_object_at_version(obj_id, Some(version)).await
+                        })
+                        .ok()
+                        .flatten()
+                        .and_then(|obj| {
+                            let is_shared = matches!(obj.owner, GrpcOwner::Shared { .. });
+                            let bcs = obj.bcs?;
+                            Some((bcs, obj.type_string, obj.version, is_shared))
+                        })
                     } else {
                         None
                     };
@@ -268,7 +394,7 @@ fn main() -> Result<()> {
             fetched
         } else {
             // gRPC mode
-            let mut fetched: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
+            let mut fetched: HashMap<String, FetchedObjectData> = HashMap::new();
             for (obj_id, _name) in &objects_to_fetch {
                 let historical_version = historical_versions.get(*obj_id).copied();
                 let result = if let Some(version) = historical_version {
@@ -310,7 +436,6 @@ fn main() -> Result<()> {
             network: Some("mainnet".to_string()),
             endpoint: Some(grpc_endpoint.clone()),
             use_archive: true,
-            ..Default::default()
         };
         env = env.with_fetcher(fetcher, fetcher_config);
 
@@ -326,9 +451,14 @@ fn main() -> Result<()> {
                 let grpc_result = rt.block_on(async {
                     let client = sui_transport::grpc::GrpcClient::with_api_key(
                         &grpc_endpoint_clone,
-                        api_key.clone()
-                    ).await.ok()?;
-                    client.get_object_at_version(&child_id_str, version).await.ok()?
+                        api_key.clone(),
+                    )
+                    .await
+                    .ok()?;
+                    client
+                        .get_object_at_version(&child_id_str, version)
+                        .await
+                        .ok()?
                 })?;
                 let type_str = grpc_result.type_string.as_ref()?;
                 let bcs = grpc_result.bcs?;
@@ -390,7 +520,8 @@ fn main() -> Result<()> {
             if let Ok(fields) = graphql.fetch_dynamic_fields(parent_id, 10) {
                 for field in fields {
                     if let Some(obj_id) = &field.object_id {
-                        if let Ok(Some(obj)) = rt.block_on(async { grpc.get_object(obj_id).await }) {
+                        if let Ok(Some(obj)) = rt.block_on(async { grpc.get_object(obj_id).await })
+                        {
                             if let Some(bcs) = obj.bcs {
                                 let _ = env.load_object_from_data(
                                     obj_id,
@@ -414,7 +545,7 @@ fn main() -> Result<()> {
 
         fn make_shared_input(
             obj_id: &str,
-            fetched: &HashMap<String, (Vec<u8>, Option<String>, u64, bool)>,
+            fetched: &HashMap<String, FetchedObjectData>,
         ) -> Result<InputValue> {
             let (bcs, type_str, version, _) = fetched
                 .get(obj_id)
@@ -463,8 +594,21 @@ fn main() -> Result<()> {
             day_result.success = true;
             if let Some(effects) = &result.effects {
                 day_result.gas_used = effects.gas_used;
+
+                // Extract margin state from return values
+                // return_values[0] = first command's returns (our MoveCall)
+                if !effects.return_values.is_empty() && !effects.return_values[0].is_empty() {
+                    let return_vals = &effects.return_values[0];
+                    if let Some(margin_state) = MarginState::from_return_values(return_vals) {
+                        day_result.margin_state = Some(margin_state.clone());
+                        print_margin_state(&margin_state, snapshot.day);
+                    }
+                }
             }
-            println!("  ✅ manager_state SUCCEEDED (gas: {} MIST)", day_result.gas_used);
+            println!(
+                "  ✅ manager_state SUCCEEDED (gas: {} MIST)",
+                day_result.gas_used
+            );
         } else {
             day_result.success = false;
             if let Some(err) = &result.error {
@@ -501,17 +645,20 @@ fn fetch_objects_from_walrus(
     walrus: &WalrusClient,
     objects_to_fetch: &[(&str, &str)],
     version_info: &HashMap<String, ObjectVersionInfo>,
-) -> HashMap<String, (Vec<u8>, Option<String>, u64, bool)> {
-    use sui_types::base_types::ObjectID as SuiObjectID;
+) -> HashMap<String, FetchedObjectData> {
     use std::str::FromStr;
+    use sui_types::base_types::ObjectID as SuiObjectID;
 
-    let mut fetched_objects: HashMap<String, (Vec<u8>, Option<String>, u64, bool)> = HashMap::new();
+    let mut fetched_objects: HashMap<String, FetchedObjectData> = HashMap::new();
 
     // Group objects by checkpoint_found
     let mut by_checkpoint: HashMap<u64, Vec<(&str, &str)>> = HashMap::new();
     for (obj_id, name) in objects_to_fetch {
         if let Some(info) = version_info.get(*obj_id) {
-            by_checkpoint.entry(info.checkpoint_found).or_default().push((*obj_id, *name));
+            by_checkpoint
+                .entry(info.checkpoint_found)
+                .or_default()
+                .push((*obj_id, *name));
         }
     }
 
@@ -525,7 +672,8 @@ fn fetch_objects_from_walrus(
                         Err(_) => continue,
                     };
                     if let Some(obj) = get_object_from_checkpoint(&checkpoint_data, &sui_obj_id) {
-                        if let Some((type_str, bcs, version, is_shared)) = extract_object_bcs(&obj) {
+                        if let Some((type_str, bcs, version, is_shared)) = extract_object_bcs(&obj)
+                        {
                             println!("    ✓ {} (v{}) from cp {}", name, version, checkpoint_num);
                             fetched_objects.insert(
                                 obj_id.to_string(),
@@ -557,34 +705,172 @@ fn print_header() {
     println!();
 }
 
+/// Print detailed margin state for a single day
+fn print_margin_state(state: &MarginState, day: u32) {
+    println!("  ┌─────────────────────────────────────────────────────────────────┐");
+    println!(
+        "  │  📊 MARGIN STATE - Day {}                                        │",
+        day
+    );
+    println!("  ├─────────────────────────────────────────────────────────────────┤");
+
+    // Risk metrics
+    let risk_pct = state.risk_ratio_percent();
+    let risk_status = if risk_pct < 100.0 {
+        "🟢 HEALTHY"
+    } else if risk_pct < 200.0 {
+        "🟡 MODERATE"
+    } else if risk_pct < 500.0 {
+        "🟠 HIGH RISK"
+    } else {
+        "🔴 CRITICAL"
+    };
+
+    println!(
+        "  │  Risk Ratio:           {:>10.2}%  {}               │",
+        risk_pct, risk_status
+    );
+    println!(
+        "  │  Current Price:        {:>15.6}                        │",
+        state.current_price_display()
+    );
+    println!("  ├─────────────────────────────────────────────────────────────────┤");
+
+    // Base asset (SUI)
+    println!(
+        "  │  SUI Balance:          {:>15.4} SUI                     │",
+        state.base_asset_sui()
+    );
+    println!(
+        "  │  SUI Debt:             {:>15.4} SUI                     │",
+        state.base_debt_sui()
+    );
+
+    // Quote asset (USDC)
+    println!(
+        "  │  USDC Balance:         {:>15.2} USDC                    │",
+        state.quote_asset_usdc()
+    );
+    println!(
+        "  │  USDC Debt:            {:>15.2} USDC                    │",
+        state.quote_debt_usdc()
+    );
+    println!("  ├─────────────────────────────────────────────────────────────────┤");
+
+    // Oracle prices
+    println!(
+        "  │  Base Pyth Price:      {:>18} (decimals: {})     │",
+        state.base_pyth_price, state.base_pyth_decimals
+    );
+    println!(
+        "  │  Quote Pyth Price:     {:>18} (decimals: {})     │",
+        state.quote_pyth_price, state.quote_pyth_decimals
+    );
+    println!("  ├─────────────────────────────────────────────────────────────────┤");
+
+    // TP/SL triggers
+    println!(
+        "  │  Lowest Trigger Above: {:>18} (TP/SL longs)       │",
+        state.lowest_trigger_above
+    );
+    println!(
+        "  │  Highest Trigger Below:{:>18} (TP/SL shorts)      │",
+        state.highest_trigger_below
+    );
+    println!("  └─────────────────────────────────────────────────────────────────┘");
+}
+
 fn print_summary_table(results: &[DayResult], timeseries: &TimeSeriesData) {
-    println!("╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║                    TIME SERIES RESULTS SUMMARY                       ║");
-    println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║  Position: {}...  ║", &timeseries.margin_manager_id[..42]);
-    println!("║  Pool: {:60}  ║", timeseries.pool_type);
-    println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║  Day │ Checkpoint  │ Status │ Gas Used                              ║");
-    println!("║──────┼─────────────┼────────┼───────────────────────────────────────║");
+    println!("╔═══════════════════════════════════════════════════════════════════════════════════════════════════════╗");
+    println!("║                              TIME SERIES RESULTS SUMMARY                                              ║");
+    println!("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+    println!(
+        "║  Position: {}...                                                  ║",
+        &timeseries.margin_manager_id[..42]
+    );
+    println!("║  Pool: {:94}║", timeseries.pool_type);
+    println!("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+    println!("║  Day │ Checkpoint  │ Risk %    │ SUI Balance │ SUI Debt   │ USDC Balance │ USDC Debt   │ Status      ║");
+    println!("║──────┼─────────────┼───────────┼─────────────┼────────────┼──────────────┼─────────────┼─────────────║");
 
     for result in results {
-        let status = if result.success { "✅" } else { "❌" };
-        let gas_str = if result.gas_used > 0 {
-            format!("{} MIST", result.gas_used)
+        let status = if result.success {
+            "✅ Success"
         } else {
-            "N/A".to_string()
+            "❌ Failed "
         };
-        println!(
-            "║  {:3} │ {:11} │   {}   │ {:38}║",
-            result.day, result.checkpoint, status, gas_str
-        );
+        if let Some(ref state) = result.margin_state {
+            println!(
+                "║  {:3} │ {:>11} │ {:>8.2}% │ {:>10.4} │ {:>9.4} │ {:>11.2} │ {:>10.2} │ {}  ║",
+                result.day,
+                result.checkpoint,
+                state.risk_ratio_percent(),
+                state.base_asset_sui(),
+                state.base_debt_sui(),
+                state.quote_asset_usdc(),
+                state.quote_debt_usdc(),
+                status
+            );
+        } else {
+            println!(
+                "║  {:3} │ {:>11} │       N/A │         N/A │        N/A │          N/A │         N/A │ {}  ║",
+                result.day, result.checkpoint, status
+            );
+        }
     }
 
     let success_count = results.iter().filter(|r| r.success).count();
     let total = results.len();
 
-    println!("╠══════════════════════════════════════════════════════════════════════╣");
-    println!("║  Success Rate: {}/{} ({:.0}%)                                         ║",
-        success_count, total, (success_count as f64 / total as f64) * 100.0);
-    println!("╚══════════════════════════════════════════════════════════════════════╝");
+    println!("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+
+    // Calculate and display trends if we have data
+    let states: Vec<&MarginState> = results
+        .iter()
+        .filter_map(|r| r.margin_state.as_ref())
+        .collect();
+    if states.len() >= 2 {
+        let first = states.first().unwrap();
+        let last = states.last().unwrap();
+
+        let risk_change = last.risk_ratio_percent() - first.risk_ratio_percent();
+        let sui_change = last.base_asset_sui() - first.base_asset_sui();
+        let usdc_change = last.quote_asset_usdc() - first.quote_asset_usdc();
+
+        let risk_arrow = if risk_change > 0.0 {
+            "↑"
+        } else if risk_change < 0.0 {
+            "↓"
+        } else {
+            "→"
+        };
+        let sui_arrow = if sui_change > 0.0 {
+            "↑"
+        } else if sui_change < 0.0 {
+            "↓"
+        } else {
+            "→"
+        };
+        let usdc_arrow = if usdc_change > 0.0 {
+            "↑"
+        } else if usdc_change < 0.0 {
+            "↓"
+        } else {
+            "→"
+        };
+
+        println!(
+            "║  📈 TRENDS: Risk: {} {:+.2}%  |  SUI: {} {:+.4}  |  USDC: {} {:+.2}                                    ║",
+            risk_arrow, risk_change, sui_arrow, sui_change, usdc_arrow, usdc_change
+        );
+        println!("╠═══════════════════════════════════════════════════════════════════════════════════════════════════════╣");
+    }
+
+    println!(
+        "║  Success Rate: {}/{} ({:.0}%)                                                                           ║",
+        success_count,
+        total,
+        (success_count as f64 / total as f64) * 100.0
+    );
+    println!("╚═══════════════════════════════════════════════════════════════════════════════════════════════════════╝");
 }

@@ -4808,8 +4808,7 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         let progress = match std::env::var("SUI_PTB_PROGRESS") {
             Ok(raw) => {
                 let value = raw.trim().to_ascii_lowercase();
-                !(value.is_empty()
-                    || matches!(value.as_str(), "0" | "false" | "no" | "off"))
+                !(value.is_empty() || matches!(value.as_str(), "0" | "false" | "no" | "off"))
             }
             Err(_) => false,
         };
