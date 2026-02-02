@@ -2426,7 +2426,24 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     }
 
     /// Add an object input.
+    ///
+    /// **Important**: For custom struct types (non-primitive objects like user-defined structs),
+    /// the `type_tag` field MUST be provided. If `type_tag` is `None`, the VM will not be able
+    /// to correctly deserialize the object bytes, leading to `FAILED_TO_DESERIALIZE_ARGUMENT` errors.
+    ///
+    /// Use `SimulationEnvironment::get_object_for_ptb()` to automatically populate type information,
+    /// or ensure you pass `type_tag: Some(obj.type_tag.clone())` when constructing `ObjectInput` manually.
     pub fn add_object_input(&mut self, obj: ObjectInput) -> Result<u16> {
+        // Warn if type_tag is None - this often causes deserialization failures for custom types
+        if obj.type_tag().is_none() {
+            tracing::warn!(
+                object_id = %obj.id().to_hex_literal(),
+                "ObjectInput has type_tag: None. This may cause FAILED_TO_DESERIALIZE_ARGUMENT \
+                 errors for custom struct types. Consider using SimulationEnvironment::get_object_for_ptb() \
+                 or explicitly providing the type_tag."
+            );
+        }
+
         let idx = self.inputs.len();
         if idx > u16::MAX as usize {
             return Err(anyhow!("too many inputs"));
@@ -2468,10 +2485,22 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
 
     /// Add an input value (pure or object).
     /// For object inputs, this tracks ownership for transfer validation.
+    ///
+    /// **Note**: For object inputs with custom struct types, ensure `type_tag` is provided.
+    /// See `add_object_input` for details.
     pub fn add_input(&mut self, input: InputValue) -> u16 {
         let idx = self.inputs.len();
         // Track Owned objects as transferable by the sender
         if let InputValue::Object(ref obj) = &input {
+            // Warn if type_tag is None - this often causes deserialization failures
+            if obj.type_tag().is_none() {
+                tracing::warn!(
+                    object_id = %obj.id().to_hex_literal(),
+                    "ObjectInput has type_tag: None. This may cause FAILED_TO_DESERIALIZE_ARGUMENT \
+                     errors for custom struct types."
+                );
+            }
+
             // Track storage read cost for gas metering and get computation cost
             // On Sui, object reads are charged as computation gas (not storage gas)
             let read_computation_cost = self.vm.track_object_read(obj.bytes().len());
