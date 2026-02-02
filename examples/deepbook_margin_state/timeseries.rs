@@ -84,15 +84,10 @@ const DEFAULT_TIMESERIES_FILE: &str = "./examples/deepbook_margin_state/data/pos
 
 #[derive(Debug, Deserialize)]
 struct TimeSeriesData {
-    #[allow(dead_code)]
     description: String,
     margin_manager_id: String,
     pool_type: String,
     #[serde(default)]
-    #[allow(dead_code)]
-    deepbook_pool: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
     position_created_checkpoint: Option<u64>,
     daily_snapshots: Vec<DailySnapshot>,
 }
@@ -107,8 +102,7 @@ struct DailySnapshot {
 
 #[derive(Debug, Deserialize, Clone)]
 struct ObjectVersionInfo {
-    #[allow(dead_code)]
-    name: String,
+    // Note: JSON has a `name` field but we don't need it - names come from objects_to_fetch
     version: u64,
     checkpoint_found: u64,
 }
@@ -141,10 +135,12 @@ fn main() -> Result<()> {
     println!("  📂 Loading time series from: {}", timeseries_file);
     let timeseries = load_timeseries(&timeseries_file)?;
 
-    println!("  ✓ Loaded {} daily snapshots for {}",
-        timeseries.daily_snapshots.len(),
-        timeseries.pool_type);
+    println!("  ✓ {}", timeseries.description);
+    println!("  📊 Pool: {} | Snapshots: {}", timeseries.pool_type, timeseries.daily_snapshots.len());
     println!("  📍 Margin Manager: {}...", &timeseries.margin_manager_id[..20]);
+    if let Some(created_cp) = timeseries.position_created_checkpoint {
+        println!("  🕐 Position created at checkpoint: {}", created_cp);
+    }
     println!();
 
     // =========================================================================
