@@ -112,8 +112,8 @@ The `position_b_daily_timeseries.json` file contains **8 consecutive daily snaps
 | 3 | 236134228 | v757472086 | Continued trading |
 | 4 | 236289445 | v757848631 | Position growth |
 | 5 | 236527001 | v758456911 | Mid-week |
-| 6 | 236790859 | v759259607 | Active trading |
-| 7 | 237019020 | v760195988 | Approaching week end |
+| 6 | 236926043 | v759855738 | Active trading |
+| 7 | 237137954 | v760412772 | Approaching week end |
 | 8 | 237335780 | v760921405 | Week 1 complete |
 
 This demonstrates the power of historical tracking - you can reconstruct portfolio state at any point in time to analyze:

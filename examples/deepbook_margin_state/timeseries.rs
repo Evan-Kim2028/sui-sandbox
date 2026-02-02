@@ -471,9 +471,11 @@ fn main() -> Result<()> {
                 day_result.error = Some(format!("{:?}", err));
             }
             println!("  ❌ manager_state FAILED");
+            if let Some(raw_err) = &result.raw_error {
+                println!("     Raw error: {}", raw_err);
+            }
             if let Some(e) = &day_result.error {
-                let truncated = if e.len() > 80 { &e[..80] } else { e };
-                println!("     Error: {}...", truncated);
+                println!("     Error: {}", e);
             }
         }
 

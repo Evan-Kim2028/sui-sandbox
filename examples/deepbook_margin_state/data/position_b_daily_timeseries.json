@@ -90,34 +90,34 @@
     },
     {
       "day": 6,
-      "checkpoint": 236790859,
+      "checkpoint": 236926043,
       "description": "Day 6",
       "objects": {
-        "0x6": {"name": "Clock", "version": 703829497, "checkpoint_found": 236790859},
-        "0x0000000000000000000000000000000000000000000000000000000000000006": {"name": "Clock", "version": 703829497, "checkpoint_found": 236790859},
-        "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {"name": "DeepBook_Pool", "version": 759259607, "checkpoint_found": 236790859},
-        "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {"name": "Margin_Registry", "version": 759236041, "checkpoint_found": 236780078},
-        "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {"name": "Base_Margin_Pool", "version": 759259607, "checkpoint_found": 236790859},
-        "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {"name": "Quote_Margin_Pool", "version": 759258283, "checkpoint_found": 236790009},
-        "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {"name": "SUI_Pyth_Oracle", "version": 759259427, "checkpoint_found": 236790783},
-        "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {"name": "USDC_Pyth_Oracle", "version": 759259427, "checkpoint_found": 236790811},
-        "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60": {"name": "Margin_Manager", "version": 759259607, "checkpoint_found": 236790859}
+        "0x6": {"name": "Clock", "version": 704198619, "checkpoint_found": 236926043},
+        "0x0000000000000000000000000000000000000000000000000000000000000006": {"name": "Clock", "version": 704198619, "checkpoint_found": 236926043},
+        "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {"name": "DeepBook_Pool", "version": 759855732, "checkpoint_found": 236926043},
+        "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {"name": "Margin_Registry", "version": 759414912, "checkpoint_found": 236845255},
+        "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {"name": "Base_Margin_Pool", "version": 759688285, "checkpoint_found": 236898358},
+        "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {"name": "Quote_Margin_Pool", "version": 759615855, "checkpoint_found": 236896351},
+        "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {"name": "SUI_Pyth_Oracle", "version": 759855734, "checkpoint_found": 236926043},
+        "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {"name": "USDC_Pyth_Oracle", "version": 759855734, "checkpoint_found": 236926043},
+        "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60": {"name": "Margin_Manager", "version": 759855738, "checkpoint_found": 236926043}
       }
     },
     {
       "day": 7,
-      "checkpoint": 237019020,
+      "checkpoint": 237137954,
       "description": "Day 7",
       "objects": {
-        "0x6": {"name": "Clock", "version": 704464097, "checkpoint_found": 237019020},
-        "0x0000000000000000000000000000000000000000000000000000000000000006": {"name": "Clock", "version": 704464097, "checkpoint_found": 237019020},
-        "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {"name": "DeepBook_Pool", "version": 760195988, "checkpoint_found": 237019020},
-        "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {"name": "Margin_Registry", "version": 759414912, "checkpoint_found": 236845255},
-        "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {"name": "Base_Margin_Pool", "version": 760081551, "checkpoint_found": 236981818},
-        "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {"name": "Quote_Margin_Pool", "version": 760195988, "checkpoint_found": 237019020},
-        "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {"name": "SUI_Pyth_Oracle", "version": 760195898, "checkpoint_found": 237018976},
-        "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {"name": "USDC_Pyth_Oracle", "version": 760195941, "checkpoint_found": 237019001},
-        "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60": {"name": "Margin_Manager", "version": 760195988, "checkpoint_found": 237019020}
+        "0x6": {"name": "Clock", "version": 704793487, "checkpoint_found": 237137954},
+        "0x0000000000000000000000000000000000000000000000000000000000000006": {"name": "Clock", "version": 704793487, "checkpoint_found": 237137954},
+        "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {"name": "DeepBook_Pool", "version": 760412769, "checkpoint_found": 237137954},
+        "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {"name": "Margin_Registry", "version": 760411529, "checkpoint_found": 237137282},
+        "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {"name": "Base_Margin_Pool", "version": 760412772, "checkpoint_found": 237137954},
+        "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {"name": "Quote_Margin_Pool", "version": 760410705, "checkpoint_found": 237136890},
+        "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {"name": "SUI_Pyth_Oracle", "version": 760412772, "checkpoint_found": 237137954},
+        "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {"name": "USDC_Pyth_Oracle", "version": 760412772, "checkpoint_found": 237137954},
+        "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60": {"name": "Margin_Manager", "version": 760412772, "checkpoint_found": 237137954}
       }
     },
     {
