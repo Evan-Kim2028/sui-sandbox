@@ -1835,6 +1835,16 @@ impl SimulationEnvironment {
             config.clock_base_ms = ts;
         }
 
+        // CRITICAL: Generate a unique tx_hash for each PTB execution to ensure
+        // globally unique object IDs. Object IDs are derived as hash(tx_hash || ids_created),
+        // so reusing the same tx_hash across PTBs causes ID collisions.
+        self.tx_counter += 1;
+        let mut tx_hash = [0u8; 32];
+        // Combine base tx_hash with tx_counter for uniqueness
+        tx_hash[..24].copy_from_slice(&config.tx_hash[..24]);
+        tx_hash[24..32].copy_from_slice(&self.tx_counter.to_le_bytes());
+        config.tx_hash = tx_hash;
+
         // Create VM harness with custom config
         let mut harness = match VMHarness::with_config(&self.resolver, false, config) {
             Ok(h) => h,
