@@ -249,6 +249,10 @@ path = "examples/deepbook_margin_state/main.rs"
 name = "deepbook_timeseries"
 path = "examples/deepbook_margin_state/timeseries.rs"
 
+[[example]]
+name = "deepbook_snowflake_only"
+path = "examples/deepbook_margin_state/snowflake_only.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"

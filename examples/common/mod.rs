@@ -46,6 +46,10 @@ pub use sui_sandbox_core::utilities::{
 // Backwards compatibility alias
 pub use parse_type_tag as parse_type_tag_simple;
 
+// Snowflake BCS reconstruction utilities
+pub mod snowflake_bcs;
+pub use snowflake_bcs::JsonToBcsConverter;
+
 // =============================================================================
 // Example-Specific Helpers
 // =============================================================================
