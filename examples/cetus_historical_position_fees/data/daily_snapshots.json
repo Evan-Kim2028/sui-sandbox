@@ -1,0 +1,100 @@
+{
+  "description": "Daily snapshots of Cetus JWLSUI/SUI position at end-of-day checkpoints",
+  "position_id": "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1",
+  "pool_id": "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28",
+  "global_config_id": "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f",
+  "coin_a": "0x2921ca2fe6ee99698b095f046bc9759ce7a764d2e91ab0ad182c143649c3df79::jwlsui::JWLSUI",
+  "coin_b": "0x2::sui::SUI",
+  "snapshots": [
+    {
+      "date": "2026-02-03",
+      "checkpoint": 241388715,
+      "objects": {
+        "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f": {
+          "name": "GlobalConfig",
+          "version": 774499938
+        },
+        "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28": {
+          "name": "Pool",
+          "version": 774410730
+        },
+        "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1": {
+          "name": "Position",
+          "version": 774410730
+        }
+      }
+    },
+    {
+      "date": "2026-02-02",
+      "checkpoint": 241056077,
+      "objects": {
+        "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f": {
+          "name": "GlobalConfig",
+          "version": 773011600
+        },
+        "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28": {
+          "name": "Pool",
+          "version": 772958960
+        },
+        "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1": {
+          "name": "Position",
+          "version": 772958960
+        }
+      }
+    },
+    {
+      "date": "2026-02-01",
+      "checkpoint": 240719382,
+      "objects": {
+        "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f": {
+          "name": "GlobalConfig",
+          "version": 771436829
+        },
+        "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28": {
+          "name": "Pool",
+          "version": 771287621
+        },
+        "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1": {
+          "name": "Position",
+          "version": 771287621
+        }
+      }
+    },
+    {
+      "date": "2026-01-31",
+      "checkpoint": 240388641,
+      "objects": {
+        "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f": {
+          "name": "GlobalConfig",
+          "version": 769990146
+        },
+        "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28": {
+          "name": "Pool",
+          "version": 769891196
+        },
+        "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1": {
+          "name": "Position",
+          "version": 769891196
+        }
+      }
+    },
+    {
+      "date": "2026-01-30",
+      "checkpoint": 240060178,
+      "objects": {
+        "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f": {
+          "name": "GlobalConfig",
+          "version": 768529258
+        },
+        "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28": {
+          "name": "Pool",
+          "version": 768470949
+        },
+        "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1": {
+          "name": "Position",
+          "version": 768470949
+        }
+      }
+    }
+  ]
+}

@@ -253,6 +253,10 @@ path = "examples/deepbook_margin_state/timeseries.rs"
 name = "deepbook_snowflake_only"
 path = "examples/deepbook_margin_state/snowflake_only.rs"
 
+[[example]]
+name = "cetus_dlmm_position"
+path = "examples/cetus_dlmm_position.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"

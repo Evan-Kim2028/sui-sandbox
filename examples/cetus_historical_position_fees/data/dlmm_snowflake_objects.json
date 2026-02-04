@@ -1,0 +1,247 @@
+{
+  "description": "Cetus DLMM USDC/SUI pool and position from Snowflake (recent version)",
+  "checkpoint": 241677000,
+  "objects": [
+    {
+      "object_id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076",
+      "version": 775634278,
+      "type": "0x5664f9d3fd82c84023870cfbda8ea84e14c8dd56ce557ad2116e0668581a682b::pool::Pool<0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC, 0x2::sui::SUI>",
+      "owner_type": "Shared",
+      "initial_shared_version": 643563051,
+      "object_json": {
+        "active_id": {
+          "bits": 1367
+        },
+        "active_open_positions": "0",
+        "balance_a": "106053548078",
+        "balance_b": "204621849391864",
+        "base_fee_rate": "4000000",
+        "bin_manager": {
+          "bin_step": 50,
+          "bins": {
+            "head": [
+              {
+                "is_none": false,
+                "v": "27789"
+              },
+              {
+                "is_none": false,
+                "v": "27789"
+              },
+              {
+                "is_none": false,
+                "v": "27790"
+              },
+              {
+                "is_none": false,
+                "v": "27795"
+              },
+              {
+                "is_none": false,
+                "v": "27803"
+              },
+              {
+                "is_none": true,
+                "v": "0"
+              }
+            ],
+            "id": {
+              "id": "0x0a0eeca470c2ed9dafe4cc189a1077f4f3d8af239808ad5182583a6a043e4ecc"
+            },
+            "level": "6",
+            "list_p": "2",
+            "max_level": "16",
+            "random": {
+              "seed": "12508139091182181965"
+            },
+            "size": "34",
+            "tail": {
+              "is_none": false,
+              "v": "27822"
+            }
+          },
+          "pool_id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076"
+        },
+        "id": {
+          "id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076"
+        },
+        "index": "15",
+        "permissions": {
+          "disable_add": false,
+          "disable_add_reward": false,
+          "disable_collect_fee": false,
+          "disable_collect_reward": false,
+          "disable_remove": false,
+          "disable_swap": false
+        },
+        "position_manager": {
+          "bin_step": 50,
+          "position_index": "5327",
+          "positions": {
+            "id": {
+              "id": "0x40b4c5d342d423130889a8b9617bd81abeb4aa10f571d3eb590685d30c171619"
+            },
+            "size": "309"
+          }
+        },
+        "protocol_fee_a": "12528347",
+        "protocol_fee_b": "3474320765",
+        "reward_manager": {
+          "emergency_reward_pause": false,
+          "is_public": true,
+          "last_updated_time": "1770238246",
+          "rewards": [
+            {
+              "current_emission_rate": "854015929338405167407407407",
+              "period_emission_rates": {
+                "head": [
+                  {
+                    "is_none": false,
+                    "v": "1771243200"
+                  },
+                  {
+                    "is_none": true,
+                    "v": "0"
+                  },
+                  {
+                    "is_none": true,
+                    "v": "0"
+                  }
+                ],
+                "id": {
+                  "id": "0x4c34d51196183722ddd947a6a7d13d980ae0293ef46b20edf97c0617b8bdcb52"
+                },
+                "level": "3",
+                "list_p": "2",
+                "max_level": "16",
+                "random": {
+                  "seed": "12425396660134287727"
+                },
+                "size": "1",
+                "tail": {
+                  "is_none": false,
+                  "v": "1771243200"
+                }
+              },
+              "reward_coin": {
+                "name": "06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS"
+              },
+              "reward_harvested": "277863045843072",
+              "reward_refunded": "0",
+              "reward_released": "5278370137601702693230614197256122"
+            },
+            {
+              "current_emission_rate": "133012980994456604823703703",
+              "period_emission_rates": {
+                "head": [
+                  {
+                    "is_none": false,
+                    "v": "1771243200"
+                  }
+                ],
+                "id": {
+                  "id": "0xc9a940414754198cf340e9fbfffd5f68c05f6fae721fede294e4b5cfefd387a8"
+                },
+                "level": "1",
+                "list_p": "2",
+                "max_level": "16",
+                "random": {
+                  "seed": "13835334619034044441"
+                },
+                "size": "1",
+                "tail": {
+                  "is_none": false,
+                  "v": "1771243200"
+                }
+              },
+              "reward_coin": {
+                "name": "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+              },
+              "reward_harvested": "838777847808",
+              "reward_refunded": "0",
+              "reward_released": "27220574508591566350751668004138"
+            }
+          ],
+          "vault": {
+            "id": {
+              "id": "0x8410859fb6fa19920a1b3fedcd73a749ab43356036c8b9ac89477af6c5a0b948"
+            },
+            "size": "2"
+          }
+        },
+        "url": "https://node1.irys.xyz/yKfgcB2yEJ1JZSeGm_eXAD0d34a3Wx7tcomS502ZKT8",
+        "v_parameters": {
+          "bin_step_config": {
+            "base_factor": 8000,
+            "bin_step": 50,
+            "decay_period": 1200,
+            "filter_period": 120,
+            "max_volatility_accumulator": 150000,
+            "protocol_fee_rate": "200000000",
+            "reduction_factor": 5000,
+            "variable_fee_control": 7500
+          },
+          "index_reference": {
+            "bits": 1366
+          },
+          "last_update_timestamp": "1770238246",
+          "volatility_accumulator": 12254,
+          "volatility_reference": 2254
+        }
+      }
+    },
+    {
+      "object_id": "0x33f5514521220478d3b3e141c7a67f766fd6b4150e25148a13171b4b68089417",
+      "version": 768361907,
+      "type": "0x5664f9d3fd82c84023870cfbda8ea84e14c8dd56ce557ad2116e0668581a682b::position::Position",
+      "owner_type": "AddressOwner",
+      "initial_shared_version": null,
+      "object_json": {
+        "coin_type_a": "dba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+        "coin_type_b": "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI",
+        "description": "Cetus DLMM Position",
+        "flash_count": "0",
+        "id": {
+          "id": "0x33f5514521220478d3b3e141c7a67f766fd6b4150e25148a13171b4b68089417"
+        },
+        "index": "4039",
+        "liquidity_shares": [
+          "46177627550776771595505096759",
+          "42021483202007678022227906473",
+          "37865364324575733314307817829",
+          "33709259401299293608946974017",
+          "29553161992387312765765657816",
+          "25395637402432933512770820150",
+          "21240079362169320778666005670",
+          "17084400265709140399378297503",
+          "12928733436914822917308658831",
+          "8773108344984607109473309297",
+          "4617447812488315227571090118",
+          "7572605928733902740448220148",
+          "10527766176578274164690023170",
+          "13482932211392136217020530470",
+          "16432999551753986904956378599",
+          "19387340965356111580680127985",
+          "22341695062615743604749742821",
+          "25295965865060711075142026961",
+          "28250362133758889082360868589",
+          "31205377118284606736798811659",
+          "34160525791541710950729214303",
+          "37115041551469381295757831808",
+          "40070000126712705397573040327",
+          "43025426195843862326244890545",
+          "45980120694464063577244286154"
+        ],
+        "lower_bin_id": {
+          "bits": 1325
+        },
+        "name": "Cetus DLMM LP | Pool15-4039",
+        "pool_id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076",
+        "upper_bin_id": {
+          "bits": 1349
+        },
+        "uri": "https://node1.irys.xyz/yKfgcB2yEJ1JZSeGm_eXAD0d34a3Wx7tcomS502ZKT8"
+      }
+    }
+  ]
+}

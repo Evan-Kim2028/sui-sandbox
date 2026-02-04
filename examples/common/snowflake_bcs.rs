@@ -212,25 +212,18 @@ impl JsonToBcsConverter {
                 Ok(DynamicValue::Address(addr_bytes))
             }
 
-            MoveType::Vector(inner_type) => {
-                self.convert_vector(json, inner_type, field_name)
-            }
+            MoveType::Vector(inner_type) => self.convert_vector(json, inner_type, field_name),
 
             MoveType::Struct {
                 address,
                 module,
                 name,
                 type_args,
-            } => {
-                self.convert_struct(json, address, module, name, type_args, field_name)
-            }
+            } => self.convert_struct(json, address, module, name, type_args, field_name),
 
             MoveType::TypeParameter(_) => {
                 // Type parameters should be resolved before calling this
-                Err(anyhow!(
-                    "Unresolved type parameter in field {}",
-                    field_name
-                ))
+                Err(anyhow!("Unresolved type parameter in field {}", field_name))
             }
         }
     }
@@ -246,8 +239,8 @@ impl JsonToBcsConverter {
         if matches!(inner_type, MoveType::U8) {
             if let Some(s) = json.as_str() {
                 // Try hex decode
-                if s.starts_with("0x") {
-                    let bytes = hex::decode(&s[2..])
+                if let Some(hex_str) = s.strip_prefix("0x") {
+                    let bytes = hex::decode(hex_str)
                         .with_context(|| format!("Invalid hex in field {}", field_name))?;
                     return Ok(DynamicValue::Vector(
                         bytes.into_iter().map(DynamicValue::U8).collect(),
@@ -294,7 +287,11 @@ impl JsonToBcsConverter {
         let full_type = if type_args.is_empty() {
             base_type.clone()
         } else {
-            let type_args_str = type_args.iter().map(|t| format_move_type(t)).collect::<Vec<_>>().join(", ");
+            let type_args_str = type_args
+                .iter()
+                .map(format_move_type)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{}<{}>", base_type, type_args_str)
         };
 
@@ -344,7 +341,9 @@ impl JsonToBcsConverter {
         }
 
         // Generic struct - try to get layout and recurse
-        if let Some((layout, nested_type_args)) = self.layout_registry.get_layout_with_type_args(&full_type) {
+        if let Some((layout, nested_type_args)) =
+            self.layout_registry.get_layout_with_type_args(&full_type)
+        {
             return self.json_to_dynamic_value_with_type_args(json, &layout, &nested_type_args);
         }
 
@@ -472,7 +471,10 @@ impl JsonToBcsConverter {
             .ok_or_else(|| anyhow!("Expected string for TypeName.name in {}", field_name))?;
 
         // TypeName has one field: name: String (which is vector<u8>)
-        let name_value = self.convert_string(&serde_json::Value::String(name_str.to_string()), &format!("{}.name", field_name))?;
+        let name_value = self.convert_string(
+            &serde_json::Value::String(name_str.to_string()),
+            &format!("{}.name", field_name),
+        )?;
 
         Ok(DynamicValue::Struct {
             type_name: "TypeName".to_string(),
@@ -532,7 +534,11 @@ impl JsonToBcsConverter {
             })?;
 
             let key = entry_obj.get("key").ok_or_else(|| {
-                anyhow!("Missing 'key' in VecMap entry {}.contents[{}]", field_name, i)
+                anyhow!(
+                    "Missing 'key' in VecMap entry {}.contents[{}]",
+                    field_name,
+                    i
+                )
             })?;
             let value = entry_obj.get("value").ok_or_else(|| {
                 anyhow!(
@@ -542,7 +548,8 @@ impl JsonToBcsConverter {
                 )
             })?;
 
-            let key_val = self.infer_and_convert(key, &format!("{}.contents[{}].key", field_name, i))?;
+            let key_val =
+                self.infer_and_convert(key, &format!("{}.contents[{}].key", field_name, i))?;
             let val_val =
                 self.infer_and_convert(value, &format!("{}.contents[{}].value", field_name, i))?;
 
@@ -654,7 +661,7 @@ impl JsonToBcsConverter {
                                 // Check if it's VecMap (entries have key/value) or VecSet
                                 if let Some(first) = contents.as_array().and_then(|a| a.first()) {
                                     if first.is_object()
-                                        && first.as_object().map_or(false, |o| o.contains_key("key"))
+                                        && first.as_object().is_some_and(|o| o.contains_key("key"))
                                     {
                                         return self.convert_vec_map(json, field_name);
                                     }
@@ -735,8 +742,8 @@ fn parse_json_number_u128(json: &JsonValue, field_name: &str) -> Result<u128> {
 /// Parse a JSON value as U256 (32 bytes).
 fn parse_json_u256(json: &JsonValue, field_name: &str) -> Result<[u8; 32]> {
     if let Some(s) = json.as_str() {
-        if s.starts_with("0x") {
-            let bytes = hex::decode(&s[2..])
+        if let Some(hex_str) = s.strip_prefix("0x") {
+            let bytes = hex::decode(hex_str)
                 .with_context(|| format!("Invalid hex for U256 {}", field_name))?;
             if bytes.len() == 32 {
                 let mut arr = [0u8; 32];
@@ -758,8 +765,7 @@ fn parse_json_u256(json: &JsonValue, field_name: &str) -> Result<[u8; 32]> {
 /// Parse a JSON value as an address (32 bytes).
 fn parse_json_address(json: &JsonValue, field_name: &str) -> Result<[u8; 32]> {
     if let Some(s) = json.as_str() {
-        return parse_hex_address(s)
-            .with_context(|| format!("Invalid address for {}", field_name));
+        return parse_hex_address(s).with_context(|| format!("Invalid address for {}", field_name));
     }
     // Handle nested { "id": "0x..." } pattern
     if let Some(obj) = json.as_object() {
@@ -780,8 +786,7 @@ fn parse_hex_address(s: &str) -> Result<[u8; 32]> {
     // Pad to 64 hex chars (32 bytes)
     let padded = format!("{:0>64}", s);
 
-    let bytes =
-        hex::decode(&padded).with_context(|| format!("Invalid hex address: 0x{}", s))?;
+    let bytes = hex::decode(&padded).with_context(|| format!("Invalid hex address: 0x{}", s))?;
 
     if bytes.len() != 32 {
         return Err(anyhow!("Address must be 32 bytes, got {}", bytes.len()));
@@ -815,7 +820,11 @@ fn format_move_type(move_type: &MoveType) -> String {
             if type_args.is_empty() {
                 base
             } else {
-                let args_str = type_args.iter().map(format_move_type).collect::<Vec<_>>().join(", ");
+                let args_str = type_args
+                    .iter()
+                    .map(format_move_type)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!("{}<{}>", base, args_str)
             }
         }
