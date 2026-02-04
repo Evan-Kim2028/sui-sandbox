@@ -1362,10 +1362,9 @@ impl ToolDispatcher {
                     for &cp in chunk {
                         match walrus.get_checkpoint_json(cp) {
                             Ok(value) => decoded.push((cp, value)),
-                            Err(err) => eprintln!(
-                                "[walrus] checkpoint {} failed in fallback: {}",
-                                cp, err
-                            ),
+                            Err(err) => {
+                                eprintln!("[walrus] checkpoint {} failed in fallback: {}", cp, err)
+                            }
                         }
                     }
                 }

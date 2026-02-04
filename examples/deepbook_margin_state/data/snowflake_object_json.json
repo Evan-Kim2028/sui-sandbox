@@ -1,0 +1,85 @@
+{
+  "description": "OBJECT_JSON data from Snowflake for BCS reconstruction proof-of-concept",
+  "source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "checkpoint": 236527001,
+  "notes": "This demonstrates reconstructing BCS from decoded JSON - works for simple objects but has limitations for complex types",
+  "objects": [
+    {
+      "object_id": "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60",
+      "version": 758456911,
+      "type": "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b::margin_manager::MarginManager<0x2::sui::SUI, 0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC>",
+      "bcs_length": 752,
+      "object_json": {
+        "balance_manager": {
+          "allow_listed": {
+            "contents": [
+              "0x7ef2713610aa5ed4707252803173fd556bc3e7123d01aa0045c1d71b82fac715",
+              "0xfaa4023805bb8f805057c109071966fa434a114ff240aaca67b9f65211a6bd9d",
+              "0xbc1affd965bf9c34484c16e326b8c492be7e98bbef02272ecfffb324d48dc6cc"
+            ]
+          },
+          "balances": {
+            "id": {
+              "id": "0x3533d634ea79c14101108d949c5ecd88b65f2645d98d728250995bad2fb48d03"
+            },
+            "size": "2"
+          },
+          "id": {
+            "id": "0x14ccf2650052b48b285de86295aa024e2fafc03d391e9f570c39487769ddf826"
+          },
+          "owner": "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60"
+        },
+        "borrowed_base_shares": "6531093430",
+        "borrowed_quote_shares": "0",
+        "deepbook_pool": "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407",
+        "deposit_cap": {
+          "balance_manager_id": "0x14ccf2650052b48b285de86295aa024e2fafc03d391e9f570c39487769ddf826",
+          "id": {
+            "id": "0x7ef2713610aa5ed4707252803173fd556bc3e7123d01aa0045c1d71b82fac715"
+          }
+        },
+        "extra_fields": {
+          "contents": []
+        },
+        "id": {
+          "id": "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60"
+        },
+        "margin_pool_id": "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344",
+        "owner": "0x33fd8e77fe04f1684d2dd4cf1198fff8fa0c3f15e20b9c7574fb1a64d4f40075",
+        "take_profit_stop_loss": {
+          "trigger_above": [],
+          "trigger_below": []
+        },
+        "trade_cap": {
+          "balance_manager_id": "0x14ccf2650052b48b285de86295aa024e2fafc03d391e9f570c39487769ddf826",
+          "id": {
+            "id": "0xbc1affd965bf9c34484c16e326b8c492be7e98bbef02272ecfffb324d48dc6cc"
+          }
+        },
+        "withdraw_cap": {
+          "balance_manager_id": "0x14ccf2650052b48b285de86295aa024e2fafc03d391e9f570c39487769ddf826",
+          "id": {
+            "id": "0xfaa4023805bb8f805057c109071966fa434a114ff240aaca67b9f65211a6bd9d"
+          }
+        }
+      }
+    },
+    {
+      "object_id": "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407",
+      "version": 758456911,
+      "type": "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::pool::Pool<0x2::sui::SUI, 0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC>",
+      "bcs_length": null,
+      "object_json": {
+        "id": {
+          "id": "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407"
+        },
+        "inner": {
+          "id": {
+            "id": "0x50997b5f1f6401674d3d881a61e09a71776ee19cd8b83114a0a21b3a82f130b5"
+          },
+          "version": "1"
+        }
+      }
+    }
+  ]
+}

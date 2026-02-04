@@ -1,0 +1,143 @@
+{
+  "description": "Dynamic field edge case objects for BCS reconstruction testing",
+  "source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "checkpoint_range": "236500000-236530000",
+  "objects": [
+    {
+      "object_id": "0xd781bcc4104c09190726de68325da59cd101269681e121e3174517a154a50806",
+      "version": 758423279,
+      "type": "0x2::table::Table<vector<u8>, 0x978fed071cca22dd26bec3cf4a5d5a00ab10f39cb8c659bbfdfbec4397241001::order::OrderStatus>",
+      "bcs_length": 201,
+      "category": "Table",
+      "object_json": {
+        "id": {
+          "id": "0xd781bcc4104c09190726de68325da59cd101269681e121e3174517a154a50806"
+        },
+        "size": "446089"
+      }
+    },
+    {
+      "object_id": "0xfc7ed43a7b7b261fabd3f55e90d544a56964534266eaa5f223a389b005defa6a",
+      "version": 758466350,
+      "type": "0x2::dynamic_field::Field<address, 0x2::vec_set::VecSet<0x2::object::ID>>",
+      "bcs_length": 427,
+      "category": "VecSet",
+      "object_json": {
+        "id": {
+          "id": "0xfc7ed43a7b7b261fabd3f55e90d544a56964534266eaa5f223a389b005defa6a"
+        },
+        "name": "0x2c13b09f1ff33edefd665e45c7ffe91c48a361bce1d06db03190f043f6091c02",
+        "value": {
+          "contents": [
+            "0x0549962676630d02d0efb64b73d139a83407ced9b10ebe8be207af93d0c04e9e",
+            "0x9551787508253268550e576c0bbdf5dd751796717582bef15f9ffa9ba210ca94",
+            "0x2dd336bf157a578fed58613cab5b44fee2f932add2426b8e44d3dff720580d82",
+            "0xb7b43e3d70ef9009fe1a84b190bdffc6bbf9a1d5eab30253711a3d5fbc214e6a"
+          ]
+        }
+      }
+    },
+    {
+      "object_id": "0x294a992142e7f8709c919d189ade425ef9ba3cba40bf2526494b6d2594043b52",
+      "version": 758463442,
+      "type": "0x2::dynamic_field::Field<0x1::type_name::TypeName, 0x2::vec_map::VecMap<0x1::type_name::TypeName, 0x2::balance::Balance<0xd0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH>>>",
+      "bcs_length": 580,
+      "category": "VecMap",
+      "object_json": {
+        "id": {
+          "id": "0x294a992142e7f8709c919d189ade425ef9ba3cba40bf2526494b6d2594043b52"
+        },
+        "name": {
+          "name": "d0e89b2af5e4910726fbcd8b8dd37bb79b29e5f83f7491bca830e94f7f226d29::eth::ETH"
+        },
+        "value": {
+          "contents": [
+            {
+              "key": {
+                "name": "dba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
+              },
+              "value": "624776"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "object_id": "0x00a2b1a4a4dcfe8c57256b5b1bb8301fa3e6f380b4482215d51f68f4b8487d14",
+      "version": 758470965,
+      "type": "0x2::dynamic_field::Field<u64, 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::big_vector::Slice<0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809::order::Order>>",
+      "bcs_length": 1561,
+      "category": "BigVectorSlice",
+      "object_json": {
+        "id": {
+          "id": "0x00a2b1a4a4dcfe8c57256b5b1bb8301fa3e6f380b4482215d51f68f4b8487d14"
+        },
+        "name": "35",
+        "value": {
+          "keys": [
+            "170141200196646727486152198364206344096",
+            "170141200199229271656471535590446344097",
+            "170141200207345839048903738301486344084",
+            "170141200252171427148017948728366344087",
+            "170141200287404708328803192314926344062",
+            "170141200479988716458330911185966344090",
+            "170141211130216407414540536683566274113",
+            "170141211130400874855277632199725572115",
+            "170141367925511892097621222005805207160",
+            "170141367925696359538358317521965187611",
+            "170141367927725501386466368199724682640"
+          ],
+          "next": "0",
+          "prev": "0",
+          "vals": [
+            {
+              "balance_manager_id": "0x0a4b8cd3b980819b7603259586a6ad38c42dd908020204798b483ae56977085d",
+              "client_order_id": "0",
+              "epoch": "1013",
+              "expire_timestamp": "1768919814000",
+              "fee_is_deep": true,
+              "filled_quantity": "0",
+              "order_deep_price": {
+                "asset_is_base": false,
+                "deep_per_asset": "5559237615"
+              },
+              "order_id": "170141200196646727486152198364206344096",
+              "quantity": "1100000",
+              "status": 0
+            },
+            {
+              "balance_manager_id": "0x0a4b8cd3b980819b7603259586a6ad38c42dd908020204798b483ae56977085d",
+              "client_order_id": "0",
+              "epoch": "1013",
+              "expire_timestamp": "1768919814000",
+              "fee_is_deep": true,
+              "filled_quantity": "0",
+              "order_deep_price": {
+                "asset_is_base": false,
+                "deep_per_asset": "5559237615"
+              },
+              "order_id": "170141200199229271656471535590446344097",
+              "quantity": "2200000",
+              "status": 0
+            },
+            {
+              "balance_manager_id": "0x47dcbbc8561fe3d52198336855f0983878152a12524749e054357ac2e3573d58",
+              "client_order_id": "33615630",
+              "epoch": "1013",
+              "expire_timestamp": "1844674407370955161",
+              "fee_is_deep": true,
+              "filled_quantity": "0",
+              "order_deep_price": {
+                "asset_is_base": false,
+                "deep_per_asset": "5559237615"
+              },
+              "order_id": "170141200207345839048903738301486344084",
+              "quantity": "1000000",
+              "status": 0
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

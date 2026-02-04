@@ -4834,6 +4834,16 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
     /// Execute all commands in the PTB.
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<TransactionEffects> {
         let start_time = std::time::Instant::now();
+        let progress = match std::env::var("SUI_PTB_PROGRESS") {
+            Ok(raw) => {
+                let value = raw.trim().to_ascii_lowercase();
+                !(value.is_empty() || matches!(value.as_str(), "0" | "false" | "no" | "off"))
+            }
+            Err(_) => false,
+        };
+        if progress {
+            eprintln!("[ptb] start commands={}", commands.len());
+        }
 
         // Validate PTB causality before execution
         let validation = validate_ptb(&commands, self.inputs.len());
@@ -4874,6 +4884,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         for (index, cmd) in commands.iter().enumerate() {
             let cmd_description = Self::describe_command(cmd);
             let cmd_type = Self::command_type_name(cmd);
+            if progress {
+                eprintln!(
+                    "[ptb] start cmd {}/{}: {}",
+                    index + 1,
+                    commands.len(),
+                    cmd_description
+                );
+            }
 
             // Extract function call info for MoveCall commands
             let func_info = if let Command::MoveCall {
@@ -4915,6 +4933,15 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                     if let Some(info) = func_info {
                         self.execution_trace.add_function_call(info);
                     }
+                    if progress {
+                        eprintln!(
+                            "[ptb] end cmd {}/{}: {} ({}us)",
+                            index + 1,
+                            commands.len(),
+                            cmd_type,
+                            cmd_duration_us
+                        );
+                    }
 
                     // Check gas budget after each successful command
                     if let Err(gas_err) = self.check_gas_budget() {
@@ -4952,6 +4979,15 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                         cmd_description.clone(),
                         e.to_string(),
                     );
+                    if progress {
+                        eprintln!(
+                            "[ptb] error cmd {}/{}: {}: {}",
+                            index + 1,
+                            commands.len(),
+                            cmd_type,
+                            e
+                        );
+                    }
                     self.execution_trace
                         .complete(false, Some(start_time.elapsed().as_millis() as u64));
                     return Ok(TransactionEffects::failure_at_with_context(

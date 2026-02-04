@@ -241,6 +241,22 @@ path = "examples/walrus_checkpoint_replay.rs"
 name = "walrus_cache_build"
 path = "examples/walrus_cache_build.rs"
 
+[[example]]
+name = "deepbook_margin_state"
+path = "examples/deepbook_margin_state/main.rs"
+
+[[example]]
+name = "deepbook_timeseries"
+path = "examples/deepbook_margin_state/timeseries.rs"
+
+[[example]]
+name = "deepbook_snowflake_only"
+path = "examples/deepbook_margin_state/snowflake_only.rs"
+
+[[example]]
+name = "cetus_dlmm_position"
+path = "examples/cetus_dlmm_position.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"
