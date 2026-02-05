@@ -1,0 +1,59 @@
+{
+  "checkpoint": 240732600,
+  "description": "Object versions at checkpoint 240732600 - earlier state of DeepBook margin position",
+  "query_source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "generated_at": "2026-02-02",
+  "notes": {
+    "margin_manager_created": 240732410,
+    "this_checkpoint": 240732600,
+    "later_checkpoint": 240733000,
+    "time_delta": "~400 checkpoints after creation, ~400 checkpoints before later snapshot"
+  },
+  "objects": {
+    "0x0000000000000000000000000000000000000000000000000000000000000006": {
+      "name": "Clock",
+      "version": 714665334,
+      "checkpoint_found": 240732600
+    },
+    "0x6": {
+      "name": "Clock (short)",
+      "version": 714665334,
+      "checkpoint_found": 240732600
+    },
+    "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407": {
+      "name": "DeepBook_Pool",
+      "version": 771528719,
+      "checkpoint_found": 240732600
+    },
+    "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742": {
+      "name": "Margin_Registry",
+      "version": 771527466,
+      "checkpoint_found": 240732410
+    },
+    "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344": {
+      "name": "Base_Margin_Pool",
+      "version": 771511934,
+      "checkpoint_found": 240730234
+    },
+    "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f": {
+      "name": "Quote_Margin_Pool",
+      "version": 771528097,
+      "checkpoint_found": 240732519
+    },
+    "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37": {
+      "name": "SUI_Pyth_Oracle",
+      "version": 771528690,
+      "checkpoint_found": 240732596
+    },
+    "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab": {
+      "name": "USDC_Pyth_Oracle",
+      "version": 771528690,
+      "checkpoint_found": 240732596
+    },
+    "0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80": {
+      "name": "Margin_Manager",
+      "version": 771528097,
+      "checkpoint_found": 240732519
+    }
+  }
+}

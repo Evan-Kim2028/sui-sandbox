@@ -52,7 +52,7 @@ rayon = "1.10"
 better_any = "0.1"
 
 # Async runtime - pinned to match MystenLabs Sui crate requirements
-tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "=1.47.1", features = ["rt-multi-thread", "macros", "sync", "process"] }
 tokio-stream = "0.1"
 futures = "0.3"
 async-trait = "0.1"
@@ -188,6 +188,22 @@ path = "examples/batch_ptb/main.rs"
 [[example]]
 name = "ptb_basics"
 path = "examples/ptb_basics.rs"
+
+[[example]]
+name = "deepbook_margin_state"
+path = "examples/deepbook_margin_state/main.rs"
+
+[[example]]
+name = "deepbook_timeseries"
+path = "examples/deepbook_margin_state/timeseries.rs"
+
+[[example]]
+name = "deepbook_snowflake_only"
+path = "examples/deepbook_margin_state/snowflake_only.rs"
+
+[[example]]
+name = "cetus_dlmm_position"
+path = "examples/cetus_dlmm_position.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

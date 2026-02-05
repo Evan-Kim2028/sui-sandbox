@@ -1,0 +1,93 @@
+{
+  "description": "Daily historical snapshots for Cetus JWLSUI/SUI position",
+  "position_id": "0x86c2a2d02ef5f9be17874e3de1a908b81409c6890626ab73dac6740b9309abb1",
+  "pool_id": "0x075a472bdbb478df8d6a8ed51128712d3c7db67667cda94028865f129315ae28",
+  "coin_a": "JWLSUI (0x2921ca2fe6ee99698b095f046bc9759ce7a764d2e91ab0ad182c143649c3df79::jwlsui::JWLSUI)",
+  "coin_b": "SUI (0x2::sui::SUI)",
+  "coin_a_decimals": 9,
+  "coin_b_decimals": 9,
+  "position_created": "2024-09-16",
+  "last_pool_activity": "2026-01-27",
+  "data_source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "generated_at": "2026-02-04",
+  "notes": [
+    "Position liquidity has been constant at 1,236,605,018,014 since creation",
+    "Pool went dormant on 2026-01-27 (no swaps since then)",
+    "fee_growth_global values are Q64.64 fixed point (divide by 2^64 to get actual)",
+    "tick_lower=-443636, tick_upper=443636 (full range position)",
+    "current_tick shows price movement - negative means SUI appreciated vs JWLSUI"
+  ],
+  "sample_data": [
+    {
+      "date": "2025-10-29",
+      "checkpoint": 206456776,
+      "position_liquidity": 1236605018014,
+      "tick_lower": -443636,
+      "tick_upper": 443636,
+      "pool_reserve_a": 16717216681607,
+      "pool_reserve_b": 1099724776516,
+      "fee_growth_global_a": 23293797650158696,
+      "fee_growth_global_b": 136391288965671,
+      "current_sqrt_price": "18444908409205228000",
+      "current_tick": -2,
+      "pool_active_liquidity": 78456899045992660
+    },
+    {
+      "date": "2025-11-29",
+      "checkpoint": 217649299,
+      "position_liquidity": 1236605018014,
+      "tick_lower": -443636,
+      "tick_upper": 443636,
+      "pool_reserve_a": 16764013898933,
+      "pool_reserve_b": 1050196804374,
+      "fee_growth_global_a": 28363620421551188,
+      "fee_growth_global_b": 2238674167189202,
+      "current_sqrt_price": "18262899634668757000",
+      "current_tick": -201,
+      "pool_active_liquidity": 1060404878812
+    },
+    {
+      "date": "2025-12-29",
+      "checkpoint": 228825550,
+      "position_liquidity": 1236605018014,
+      "tick_lower": -443636,
+      "tick_upper": 443636,
+      "pool_reserve_a": 19061044243741,
+      "pool_reserve_b": 334418672505,
+      "fee_growth_global_a": 43503515543057980,
+      "fee_growth_global_b": 3679142106272115,
+      "current_sqrt_price": "5809582739407761000",
+      "current_tick": -23109,
+      "pool_active_liquidity": 1060404878812
+    },
+    {
+      "date": "2026-01-27",
+      "checkpoint": 239055451,
+      "position_liquidity": 1236605018014,
+      "tick_lower": -443636,
+      "tick_upper": 443636,
+      "pool_reserve_a": 19849995482241,
+      "pool_reserve_b": 271028547206,
+      "fee_growth_global_a": 44870291705415870,
+      "fee_growth_global_b": 3697660314992661,
+      "current_sqrt_price": "4706829378324787000",
+      "current_tick": -27319,
+      "pool_active_liquidity": 1060404878812
+    },
+    {
+      "date": "2026-02-04",
+      "checkpoint": 241670271,
+      "position_liquidity": 1236605018014,
+      "tick_lower": -443636,
+      "tick_upper": 443636,
+      "pool_reserve_a": 19849995482241,
+      "pool_reserve_b": 271028547206,
+      "fee_growth_global_a": 44870291705415870,
+      "fee_growth_global_b": 3697660314992661,
+      "current_sqrt_price": "4706829378324787000",
+      "current_tick": -27319,
+      "pool_active_liquidity": 1060404878812
+    }
+  ],
+  "sql_query": "-- Complete daily historical snapshot available via Snowflake query\n-- See examples/cetus_historical_position_fees/data/daily_snapshot_query.sql"
+}

@@ -46,36 +46,6 @@ pub use sui_sandbox_core::utilities::{
 // Backwards compatibility alias
 pub use parse_type_tag as parse_type_tag_simple;
 
-// Snowflake BCS reconstruction utilities
-pub mod snowflake_bcs;
-pub use snowflake_bcs::JsonToBcsConverter;
-
-// Cetus DLMM calculation utilities
-pub mod dlmm;
-pub use dlmm::{
-    // Functions
-    calculate_position_amounts,
-    calculate_snapshot_amounts,
-    display_historical_view,
-    display_position_amounts,
-    extract_coin_types_from_pool,
-    get_range_status,
-    load_extended_position_data,
-    load_historical_data,
-    load_snowflake_data,
-    // Data structures
-    BinAmount,
-    BinData,
-    BinGroupData,
-    DailySnapshot,
-    ExtendedPositionData,
-    HistoricalData,
-    ObjectData,
-    PositionAmounts,
-    PositionBinStat,
-    SnowflakeData,
-};
-
 // =============================================================================
 // Example-Specific Helpers
 // =============================================================================
@@ -91,8 +61,8 @@ use tokio::runtime::Runtime;
 use anyhow::Result;
 use base64::Engine;
 use std::str::FromStr;
+use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
-use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
@@ -487,7 +457,7 @@ pub use sui_transport::graphql::GraphQLClient;
 
 use move_core_types::language_storage::TypeTag;
 use sui_prefetch::{DynamicFieldKey, PrefetchedChild};
-use sui_sandbox_core::sandbox_runtime::KeyBasedChildFetcherFn;
+use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
 
 type CachedObjectIndex = Arc<HashMap<String, (String, Vec<u8>)>>;
 /// Dynamic discovery cache for child objects discovered during execution.

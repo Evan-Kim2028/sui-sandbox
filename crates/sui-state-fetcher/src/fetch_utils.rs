@@ -112,6 +112,7 @@ pub fn fetch_child_object(
     max_version: u64,
 ) -> Option<(TypeTag, Vec<u8>, u64)> {
     let debug_df = env_bool("SUI_DEBUG_DF_FETCH");
+    let strict_checkpoint = checkpoint.is_some() && env_bool("SUI_DF_STRICT_CHECKPOINT");
     let cache = provider.cache();
     let mut best: Option<(TypeTag, Vec<u8>, u64)> = None;
 
@@ -161,6 +162,16 @@ pub fn fetch_child_object(
                 }
             }
         }
+    }
+
+    if strict_checkpoint {
+        if debug_df {
+            eprintln!(
+                "[df_fetch] strict checkpoint skip latest child={}",
+                child_id.to_hex_literal()
+            );
+        }
+        return None;
     }
 
     // Try gRPC latest

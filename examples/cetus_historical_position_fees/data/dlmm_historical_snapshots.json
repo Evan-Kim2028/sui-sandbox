@@ -1,0 +1,126 @@
+{
+  "description": "7-day historical snapshots of Cetus DLMM USDC/SUI position with bin data",
+  "position_id": "0x33f5514521220478d3b3e141c7a67f766fd6b4150e25148a13171b4b68089417",
+  "pool_id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076",
+  "lower_bin": 1325,
+  "upper_bin": 1349,
+  "position_stats": [
+    {"bin_id": 1325, "liquidity_share": "46177627550776771595505096759"},
+    {"bin_id": 1326, "liquidity_share": "42021483202007678022227906473"},
+    {"bin_id": 1327, "liquidity_share": "37865364324575733314307817829"},
+    {"bin_id": 1328, "liquidity_share": "33709259401299293608946974017"},
+    {"bin_id": 1329, "liquidity_share": "29553161992387312765765657816"},
+    {"bin_id": 1330, "liquidity_share": "25395637402432933512770820150"},
+    {"bin_id": 1331, "liquidity_share": "21240079362169320778666005670"},
+    {"bin_id": 1332, "liquidity_share": "17084400265709140399378297503"},
+    {"bin_id": 1333, "liquidity_share": "12928733436914822917308658831"},
+    {"bin_id": 1334, "liquidity_share": "8773108344984607109473309297"},
+    {"bin_id": 1335, "liquidity_share": "4617447812488315227571090118"},
+    {"bin_id": 1336, "liquidity_share": "7572605928733902740448220148"},
+    {"bin_id": 1337, "liquidity_share": "10527766176578274164690023170"},
+    {"bin_id": 1338, "liquidity_share": "13482932211392136217020530470"},
+    {"bin_id": 1339, "liquidity_share": "16432999551753986904956378599"},
+    {"bin_id": 1340, "liquidity_share": "19387340965356111580680127985"},
+    {"bin_id": 1341, "liquidity_share": "22341695062615743604749742821"},
+    {"bin_id": 1342, "liquidity_share": "25295965865060711075142026961"},
+    {"bin_id": 1343, "liquidity_share": "28250362133758889082360868589"},
+    {"bin_id": 1344, "liquidity_share": "31205377118284606736798811659"},
+    {"bin_id": 1345, "liquidity_share": "34160525791541710950729214303"},
+    {"bin_id": 1346, "liquidity_share": "37115041551469381295757831808"},
+    {"bin_id": 1347, "liquidity_share": "40070000126712705397573040327"},
+    {"bin_id": 1348, "liquidity_share": "43025426195843862326244890545"},
+    {"bin_id": 1349, "liquidity_share": "45980120694464063577244286154"}
+  ],
+  "daily_snapshots": [
+    {
+      "date": "2026-01-30",
+      "checkpoint": 240060178,
+      "active_bin": 1337,
+      "range_status": "IN_RANGE",
+      "pool_usdc": 44129.47,
+      "pool_sui": 128182.68,
+      "bin_groups": [
+        {
+          "group_idx": 27810,
+          "bins": [
+            {"bin_id": 1325, "amount_a": "0", "amount_b": "1975418970585", "liquidity_share": "36438209788901069284045002460055"},
+            {"bin_id": 1326, "amount_a": "0", "amount_b": "1976757099955", "liquidity_share": "36462755699539165226081280939488"},
+            {"bin_id": 1327, "amount_a": "0", "amount_b": "1978147957327", "liquidity_share": "36488268466864968921257421272321"},
+            {"bin_id": 1328, "amount_a": "0", "amount_b": "1980101358423", "liquidity_share": "36524137405265911214349069796998"},
+            {"bin_id": 1329, "amount_a": "0", "amount_b": "1981492206284", "liquidity_share": "36549592922629106122778622735559"},
+            {"bin_id": 1330, "amount_a": "0", "amount_b": "1982380312437", "liquidity_share": "36563654749886902564375289916911"},
+            {"bin_id": 1331, "amount_a": "0", "amount_b": "1984404847902", "liquidity_share": "36601153969480399117887403430748"},
+            {"bin_id": 1332, "amount_a": "0", "amount_b": "1985829859640", "liquidity_share": "36627413016180674507052016329495"},
+            {"bin_id": 1333, "amount_a": "0", "amount_b": "1988483804594", "liquidity_share": "36676358053920564162753490258379"},
+            {"bin_id": 1334, "amount_a": "0", "amount_b": "1978149385377", "liquidity_share": "36485909200590069977920029144431"},
+            {"bin_id": 1335, "amount_a": "0", "amount_b": "1978504995807", "liquidity_share": "36492653290327758489953959303897"},
+            {"bin_id": 1336, "amount_a": "0", "amount_b": "1976362749430", "liquidity_share": "36453140712734063480909927314833"},
+            {"bin_id": 1337, "amount_a": "1099555130", "amount_b": "643324158735", "liquidity_share": "27828656332659264298401451751771"},
+            {"bin_id": 1338, "amount_a": "1318427818", "amount_b": "0", "liquidity_share": "19236016965259449494378215063844"},
+            {"bin_id": 1339, "amount_a": "1317855800", "amount_b": "0", "liquidity_share": "19317806425570106482303416157445"}
+          ]
+        },
+        {
+          "group_idx": 27811,
+          "bins": [
+            {"bin_id": 1340, "amount_a": "1320222425", "amount_b": "0", "liquidity_share": "19449353333140888183335477405926"},
+            {"bin_id": 1341, "amount_a": "1313055690", "amount_b": "0", "liquidity_share": "19440577247221358206289941865107"},
+            {"bin_id": 1342, "amount_a": "1309553886", "amount_b": "0", "liquidity_share": "19485676625703073656398225595866"},
+            {"bin_id": 1343, "amount_a": "1309286739", "amount_b": "0", "liquidity_share": "19579186266164008465064274275158"},
+            {"bin_id": 1344, "amount_a": "1308512661", "amount_b": "0", "liquidity_share": "19665913021250448804172709729920"},
+            {"bin_id": 1345, "amount_a": "1306611776", "amount_b": "0", "liquidity_share": "19735992040162247221383773254725"},
+            {"bin_id": 1346, "amount_a": "1303373655", "amount_b": "0", "liquidity_share": "19785560854532466159830415845006"},
+            {"bin_id": 1347, "amount_a": "1302237663", "amount_b": "0", "liquidity_share": "19867418446252537906735742231096"},
+            {"bin_id": 1348, "amount_a": "1300390742", "amount_b": "0", "liquidity_share": "19938884184667679075642396031688"},
+            {"bin_id": 1349, "amount_a": "1291303331", "amount_b": "0", "liquidity_share": "19898607677962583367336443948503"}
+          ]
+        }
+      ]
+    },
+    {
+      "date": "2026-02-04",
+      "checkpoint": 241690909,
+      "active_bin": 1367,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 106053.55,
+      "pool_sui": 204621.85,
+      "bin_groups": [
+        {
+          "group_idx": 27810,
+          "bins": [
+            {"bin_id": 1325, "amount_a": "0", "amount_b": "556676699843", "liquidity_share": "10268354547596124206800319288648"},
+            {"bin_id": 1326, "amount_a": "0", "amount_b": "556520602826", "liquidity_share": "10265436648376577115024952210294"},
+            {"bin_id": 1327, "amount_a": "0", "amount_b": "555874009835", "liquidity_share": "10253469679090214576162408853579"},
+            {"bin_id": 1328, "amount_a": "0", "amount_b": "558166991932", "liquidity_share": "10295719366993343738595282731246"},
+            {"bin_id": 1329, "amount_a": "0", "amount_b": "557649303663", "liquidity_share": "10286114158906320828428018155718"},
+            {"bin_id": 1330, "amount_a": "0", "amount_b": "556552393040", "liquidity_share": "10265229844000971316172672256740"},
+            {"bin_id": 1331, "amount_a": "0", "amount_b": "556048905014", "liquidity_share": "10255987635220627275581248164071"},
+            {"bin_id": 1332, "amount_a": "0", "amount_b": "2694635950481", "liquidity_share": "49700906346024536557666329435141"},
+            {"bin_id": 1333, "amount_a": "0", "amount_b": "2696081986352", "liquidity_share": "49727570339603139396283737669523"},
+            {"bin_id": 1334, "amount_a": "0", "amount_b": "2673973058952", "liquidity_share": "49320005324003322085202944048329"},
+            {"bin_id": 1335, "amount_a": "0", "amount_b": "2672692549557", "liquidity_share": "49296636982426845252969675361389"},
+            {"bin_id": 1336, "amount_a": "0", "amount_b": "2671672465918", "liquidity_share": "49277822277654874357043648578134"},
+            {"bin_id": 1337, "amount_a": "0", "amount_b": "2671096395946", "liquidity_share": "49267190016010137254087408334905"},
+            {"bin_id": 1338, "amount_a": "0", "amount_b": "4489978409909", "liquidity_share": "82815649936280565645541987534945"},
+            {"bin_id": 1339, "amount_a": "0", "amount_b": "4487871778366", "liquidity_share": "82751078874336835254030696851158"}
+          ]
+        },
+        {
+          "group_idx": 27811,
+          "bins": [
+            {"bin_id": 1340, "amount_a": "0", "amount_b": "4484948938720", "liquidity_share": "82697581340857413951914385432439"},
+            {"bin_id": 1341, "amount_a": "0", "amount_b": "4483627398079", "liquidity_share": "82673572967962760674692563108395"},
+            {"bin_id": 1342, "amount_a": "0", "amount_b": "4479298299505", "liquidity_share": "82593757187205930251903805290939"},
+            {"bin_id": 1343, "amount_a": "0", "amount_b": "4476735282148", "liquidity_share": "82546818889698239227887352129001"},
+            {"bin_id": 1344, "amount_a": "0", "amount_b": "4474458733652", "liquidity_share": "82506789248505052180782825681951"},
+            {"bin_id": 1345, "amount_a": "0", "amount_b": "4473231906102", "liquidity_share": "82486094058384159597685846798240"},
+            {"bin_id": 1346, "amount_a": "0", "amount_b": "4471351768748", "liquidity_share": "82451608622494299462872475381611"},
+            {"bin_id": 1347, "amount_a": "0", "amount_b": "4467725332240", "liquidity_share": "82385818574802994275548146044729"},
+            {"bin_id": 1348, "amount_a": "0", "amount_b": "4570117363832", "liquidity_share": "84275837887393041728251241640285"},
+            {"bin_id": 1349, "amount_a": "0", "amount_b": "4561257626121", "liquidity_share": "84112725184638477906533876848808"}
+          ]
+        }
+      ]
+    }
+  ]
+}

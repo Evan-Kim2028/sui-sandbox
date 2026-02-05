@@ -230,6 +230,7 @@ impl GrpcClient {
                     "digest".to_string(),
                     "object_type".to_string(),
                     "owner".to_string(),
+                    "previous_transaction".to_string(),
                     "bcs".to_string(),      // Full object BCS (includes type tag)
                     "contents".to_string(), // Move struct BCS (starts with UID)
                     "package".to_string(),  // Package info including modules
