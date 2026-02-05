@@ -1,7 +1,7 @@
 //! Shared fetch utilities for transaction replay.
 //!
 //! This module provides reusable functions for fetching packages and objects
-//! during transaction replay, used by both CLI and MCP server.
+//! during transaction replay, used by the CLI replay flow.
 
 use std::collections::HashMap;
 

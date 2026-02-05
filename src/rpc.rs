@@ -11,7 +11,7 @@
 //!
 //! For new code, prefer using `sui_transport::graphql::GraphQLClient` directly
 //! (current state queries) or `sui_state_fetcher::HistoricalStateProvider` for
-//! historical replay. `DataFetcher` is deprecated and kept for compatibility.
+//! historical replay.
 
 use crate::args::RetryConfig;
 use crate::bytecode::build_bytecode_interface_value_from_compiled_modules;

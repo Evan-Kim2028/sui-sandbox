@@ -224,8 +224,11 @@ impl CheckpointRangeCache {
     pub fn get_object_any_version(&self, object_id: &str) -> Option<&CachedObject> {
         // Normalize the object_id
         let normalized = sui_sandbox_core::utilities::normalize_address(object_id);
+        let short = sui_sandbox_core::types::normalize_address_short(object_id)
+            .unwrap_or_else(|| object_id.to_string());
         for (key, obj) in &self.objects {
-            if key.starts_with(&normalized) || key.starts_with(object_id) {
+            if key.starts_with(&normalized) || key.starts_with(&short) || key.starts_with(object_id)
+            {
                 return Some(obj);
             }
         }

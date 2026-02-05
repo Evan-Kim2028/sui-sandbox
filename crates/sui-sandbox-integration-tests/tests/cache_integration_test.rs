@@ -1,5 +1,4 @@
 #![cfg(feature = "network-tests")]
-#![allow(deprecated)]
 //! Integration tests for the unified cache architecture.
 //!
 //! These tests verify:
@@ -9,7 +8,6 @@
 //! 4. Version and type metadata are preserved
 
 use sui_sandbox::cache::{normalize_address, CacheManager};
-use sui_sandbox::data_fetcher::{DataFetcher, DataSource};
 use tempfile::TempDir;
 
 #[test]
@@ -132,104 +130,6 @@ fn test_version_preservation() {
 
     let pkg = cache.get_package("0x100").unwrap().unwrap();
     assert_eq!(pkg.version, 2); // Still v2
-}
-
-#[test]
-fn test_data_fetcher_cache_integration() {
-    // Create fetcher with the actual .tx-cache directory
-    let fetcher = DataFetcher::mainnet().with_cache_optional(".tx-cache");
-
-    if !fetcher.has_cache() {
-        println!("No .tx-cache directory found, skipping integration test");
-        return;
-    }
-
-    let stats = fetcher.cache_stats().expect("cache_stats failed");
-    println!(
-        "Cache stats: {} packages, {} objects, {} transactions, {} bytes on disk",
-        stats.package_count, stats.object_count, stats.transaction_count, stats.disk_size_bytes
-    );
-
-    assert!(stats.package_count > 0, "Should have cached packages");
-    assert!(stats.object_count > 0, "Should have cached objects");
-    assert!(
-        stats.transaction_count > 0,
-        "Should have cached transactions"
-    );
-
-    // Test cache-first lookup
-    // This package (cetus/clmm) should be in our cached transactions
-    let test_pkg = "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb";
-
-    match fetcher.fetch_package(test_pkg) {
-        Ok(pkg) => {
-            println!(
-                "Fetched package: {} modules via {:?}",
-                pkg.modules.len(),
-                pkg.source
-            );
-            // If it came from cache, that's what we want
-            // If it came from network, that's also fine (means it wasn't in cache)
-            assert!(!pkg.modules.is_empty(), "Package should have modules");
-        }
-        Err(e) => {
-            println!("Package not available: {}", e);
-            // This is acceptable - the package might not be in cache
-        }
-    }
-}
-
-#[test]
-fn test_write_through_caching() {
-    let temp_dir = TempDir::new().expect("failed to create temp dir");
-
-    // Create a fetcher with write-through caching to our temp directory
-    // Note: This test requires network access, so we skip if it fails
-    let fetcher = match DataFetcher::mainnet().with_cache(temp_dir.path()) {
-        Ok(f) => f,
-        Err(e) => {
-            println!("Could not create fetcher: {}", e);
-            return;
-        }
-    };
-
-    // First, verify cache is empty
-    let stats_before = fetcher.cache_stats().unwrap();
-    assert_eq!(stats_before.package_count, 0, "Cache should start empty");
-
-    // Fetch a well-known package (Sui framework) - this will hit network
-    println!("Fetching 0x2 (Sui framework)...");
-    match fetcher.fetch_package("0x2") {
-        Ok(pkg) => {
-            println!("Fetched {} modules via {:?}", pkg.modules.len(), pkg.source);
-
-            // If we got from network, it should now be cached
-            if pkg.source != DataSource::Cache {
-                // Write-through is synchronous, no sleep needed
-
-                // Check cache was populated
-                let stats_after = fetcher.cache_stats().unwrap();
-                println!("Cache after fetch: {} packages", stats_after.package_count);
-
-                // Note: write-through happens in the same thread, so it should be immediate
-                // But if the package was already in cache, this assertion wouldn't apply
-            }
-
-            assert!(!pkg.modules.is_empty(), "Sui framework should have modules");
-            // Check for common Sui framework modules
-            let module_names: Vec<&str> = pkg.modules.iter().map(|m| m.name.as_str()).collect();
-            println!("Modules found: {:?}", module_names);
-            assert!(
-                module_names
-                    .iter()
-                    .any(|n| *n == "coin" || *n == "object" || *n == "transfer"),
-                "Should have core Sui modules like 'coin', 'object', or 'transfer'"
-            );
-        }
-        Err(e) => {
-            println!("Network fetch failed (this is OK in CI): {}", e);
-        }
-    }
 }
 
 #[test]

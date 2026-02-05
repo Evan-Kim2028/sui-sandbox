@@ -2975,28 +2975,6 @@ mod tests {
         println!("Fetched clock object: {:?}", obj);
     }
 
-    // Test the unified DataFetcher fallback behavior.
-    // NOTE: This test uses DataFetcher from the main crate (sui-sandbox),
-    // not from sui-transport. Run integration tests via the main crate instead.
-    // Run with: cargo test test_data_fetcher_integration -- --ignored --nocapture
-    // #[test]
-    // #[ignore]
-    // fn test_data_fetcher_integration() {
-    //     use sui_sandbox::data_fetcher::DataFetcher;
-    //
-    //     let fetcher = DataFetcher::mainnet();
-    //
-    //     // Fetch an object using the unified fetcher
-    //     let result = fetcher.fetch_object("0x6");
-    //     assert!(result.is_ok(), "Failed to fetch object: {:?}", result.err());
-    //
-    //     let obj = result.unwrap();
-    //     println!(
-    //         "Fetched via DataFetcher: address={}, version={}, source={:?}",
-    //         obj.address, obj.version, obj.source
-    //     );
-    // }
-
     /// Test fetching packages that were problematic in case studies
     /// Run with: cargo test test_problematic_packages -- --ignored --nocapture
     #[test]

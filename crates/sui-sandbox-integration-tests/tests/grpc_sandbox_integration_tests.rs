@@ -1,5 +1,5 @@
 #![cfg(feature = "network-tests")]
-#![allow(unused_imports, deprecated)]
+#![allow(unused_imports)]
 //! gRPC + Sandbox Integration Tests
 //!
 //! These tests validate the full pipeline from gRPC data fetching through sandbox replay.
@@ -20,7 +20,6 @@
 
 use std::time::Duration;
 
-use sui_sandbox::data_fetcher::DataFetcher;
 use sui_sandbox::graphql::GraphQLClient;
 use sui_sandbox::grpc::{GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction};
 
@@ -203,99 +202,6 @@ async fn test_grpc_command_type_parsing() {
 
     // Most checkpoints should have MoveCall commands
     assert!(move_calls > 0, "Expected some MoveCall commands");
-}
-
-// =============================================================================
-// DataFetcher Integration Tests
-// =============================================================================
-
-/// Test DataFetcher with gRPC for checkpoint streaming.
-#[tokio::test]
-#[ignore]
-async fn test_datafetcher_grpc_checkpoint_fetch() {
-    let endpoint = require_grpc!();
-
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint(&endpoint)
-        .await
-        .expect("create fetcher");
-
-    assert!(fetcher.has_grpc(), "Should have gRPC enabled");
-
-    // Fetch latest checkpoint
-    let checkpoint = fetcher
-        .get_latest_checkpoint_grpc()
-        .await
-        .expect("get checkpoint");
-
-    println!("Checkpoint {} via DataFetcher:", checkpoint.sequence_number);
-    println!("  Transactions: {}", checkpoint.transactions.len());
-
-    let ptb_count = checkpoint
-        .transactions
-        .iter()
-        .filter(|t| t.is_ptb())
-        .count();
-    println!("  PTB transactions: {}", ptb_count);
-
-    assert!(
-        !checkpoint.transactions.is_empty(),
-        "Should have transactions"
-    );
-}
-
-/// Test hybrid workflow: gRPC for transactions, GraphQL for packages.
-#[tokio::test]
-#[ignore]
-async fn test_sandbox_hybrid_grpc_graphql_workflow() {
-    let endpoint = require_grpc!();
-
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint(&endpoint)
-        .await
-        .expect("create fetcher");
-
-    println!("=== Hybrid gRPC + GraphQL Workflow ===\n");
-
-    // 1. Get transactions via gRPC (fast, real-time)
-    let checkpoint = fetcher
-        .get_latest_checkpoint_grpc()
-        .await
-        .expect("gRPC checkpoint");
-
-    println!(
-        "1. gRPC: Got checkpoint {} ({} txs)",
-        checkpoint.sequence_number,
-        checkpoint.transactions.len()
-    );
-
-    // 2. Find a MoveCall to a well-known package
-    let move_call_tx = checkpoint
-        .transactions
-        .iter()
-        .find(|tx| {
-            tx.commands.iter().any(|cmd| {
-                matches!(cmd, GrpcCommand::MoveCall { package, .. }
-                    if package.starts_with("0x0000000000000000000000000000000000000000000000000000000000000002"))
-            })
-        });
-
-    if let Some(tx) = move_call_tx {
-        println!("2. Found tx calling Sui framework: {}", tx.digest);
-
-        // 3. Fetch the package via GraphQL (has full bytecode)
-        let pkg = fetcher.fetch_package("0x2").expect("fetch package");
-        println!(
-            "3. GraphQL: Fetched Sui framework ({} modules)",
-            pkg.modules.len()
-        );
-
-        // This demonstrates the hybrid approach:
-        // - gRPC for fast transaction streaming
-        // - GraphQL for package bytecode needed for replay
-    } else {
-        println!("2. No framework calls in this checkpoint");
-    }
 }
 
 // =============================================================================

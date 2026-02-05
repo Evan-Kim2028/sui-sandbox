@@ -21,11 +21,8 @@
 //! # Subsequent runs: use cache for fast iteration
 //! cargo run --example batch_ptb --release
 //!
-//! # Compare ground-truth vs legacy prefetch strategies
-//! cargo run --example batch_ptb --release -- --compare
-//!
-//! # Use legacy GraphQL-first prefetch strategy (comparison/regression only)
-//! cargo run --example batch_ptb --release -- --legacy
+//! # Use MM2 predictive prefetch strategy
+//! cargo run --example batch_ptb --release -- --mm2
 //! ```
 
 mod cache;
@@ -56,14 +53,10 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let fetch_mode = args.iter().any(|a| a == "--fetch" || a == "-f");
     let quiet_mode = args.iter().any(|a| a == "--quiet" || a == "-q");
-    let compare_mode = args.iter().any(|a| a == "--compare" || a == "-c");
-    let legacy_mode = args.iter().any(|a| a == "--legacy" || a == "-l");
     let mm2_mode = args.iter().any(|a| a == "--mm2" || a == "-m");
 
     // Determine prefetch strategy
-    let strategy = if legacy_mode {
-        PrefetchStrategy::LegacyGraphQL
-    } else if mm2_mode {
+    let strategy = if mm2_mode {
         PrefetchStrategy::MM2Predictive
     } else {
         PrefetchStrategy::GroundTruth
@@ -78,9 +71,7 @@ fn main() -> Result<()> {
         START_CHECKPOINT + NUM_CHECKPOINTS - 1
     );
     println!("║  Goal: 100% local/on-chain parity                                    ║");
-    if compare_mode {
-        println!("║  Mode: COMPARISON (ground-truth vs legacy prefetch)                 ║");
-    } else if fetch_mode {
+    if fetch_mode {
         println!("║  Mode: FETCH (will cache data to disk)                              ║");
     } else {
         println!("║  Mode: REPLAY (using cached data if available)                      ║");
@@ -92,9 +83,6 @@ fn main() -> Result<()> {
         PrefetchStrategy::MM2Predictive => {
             println!("║  Prefetch: MM2 PREDICTIVE (ground-truth + bytecode analysis)       ║");
         }
-        PrefetchStrategy::LegacyGraphQL => {
-            println!("║  Prefetch: LEGACY GRAPHQL-FIRST                                    ║");
-        }
     }
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
 
@@ -102,23 +90,6 @@ fn main() -> Result<()> {
 
     // Create and run the pipeline
     let rt = tokio::runtime::Runtime::new()?;
-
-    if compare_mode {
-        // Run comparison mode
-        let comparison = rt.block_on(async {
-            BatchPipeline::run_comparison(START_CHECKPOINT, NUM_CHECKPOINTS).await
-        })?;
-
-        comparison.print_summary();
-
-        // Exit with error code if ground-truth is worse than legacy
-        if comparison.ground_truth_stats.match_rate() < comparison.legacy_stats.match_rate() {
-            eprintln!("WARNING: Ground-truth strategy performed worse than legacy!");
-            std::process::exit(1);
-        }
-
-        return Ok(());
-    }
 
     // Run with specified strategy
     let stats = rt.block_on(async {

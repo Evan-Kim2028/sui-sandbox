@@ -7,13 +7,8 @@ This guide covers how to fetch on-chain data (objects, packages, transactions) f
 | Use Case | Recommended API | Why |
 |----------|-----------------|-----|
 | **Historical transaction replay** | `sui_state_fetcher::HistoricalStateProvider` | Versioned cache, fetches objects at exact historical versions |
-| Current state queries | `sui_transport::graphql::GraphQLClient` | Direct GraphQL access; DataFetcher is legacy |
-| Real-time streaming | `sui_transport::grpc::GrpcClient` | Native streaming client; DataFetcher is legacy |
-
-> **Note:** `DataFetcher` is deprecated and kept for backwards compatibility. It is suitable for
-> **current state** queries and streaming but is not version-aware and should not be used for
-> historical replay. Prefer `HistoricalStateProvider` for replay and the transport clients for
-> new code.
+| Current state queries | `sui_transport::graphql::GraphQLClient` | Direct GraphQL access |
+| Real-time streaming | `sui_transport::grpc::GrpcClient` | Native streaming client |
 
 ## Historical Transaction Replay
 
@@ -52,170 +47,37 @@ See the `sui-state-fetcher` crate documentation for full API details.
 
 ---
 
-## DataFetcher API (Legacy Current State)
+## Current State Queries (GraphQL)
 
-The `DataFetcher` is suitable for querying **current state** (latest versions) but is deprecated.
-It provides a unified interface with two backends:
-
-| Backend | Best For | Tradeoff |
-|---------|----------|----------|
-| **gRPC Streaming** | Real-time monitoring, high throughput | Limited effects data (no created/mutated/deleted) |
-| **GraphQL** | Queries, packages, replay verification | Polling only, may miss transactions |
-
-**Key features:**
-
-- **gRPC streaming** - Subscribe to checkpoints as they're finalized (no polling gaps)
-- **GraphQL queries** - Complete data including full effects for replay
-- **Automatic pagination** - Handles cursor-based pagination transparently
-- **Transaction parsing** - Full PTB (Programmable Transaction Block) structure
-
-> **See [Choosing a Data Source](#choosing-a-data-source-tradeoffs)** for detailed comparison of when to use each backend.
-
-## Quick Start
+Use `sui_transport::graphql::GraphQLClient` for latest on-chain state:
 
 ```rust
-use sui_sandbox::data_fetcher::DataFetcher;
+use sui_transport::graphql::GraphQLClient;
 
 fn main() -> anyhow::Result<()> {
-    // Create a fetcher for mainnet
-    let fetcher = DataFetcher::mainnet();
-
-    // Fetch an object
-    let obj = fetcher.fetch_object("0x6")?;  // Clock object
-    println!("Object version: {}", obj.version);
-
-    // Fetch a package
-    let pkg = fetcher.fetch_package("0x2")?;  // Sui framework
-    println!("Package has {} modules", pkg.modules.len());
-
-    // Fetch recent transactions
-    let txs = fetcher.fetch_recent_ptb_transactions(10)?;
-    for tx in &txs {
-        println!("{}: {} commands", tx.digest, tx.commands.len());
-    }
-
+    let client = GraphQLClient::mainnet();
+    let obj = client.fetch_object("0x6")?;
+    let pkg = client.fetch_package("0x2")?;
+    let txs = client.fetch_recent_ptb_transactions(10)?;
+    println!("object version={} package modules={} txs={}",
+        obj.version, pkg.modules.len(), txs.len());
     Ok(())
 }
 ```
 
-### DataFetcher API Details
+## Real-Time Streaming (gRPC)
 
-#### Creating a Fetcher
-
-```rust
-// For mainnet (uses GraphQL)
-let fetcher = DataFetcher::mainnet();
-
-// For testnet
-let fetcher = DataFetcher::testnet();
-
-// Custom GraphQL endpoint
-let fetcher = DataFetcher::new("https://graphql.mainnet.sui.io/graphql");
-```
-
-#### Fetching Objects
+Use `sui_transport::grpc::GrpcClient` for checkpoint streaming and gRPC-only queries:
 
 ```rust
-let obj = fetcher.fetch_object("0x...")?;
+use sui_transport::grpc::GrpcClient;
 
-// Returns FetchedObjectData:
-// - address: String
-// - version: u64
-// - type_string: Option<String>
-// - bcs_bytes: Option<Vec<u8>>
-// - is_shared: bool
-// - is_immutable: bool
-// - source: DataSource (GraphQL, Grpc, or Cache)
-```
-
-#### Fetching Packages
-
-```rust
-let pkg = fetcher.fetch_package("0x2")?;
-
-// Returns FetchedPackageData:
-// - address: String
-// - version: u64
-// - modules: Vec<FetchedModuleData>
-// - source: DataSource
-
-for module in &pkg.modules {
-    println!("Module: {}", module.name);
-    // module.bytecode contains the compiled Move bytecode
-}
-```
-
-### Fetching Transactions
-
-Three methods available, depending on your needs:
-
-```rust
-// 1. Just digests (fast, paginated)
-let digests = fetcher.fetch_recent_transactions(100)?;
-
-// 2. Full transaction data (includes system transactions)
-let txs = fetcher.fetch_recent_transactions_full(50)?;
-
-// 3. Only programmable transactions (filters out system txs) - RECOMMENDED
-let ptb_txs = fetcher.fetch_recent_ptb_transactions(25)?;
-```
-
-**Why use `fetch_recent_ptb_transactions`?**
-
-Sui mainnet includes system transactions (epoch changes, randomness updates) that have:
-
-- Empty sender
-- Zero gas budget
-- No commands
-
-These are valid but not useful for analyzing user activity. The `fetch_recent_ptb_transactions` method filters these out automatically.
-
-### Transaction Structure
-
-```rust
-// GraphQLTransaction contains:
-pub struct GraphQLTransaction {
-    pub digest: String,
-    pub sender: String,
-    pub gas_budget: Option<u64>,
-    pub gas_price: Option<u64>,
-    pub timestamp_ms: Option<u64>,
-    pub checkpoint: Option<u64>,
-    pub inputs: Vec<GraphQLTransactionInput>,
-    pub commands: Vec<GraphQLCommand>,
-    pub effects: Option<GraphQLEffects>,
-}
-```
-
-**Transaction Inputs:**
-
-```rust
-pub enum GraphQLTransactionInput {
-    Pure { bytes_base64: String },
-    OwnedObject { address: String, version: u64, digest: String },
-    SharedObject { address: String, initial_shared_version: u64, mutable: bool },
-    Receiving { address: String, version: u64, digest: String },
-}
-```
-
-**PTB Commands:**
-
-```rust
-pub enum GraphQLCommand {
-    MoveCall {
-        package: String,
-        module: String,
-        function: String,
-        type_arguments: Vec<String>,
-        arguments: Vec<GraphQLArgument>,
-    },
-    SplitCoins { coin: GraphQLArgument, amounts: Vec<GraphQLArgument> },
-    MergeCoins { destination: GraphQLArgument, sources: Vec<GraphQLArgument> },
-    TransferObjects { objects: Vec<GraphQLArgument>, address: GraphQLArgument },
-    MakeMoveVec { type_arg: Option<String>, elements: Vec<GraphQLArgument> },
-    Publish { modules: Vec<String>, dependencies: Vec<String> },
-    Upgrade { modules: Vec<String>, dependencies: Vec<String>, package: String, ticket: GraphQLArgument },
-    Other { typename: String },
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let client = GrpcClient::mainnet();
+    let checkpoint = client.get_latest_checkpoint().await?;
+    println!("latest checkpoint {:?}", checkpoint.map(|c| c.sequence_number));
+    Ok(())
 }
 ```
 
@@ -233,8 +95,11 @@ pub enum GraphQLArgument {
 ## Searching Objects by Type
 
 ```rust
+use sui_transport::graphql::GraphQLClient;
+
 // Search for all objects of a specific type
-let coins = fetcher.search_objects_by_type(
+let client = GraphQLClient::mainnet();
+let coins = client.search_objects_by_type(
     "0x2::coin::Coin<0x2::sui::SUI>",
     100  // limit
 )?;
@@ -247,7 +112,7 @@ let coins = fetcher.search_objects_by_type(
 For advanced use cases, you can use the GraphQL client directly:
 
 ```rust
-use sui_sandbox::graphql::GraphQLClient;
+use sui_transport::graphql::GraphQLClient;
 
 let client = GraphQLClient::mainnet();
 
@@ -268,9 +133,7 @@ for module in &pkg.modules {
 For custom paginated queries, use the `Paginator` helper:
 
 ```rust
-use sui_sandbox::data_fetcher::{
-    Paginator, PaginationDirection, PageInfo
-};
+use sui_transport::graphql::{Paginator, PaginationDirection, PageInfo};
 
 let paginator = Paginator::new(
     PaginationDirection::Forward,  // or Backward
@@ -301,11 +164,12 @@ while let Some(page) = paginator.next_page()? {
 
 ```rust
 use anyhow::Result;
+use sui_transport::graphql::GraphQLClient;
 
 fn fetch_data() -> Result<()> {
-    let fetcher = DataFetcher::mainnet();
+    let client = GraphQLClient::mainnet();
 
-    match fetcher.fetch_object("0x...") {
+    match client.fetch_object("0x...") {
         Ok(obj) => println!("Got object: {}", obj.address),
         Err(e) => {
             // Common errors:
@@ -330,45 +194,7 @@ fn fetch_data() -> Result<()> {
 | Object BCS | ✅ Available |
 | Historical data | ✅ Good |
 
-**Recommendation:** Use `sui_transport::graphql::GraphQLClient` for new code.
-`DataFetcher` is a legacy convenience wrapper.
-
-## Example: Analyzing Recent Transactions (Legacy DataFetcher)
-
-```rust
-use sui_sandbox::data_fetcher::{DataFetcher, GraphQLCommand};
-
-fn analyze_transactions() -> anyhow::Result<()> {
-    let fetcher = DataFetcher::mainnet();
-    let txs = fetcher.fetch_recent_ptb_transactions(50)?;
-
-    let mut stats = std::collections::HashMap::new();
-
-    for tx in &txs {
-        for cmd in &tx.commands {
-            match cmd {
-                GraphQLCommand::MoveCall { package, module, function, .. } => {
-                    let key = format!("{}::{}::{}", package, module, function);
-                    *stats.entry(key).or_insert(0) += 1;
-                }
-                GraphQLCommand::TransferObjects { .. } => {
-                    *stats.entry("TransferObjects".to_string()).or_insert(0) += 1;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    println!("Top functions called:");
-    let mut sorted: Vec<_> = stats.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    for (func, count) in sorted.iter().take(10) {
-        println!("  {}: {}", func, count);
-    }
-
-    Ok(())
-}
-```
+**Recommendation:** Use `sui_transport::graphql::GraphQLClient` for current-state queries.
 
 ## Real-Time Streaming with gRPC
 
@@ -391,21 +217,19 @@ For real-time transaction monitoring, gRPC streaming is the recommended approach
 ### Setting Up gRPC Streaming
 
 ```rust
-use sui_sandbox::data_fetcher::DataFetcher;
+use sui_transport::grpc::GrpcClient;
+use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create fetcher with gRPC enabled
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint("https://your-provider:9000")
-        .await?;
+    let client = GrpcClient::new("https://your-provider:9000").await?;
 
     // Check connection
-    let info = fetcher.get_service_info().await?;
+    let info = client.get_service_info().await?;
     println!("Connected to {} at checkpoint {}", info.chain, info.checkpoint_height);
 
     // Subscribe to checkpoints
-    let mut stream = fetcher.subscribe_checkpoints().await?;
+    let mut stream = client.subscribe_checkpoints().await?;
 
     while let Some(result) = stream.next().await {
         let checkpoint = result?;
@@ -429,25 +253,20 @@ async fn main() -> anyhow::Result<()> {
 gRPC streaming uses slightly different types than GraphQL queries:
 
 ```rust
-use sui_sandbox::data_fetcher::{
-    StreamingCheckpoint,
-    StreamingTransaction,
-    StreamingCommand,
-    StreamingInput,
-};
+use sui_transport::grpc::{GrpcCheckpoint, GrpcCommand, GrpcInput, GrpcTransaction};
 
-// StreamingCheckpoint contains:
+// GrpcCheckpoint contains:
 // - sequence_number: u64
 // - digest: String
 // - timestamp_ms: Option<u64>
-// - transactions: Vec<StreamingTransaction>
+// - transactions: Vec<GrpcTransaction>
 
-// StreamingTransaction contains:
+// GrpcTransaction contains:
 // - digest: String
 // - sender: String
 // - gas_budget: Option<u64>
-// - inputs: Vec<StreamingInput>
-// - commands: Vec<StreamingCommand>
+// - inputs: Vec<GrpcInput>
+// - commands: Vec<GrpcCommand>
 // - status: Option<String>  // "success" or "failure"
 
 // Check if transaction is a user PTB (not system tx)
@@ -473,10 +292,10 @@ If you don't have gRPC access, use the GraphQL polling tool:
 
 ```bash
 # Poll transactions every 1.5 seconds for 10 minutes
-cargo run --bin poll_transactions -- --duration 600 --interval 1500 --output txs.jsonl
+sui-sandbox tools poll-transactions --duration 600 --interval-ms 1500 --output txs.jsonl
 
 # PTB-only mode (skip system transactions)
-cargo run --bin poll_transactions -- --ptb-only --verbose
+sui-sandbox tools poll-transactions --ptb-only --verbose
 ```
 
 ### Streaming Tool (gRPC)
@@ -488,10 +307,10 @@ With a gRPC endpoint:
 export SUI_GRPC_ENDPOINT="https://your-provider:9000"
 
 # Stream for 1 minute
-cargo run --bin stream_transactions -- --duration 60 --output stream.jsonl
+sui-sandbox tools stream-transactions --duration 60 --output stream.jsonl
 
 # Stream PTB transactions only
-cargo run --bin stream_transactions -- --ptb-only --verbose
+sui-sandbox tools stream-transactions --ptb-only --verbose
 ```
 
 ## Choosing a Data Source: Tradeoffs
@@ -575,7 +394,7 @@ effects: {
 
 Both tools save to JSONL with compatible formats:
 
-**gRPC streaming** (`stream_transactions`):
+**gRPC streaming** (`sui-sandbox tools stream-transactions`):
 
 ```json
 {
@@ -589,7 +408,7 @@ Both tools save to JSONL with compatible formats:
 }
 ```
 
-**GraphQL polling** (`poll_transactions`):
+**GraphQL polling** (`sui-sandbox tools poll-transactions`):
 
 ```json
 {
@@ -674,5 +493,4 @@ pub struct SimulationResult {
 ## See Also
 
 - [Transaction Replay Guide](TRANSACTION_REPLAY.md) - For replaying transactions in the sandbox
-- [Sandbox API Reference](../reference/SANDBOX_API.md) - For executing PTBs locally
 - [CLI Reference](../reference/CLI_REFERENCE.md) - Command-line tools

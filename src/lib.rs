@@ -4,7 +4,7 @@
 //!
 //! - **Interface extraction**: Extract module interfaces from bytecode or RPC
 //! - **Bytecode analysis**: Parse and analyze compiled Move bytecode
-//! - **Data fetching**: Unified API for gRPC streaming, GraphQL queries, and JSON-RPC
+//! - **State fetching**: GraphQL/gRPC clients and historical replay helpers
 //!
 //! For transaction simulation, see the `sui-sandbox-core` crate.
 
@@ -16,11 +16,6 @@ pub mod args;
 pub mod cache;
 pub mod comparator;
 pub mod corpus;
-#[deprecated(
-    since = "0.9.0",
-    note = "Use sui_state_fetcher::HistoricalStateProvider instead"
-)]
-pub mod data_fetcher;
 pub mod move_stubs;
 pub mod ptb_classifier;
 pub mod rpc;

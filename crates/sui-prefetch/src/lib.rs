@@ -3,9 +3,7 @@
 //! Strategic data prefetching for Sui transaction replay.
 //!
 //! This crate provides:
-//! - [`eager_prefetch`]: Two prefetching strategies for transaction replay
-//!   - Ground-truth-first (recommended): Uses `unchanged_loaded_runtime_objects`
-//!   - GraphQL discovery (legacy): Discovers dynamic fields via GraphQL
+//! - [`eager_prefetch`]: Ground-truth-first prefetching for transaction replay
 //! - [`conversion`]: Convert gRPC transactions to internal FetchedTransaction format
 //! - [`utilities`]: Dynamic field helpers and data aggregation
 //!
@@ -33,15 +31,6 @@ pub mod utilities;
 pub use eager_prefetch::{
     ground_truth_prefetch_for_transaction, GroundTruthPrefetchConfig, GroundTruthPrefetchResult,
     GroundTruthPrefetchStats,
-};
-
-// =============================================================================
-// Legacy API: GraphQL Discovery Prefetch
-// =============================================================================
-// Discovers dynamic fields via GraphQL queries. Use ground-truth when available.
-pub use eager_prefetch::{
-    analyze_transaction_access_patterns, eager_prefetch_for_transaction, EagerPrefetchConfig,
-    EagerPrefetchResult, PrefetchStats, TransactionAccessAnalysis,
 };
 
 // =============================================================================

@@ -644,7 +644,7 @@ impl SimulationEnvironment {
 
     /// Deploy a package with pre-fetched modules at a specific address.
     /// This is used by the mainnet import feature when modules are already fetched
-    /// via DataFetcher.
+    /// via GraphQL/gRPC clients.
     pub fn deploy_package_at_address(
         &mut self,
         package_id: &str,

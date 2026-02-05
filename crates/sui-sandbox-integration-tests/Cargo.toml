@@ -8,10 +8,10 @@ publish = false
 network-tests = []
 
 [dependencies]
-sui-sandbox = { path = "../..", package = "sui-sandbox" }
 sui-sandbox-core = { path = "../sui-sandbox-core" }
 
 [dev-dependencies]
+sui-sandbox = { path = "../..", package = "sui-sandbox" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

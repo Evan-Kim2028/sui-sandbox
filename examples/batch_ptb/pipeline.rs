@@ -10,19 +10,17 @@
 //!
 //! ## Prefetch Strategies
 //!
-//! The pipeline supports two prefetch strategies:
+//! The pipeline supports these prefetch strategies:
 //!
 //! 1. **Ground-Truth-First** (recommended): Uses `unchanged_loaded_runtime_objects` from
 //!    transaction effects as the authoritative source for what objects to fetch. This is
 //!    faster and more accurate because we know exact versions upfront.
 //!
-//! 2. **Legacy GraphQL-First**: Discovers dynamic field children via GraphQL, then fetches
-//!    at historical versions. This is slower and may miss objects due to version mismatches.
-//!
-//! Use the `--compare` flag to run both strategies side-by-side and compare results.
+//! 2. **MM2 Predictive**: Ground-truth plus MM2 bytecode analysis for deeper coverage.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,6 +28,7 @@ use anyhow::Result;
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
+use crate::cache::{CachedCheckpoint, CachedLinkage, CachedObject, CheckpointRangeCache};
 use sui_prefetch::{ground_truth_prefetch_for_transaction, GroundTruthPrefetchConfig};
 use sui_sandbox_core::predictive_prefetch::{PredictivePrefetchConfig, PredictivePrefetcher};
 use sui_sandbox_core::resolver::LocalModuleResolver;
@@ -55,8 +54,6 @@ pub enum PrefetchStrategy {
     GroundTruth,
     /// MM2 Predictive: Ground-truth + MM2 bytecode analysis for dynamic field prediction.
     MM2Predictive,
-    /// Legacy GraphQL-first: Discover dynamic fields via GraphQL, then fetch at historical versions.
-    LegacyGraphQL,
 }
 
 /// Extract missing package address from LINKER_ERROR or FUNCTION_RESOLUTION_FAILURE message.
@@ -150,6 +147,57 @@ fn build_replay_config_for_tx(
     Ok(config)
 }
 
+/// Build a replay SimulationConfig without network calls using cached metadata.
+fn build_replay_config_for_tx_cached(
+    grpc_tx: &GrpcTransaction,
+    tx_timestamp_ms: u64,
+    cache: &CheckpointRangeCache,
+) -> Result<SimulationConfig> {
+    let tx_hash = SuiTransactionDigest::from_str(&grpc_tx.digest)
+        .map_err(|e| anyhow::anyhow!("Invalid transaction digest {}: {}", grpc_tx.digest, e))?
+        .into_inner();
+
+    let mut epoch = grpc_tx.epoch.unwrap_or(0);
+    if epoch == 0 {
+        if let Some(checkpoint) = grpc_tx.checkpoint {
+            if let Some(cp) = cache
+                .checkpoints
+                .iter()
+                .find(|c| c.sequence_number == checkpoint)
+            {
+                epoch = cp.epoch;
+            }
+        }
+    }
+
+    let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
+    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
+
+    let protocol_version = DEFAULT_PROTOCOL_VERSION;
+
+    let mut config = SimulationConfig::default()
+        .with_sender_address(sender_address)
+        .with_epoch(epoch)
+        .with_protocol_version(protocol_version)
+        .with_tx_hash(tx_hash)
+        .with_tx_timestamp(tx_timestamp_ms);
+
+    if let Some(budget) = grpc_tx.gas_budget {
+        if budget > 0 {
+            config = config.with_gas_budget(Some(budget));
+        }
+    }
+
+    if let Some(price) = grpc_tx.gas_price {
+        if price > 0 {
+            config = config.with_gas_price(price);
+            config = config.with_reference_gas_price(price);
+        }
+    }
+
+    Ok(config)
+}
+
 /// Statistics collected during batch processing.
 #[derive(Debug, Default)]
 pub struct BatchStats {
@@ -194,184 +242,6 @@ impl BatchStats {
     fn record_failure(&mut self, reason: &str) {
         *self.failure_reasons.entry(reason.to_string()).or_insert(0) += 1;
     }
-
-    /// Complex (non-framework) match rate.
-    pub fn complex_match_rate(&self) -> f64 {
-        if self.complex_total == 0 {
-            return 0.0;
-        }
-        self.complex_matches as f64 / self.complex_total as f64
-    }
-}
-
-/// Comparison results between two prefetch strategies.
-#[derive(Debug)]
-pub struct ComparisonResult {
-    /// Stats from ground-truth-first strategy.
-    pub ground_truth_stats: BatchStats,
-    /// Stats from legacy GraphQL-first strategy.
-    pub legacy_stats: BatchStats,
-    /// Per-transaction comparison: (digest, ground_truth_match, legacy_match, both_agree)
-    pub per_tx_comparison: Vec<TransactionComparison>,
-}
-
-/// Per-transaction comparison between strategies.
-#[derive(Debug)]
-pub struct TransactionComparison {
-    pub digest: String,
-    pub is_framework_only: bool,
-    pub ground_truth_matches: bool,
-    pub legacy_matches: bool,
-    /// True if both strategies produced the same outcome (both match or both mismatch).
-    pub strategies_agree: bool,
-    /// Error from ground-truth strategy (if any).
-    pub ground_truth_error: Option<String>,
-    /// Error from legacy strategy (if any).
-    pub legacy_error: Option<String>,
-    /// Time spent in ground-truth prefetch (ms).
-    pub ground_truth_prefetch_ms: u64,
-    /// Time spent in legacy prefetch (ms).
-    pub legacy_prefetch_ms: u64,
-}
-
-impl ComparisonResult {
-    /// Print a summary of the comparison.
-    pub fn print_summary(&self) {
-        println!("\n========================================");
-        println!("       PREFETCH STRATEGY COMPARISON");
-        println!("========================================\n");
-
-        // Overall stats
-        println!("OVERALL MATCH RATES:");
-        println!(
-            "  Ground-Truth-First: {}/{} ({:.1}%)",
-            self.ground_truth_stats.outcome_matches,
-            self.ground_truth_stats.transactions_processed,
-            self.ground_truth_stats.match_rate() * 100.0
-        );
-        println!(
-            "  Legacy GraphQL:     {}/{} ({:.1}%)",
-            self.legacy_stats.outcome_matches,
-            self.legacy_stats.transactions_processed,
-            self.legacy_stats.match_rate() * 100.0
-        );
-
-        // Complex transaction stats
-        println!("\nCOMPLEX TRANSACTION MATCH RATES:");
-        println!(
-            "  Ground-Truth-First: {}/{} ({:.1}%)",
-            self.ground_truth_stats.complex_matches,
-            self.ground_truth_stats.complex_total,
-            self.ground_truth_stats.complex_match_rate() * 100.0
-        );
-        println!(
-            "  Legacy GraphQL:     {}/{} ({:.1}%)",
-            self.legacy_stats.complex_matches,
-            self.legacy_stats.complex_total,
-            self.legacy_stats.complex_match_rate() * 100.0
-        );
-
-        // Timing comparison
-        let gt_total_ms: u64 = self
-            .per_tx_comparison
-            .iter()
-            .map(|c| c.ground_truth_prefetch_ms)
-            .sum();
-        let legacy_total_ms: u64 = self
-            .per_tx_comparison
-            .iter()
-            .map(|c| c.legacy_prefetch_ms)
-            .sum();
-        println!("\nPREFETCH TIMING:");
-        println!("  Ground-Truth-First: {}ms total", gt_total_ms);
-        println!("  Legacy GraphQL:     {}ms total", legacy_total_ms);
-        if legacy_total_ms > 0 {
-            println!(
-                "  Speedup:            {:.1}x",
-                legacy_total_ms as f64 / gt_total_ms.max(1) as f64
-            );
-        }
-
-        // Strategy agreement
-        let agree_count = self
-            .per_tx_comparison
-            .iter()
-            .filter(|c| c.strategies_agree)
-            .count();
-        let gt_better = self
-            .per_tx_comparison
-            .iter()
-            .filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches)
-            .count();
-        let legacy_better = self
-            .per_tx_comparison
-            .iter()
-            .filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches)
-            .count();
-
-        println!("\nSTRATEGY AGREEMENT:");
-        println!(
-            "  Both agree:             {}/{} ({:.1}%)",
-            agree_count,
-            self.per_tx_comparison.len(),
-            (agree_count as f64 / self.per_tx_comparison.len().max(1) as f64) * 100.0
-        );
-        println!("  Ground-Truth wins:      {}", gt_better);
-        println!("  Legacy wins:            {}", legacy_better);
-
-        // Show transactions where ground-truth won (most interesting)
-        if gt_better > 0 {
-            println!("\nTRANSACTIONS WHERE GROUND-TRUTH WON:");
-            for cmp in self
-                .per_tx_comparison
-                .iter()
-                .filter(|c| !c.strategies_agree && c.ground_truth_matches && !c.legacy_matches)
-                .take(5)
-            {
-                let category = if cmp.is_framework_only {
-                    "framework"
-                } else {
-                    "complex"
-                };
-                println!("  {} [{}]", &cmp.digest[..16], category);
-                if let Some(err) = &cmp.legacy_error {
-                    println!("    Legacy error: {}", truncate_error(err, 80));
-                }
-            }
-        }
-
-        // Show transactions where legacy won (potential regressions to investigate)
-        if legacy_better > 0 {
-            println!("\nTRANSACTIONS WHERE LEGACY WON (POTENTIAL REGRESSIONS):");
-            for cmp in self
-                .per_tx_comparison
-                .iter()
-                .filter(|c| !c.strategies_agree && !c.ground_truth_matches && c.legacy_matches)
-                .take(5)
-            {
-                let category = if cmp.is_framework_only {
-                    "framework"
-                } else {
-                    "complex"
-                };
-                println!("  {} [{}]", &cmp.digest[..16], category);
-                if let Some(err) = &cmp.ground_truth_error {
-                    println!("    Ground-truth error: {}", truncate_error(err, 80));
-                }
-            }
-        }
-
-        println!("\n========================================\n");
-    }
-}
-
-/// Helper to truncate error messages.
-fn truncate_error(err: &str, max_len: usize) -> String {
-    if err.len() <= max_len {
-        err.to_string()
-    } else {
-        format!("{}...", &err[..max_len])
-    }
 }
 
 /// Result of processing a single transaction.
@@ -384,8 +254,6 @@ struct TransactionResult {
     objects_fetched: usize,
     packages_fetched: usize,
     dynamic_fields_prefetched: usize,
-    /// Time spent in prefetch phase (ms).
-    prefetch_time_ms: u64,
 }
 
 /// The main batch processing pipeline.
@@ -458,25 +326,8 @@ impl BatchPipeline {
 
         Ok(stats)
     }
-
-    /// Run comparison mode: execute both prefetch strategies side-by-side.
-    ///
-    /// This is useful for validating the ground-truth-first implementation
-    /// against the legacy GraphQL-first approach.
-    pub async fn run_comparison(
-        start_checkpoint: u64,
-        num_checkpoints: u64,
-    ) -> Result<ComparisonResult> {
-        let result = tokio::task::spawn_blocking(move || {
-            run_comparison_batch(start_checkpoint, num_checkpoints)
-        })
-        .await??;
-
-        Ok(result)
-    }
 }
 
-use crate::cache::{CachedCheckpoint, CachedObject, CheckpointRangeCache};
 use std::sync::Mutex;
 
 /// Shared object cache for accumulating fetched objects across transactions
@@ -514,7 +365,13 @@ impl SharedObjectCache {
         self.objects.lock().unwrap().insert(key, cached);
     }
 
-    fn add_package(&self, pkg_id: &str, version: u64, modules: Vec<(String, Vec<u8>)>) {
+    fn add_package(
+        &self,
+        pkg_id: &str,
+        version: u64,
+        modules: Vec<(String, Vec<u8>)>,
+        linkage: Option<Vec<CachedLinkage>>,
+    ) {
         let key = format!("{}:{}", pkg_id, version);
         let cached = CachedObject {
             object_id: pkg_id.to_string(),
@@ -522,7 +379,7 @@ impl SharedObjectCache {
             type_string: None,
             bcs: None,
             package_modules: Some(modules),
-            package_linkage: None,
+            package_linkage: linkage,
         };
         self.objects.lock().unwrap().insert(key, cached);
     }
@@ -870,26 +727,340 @@ fn run_from_cache(cache: &CheckpointRangeCache, quiet_mode: bool) -> Result<Batc
     Ok(stats)
 }
 
+fn add_version(versions: &mut HashMap<String, u64>, object_id: &str, version: u64) {
+    let normalized = normalize_address(object_id);
+    match versions.get_mut(&normalized) {
+        Some(existing) => {
+            if version > *existing {
+                *existing = version;
+            }
+        }
+        None => {
+            versions.insert(normalized, version);
+        }
+    }
+}
+
+fn collect_historical_versions(grpc_tx: &GrpcTransaction) -> HashMap<String, u64> {
+    let mut versions = HashMap::new();
+
+    for input in &grpc_tx.inputs {
+        match input {
+            GrpcInput::Object {
+                object_id, version, ..
+            } => {
+                add_version(&mut versions, object_id, *version);
+            }
+            GrpcInput::Receiving {
+                object_id, version, ..
+            } => {
+                add_version(&mut versions, object_id, *version);
+            }
+            GrpcInput::SharedObject {
+                object_id,
+                initial_version,
+                ..
+            } => {
+                add_version(&mut versions, object_id, *initial_version);
+            }
+            GrpcInput::Pure { .. } => {}
+        }
+    }
+
+    for (obj_id, version) in &grpc_tx.unchanged_loaded_runtime_objects {
+        add_version(&mut versions, obj_id, *version);
+    }
+    for (obj_id, version) in &grpc_tx.changed_objects {
+        add_version(&mut versions, obj_id, *version);
+    }
+    for (obj_id, version) in &grpc_tx.created_objects {
+        add_version(&mut versions, obj_id, *version);
+    }
+    for (obj_id, version) in &grpc_tx.unchanged_consensus_objects {
+        add_version(&mut versions, obj_id, *version);
+    }
+
+    versions
+}
+
+fn collect_needed_package_ids(
+    grpc_tx: &GrpcTransaction,
+    object_types: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut package_ids = HashSet::new();
+
+    for cmd in &grpc_tx.commands {
+        match cmd {
+            sui_transport::grpc::GrpcCommand::MoveCall {
+                package,
+                type_arguments,
+                ..
+            } => {
+                package_ids.insert(normalize_address(package));
+                for type_arg in type_arguments {
+                    for pkg_id in extract_package_ids_from_type(type_arg) {
+                        package_ids.insert(normalize_address(&pkg_id));
+                    }
+                }
+            }
+            sui_transport::grpc::GrpcCommand::MakeMoveVec {
+                element_type: Some(element_type),
+                ..
+            } => {
+                for pkg_id in extract_package_ids_from_type(element_type) {
+                    package_ids.insert(normalize_address(&pkg_id));
+                }
+            }
+            sui_transport::grpc::GrpcCommand::Publish { dependencies, .. }
+            | sui_transport::grpc::GrpcCommand::Upgrade { dependencies, .. } => {
+                for dep in dependencies {
+                    package_ids.insert(normalize_address(dep));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Packages that were dynamically loaded during execution
+    for (obj_id, _version) in &grpc_tx.unchanged_loaded_runtime_objects {
+        package_ids.insert(normalize_address(obj_id));
+    }
+
+    // Packages referenced by type strings
+    for type_str in object_types.values() {
+        for addr in extract_addresses_from_type_params(type_str) {
+            package_ids.insert(normalize_address(&addr));
+        }
+    }
+
+    package_ids
+}
+
+fn build_cached_child_map(cache: &CheckpointRangeCache) -> HashMap<String, (u64, String, Vec<u8>)> {
+    let mut out = cache.dynamic_field_children.clone();
+    for obj in cache.objects.values() {
+        if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
+            let key = normalize_address(&obj.object_id);
+            out.entry(key)
+                .or_insert((obj.version, type_str.clone(), bcs.clone()));
+        }
+    }
+    out
+}
+
+fn find_cached_package<'a>(
+    cache: &'a CheckpointRangeCache,
+    pkg_id: &str,
+    version: Option<u64>,
+) -> Option<&'a CachedObject> {
+    if let Some(ver) = version {
+        if let Some(obj) = cache.get_object(pkg_id, ver) {
+            if obj.package_modules.is_some() {
+                return Some(obj);
+            }
+        }
+    }
+    cache
+        .get_object_any_version(pkg_id)
+        .and_then(|obj| obj.package_modules.as_ref().map(|_| obj))
+}
+
+fn resolve_cached_packages(
+    cache: &CheckpointRangeCache,
+    initial_packages: HashSet<String>,
+    historical_versions: &mut HashMap<String, u64>,
+    linkage_upgrades: &mut HashMap<String, String>,
+) -> (HashMap<String, Vec<(String, String)>>, HashSet<String>) {
+    let mut packages = HashMap::new();
+    let mut missing = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut queue: Vec<String> = initial_packages.into_iter().collect();
+
+    const MAX_DEPENDENCY_DEPTH: usize = 25;
+    for _depth in 0..MAX_DEPENDENCY_DEPTH {
+        if queue.is_empty() {
+            break;
+        }
+
+        let mut next = Vec::new();
+        for pkg_id in queue.drain(..) {
+            let normalized = normalize_address(&pkg_id);
+            if !visited.insert(normalized.clone()) {
+                continue;
+            }
+
+            let preferred_version = historical_versions.get(&normalized).copied();
+            let cached_obj = find_cached_package(cache, &normalized, preferred_version);
+            let Some(obj) = cached_obj else {
+                missing.insert(normalized);
+                continue;
+            };
+
+            let Some(modules) = &obj.package_modules else {
+                missing.insert(normalized);
+                continue;
+            };
+
+            let modules_b64: Vec<(String, String)> = modules
+                .iter()
+                .map(|(name, bytes)| {
+                    (
+                        name.clone(),
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                    )
+                })
+                .collect();
+            packages.insert(normalized.clone(), modules_b64);
+            historical_versions
+                .entry(normalized.clone())
+                .or_insert(obj.version);
+
+            if let Some(linkage) = &obj.package_linkage {
+                for l in linkage {
+                    if is_framework_package(&l.original_id) {
+                        continue;
+                    }
+                    let orig_norm = normalize_address(&l.original_id);
+                    let upgraded_norm = normalize_address(&l.upgraded_id);
+                    if orig_norm != upgraded_norm {
+                        linkage_upgrades.insert(orig_norm, upgraded_norm.clone());
+                        next.push(upgraded_norm);
+                    }
+                }
+            }
+
+            for (_name, bytecode) in modules {
+                let deps = extract_dependencies_from_bytecode(bytecode);
+                for dep in deps {
+                    let dep_norm = normalize_address(&dep);
+                    let actual = linkage_upgrades.get(&dep_norm).cloned().unwrap_or(dep_norm);
+                    next.push(actual);
+                }
+
+                let const_addrs = extract_addresses_from_bytecode_constants(bytecode);
+                for addr in const_addrs {
+                    next.push(normalize_address(&addr));
+                }
+            }
+        }
+
+        queue = next;
+    }
+
+    if !queue.is_empty() {
+        for pkg_id in queue {
+            missing.insert(normalize_address(&pkg_id));
+        }
+    }
+
+    (packages, missing)
+}
+
 /// Process a single transaction from cache (no network fetching).
 fn process_single_transaction_from_cache(
-    _cache: &CheckpointRangeCache,
+    cache: &CheckpointRangeCache,
     grpc_tx: &GrpcTransaction,
     _quiet_mode: bool,
 ) -> Result<TransactionResult> {
-    let _onchain_success = grpc_tx
+    let onchain_success = grpc_tx
         .status
         .as_ref()
         .map(|s| s == "success")
         .unwrap_or(false);
 
-    // For now, just return a placeholder - we need to implement the full replay
-    // This is simplified since we need to collect all necessary data from cache
+    let mut historical_versions = collect_historical_versions(grpc_tx);
+    let mut objects: HashMap<String, String> = HashMap::new();
+    let mut object_types: HashMap<String, String> = HashMap::new();
+    let mut linkage_upgrades: HashMap<String, String> = HashMap::new();
+    let mut package_ids: HashSet<String> = HashSet::new();
+    let mut missing_objects: Vec<String> = Vec::new();
 
-    // TODO: Implement full replay from cache
-    // For now, indicate that we need to fetch data to populate cache first
-    Err(anyhow::anyhow!(
-        "Cache replay not fully implemented - run with --fetch first to populate cache with object data"
-    ))
+    let versions_snapshot: Vec<(String, u64)> = historical_versions
+        .iter()
+        .map(|(id, ver)| (id.clone(), *ver))
+        .collect();
+
+    for (obj_id, version) in versions_snapshot {
+        let cached_obj = cache
+            .get_object(&obj_id, version)
+            .or_else(|| cache.get_object_any_version(&obj_id));
+
+        let Some(obj) = cached_obj else {
+            missing_objects.push(obj_id);
+            continue;
+        };
+
+        if let Some(bcs) = &obj.bcs {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bcs);
+            objects.insert(obj_id.clone(), b64);
+        } else if obj.package_modules.is_none() {
+            missing_objects.push(obj_id.clone());
+        }
+
+        if let Some(type_str) = &obj.type_string {
+            object_types.insert(obj_id.clone(), type_str.clone());
+        }
+
+        if obj.package_modules.is_some() {
+            let normalized = normalize_address(&obj.object_id);
+            package_ids.insert(normalized.clone());
+            historical_versions.entry(normalized).or_insert(obj.version);
+        }
+
+        if let Some(linkage) = &obj.package_linkage {
+            for l in linkage {
+                if is_framework_package(&l.original_id) {
+                    continue;
+                }
+                let orig_norm = normalize_address(&l.original_id);
+                let upgraded_norm = normalize_address(&l.upgraded_id);
+                if orig_norm != upgraded_norm {
+                    linkage_upgrades.insert(orig_norm, upgraded_norm);
+                }
+            }
+        }
+    }
+
+    if !missing_objects.is_empty() {
+        return Err(anyhow::anyhow!(
+            "cache missing {} object(s): {}",
+            missing_objects.len(),
+            missing_objects.join(", ")
+        ));
+    }
+
+    package_ids.extend(collect_needed_package_ids(grpc_tx, &object_types));
+
+    let (packages, missing_packages) = resolve_cached_packages(
+        cache,
+        package_ids,
+        &mut historical_versions,
+        &mut linkage_upgrades,
+    );
+
+    if !missing_packages.is_empty() {
+        let mut missing_list: Vec<String> = missing_packages.into_iter().collect();
+        missing_list.sort();
+        return Err(anyhow::anyhow!(
+            "cache missing {} package(s): {}",
+            missing_list.len(),
+            missing_list.join(", ")
+        ));
+    }
+
+    let cached_children = build_cached_child_map(cache);
+
+    execute_replay_from_cache(
+        cache,
+        grpc_tx,
+        objects,
+        object_types,
+        packages,
+        historical_versions,
+        linkage_upgrades,
+        Arc::new(cached_children),
+        onchain_success,
+    )
 }
 
 /// Process a single transaction through the full replay pipeline.
@@ -925,9 +1096,6 @@ fn process_single_transaction(
             shared_cache,
             onchain_success,
         ),
-        PrefetchStrategy::LegacyGraphQL => {
-            process_with_legacy_prefetch(rt, grpc, graphql, grpc_tx, shared_cache, onchain_success)
-        }
     }
 }
 
@@ -940,14 +1108,10 @@ fn process_with_ground_truth_prefetch(
     shared_cache: Option<&Arc<SharedObjectCache>>,
     onchain_success: bool,
 ) -> Result<TransactionResult> {
-    let prefetch_start = Instant::now();
-
     // Use the new ground-truth-first prefetch
     let config = GroundTruthPrefetchConfig::default();
     let prefetch_result =
         ground_truth_prefetch_for_transaction(grpc, Some(graphql), rt, grpc_tx, &config);
-
-    let prefetch_time_ms = prefetch_start.elapsed().as_millis() as u64;
 
     // Convert prefetch result to the format expected by replay
     let mut objects: HashMap<String, String> = HashMap::new();
@@ -994,7 +1158,20 @@ fn process_with_ground_truth_prefetch(
 
         // Store to shared cache
         if let Some(cache) = shared_cache {
-            cache.add_package(pkg_id, pkg.version, pkg.modules.clone());
+            let linkage = if pkg.linkage.is_empty() {
+                None
+            } else {
+                Some(
+                    pkg.linkage
+                        .iter()
+                        .map(|(original, upgraded)| CachedLinkage {
+                            original_id: original.clone(),
+                            upgraded_id: upgraded.clone(),
+                        })
+                        .collect(),
+                )
+            };
+            cache.add_package(pkg_id, pkg.version, pkg.modules.clone(), linkage);
         }
 
         // Accumulate linkage
@@ -1034,7 +1211,6 @@ fn process_with_ground_truth_prefetch(
         objects_fetched,
         packages_fetched,
         dynamic_fields_prefetched,
-        prefetch_time_ms,
     )
 }
 
@@ -1050,15 +1226,11 @@ fn process_with_mm2_predictive_prefetch(
     shared_cache: Option<&Arc<SharedObjectCache>>,
     onchain_success: bool,
 ) -> Result<TransactionResult> {
-    let prefetch_start = Instant::now();
-
     // Use the predictive prefetcher with MM2 analysis
     let mut prefetcher = PredictivePrefetcher::new();
     let config = PredictivePrefetchConfig::default();
     let prefetch_result =
         prefetcher.prefetch_for_transaction(grpc, Some(graphql), rt, grpc_tx, &config);
-
-    let prefetch_time_ms = prefetch_start.elapsed().as_millis() as u64;
 
     // Log MM2 prediction stats
     let pred_stats = &prefetch_result.prediction_stats;
@@ -1121,7 +1293,20 @@ fn process_with_mm2_predictive_prefetch(
 
         // Store to shared cache
         if let Some(cache) = shared_cache {
-            cache.add_package(pkg_id, pkg.version, pkg.modules.clone());
+            let linkage = if pkg.linkage.is_empty() {
+                None
+            } else {
+                Some(
+                    pkg.linkage
+                        .iter()
+                        .map(|(original, upgraded)| CachedLinkage {
+                            original_id: original.clone(),
+                            upgraded_id: upgraded.clone(),
+                        })
+                        .collect(),
+                )
+            };
+            cache.add_package(pkg_id, pkg.version, pkg.modules.clone(), linkage);
         }
 
         // Accumulate linkage
@@ -1161,624 +1346,9 @@ fn process_with_mm2_predictive_prefetch(
         objects_fetched,
         packages_fetched,
         dynamic_fields_prefetched,
-        prefetch_time_ms,
     )
 }
 
-/// Process transaction using legacy GraphQL-first prefetch strategy.
-fn process_with_legacy_prefetch(
-    rt: &tokio::runtime::Runtime,
-    grpc: &Arc<GrpcClient>,
-    graphql: &GraphQLClient,
-    grpc_tx: &GrpcTransaction,
-    shared_cache: Option<&Arc<SharedObjectCache>>,
-    onchain_success: bool,
-) -> Result<TransactionResult> {
-    let prefetch_start = Instant::now();
-
-    // =========================================================================
-    // Collect historical object versions
-    // =========================================================================
-    let mut historical_versions: HashMap<String, u64> = HashMap::new();
-
-    // From unchanged_loaded_runtime_objects
-    for (id, ver) in &grpc_tx.unchanged_loaded_runtime_objects {
-        historical_versions.insert(id.clone(), *ver);
-    }
-
-    // From changed_objects (INPUT version)
-    for (id, ver) in &grpc_tx.changed_objects {
-        historical_versions.insert(id.clone(), *ver);
-    }
-
-    // From unchanged_consensus_objects
-    for (id, ver) in &grpc_tx.unchanged_consensus_objects {
-        historical_versions.insert(id.clone(), *ver);
-    }
-
-    // From transaction inputs
-    for input in &grpc_tx.inputs {
-        match input {
-            GrpcInput::Object {
-                object_id, version, ..
-            } => {
-                historical_versions
-                    .entry(object_id.clone())
-                    .or_insert(*version);
-            }
-            GrpcInput::SharedObject {
-                object_id,
-                initial_version,
-                ..
-            } => {
-                historical_versions
-                    .entry(object_id.clone())
-                    .or_insert(*initial_version);
-            }
-            GrpcInput::Receiving {
-                object_id, version, ..
-            } => {
-                historical_versions
-                    .entry(object_id.clone())
-                    .or_insert(*version);
-            }
-            GrpcInput::Pure { .. } => {}
-        }
-    }
-
-    // =========================================================================
-    // Prefetch dynamic fields
-    // =========================================================================
-    let mut prefetched = if let Some(cp) = grpc_tx.checkpoint {
-        sui_prefetch::prefetch_dynamic_fields_at_checkpoint(
-            graphql,
-            grpc,
-            rt,
-            &historical_versions,
-            6,   // max_depth (increased for deeply nested structures like DeepBook history)
-            200, // max_fields_per_object (increased for larger tables)
-            cp,
-        )
-    } else {
-        sui_prefetch::prefetch_dynamic_fields(
-            graphql,
-            grpc,
-            rt,
-            &historical_versions,
-            6,   // max_depth (increased for deeply nested structures like DeepBook history)
-            200, // max_fields_per_object (increased for larger tables)
-        )
-    };
-
-    // Also prefetch epoch-keyed dynamic fields for DeepBook's historical data
-    // This is essential for functions like `history::historic_maker_fee`
-    let tx_epoch = grpc_tx.epoch.unwrap_or(0);
-
-    // Debug summary (minimal)
-    if prefetched
-        .children_by_key
-        .keys()
-        .any(|k| k.name_type == "u64")
-    {
-        eprintln!(
-            "[EPOCH] Transaction {} epoch={}, found u64-keyed fields",
-            &grpc_tx.digest[..16],
-            tx_epoch
-        );
-    }
-
-    let epoch_fields_fetched = sui_prefetch::prefetch_epoch_keyed_fields(
-        graphql,
-        grpc,
-        rt,
-        &mut prefetched,
-        tx_epoch,
-        10, // lookback 10 epochs to cover historical fee lookups
-    );
-
-    for (child_id, (version, type_str, bcs)) in &prefetched.children {
-        historical_versions
-            .entry(child_id.clone())
-            .or_insert(*version);
-
-        // Store dynamic field children to shared cache
-        if let Some(cache) = shared_cache {
-            cache.add_dynamic_child(child_id, *version, type_str.clone(), bcs.clone());
-        }
-    }
-
-    let dynamic_fields_prefetched = prefetched.fetched_count + epoch_fields_fetched;
-
-    // =========================================================================
-    // Fetch objects and packages
-    // =========================================================================
-    let tx_timestamp_ms = grpc_tx.timestamp_ms.unwrap_or(1700000000000);
-
-    let mut objects: HashMap<String, String> = HashMap::new();
-    let mut object_types: HashMap<String, String> = HashMap::new();
-    let mut packages: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut package_ids_to_fetch: HashSet<String> = HashSet::new();
-
-    // Extract package IDs from commands (including type arguments)
-    for cmd in &grpc_tx.commands {
-        if let sui_transport::grpc::GrpcCommand::MoveCall {
-            package,
-            type_arguments,
-            ..
-        } = cmd
-        {
-            package_ids_to_fetch.insert(package.clone());
-            // Also extract packages from type arguments (e.g., 0xabc::coin::COIN)
-            for type_arg in type_arguments {
-                for pkg_id in extract_package_ids_from_type(type_arg) {
-                    package_ids_to_fetch.insert(pkg_id);
-                }
-            }
-        }
-        // Also handle MakeMoveVec element_type
-        if let sui_transport::grpc::GrpcCommand::MakeMoveVec {
-            element_type: Some(elem_type),
-            ..
-        } = cmd
-        {
-            for pkg_id in extract_package_ids_from_type(elem_type) {
-                package_ids_to_fetch.insert(pkg_id);
-            }
-        }
-    }
-
-    // Also extract packages from unchanged_loaded_runtime_objects - these include
-    // packages that were dynamically accessed during transaction execution
-    for (obj_id, _version) in &grpc_tx.unchanged_loaded_runtime_objects {
-        // If the object ID looks like a package (64-char hex), add it
-        let normalized = normalize_address(obj_id);
-        // Try to fetch as a potential package
-        package_ids_to_fetch.insert(normalized);
-    }
-
-    // Fetch objects
-    for (obj_id, version) in &historical_versions {
-        let result =
-            rt.block_on(async { grpc.get_object_at_version(obj_id, Some(*version)).await });
-
-        if let Ok(Some(obj)) = result {
-            if let Some(bcs) = &obj.bcs {
-                let bcs_b64 = base64::engine::general_purpose::STANDARD.encode(bcs);
-                objects.insert(obj_id.clone(), bcs_b64);
-
-                // Store to shared cache for later disk persistence
-                if let Some(cache) = shared_cache {
-                    cache.add_object(obj_id, *version, obj.type_string.clone(), Some(bcs.clone()));
-                }
-
-                if let Some(type_str) = &obj.type_string {
-                    object_types.insert(obj_id.clone(), type_str.clone());
-                    for pkg_id in extract_package_ids_from_type(type_str) {
-                        package_ids_to_fetch.insert(pkg_id);
-                    }
-                }
-
-                if let Some(modules) = &obj.package_modules {
-                    let modules_b64: Vec<(String, String)> = modules
-                        .iter()
-                        .map(|(name, bytes)| {
-                            (
-                                name.clone(),
-                                base64::engine::general_purpose::STANDARD.encode(bytes),
-                            )
-                        })
-                        .collect();
-                    packages.insert(obj_id.clone(), modules_b64);
-                    package_ids_to_fetch.remove(obj_id);
-
-                    // Store package to shared cache
-                    if let Some(cache) = shared_cache {
-                        cache.add_package(obj_id, *version, modules.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // =========================================================================
-    // Extract additional package addresses from type strings
-    // =========================================================================
-    // Type strings reliably contain package addresses (e.g., Pool<0xabc::coin::COIN>)
-    // This is more precise than scanning raw BCS bytes for 32-byte sequences.
-    for type_str in object_types.values() {
-        let type_addrs = extract_addresses_from_type_params(type_str);
-        for addr in type_addrs {
-            package_ids_to_fetch.insert(addr);
-        }
-    }
-
-    // Note: We intentionally don't scan raw BCS bytes here because:
-    // 1. It generates many false positives (random 32-byte sequences)
-    // 2. Type strings and linkage tables already capture most package references
-    // 3. The BcsAddressScanner is available for targeted use cases where needed
-
-    // =========================================================================
-    // Fetch packages with transitive dependencies
-    // =========================================================================
-    let mut fetched_packages: HashSet<String> = HashSet::new();
-    let mut packages_to_fetch = package_ids_to_fetch.clone();
-    let mut linkage_upgrades: HashMap<String, String> = HashMap::new();
-    // Track package_id -> version from linkage tables
-    let mut linkage_versions: HashMap<String, u64> = HashMap::new();
-
-    // Resolve transitive dependencies with a reasonable depth limit
-    // Most real-world package graphs have depth < 20
-    const MAX_DEPENDENCY_DEPTH: usize = 25;
-    for depth in 0..MAX_DEPENDENCY_DEPTH {
-        if packages_to_fetch.is_empty() {
-            break;
-        }
-
-        // Warn if we're getting deep into the dependency graph
-        if depth == MAX_DEPENDENCY_DEPTH - 1 && !packages_to_fetch.is_empty() {
-            eprintln!(
-                "WARNING: Reached max dependency depth ({}), {} packages may be missing",
-                MAX_DEPENDENCY_DEPTH,
-                packages_to_fetch.len()
-            );
-        }
-
-        let mut new_deps: HashSet<String> = HashSet::new();
-
-        for pkg_id in packages_to_fetch.iter() {
-            let pkg_id_normalized = normalize_address(pkg_id);
-            if fetched_packages.contains(&pkg_id_normalized) {
-                continue;
-            }
-
-            // Try linkage version first, then historical_versions, then None (latest)
-            let version = linkage_versions
-                .get(pkg_id)
-                .copied()
-                .or_else(|| historical_versions.get(pkg_id).copied());
-            let result = rt.block_on(async { grpc.get_object_at_version(pkg_id, version).await });
-
-            if let Ok(Some(obj)) = result {
-                if let Some(modules) = &obj.package_modules {
-                    let modules_b64: Vec<(String, String)> = modules
-                        .iter()
-                        .map(|(name, bytes)| {
-                            (
-                                name.clone(),
-                                base64::engine::general_purpose::STANDARD.encode(bytes),
-                            )
-                        })
-                        .collect();
-
-                    if let Some(linkage) = &obj.package_linkage {
-                        for l in linkage {
-                            if is_framework_package(&l.original_id) {
-                                continue;
-                            }
-
-                            let orig_normalized = normalize_address(&l.original_id);
-                            let upgraded_normalized = normalize_address(&l.upgraded_id);
-                            if orig_normalized != upgraded_normalized {
-                                linkage_upgrades
-                                    .insert(orig_normalized.clone(), upgraded_normalized.clone());
-                                // Track the version from linkage table
-                                linkage_versions
-                                    .insert(upgraded_normalized.clone(), l.upgraded_version);
-                                if !fetched_packages.contains(&upgraded_normalized)
-                                    && !packages.contains_key(&upgraded_normalized)
-                                {
-                                    new_deps.insert(upgraded_normalized);
-                                }
-                            }
-                        }
-                    }
-
-                    for (_name, bytecode_b64) in &modules_b64 {
-                        if let Ok(bytecode) =
-                            base64::engine::general_purpose::STANDARD.decode(bytecode_b64)
-                        {
-                            // Extract dependencies from module handles
-                            let deps = extract_dependencies_from_bytecode(&bytecode);
-                            for dep in deps {
-                                let dep_normalized = normalize_address(&dep);
-                                let actual_dep = linkage_upgrades
-                                    .get(&dep_normalized)
-                                    .cloned()
-                                    .unwrap_or(dep_normalized);
-                                if !fetched_packages.contains(&actual_dep)
-                                    && !packages.contains_key(&actual_dep)
-                                {
-                                    new_deps.insert(actual_dep);
-                                }
-                            }
-
-                            // Also extract addresses from bytecode constants
-                            // This catches dynamically-referenced packages stored as constants
-                            let const_addrs = extract_addresses_from_bytecode_constants(&bytecode);
-                            for addr in const_addrs {
-                                if !fetched_packages.contains(&addr)
-                                    && !packages.contains_key(&addr)
-                                {
-                                    new_deps.insert(addr);
-                                }
-                            }
-                        }
-                    }
-
-                    packages.insert(pkg_id_normalized.clone(), modules_b64);
-                    fetched_packages.insert(pkg_id_normalized.clone());
-
-                    // Store package to shared cache
-                    if let Some(cache) = shared_cache {
-                        cache.add_package(&pkg_id_normalized, obj.version, modules.clone());
-                    }
-                }
-            } else {
-                fetched_packages.insert(pkg_id_normalized);
-            }
-        }
-
-        packages_to_fetch = new_deps;
-    }
-
-    // =========================================================================
-    // Build CachedTransaction
-    // =========================================================================
-    let fetched_tx = grpc_to_fetched_transaction(grpc_tx)?;
-    let mut cached = CachedTransaction::new(fetched_tx);
-
-    for (pkg_id, modules) in &packages {
-        cached.packages.insert(pkg_id.clone(), modules.clone());
-    }
-    cached.objects = objects;
-    cached.object_types = object_types;
-    cached.object_versions = historical_versions.clone();
-
-    let objects_fetched = cached.objects.len();
-    let packages_fetched = cached.packages.len();
-
-    // =========================================================================
-    // Build module resolver
-    // =========================================================================
-    let mut resolver = LocalModuleResolver::new();
-
-    // First pass: load all packages at their native addresses (from bytecode)
-    // Also track: package_id -> bytecode_address mappings for alias setup
-    let mut pkg_id_to_bytecode_addr: HashMap<String, AccountAddress> = HashMap::new();
-
-    // CRITICAL: Sort packages by version (ascending) so that higher versions load last and overwrite.
-    // This ensures that for package upgrades where both v1 (original) and vN (upgrade) share the
-    // same bytecode address, the newer version's bytecode is used.
-    let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> =
-        cached.packages.iter().collect();
-    packages_sorted.sort_by(|a, b| {
-        let ver_a = historical_versions.get(a.0).copied().unwrap_or(1);
-        let ver_b = historical_versions.get(b.0).copied().unwrap_or(1);
-        ver_a.cmp(&ver_b)
-    });
-
-    for (pkg_id, modules) in packages_sorted {
-        let decoded_modules: Vec<(String, Vec<u8>)> = modules
-            .iter()
-            .filter_map(|(name, b64)| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .ok()
-                    .map(|bytes| (name.clone(), bytes))
-            })
-            .collect();
-
-        // add_package_modules_at returns the bytecode address (address in bytecode, not package ID)
-        if let Ok((count, Some(bytecode_addr))) =
-            resolver.add_package_modules_at(decoded_modules, None)
-        {
-            if count > 0 {
-                pkg_id_to_bytecode_addr.insert(pkg_id.clone(), bytecode_addr);
-            }
-        }
-    }
-
-    // Second pass: set up aliases
-    // 1. Alias from fetched package ID -> bytecode address (for upgraded packages)
-    // 2. Alias from linkage original -> upgraded bytecode address
-    for (pkg_id, bytecode_addr) in &pkg_id_to_bytecode_addr {
-        let pkg_addr = match AccountAddress::from_hex_literal(pkg_id) {
-            Ok(addr) => addr,
-            Err(_) => continue,
-        };
-
-        // If package ID differs from bytecode address, set up alias
-        if pkg_addr != *bytecode_addr {
-            // Alias: pkg_id -> bytecode_addr (so lookups at pkg_id find modules at bytecode_addr)
-            resolver.add_address_alias(pkg_addr, *bytecode_addr);
-        }
-    }
-
-    // Also set up linkage upgrade aliases
-    for (original_id, upgraded_id) in &linkage_upgrades {
-        let original_addr = match AccountAddress::from_hex_literal(&format!("0x{}", original_id)) {
-            Ok(addr) => addr,
-            Err(_) => continue,
-        };
-
-        // Find the bytecode address for the upgraded package
-        let bytecode_addr = pkg_id_to_bytecode_addr
-            .get(&format!("0x{}", upgraded_id))
-            .or_else(|| pkg_id_to_bytecode_addr.get(upgraded_id));
-
-        if let Some(&bytecode_addr) = bytecode_addr {
-            // Alias: original -> bytecode_addr of upgraded package
-            resolver.add_address_alias(original_addr, bytecode_addr);
-        }
-    }
-
-    resolver.load_sui_framework()?;
-
-    // =========================================================================
-    // Create VM harness
-    // =========================================================================
-    let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
-    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
-
-    let mut config = build_replay_config_for_tx(rt, grpc, grpc_tx, tx_timestamp_ms)?;
-    config = config.with_sender_address(sender_address);
-
-    let mut harness = VMHarness::with_config(&resolver, false, config)?;
-
-    // =========================================================================
-    // Set up versioned child fetcher (for proper transaction replay)
-    // =========================================================================
-    let prefetched_children = Arc::new(prefetched.children.clone());
-    let grpc_clone = grpc.clone();
-    let historical_clone = Arc::new(historical_versions.clone());
-
-    // Build address aliases for type rewriting in child fetcher
-    // Map: upgraded_address -> original_address
-    let type_rewrite_aliases: HashMap<AccountAddress, AccountAddress> = linkage_upgrades
-        .iter()
-        .filter_map(|(original, upgraded)| {
-            let original_norm = normalize_address(original);
-            let upgraded_norm = normalize_address(upgraded);
-            let original_addr =
-                AccountAddress::from_hex_literal(&format!("0x{}", original_norm)).ok()?;
-            let upgraded_addr =
-                AccountAddress::from_hex_literal(&format!("0x{}", upgraded_norm)).ok()?;
-            Some((upgraded_addr, original_addr))
-        })
-        .collect();
-    let type_aliases = Arc::new(type_rewrite_aliases);
-
-    // Clone shared cache for use in the child fetcher closure
-    let cache_for_fetcher: Option<Arc<SharedObjectCache>> = shared_cache.cloned();
-
-    // Create a dedicated runtime for on-demand fetching (reused across all calls)
-    // This is much more efficient than creating a new runtime for each fetch
-    let fetch_runtime = Arc::new(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create fetch runtime"),
-    );
-    let fetch_runtime_clone = fetch_runtime.clone();
-
-    let child_fetcher: VersionedChildFetcherFn = Box::new(
-        move |_parent_id: AccountAddress, child_id: AccountAddress| {
-            let child_id_str = child_id.to_hex_literal();
-
-            // Check prefetched cache first (contains version info)
-            if let Some((version, type_str, bcs)) = prefetched_children.get(&child_id_str) {
-                if let Some(type_tag) = parse_type_tag(type_str) {
-                    // Rewrite type addresses using linkage upgrade mappings
-                    let rewritten = rewrite_type_tag(type_tag, &type_aliases);
-                    return Some((rewritten, bcs.clone(), *version));
-                }
-            }
-
-            // Fallback: fetch on-demand using the shared runtime
-            let version = historical_clone.get(&child_id_str).copied();
-
-            let result = fetch_runtime_clone.block_on(async {
-                grpc_clone
-                    .get_object_at_version(&child_id_str, version)
-                    .await
-            });
-
-            if let Ok(Some(obj)) = result {
-                if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                    // Store to shared cache for later disk persistence
-                    if let Some(ref cache) = cache_for_fetcher {
-                        cache.add_dynamic_child(
-                            &child_id_str,
-                            obj.version,
-                            type_str.clone(),
-                            bcs.clone(),
-                        );
-                    }
-
-                    if let Some(type_tag) = parse_type_tag(type_str) {
-                        // Rewrite type addresses using linkage upgrade mappings
-                        let rewritten = rewrite_type_tag(type_tag, &type_aliases);
-                        return Some((rewritten, bcs.clone(), obj.version));
-                    }
-                }
-            }
-
-            None
-        },
-    );
-
-    harness.set_versioned_child_fetcher(child_fetcher);
-
-    // =========================================================================
-    // Register input objects
-    // =========================================================================
-    for (obj_id, version) in &historical_versions {
-        if let Ok(addr) = AccountAddress::from_hex_literal(obj_id) {
-            harness.add_sui_input_object(
-                addr,
-                *version,
-                sui_types::object::Owner::Shared {
-                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
-                        *version,
-                    ),
-                },
-            );
-        }
-    }
-
-    // =========================================================================
-    // Execute replay
-    // =========================================================================
-    // Build comprehensive address aliases from both bytecode and linkage information
-    let address_aliases = sui_sandbox_core::tx_replay::build_comprehensive_address_aliases(
-        &cached,
-        &linkage_upgrades,
-    );
-    harness.set_address_aliases(address_aliases.clone());
-
-    let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(
-        &cached.transaction,
-        &mut harness,
-        &cached.objects,
-        &address_aliases,
-    );
-
-    let prefetch_time_ms = prefetch_start.elapsed().as_millis() as u64;
-
-    match result {
-        Ok(replay_result) => {
-            let local_success = replay_result.local_success;
-            let outcome_matches = local_success == onchain_success;
-
-            Ok(TransactionResult {
-                digest: grpc_tx.digest.clone(),
-                onchain_success,
-                local_success,
-                outcome_matches,
-                error: replay_result.local_error,
-                objects_fetched,
-                packages_fetched,
-                dynamic_fields_prefetched,
-                prefetch_time_ms,
-            })
-        }
-        Err(e) => Ok(TransactionResult {
-            digest: grpc_tx.digest.clone(),
-            onchain_success,
-            local_success: false,
-            outcome_matches: !onchain_success,
-            error: Some(e.to_string()),
-            objects_fetched,
-            packages_fetched,
-            dynamic_fields_prefetched,
-            prefetch_time_ms,
-        }),
-    }
-}
-
-/// Execute replay with on-demand package fetching on LINKER_ERROR.
-/// Wraps execute_replay_inner and retries up to MAX_PACKAGE_RETRIES times.
-#[allow(clippy::too_many_arguments)]
 fn execute_replay(
     rt: &tokio::runtime::Runtime,
     grpc: &Arc<GrpcClient>,
@@ -1794,7 +1364,6 @@ fn execute_replay(
     objects_fetched: usize,
     mut packages_fetched: usize,
     dynamic_fields_prefetched: usize,
-    prefetch_time_ms: u64,
 ) -> Result<TransactionResult> {
     const MAX_PACKAGE_RETRIES: usize = 5;
     let mut attempted_packages: HashSet<String> = HashSet::new();
@@ -1814,7 +1383,6 @@ fn execute_replay(
             objects_fetched,
             packages_fetched,
             dynamic_fields_prefetched,
-            prefetch_time_ms,
         )?;
 
         // Check if we got a LINKER_ERROR or FUNCTION_RESOLUTION_FAILURE
@@ -1928,53 +1496,21 @@ fn execute_replay(
         objects_fetched,
         packages_fetched,
         dynamic_fields_prefetched,
-        prefetch_time_ms,
     )
 }
 
-/// Inner execute replay function (without retry logic).
-#[allow(clippy::too_many_arguments)]
-fn execute_replay_inner(
-    rt: &tokio::runtime::Runtime,
-    grpc: &Arc<GrpcClient>,
-    grpc_tx: &GrpcTransaction,
-    objects: HashMap<String, String>,
-    object_types: HashMap<String, String>,
-    packages: HashMap<String, Vec<(String, String)>>,
-    historical_versions: HashMap<String, u64>,
-    linkage_upgrades: HashMap<String, String>,
-    shared_cache: Option<&Arc<SharedObjectCache>>,
-    onchain_success: bool,
-    objects_fetched: usize,
-    packages_fetched: usize,
-    dynamic_fields_prefetched: usize,
-    prefetch_time_ms: u64,
-) -> Result<TransactionResult> {
-    let tx_timestamp_ms = grpc_tx.timestamp_ms.unwrap_or(1700000000000);
-
-    // =========================================================================
-    // Build CachedTransaction
-    // =========================================================================
-    let fetched_tx = grpc_to_fetched_transaction(grpc_tx)?;
-    let mut cached = CachedTransaction::new(fetched_tx);
-
-    for (pkg_id, modules) in &packages {
-        cached.packages.insert(pkg_id.clone(), modules.clone());
-    }
-    cached.objects = objects;
-    cached.object_types = object_types;
-    cached.object_versions = historical_versions.clone();
-
-    // =========================================================================
-    // Build module resolver
-    // =========================================================================
+/// Build a module resolver with package bytecode and address aliases.
+fn build_module_resolver(
+    cached: &CachedTransaction,
+    historical_versions: &HashMap<String, u64>,
+    linkage_upgrades: &HashMap<String, String>,
+) -> Result<LocalModuleResolver> {
     let mut resolver = LocalModuleResolver::new();
 
-    // First pass: load all packages at their native addresses (from bytecode)
-    // Also track: package_id -> bytecode_address mappings for alias setup
+    // Track: package_id -> bytecode_address mappings for alias setup
     let mut pkg_id_to_bytecode_addr: HashMap<String, AccountAddress> = HashMap::new();
 
-    // CRITICAL: Sort packages by version (ascending) so that higher versions load last and overwrite.
+    // Sort packages by version so higher versions load last and override.
     let mut packages_sorted: Vec<(&String, &Vec<(String, String)>)> =
         cached.packages.iter().collect();
     packages_sorted.sort_by(|a, b| {
@@ -1994,7 +1530,6 @@ fn execute_replay_inner(
             })
             .collect();
 
-        // add_package_modules_at returns the bytecode address (address in bytecode, not package ID)
         if let Ok((count, Some(bytecode_addr))) =
             resolver.add_package_modules_at(decoded_modules, None)
         {
@@ -2004,41 +1539,95 @@ fn execute_replay_inner(
         }
     }
 
-    // Second pass: set up aliases
-    // 1. Alias from fetched package ID -> bytecode address (for upgraded packages)
-    // 2. Alias from linkage original -> upgraded bytecode address
+    // Alias from fetched package ID -> bytecode address
     for (pkg_id, bytecode_addr) in &pkg_id_to_bytecode_addr {
         let pkg_addr = match AccountAddress::from_hex_literal(pkg_id) {
             Ok(addr) => addr,
             Err(_) => continue,
         };
 
-        // If package ID differs from bytecode address, set up alias
         if pkg_addr != *bytecode_addr {
-            // Alias: pkg_id -> bytecode_addr (so lookups at pkg_id find modules at bytecode_addr)
             resolver.add_address_alias(pkg_addr, *bytecode_addr);
         }
     }
 
-    // Also set up linkage upgrade aliases
-    for (original_id, upgraded_id) in &linkage_upgrades {
-        let original_addr = match AccountAddress::from_hex_literal(&format!("0x{}", original_id)) {
+    // Linkage upgrade aliases (original -> upgraded bytecode address)
+    for (original_id, upgraded_id) in linkage_upgrades {
+        let original_norm = normalize_address(original_id);
+        let upgraded_norm = normalize_address(upgraded_id);
+
+        let original_addr = match AccountAddress::from_hex_literal(&original_norm) {
             Ok(addr) => addr,
             Err(_) => continue,
         };
 
-        // Find the bytecode address for the upgraded package
         let bytecode_addr = pkg_id_to_bytecode_addr
-            .get(&format!("0x{}", upgraded_id))
+            .get(&upgraded_norm)
             .or_else(|| pkg_id_to_bytecode_addr.get(upgraded_id));
 
         if let Some(&bytecode_addr) = bytecode_addr {
-            // Alias: original -> bytecode_addr of upgraded package
             resolver.add_address_alias(original_addr, bytecode_addr);
         }
     }
 
     resolver.load_sui_framework()?;
+
+    Ok(resolver)
+}
+
+/// Build type-rewrite aliases (upgraded -> original) for dynamic field decoding.
+fn build_type_rewrite_aliases(
+    linkage_upgrades: &HashMap<String, String>,
+) -> Arc<HashMap<AccountAddress, AccountAddress>> {
+    let type_rewrite_aliases: HashMap<AccountAddress, AccountAddress> = linkage_upgrades
+        .iter()
+        .filter_map(|(original, upgraded)| {
+            let original_norm = normalize_address(original);
+            let upgraded_norm = normalize_address(upgraded);
+            let original_addr = AccountAddress::from_hex_literal(&original_norm).ok()?;
+            let upgraded_addr = AccountAddress::from_hex_literal(&upgraded_norm).ok()?;
+            Some((upgraded_addr, original_addr))
+        })
+        .collect();
+    Arc::new(type_rewrite_aliases)
+}
+
+/// Inner execute replay function (without retry logic).
+#[allow(clippy::too_many_arguments)]
+fn execute_replay_inner(
+    rt: &tokio::runtime::Runtime,
+    grpc: &Arc<GrpcClient>,
+    grpc_tx: &GrpcTransaction,
+    objects: HashMap<String, String>,
+    object_types: HashMap<String, String>,
+    packages: HashMap<String, Vec<(String, String)>>,
+    historical_versions: HashMap<String, u64>,
+    linkage_upgrades: HashMap<String, String>,
+    shared_cache: Option<&Arc<SharedObjectCache>>,
+    onchain_success: bool,
+    objects_fetched: usize,
+    packages_fetched: usize,
+    dynamic_fields_prefetched: usize,
+) -> Result<TransactionResult> {
+    let tx_timestamp_ms = grpc_tx.timestamp_ms.unwrap_or(1700000000000);
+
+    // =========================================================================
+    // Build CachedTransaction
+    // =========================================================================
+    let fetched_tx = grpc_to_fetched_transaction(grpc_tx)?;
+    let mut cached = CachedTransaction::new(fetched_tx);
+
+    for (pkg_id, modules) in &packages {
+        cached.packages.insert(pkg_id.clone(), modules.clone());
+    }
+    cached.objects = objects;
+    cached.object_types = object_types;
+    cached.object_versions = historical_versions.clone();
+
+    // =========================================================================
+    // Build module resolver
+    // =========================================================================
+    let resolver = build_module_resolver(&cached, &historical_versions, &linkage_upgrades)?;
 
     // =========================================================================
     // Create VM harness
@@ -2057,19 +1646,7 @@ fn execute_replay_inner(
     let grpc_clone = grpc.clone();
     let historical_clone = Arc::new(historical_versions.clone());
 
-    let type_rewrite_aliases: HashMap<AccountAddress, AccountAddress> = linkage_upgrades
-        .iter()
-        .filter_map(|(original, upgraded)| {
-            let original_norm = normalize_address(original);
-            let upgraded_norm = normalize_address(upgraded);
-            let original_addr =
-                AccountAddress::from_hex_literal(&format!("0x{}", original_norm)).ok()?;
-            let upgraded_addr =
-                AccountAddress::from_hex_literal(&format!("0x{}", upgraded_norm)).ok()?;
-            Some((upgraded_addr, original_addr))
-        })
-        .collect();
-    let type_aliases = Arc::new(type_rewrite_aliases);
+    let type_aliases = build_type_rewrite_aliases(&linkage_upgrades);
 
     let cache_for_fetcher: Option<Arc<SharedObjectCache>> = shared_cache.cloned();
 
@@ -2163,7 +1740,6 @@ fn execute_replay_inner(
                 objects_fetched,
                 packages_fetched,
                 dynamic_fields_prefetched,
-                prefetch_time_ms,
             })
         }
         Err(e) => Ok(TransactionResult {
@@ -2175,234 +1751,127 @@ fn execute_replay_inner(
             objects_fetched,
             packages_fetched,
             dynamic_fields_prefetched,
-            prefetch_time_ms,
         }),
     }
 }
 
-/// Run comparison between both prefetch strategies.
-fn run_comparison_batch(start_checkpoint: u64, num_checkpoints: u64) -> Result<ComparisonResult> {
-    let rt = tokio::runtime::Runtime::new()?;
-    let end_checkpoint = start_checkpoint + num_checkpoints - 1;
+#[allow(clippy::too_many_arguments)]
+fn execute_replay_from_cache(
+    cache: &CheckpointRangeCache,
+    grpc_tx: &GrpcTransaction,
+    objects: HashMap<String, String>,
+    object_types: HashMap<String, String>,
+    packages: HashMap<String, Vec<(String, String)>>,
+    historical_versions: HashMap<String, u64>,
+    linkage_upgrades: HashMap<String, String>,
+    cached_children: Arc<HashMap<String, (u64, String, Vec<u8>)>>,
+    onchain_success: bool,
+) -> Result<TransactionResult> {
+    let tx_timestamp_ms = grpc_tx.timestamp_ms.unwrap_or(1700000000000);
 
-    println!("\n========================================");
-    println!("   PREFETCH STRATEGY COMPARISON MODE");
-    println!("========================================\n");
+    let fetched_tx = grpc_to_fetched_transaction(grpc_tx)?;
+    let mut cached = CachedTransaction::new(fetched_tx);
 
-    // Connect to services
-    println!("Step 1: Connecting to services...");
-    let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+    for (pkg_id, modules) in &packages {
+        cached.packages.insert(pkg_id.clone(), modules.clone());
+    }
+    cached.objects = objects;
+    cached.object_types = object_types;
+    cached.object_versions = historical_versions.clone();
 
-    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
-    let grpc = Arc::new(grpc);
-    let graphql = GraphQLClient::mainnet();
+    let resolver = build_module_resolver(&cached, &historical_versions, &linkage_upgrades)?;
 
-    println!("   Connected to {}", endpoint);
+    let sender_hex = grpc_tx.sender.strip_prefix("0x").unwrap_or(&grpc_tx.sender);
+    let sender_address = AccountAddress::from_hex_literal(&format!("0x{:0>64}", sender_hex))?;
 
-    // Fetch transactions
-    println!(
-        "\nStep 2: Fetching transactions from checkpoints {}..{}",
-        start_checkpoint, end_checkpoint
+    let mut config = build_replay_config_for_tx_cached(grpc_tx, tx_timestamp_ms, cache)?;
+    config = config.with_sender_address(sender_address);
+
+    let mut harness = VMHarness::with_config(&resolver, false, config)?;
+
+    let type_aliases = build_type_rewrite_aliases(&linkage_upgrades);
+    let child_hits = Arc::new(AtomicUsize::new(0));
+    let child_hits_clone = child_hits.clone();
+    let cached_children_clone = cached_children.clone();
+
+    let child_fetcher: VersionedChildFetcherFn = Box::new(
+        move |_parent_id: AccountAddress, child_id: AccountAddress| {
+            let child_id_str = child_id.to_hex_literal();
+            let lookup = cached_children_clone.get(&child_id_str).or_else(|| {
+                let normalized = normalize_address(&child_id_str);
+                cached_children_clone.get(&normalized)
+            });
+
+            if let Some((version, type_str, bcs)) = lookup {
+                if let Some(type_tag) = parse_type_tag(type_str) {
+                    let rewritten = rewrite_type_tag(type_tag, &type_aliases);
+                    child_hits_clone.fetch_add(1, Ordering::Relaxed);
+                    return Some((rewritten, bcs.clone(), *version));
+                }
+            }
+
+            None
+        },
     );
 
-    let mut all_transactions: Vec<GrpcTransaction> = Vec::new();
+    harness.set_versioned_child_fetcher(child_fetcher);
 
-    for cp_num in start_checkpoint..=end_checkpoint {
-        match rt.block_on(async { grpc.get_checkpoint(cp_num).await }) {
-            Ok(Some(checkpoint)) => {
-                let ptb_txs: Vec<GrpcTransaction> = checkpoint
-                    .transactions
-                    .iter()
-                    .filter(|tx| tx.is_ptb())
-                    .cloned()
-                    .collect();
-
-                println!(
-                    "   Checkpoint {}: {} total txs, {} PTBs",
-                    cp_num,
-                    checkpoint.transactions.len(),
-                    ptb_txs.len()
-                );
-
-                all_transactions.extend(ptb_txs);
-            }
-            Ok(None) => {
-                println!("   Checkpoint {}: not found", cp_num);
-            }
-            Err(e) => {
-                println!("   Checkpoint {}: error - {}", cp_num, e);
-            }
-        }
-    }
-
-    println!("\n   Total PTB transactions: {}", all_transactions.len());
-
-    // Run comparison for each transaction
-    println!("\nStep 3: Running side-by-side comparison...\n");
-
-    let mut ground_truth_stats = BatchStats::default();
-    let mut legacy_stats = BatchStats::default();
-    let mut per_tx_comparison: Vec<TransactionComparison> = Vec::new();
-
-    ground_truth_stats.prefetch_strategy = Some(PrefetchStrategy::GroundTruth);
-    legacy_stats.prefetch_strategy = Some(PrefetchStrategy::LegacyGraphQL);
-
-    for (idx, grpc_tx) in all_transactions.iter().enumerate() {
-        if (idx + 1) % 5 == 0 || idx == 0 {
-            print!(
-                "\r   Comparing transaction {}/{}...",
-                idx + 1,
-                all_transactions.len()
+    for (obj_id, version) in &cached.object_versions {
+        if let Ok(addr) = AccountAddress::from_hex_literal(obj_id) {
+            harness.add_sui_input_object(
+                addr,
+                *version,
+                sui_types::object::Owner::Shared {
+                    initial_shared_version: sui_types::base_types::SequenceNumber::from_u64(
+                        *version,
+                    ),
+                },
             );
-            std::io::Write::flush(&mut std::io::stdout())?;
         }
-
-        // Determine if framework-only
-        let tx_packages: Vec<String> = grpc_tx
-            .commands
-            .iter()
-            .filter_map(|cmd| {
-                if let sui_transport::grpc::GrpcCommand::MoveCall { package, .. } = cmd {
-                    Some(package.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let is_framework_only = tx_packages.iter().all(|p| is_framework_package(p));
-
-        // Run ground-truth strategy
-        let gt_result = process_single_transaction(
-            &rt,
-            &grpc,
-            &graphql,
-            grpc_tx,
-            None,
-            PrefetchStrategy::GroundTruth,
-        );
-
-        // Run legacy strategy
-        let legacy_result = process_single_transaction(
-            &rt,
-            &grpc,
-            &graphql,
-            grpc_tx,
-            None,
-            PrefetchStrategy::LegacyGraphQL,
-        );
-
-        // Record results
-        let (gt_matches, gt_error, gt_prefetch_ms) = match &gt_result {
-            Ok(r) => {
-                ground_truth_stats.transactions_processed += 1;
-                ground_truth_stats.total_objects_fetched += r.objects_fetched;
-                ground_truth_stats.total_packages_fetched += r.packages_fetched;
-
-                if is_framework_only {
-                    ground_truth_stats.framework_total += 1;
-                    if r.outcome_matches {
-                        ground_truth_stats.framework_matches += 1;
-                    }
-                } else {
-                    ground_truth_stats.complex_total += 1;
-                    if r.outcome_matches {
-                        ground_truth_stats.complex_matches += 1;
-                    }
-                }
-
-                if r.outcome_matches {
-                    ground_truth_stats.outcome_matches += 1;
-                }
-                if r.local_success {
-                    ground_truth_stats.successful_replays += 1;
-                } else {
-                    ground_truth_stats.failed_replays += 1;
-                }
-
-                (r.outcome_matches, r.error.clone(), r.prefetch_time_ms)
-            }
-            Err(e) => {
-                ground_truth_stats.skipped_fetch_errors += 1;
-                (false, Some(e.to_string()), 0)
-            }
-        };
-
-        let (legacy_matches, legacy_error, legacy_prefetch_ms) = match &legacy_result {
-            Ok(r) => {
-                legacy_stats.transactions_processed += 1;
-                legacy_stats.total_objects_fetched += r.objects_fetched;
-                legacy_stats.total_packages_fetched += r.packages_fetched;
-
-                if is_framework_only {
-                    legacy_stats.framework_total += 1;
-                    if r.outcome_matches {
-                        legacy_stats.framework_matches += 1;
-                    }
-                } else {
-                    legacy_stats.complex_total += 1;
-                    if r.outcome_matches {
-                        legacy_stats.complex_matches += 1;
-                    }
-                }
-
-                if r.outcome_matches {
-                    legacy_stats.outcome_matches += 1;
-                }
-                if r.local_success {
-                    legacy_stats.successful_replays += 1;
-                } else {
-                    legacy_stats.failed_replays += 1;
-                }
-
-                (r.outcome_matches, r.error.clone(), r.prefetch_time_ms)
-            }
-            Err(e) => {
-                legacy_stats.skipped_fetch_errors += 1;
-                (false, Some(e.to_string()), 0)
-            }
-        };
-
-        let strategies_agree = gt_matches == legacy_matches;
-
-        // Log comparison
-        let gt_status = if gt_matches { "✓" } else { "✗" };
-        let legacy_status = if legacy_matches { "✓" } else { "✗" };
-        let agree_str = if strategies_agree { "=" } else { "≠" };
-        let category = if is_framework_only { "fw" } else { "cx" };
-
-        eprintln!(
-            "   {} GT:{} Legacy:{} [{}] {}",
-            agree_str,
-            gt_status,
-            legacy_status,
-            category,
-            &grpc_tx.digest[..16]
-        );
-
-        per_tx_comparison.push(TransactionComparison {
-            digest: grpc_tx.digest.clone(),
-            is_framework_only,
-            ground_truth_matches: gt_matches,
-            legacy_matches,
-            strategies_agree,
-            ground_truth_error: gt_error,
-            legacy_error,
-            ground_truth_prefetch_ms: gt_prefetch_ms,
-            legacy_prefetch_ms,
-        });
     }
 
-    println!(
-        "\r   Compared {}/{} transactions.        ",
-        all_transactions.len(),
-        all_transactions.len()
+    let address_aliases = sui_sandbox_core::tx_replay::build_comprehensive_address_aliases(
+        &cached,
+        &linkage_upgrades,
+    );
+    harness.set_address_aliases(address_aliases.clone());
+
+    let result = sui_sandbox_core::tx_replay::replay_with_objects_and_aliases(
+        &cached.transaction,
+        &mut harness,
+        &cached.objects,
+        &address_aliases,
     );
 
-    Ok(ComparisonResult {
-        ground_truth_stats,
-        legacy_stats,
-        per_tx_comparison,
-    })
+    let dynamic_fields_prefetched = child_hits.load(Ordering::Relaxed);
+    let objects_fetched = cached.objects.len();
+    let packages_fetched = cached.packages.len();
+
+    match result {
+        Ok(replay_result) => {
+            let local_success = replay_result.local_success;
+            let outcome_matches = local_success == onchain_success;
+
+            Ok(TransactionResult {
+                digest: grpc_tx.digest.clone(),
+                onchain_success,
+                local_success,
+                outcome_matches,
+                error: replay_result.local_error,
+                objects_fetched,
+                packages_fetched,
+                dynamic_fields_prefetched,
+            })
+        }
+        Err(e) => Ok(TransactionResult {
+            digest: grpc_tx.digest.clone(),
+            onchain_success,
+            local_success: false,
+            outcome_matches: !onchain_success,
+            error: Some(e.to_string()),
+            objects_fetched,
+            packages_fetched,
+            dynamic_fields_prefetched,
+        }),
+    }
 }

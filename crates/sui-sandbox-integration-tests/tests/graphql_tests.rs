@@ -1,9 +1,8 @@
 #![cfg(feature = "network-tests")]
 #![allow(unused_imports)]
-#![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //! GraphQL Integration Tests
 //!
-//! These tests validate the GraphQL client and DataFetcher against mainnet.
+//! These tests validate the GraphQL client against mainnet.
 //!
 //! ## Network Tests
 //!
@@ -19,7 +18,6 @@
 //! We explicitly mark network-dependent tests as ignored rather than having them
 //! silently succeed with eprintln warnings.
 
-use sui_sandbox::data_fetcher::{DataFetcher, DataSource, GraphQLArgument, GraphQLCommand};
 use sui_sandbox::graphql::{GraphQLClient, PageInfo, PaginationDirection, Paginator};
 
 // =============================================================================
@@ -205,117 +203,6 @@ fn test_graphql_fetch_ptb_transactions() {
         }
         Err(e) => {
             eprintln!("Note: Could not fetch transactions (network issue?): {}", e);
-        }
-    }
-}
-
-// =============================================================================
-// DataFetcher Integration Tests
-// =============================================================================
-
-#[test]
-fn test_data_fetcher_creation() {
-    let mainnet = DataFetcher::mainnet();
-    let testnet = DataFetcher::testnet();
-
-    drop(mainnet);
-    drop(testnet);
-}
-
-#[test]
-#[ignore = "requires network access to Sui mainnet"]
-fn test_data_fetcher_object() {
-    let fetcher = DataFetcher::mainnet();
-
-    // Fetch the Sui Clock object (0x6)
-    let result = fetcher.fetch_object("0x6");
-
-    match result {
-        Ok(obj) => {
-            assert!(!obj.address.is_empty(), "Should have address");
-            assert!(obj.version > 0, "Should have version");
-
-            // Clock is a shared object
-            assert!(obj.is_shared, "Clock should be shared");
-
-            println!(
-                "Fetched object 0x6 via DataFetcher (source: {:?})",
-                obj.source
-            );
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch object (network issue?): {}", e);
-        }
-    }
-}
-
-#[test]
-#[ignore = "requires network access to Sui mainnet"]
-fn test_data_fetcher_package() {
-    let fetcher = DataFetcher::mainnet();
-
-    let result = fetcher.fetch_package("0x1");
-
-    match result {
-        Ok(pkg) => {
-            assert!(!pkg.modules.is_empty(), "Move stdlib should have modules");
-
-            println!(
-                "Fetched package 0x1 with {} modules (source: {:?})",
-                pkg.modules.len(),
-                pkg.source
-            );
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch package (network issue?): {}", e);
-        }
-    }
-}
-
-#[test]
-#[ignore = "requires network access to Sui mainnet"]
-fn test_data_fetcher_recent_ptb_transactions() {
-    let fetcher = DataFetcher::mainnet();
-
-    let result = fetcher.fetch_recent_ptb_transactions(10);
-
-    match result {
-        Ok(txs) => {
-            assert!(txs.len() <= 10, "Should return at most 10 transactions");
-
-            // Verify all are valid PTB transactions
-            for tx in &txs {
-                assert!(!tx.sender.is_empty(), "Should have sender");
-                assert!(tx.effects.is_some(), "Should have effects");
-            }
-
-            println!("Fetched {} PTB transactions via DataFetcher", txs.len());
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch transactions (network issue?): {}", e);
-        }
-    }
-}
-
-#[test]
-#[ignore = "requires network access to Sui mainnet"]
-fn test_data_fetcher_graphql_only() {
-    let fetcher = DataFetcher::mainnet();
-
-    // DataFetcher now uses GraphQL exclusively (JSON-RPC removed)
-    let result = fetcher.fetch_object("0x2");
-
-    match result {
-        Ok(obj) => {
-            // Source should always be GraphQL now
-            assert!(
-                matches!(obj.source, DataSource::GraphQL),
-                "DataFetcher should use GraphQL exclusively"
-            );
-            println!("Fetched via GraphQL: {:?}", obj.source);
-        }
-        Err(e) => {
-            eprintln!("Note: Could not fetch object (network issue?): {}", e);
         }
     }
 }
@@ -548,16 +435,4 @@ fn test_graphql_invalid_transaction() {
 
     // Should return an error, not panic
     assert!(result.is_err(), "Invalid transaction should return error");
-}
-
-#[test]
-#[ignore = "requires network access to Sui mainnet"]
-fn test_data_fetcher_graceful_degradation() {
-    let fetcher = DataFetcher::mainnet();
-
-    // Even with network issues, should not panic
-    // This test primarily verifies error handling paths
-    let _ = fetcher.fetch_object("0x2");
-    let _ = fetcher.fetch_package("0x1");
-    let _ = fetcher.fetch_recent_transactions(5);
 }

@@ -2,7 +2,6 @@
 //!
 //! These tests validate the gRPC client against a Sui gRPC endpoint.
 #![cfg(feature = "network-tests")]
-#![allow(deprecated)] // DataFetcher is deprecated but still tested for backwards compatibility
 //!
 //! ## Requirements
 //!
@@ -27,7 +26,6 @@
 //! testing network connectivity when the environment is properly configured.
 
 use std::time::Duration;
-use sui_sandbox::data_fetcher::DataFetcher;
 use sui_sandbox::grpc::{GrpcClient, GrpcCommand};
 
 macro_rules! require_grpc {
@@ -331,178 +329,6 @@ async fn test_grpc_move_call_details() {
     }
 
     println!("Found {} MoveCall commands (showing first 5)", found);
-}
-
-// =============================================================================
-// DataFetcher gRPC Integration Tests
-// =============================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_datafetcher_with_grpc() {
-    let endpoint = require_grpc!();
-
-    println!("Creating DataFetcher with gRPC endpoint...");
-
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint(&endpoint)
-        .await
-        .expect("Failed to create fetcher with gRPC");
-
-    assert!(fetcher.has_grpc(), "Should have gRPC enabled");
-
-    // Test service info
-    let info = fetcher
-        .get_service_info()
-        .await
-        .expect("Failed to get service info");
-    println!(
-        "Connected to {} at checkpoint {}",
-        info.chain, info.checkpoint_height
-    );
-
-    // Test checkpoint fetch
-    let checkpoint = fetcher
-        .get_latest_checkpoint_grpc()
-        .await
-        .expect("Failed to get checkpoint");
-    println!(
-        "Latest checkpoint {}: {} transactions",
-        checkpoint.sequence_number,
-        checkpoint.transactions.len()
-    );
-
-    // GraphQL should still work
-    let pkg = fetcher
-        .fetch_package("0x2")
-        .expect("Failed to fetch package via GraphQL");
-    println!(
-        "Also fetched package 0x2 via GraphQL: {} modules",
-        pkg.modules.len()
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_datafetcher_grpc_stream() {
-    let endpoint = require_grpc!();
-
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint(&endpoint)
-        .await
-        .expect("Failed to create fetcher");
-
-    println!("Streaming checkpoints for 5 seconds...\n");
-
-    let mut stream = fetcher
-        .subscribe_checkpoints()
-        .await
-        .expect("Failed to subscribe");
-
-    let start = std::time::Instant::now();
-    let duration = Duration::from_secs(5);
-    let mut count = 0;
-
-    while start.elapsed() < duration {
-        tokio::select! {
-            result = stream.next() => {
-                match result {
-                    Some(Ok(cp)) => {
-                        count += 1;
-                        let ptb_count = cp.transactions.iter().filter(|t| t.is_ptb()).count();
-                        println!(
-                            "Checkpoint {}: {} total, {} PTB",
-                            cp.sequence_number,
-                            cp.transactions.len(),
-                            ptb_count
-                        );
-                    }
-                    Some(Err(e)) => {
-                        eprintln!("Error: {}", e);
-                        break;
-                    }
-                    None => break,
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-        }
-    }
-
-    println!("\nReceived {} checkpoints", count);
-    assert!(count > 0);
-}
-
-// =============================================================================
-// gRPC + GraphQL Hybrid Tests
-// =============================================================================
-
-#[tokio::test]
-#[ignore]
-async fn test_hybrid_grpc_graphql_workflow() {
-    let endpoint = require_grpc!();
-
-    let fetcher = DataFetcher::mainnet()
-        .with_grpc_endpoint(&endpoint)
-        .await
-        .expect("Failed to create fetcher");
-
-    println!("=== Hybrid gRPC + GraphQL Workflow ===\n");
-
-    // 1. Get latest checkpoint via gRPC (faster)
-    let checkpoint = fetcher
-        .get_latest_checkpoint_grpc()
-        .await
-        .expect("gRPC checkpoint fetch failed");
-    println!(
-        "1. Got checkpoint {} via gRPC ({} txs)",
-        checkpoint.sequence_number,
-        checkpoint.transactions.len()
-    );
-
-    // 2. Find a PTB transaction
-    let ptb_tx = checkpoint.transactions.iter().find(|t| t.is_ptb());
-
-    if let Some(tx) = ptb_tx {
-        println!("2. Found PTB transaction: {}", tx.digest);
-
-        // 3. If we need more details, we could fetch via GraphQL
-        // (In practice, gRPC already has full data, but this shows the hybrid approach)
-        match fetcher.fetch_transaction(&tx.digest) {
-            Ok(graphql_tx) => {
-                println!(
-                    "3. Verified via GraphQL: {} commands",
-                    graphql_tx.commands.len()
-                );
-
-                // Compare command counts
-                assert_eq!(
-                    tx.commands.len(),
-                    graphql_tx.commands.len(),
-                    "Command count should match between gRPC and GraphQL"
-                );
-                println!("   Command count matches between gRPC and GraphQL");
-            }
-            Err(e) => {
-                println!(
-                    "3. Note: GraphQL fetch failed ({}), but gRPC data is complete",
-                    e
-                );
-            }
-        }
-    } else {
-        println!("2. No PTB transactions in this checkpoint (all system txs)");
-    }
-
-    // 4. Fetch a package via GraphQL (gRPC doesn't have full bytecode)
-    let pkg = fetcher
-        .fetch_package("0x2")
-        .expect("GraphQL package fetch failed");
-    println!(
-        "4. Fetched Sui framework via GraphQL: {} modules",
-        pkg.modules.len()
-    );
-
-    println!("\n=== Hybrid workflow complete ===");
 }
 
 // =============================================================================
