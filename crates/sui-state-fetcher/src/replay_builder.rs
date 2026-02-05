@@ -1,4 +1,4 @@
-//! Replay state builder for unified CLI/MCP replay hydration.
+//! Replay state builder for CLI replay hydration.
 //!
 //! This provides a small abstraction layer to keep replay config and
 //! hydration logic consistent across callers.

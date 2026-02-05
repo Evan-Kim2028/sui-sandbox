@@ -9,7 +9,7 @@
 //!
 //! ## Architecture
 //!
-//! Transactions are fetched via GraphQL (see `DataFetcher`) and cached locally.
+//! Transactions are fetched via GraphQL clients and cached locally.
 //! The cached transactions can then be replayed using the `FetchedTransaction::replay()` method.
 //!
 //! ```text
@@ -1480,6 +1480,13 @@ pub enum EffectsReconcilePolicy {
     DynamicFields,
 }
 
+/// Replay result plus full local PTB effects.
+#[derive(Debug, Clone)]
+pub struct ReplayExecution {
+    pub result: ReplayResult,
+    pub effects: crate::ptb::TransactionEffects,
+}
+
 pub fn replay_with_version_tracking_with_policy(
     tx: &FetchedTransaction,
     harness: &mut VMHarness,
@@ -1488,6 +1495,25 @@ pub fn replay_with_version_tracking_with_policy(
     object_versions: Option<&std::collections::HashMap<String, u64>>,
     policy: EffectsReconcilePolicy,
 ) -> Result<ReplayResult> {
+    let execution = replay_with_version_tracking_with_policy_with_effects(
+        tx,
+        harness,
+        cached_objects,
+        address_aliases,
+        object_versions,
+        policy,
+    )?;
+    Ok(execution.result)
+}
+
+pub fn replay_with_version_tracking_with_policy_with_effects(
+    tx: &FetchedTransaction,
+    harness: &mut VMHarness,
+    cached_objects: &std::collections::HashMap<String, String>,
+    address_aliases: &std::collections::HashMap<AccountAddress, AccountAddress>,
+    object_versions: Option<&std::collections::HashMap<String, u64>>,
+    policy: EffectsReconcilePolicy,
+) -> Result<ReplayExecution> {
     use crate::ptb::PTBExecutor;
 
     // Always use alias-aware conversion to handle package upgrades correctly.
@@ -1579,17 +1605,23 @@ pub fn replay_with_version_tracking_with_policy(
                     eprintln!("[linkage] modules_accessed=0");
                 }
             }
-            return Ok(ReplayResult {
-                digest: tx.digest.clone(),
-                local_success: false,
-                local_error: Some(e.to_string()),
-                comparison: None,
-                commands_executed: 0,
-                commands_failed: commands_count,
-                objects_tracked: 0,
-                lamport_timestamp: None,
-                version_summary: None,
-                gas_used: 0,
+            let mut failure_effects = crate::ptb::TransactionEffects::default();
+            failure_effects.success = false;
+            failure_effects.error = Some(e.to_string());
+            return Ok(ReplayExecution {
+                result: ReplayResult {
+                    digest: tx.digest.clone(),
+                    local_success: false,
+                    local_error: Some(e.to_string()),
+                    comparison: None,
+                    commands_executed: 0,
+                    commands_failed: commands_count,
+                    objects_tracked: 0,
+                    lamport_timestamp: None,
+                    version_summary: None,
+                    gas_used: 0,
+                },
+                effects: failure_effects,
             });
         }
     };
@@ -1945,21 +1977,24 @@ pub fn replay_with_version_tracking_with_policy(
         summary
     });
 
-    Ok(ReplayResult {
-        digest: tx.digest.clone(),
-        local_success: effects.success,
-        local_error: effects.error,
-        comparison,
-        commands_executed: if effects.success { commands_count } else { 0 },
-        commands_failed: if effects.success { 0 } else { commands_count },
-        objects_tracked: effects
-            .object_versions
-            .as_ref()
-            .map(|v| v.len())
-            .unwrap_or(0),
-        lamport_timestamp: effects.lamport_timestamp,
-        version_summary,
-        gas_used: effects.gas_used,
+    Ok(ReplayExecution {
+        result: ReplayResult {
+            digest: tx.digest.clone(),
+            local_success: effects.success,
+            local_error: effects.error.clone(),
+            comparison,
+            commands_executed: if effects.success { commands_count } else { 0 },
+            commands_failed: if effects.success { 0 } else { commands_count },
+            objects_tracked: effects
+                .object_versions
+                .as_ref()
+                .map(|v| v.len())
+                .unwrap_or(0),
+            lamport_timestamp: effects.lamport_timestamp,
+            version_summary,
+            gas_used: effects.gas_used,
+        },
+        effects,
     })
 }
 
@@ -2045,7 +2080,7 @@ pub fn cached_to_ptb_commands(
 
 /// Convert a GraphQL transaction to the internal FetchedTransaction format.
 ///
-/// This enables using transactions fetched via DataFetcher with the CachedTransaction
+/// This enables using transactions fetched via GraphQL with the CachedTransaction
 /// and replay infrastructure.
 pub fn graphql_to_fetched_transaction(
     tx: &sui_transport::graphql::GraphQLTransaction,
@@ -2230,8 +2265,8 @@ pub use sui_prefetch::grpc_to_fetched_transaction;
 // Note: For extracting dependencies from bytecode, use crate::utilities::extract_dependencies_from_bytecode
 
 // Note: fetch_and_cache_transaction and load_or_fetch_transaction functions
-// that depend on DataFetcher have been moved to the main crate's tx_replay module
-// since they require network access via DataFetcher which is not available here.
+// that depend on network fetching have been moved to the main crate's tx_replay module
+// since they require network access which is not available here.
 
 #[cfg(test)]
 mod tests {

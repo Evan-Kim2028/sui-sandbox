@@ -56,7 +56,30 @@ cp .env.example .env
 
 ## Quick Start
 
-The easiest way to replay transactions is using the example scripts:
+The easiest way to replay transactions is using the CLI:
+
+```bash
+# Replay a transaction by digest
+cargo run --bin sui-sandbox -- replay <DIGEST> --compare
+
+# Prefer Walrus for historical state (requires `--features walrus`)
+cargo run --bin sui-sandbox -- replay <DIGEST> --source walrus --compare
+```
+
+Replay returns **PTB-style effects output** on success (created/mutated/deleted/events/return values),
+so you get the same feedback as a local PTB execution. On failure, it prints the local error context
+when available.
+
+If replay fails due to missing data, run:
+
+```bash
+cargo run --bin sui-sandbox -- analyze replay <DIGEST>
+```
+
+This reports missing inputs/packages and suggests next steps (enable Walrus, use `--synthesize`,
+or re-run with `--mm2` for deeper diagnostics).
+
+You can also explore the self-contained examples:
 
 ```bash
 # Replay a DeepBook flash loan transaction
@@ -67,9 +90,6 @@ cargo run --example deepbook_orders
 
 # Replay a Cetus AMM swap
 cargo run --example cetus_swap
-
-# Replay a Scallop lending deposit
-cargo run --example scallop_deposit
 ```
 
 Each example is self-contained and fetches all data fresh via gRPC.
@@ -321,7 +341,8 @@ let address_aliases = build_comprehensive_address_aliases(&cached, &linkage_upgr
 harness.set_address_aliases_with_versions(address_aliases, package_versions);
 ```
 
-See `examples/scallop_deposit.rs` for a complete example handling multiple package upgrades.
+The replay pipeline handles these aliases automatically; see `examples/deepbook_replay.rs` for a
+complete end-to-end example.
 
 ## Limitations
 

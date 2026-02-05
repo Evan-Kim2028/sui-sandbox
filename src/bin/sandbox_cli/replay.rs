@@ -10,12 +10,13 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use super::network::{cache_dir, infer_network, resolve_graphql_endpoint};
-use super::output::format_error;
+use super::output::{format_effects, format_error};
 use super::SandboxState;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 use sui_prefetch::compute_dynamic_field_id;
+#[cfg(feature = "mm2")]
 use sui_sandbox_core::mm2::{TypeModel, TypeSynthesizer};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy, MissingInputObject};
@@ -26,7 +27,7 @@ use sui_sandbox_core::vm::SimulationConfig;
 use sui_state_fetcher::{
     build_aliases as build_aliases_shared, fetch_child_object as fetch_child_object_shared,
     fetch_object_via_grpc as fetch_object_via_grpc_shared, HistoricalStateProvider, PackageData,
-    VersionedCache,
+    ReplayStateConfig, VersionedCache,
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
@@ -36,6 +37,18 @@ use sui_types::digests::TransactionDigest;
 pub struct ReplayCmd {
     /// Transaction digest
     pub digest: String,
+
+    /// Data source for replay hydration
+    #[arg(long, value_enum, default_value = "hybrid")]
+    pub source: ReplaySource,
+
+    /// Allow fallback to secondary sources when data is missing
+    #[arg(long, default_value_t = true)]
+    pub fallback: bool,
+
+    /// Fail with non-zero status if replay or comparison mismatches occur
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
 
     /// Compare local execution with on-chain effects
     #[arg(long)]
@@ -82,7 +95,41 @@ pub struct ReplayOutput {
     pub local_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effects: Option<ReplayEffectsSummary>,
+    #[serde(skip)]
+    pub effects_full: Option<sui_sandbox_core::ptb::TransactionEffects>,
     pub commands_executed: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplayEffectsSummary {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub gas_used: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub created: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mutated: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub deleted: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub wrapped: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub unwrapped: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub transferred: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub received: Vec<String>,
+    pub events_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_command_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_command_description: Option<String>,
+    pub commands_succeeded: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub return_values: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +150,13 @@ pub enum FetchStrategy {
     Full,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum ReplaySource {
+    Grpc,
+    Walrus,
+    Hybrid,
+}
+
 impl ReplayCmd {
     pub async fn execute(
         &self,
@@ -110,6 +164,17 @@ impl ReplayCmd {
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
+        if (self.synthesize_missing || self.self_heal_dynamic_fields) && !cfg!(feature = "mm2") {
+            return Err(anyhow!(
+                "dynamic field synthesis requires the `mm2` feature"
+            ));
+        }
+        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid)
+            && !cfg!(feature = "walrus")
+        {
+            return Err(anyhow!("Walrus source requires the `walrus` feature"));
+        }
+
         let result = self.execute_inner(state, verbose || self.verbose).await;
 
         match result {
@@ -117,9 +182,11 @@ impl ReplayCmd {
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    print_replay_result(&output, self.compare);
+                    print_replay_result(&output, self.compare, verbose || self.verbose);
                 }
-
+                if self.strict {
+                    enforce_strict(&output)?;
+                }
                 if output.local_success {
                     Ok(())
                 } else {
@@ -147,19 +214,27 @@ impl ReplayCmd {
         let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
         let grpc_client = GrpcClient::with_api_key(&state.rpc_url, api_key).await?;
         let graphql_client = sui_transport::graphql::GraphQLClient::new(&graphql_endpoint);
-        let provider = Arc::new(
-            HistoricalStateProvider::with_clients(grpc_client, graphql_client)
+        if matches!(self.source, ReplaySource::Walrus) && !self.fallback {
+            std::env::set_var("SUI_WALRUS_PACKAGE_ONLY", "1");
+        }
+        let mut provider =
+            HistoricalStateProvider::with_clients(grpc_client, graphql_client).with_cache(cache);
+        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid) {
+            provider = provider
                 .with_walrus_from_env()
-                .with_local_object_store_from_env()
-                .with_cache(cache),
-        );
+                .with_local_object_store_from_env();
+        }
+        let provider = Arc::new(provider);
 
+        let config = ReplayStateConfig {
+            prefetch_dynamic_fields: self.fetch_strategy == FetchStrategy::Full,
+            df_depth: self.prefetch_depth,
+            df_limit: self.prefetch_limit,
+            auto_system_objects: self.auto_system_objects,
+        };
         let replay_state = provider
             .replay_state_builder()
-            .prefetch_dynamic_fields(self.fetch_strategy == FetchStrategy::Full)
-            .dynamic_field_depth(self.prefetch_depth)
-            .dynamic_field_limit(self.prefetch_limit)
-            .auto_system_objects(self.auto_system_objects)
+            .with_config(config)
             .build(&self.digest)
             .await
             .context("Failed to fetch replay state")?;
@@ -574,9 +649,9 @@ impl ReplayCmd {
 
         let replay_once = |cached: &HashMap<String, String>,
                            versions: &HashMap<String, u64>|
-         -> Result<sui_sandbox_core::tx_replay::ReplayResult> {
+         -> Result<sui_sandbox_core::tx_replay::ReplayExecution> {
             let mut harness = make_harness(versions)?;
-            sui_sandbox_core::tx_replay::replay_with_version_tracking_with_policy(
+            sui_sandbox_core::tx_replay::replay_with_version_tracking_with_policy_with_effects(
                 &replay_state.transaction,
                 &mut harness,
                 cached,
@@ -592,7 +667,7 @@ impl ReplayCmd {
         if self.synthesize_missing
             && replay_result
                 .as_ref()
-                .map(|r| !r.local_success)
+                .map(|r| !r.result.local_success)
                 .unwrap_or(true)
         {
             let missing =
@@ -631,7 +706,9 @@ impl ReplayCmd {
         }
 
         match replay_result {
-            Ok(result) => {
+            Ok(execution) => {
+                let result = execution.result;
+                let effects_summary = build_effects_summary(&execution.effects);
                 let comparison = if self.compare {
                     result.comparison.map(|c| {
                         let mut notes = c.notes.clone();
@@ -673,6 +750,8 @@ impl ReplayCmd {
                     local_success: result.local_success,
                     local_error: result.local_error,
                     comparison,
+                    effects: Some(effects_summary),
+                    effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
                 })
             }
@@ -681,6 +760,8 @@ impl ReplayCmd {
                 local_success: false,
                 local_error: Some(e.to_string()),
                 comparison: None,
+                effects: None,
+                effects_full: None,
                 commands_executed: 0,
             }),
         }
@@ -695,6 +776,60 @@ fn b64_matches_bytes(encoded: &str, expected: &[u8]) -> bool {
         return decoded == expected;
     }
     false
+}
+
+fn build_effects_summary(
+    effects: &sui_sandbox_core::ptb::TransactionEffects,
+) -> ReplayEffectsSummary {
+    ReplayEffectsSummary {
+        success: effects.success,
+        error: effects.error.clone(),
+        gas_used: effects.gas_used,
+        created: effects
+            .created
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        mutated: effects
+            .mutated
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        deleted: effects
+            .deleted
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        wrapped: effects
+            .wrapped
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        unwrapped: effects
+            .unwrapped
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        transferred: effects
+            .transferred
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        received: effects
+            .received
+            .iter()
+            .map(|id| id.to_hex_literal())
+            .collect(),
+        events_count: effects.events.len(),
+        failed_command_index: effects.failed_command_index,
+        failed_command_description: effects.failed_command_description.clone(),
+        commands_succeeded: effects.commands_succeeded,
+        return_values: effects
+            .return_values
+            .iter()
+            .map(|vals| vals.len())
+            .collect(),
+    }
 }
 
 fn is_type_name_tag(tag: &TypeTag) -> bool {
@@ -743,14 +878,22 @@ fn fetch_child_object_by_key(
     let debug_df = options.debug_df;
     let debug_df_full = options.debug_df_full;
     let self_heal_dynamic_fields = options.self_heal_dynamic_fields;
+    #[cfg(feature = "mm2")]
     let synth_modules = options.synth_modules.as_ref();
+    #[cfg(feature = "mm2")]
     let log_self_heal = options.log_self_heal;
+    #[cfg(not(feature = "mm2"))]
+    let _ = (options.synth_modules.as_ref(), options.log_self_heal);
 
-    let try_synthesize =
-        |value_type: &str, object_id: Option<&str>, source: &str| -> Option<(TypeTag, Vec<u8>)> {
-            if !self_heal_dynamic_fields {
-                return None;
-            }
+    let try_synthesize = |value_type: &str,
+                          object_id: Option<&str>,
+                          source: &str|
+     -> Option<(TypeTag, Vec<u8>)> {
+        if !self_heal_dynamic_fields {
+            return None;
+        }
+        #[cfg(feature = "mm2")]
+        {
             let modules = synth_modules?;
             let parsed = parse_type_tag(value_type).ok()?;
             let rewritten = rewrite_type_tag(parsed, aliases);
@@ -788,7 +931,13 @@ fn fetch_child_object_by_key(
                 );
             }
             Some((rewritten, result.bytes))
-        };
+        }
+        #[cfg(not(feature = "mm2"))]
+        {
+            let _ = (value_type, object_id, source);
+            None
+        }
+    };
 
     if let Some(obj) = provider.cache().get_object_latest(&child_id) {
         if obj.version <= max_version {
@@ -1656,19 +1805,23 @@ fn fetch_child_object_by_key(
     None
 }
 
-fn print_replay_result(result: &ReplayOutput, show_comparison: bool) {
+fn print_replay_result(result: &ReplayOutput, show_comparison: bool, verbose: bool) {
     println!("\x1b[1mTransaction Replay: {}\x1b[0m\n", result.digest);
 
-    if result.local_success {
+    if let Some(effects) = result.effects_full.as_ref() {
+        println!("\x1b[1mLocal PTB Result:\x1b[0m");
+        println!("{}", format_effects(effects, verbose));
+        println!("  Commands executed: {}", result.commands_executed);
+    } else if result.local_success {
         println!("\x1b[32m✓ Local execution succeeded\x1b[0m");
+        println!("  Commands executed: {}", result.commands_executed);
     } else {
         println!("\x1b[31m✗ Local execution failed\x1b[0m");
         if let Some(err) = &result.local_error {
             println!("  Error: {}", err);
         }
+        println!("  Commands executed: {}", result.commands_executed);
     }
-
-    println!("  Commands executed: {}", result.commands_executed);
 
     if show_comparison {
         if let Some(cmp) = &result.comparison {
@@ -1711,6 +1864,32 @@ fn print_replay_result(result: &ReplayOutput, show_comparison: bool) {
             println!("\n\x1b[33mNote: No on-chain effects available for comparison\x1b[0m");
         }
     }
+}
+
+fn enforce_strict(output: &ReplayOutput) -> Result<()> {
+    if !output.local_success {
+        return Err(anyhow!(
+            "strict replay failed: {}",
+            output
+                .local_error
+                .as_deref()
+                .unwrap_or("local execution failed")
+        ));
+    }
+    if let Some(comp) = output.comparison.as_ref() {
+        let ok =
+            comp.status_match && comp.created_match && comp.mutated_match && comp.deleted_match;
+        if !ok {
+            return Err(anyhow!(
+                "strict replay mismatch: status={} created={} mutated={} deleted={}",
+                comp.status_match,
+                comp.created_match,
+                comp.mutated_match,
+                comp.deleted_match
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn fetch_dependency_closure(
@@ -1810,6 +1989,7 @@ fn fetch_dependency_closure(
     Ok(fetched)
 }
 
+#[cfg(feature = "mm2")]
 fn synthesize_missing_inputs(
     missing: &[MissingInputObject],
     cached_objects: &mut HashMap<String, String>,
@@ -1888,6 +2068,21 @@ fn synthesize_missing_inputs(
     Ok(logs)
 }
 
+#[cfg(not(feature = "mm2"))]
+fn synthesize_missing_inputs(
+    _missing: &[MissingInputObject],
+    _cached_objects: &mut HashMap<String, String>,
+    _version_map: &mut HashMap<String, u64>,
+    _resolver: &LocalModuleResolver,
+    _aliases: &HashMap<AccountAddress, AccountAddress>,
+    _provider: &HistoricalStateProvider,
+    _verbose: bool,
+) -> Result<Vec<String>> {
+    Err(anyhow!(
+        "missing input synthesis requires the `mm2` feature"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1907,6 +2102,8 @@ mod tests {
                 local_status: "success".to_string(),
                 notes: Vec::new(),
             }),
+            effects: None,
+            effects_full: None,
             commands_executed: 3,
         };
 

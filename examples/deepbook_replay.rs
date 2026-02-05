@@ -28,6 +28,7 @@ use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::VMHarness;
 use sui_state_fetcher::{
     get_historical_versions, to_replay_data, HistoricalStateProvider, ReplayState,
+    ReplayStateConfig,
 };
 
 use common::{
@@ -84,13 +85,16 @@ fn replay_transaction(tx_digest: &str) -> Result<bool> {
 
     let provider: HistoricalStateProvider =
         rt.block_on(async { HistoricalStateProvider::mainnet().await })?;
+    let config = ReplayStateConfig {
+        prefetch_dynamic_fields: false,
+        df_depth: 0,
+        df_limit: 0,
+        auto_system_objects: true,
+    };
     let state: ReplayState = rt.block_on(async {
         provider
             .replay_state_builder()
-            .prefetch_dynamic_fields(false)
-            .dynamic_field_depth(0)
-            .dynamic_field_limit(0)
-            .auto_system_objects(true)
+            .with_config(config)
             .build(tx_digest)
             .await
     })?;
