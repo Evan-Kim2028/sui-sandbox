@@ -2,13 +2,38 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [0.14.0] - 2026-02-05
+
+### Breaking Changes
+
+- **MCP surface removed**: `sui-sandbox-mcp` crate, MCP docs, and CLI `tool` command have been removed.
+- **CLI PTB spec tightened**: `sui-sandbox ptb` now accepts only the CLI `calls` schema (MCP `commands` format removed).
+- **State format is JSON-only**: legacy bincode state files are no longer supported.
+- **DataFetcher removed**: use `sui_transport::{graphql, grpc}` or `sui_state_fetcher::HistoricalStateProvider`.
+
+### Added
+
+- **`tools` subcommand**: grouped utility commands (poll/stream/tx-sim/walrus).
+- **`analyze` subcommand**: package and replay-state introspection.
+- **Replay effects output**: PTB-style effects printed on successful replay with optional `--strict`.
+
+### Changed
+
+- **Replay hydration controls**: `--source` and `--fallback` flags for gRPC/Walrus selection.
+- **Prefetch cleanup**: legacy GraphQL-first prefetch removed; ground-truth/MM2 remain.
+- **Docs/examples refresh**: CLI-first workflows and slimmer example set.
+
+### Removed
+
+- **Archived docs/examples**: legacy case studies, MCP workflows, and old replay demos.
+
 ## [0.13.0] - 2026-02-01
 
 ### Added
 
 #### World Management System
 - **World abstraction**: New unified container for sandbox development that ties together source code, deployed state, transaction history, and configuration
-- **Session persistence**: Automatic session tracking across MCP restarts with active world restoration
+- **Session persistence**: Automatic session tracking across CLI restarts with active world restoration
 - **World templates**: Pre-built templates for common patterns: `blank`, `token`, `nft`, `defi`
 - **Snapshot/restore**: Create named snapshots of world state and restore to previous points
 - **Git integration**: Optional auto-commit on build success for version-controlled development
@@ -19,20 +44,11 @@ All notable changes to the Sui Move Interface Extractor project will be document
 - **Search and filtering**: Query history by sender, success/failure, tags, or date range
 - **Replay support**: Transaction records can be replayed for debugging and audit trails
 
-#### CLI-Parity MCP Tools
-- **`publish`**: Deploy Move packages from source or pre-compiled bytecode
-- **`run`**: Execute Move functions with auto-parsed arguments
-- **`status`**: Get sandbox state summary including loaded packages and provider config
-- **`clean`**: Reset sandbox state while retaining framework packages
-- **`view`**: Inspect module interfaces and object state
-- **`bridge`**: Generate `sui client ptb` commands from sandbox PTB specs
-
 #### New Integration Test Crate
 - **`sui-sandbox-integration-tests`**: Dedicated crate for heavy network-dependent tests (gRPC, GraphQL, replay)
 - Speeds up default test suite by isolating slow integration tests
 
 #### Enhanced PTB Support
-- **MCP-style PTB specs**: CLI now accepts MCP-format PTB specifications for interoperability
 - **PTB validation**: Pre-execution validation with detailed error messages
 - **Transaction hash generation**: Deterministic tx hash generation for sandbox executions
 
@@ -43,11 +59,11 @@ All notable changes to the Sui Move Interface Extractor project will be document
 
 #### Documentation
 - **Golden Flow guide**: Recommended CLI workflow for local development
-- **Updated reference docs**: CLI, MCP, PTB schema, and API documentation refreshed
+- **Updated reference docs**: CLI, PTB schema, and API documentation refreshed
 
 ### Changed
 
-- **State persistence format**: Migrated from bincode to JSON format with backwards-compatible legacy migration
+- **State persistence format**: JSON-only state files (legacy bincode files no longer supported)
 - **Default Sui dependency**: Projects now include Sui framework by default when dependencies list is empty
 - **Blob module visibility**: `sui_transport::blob` is now public for external use
 - **Resilient state loading**: Invalid module bytecode is now logged and skipped rather than failing load
@@ -172,7 +188,7 @@ Predictive prefetch system for dynamic field access:
 
 #### Examples
 
-- New `PrefetchStrategy` enum: GroundTruth, MM2Predictive, LegacyGraphQL
+- New `PrefetchStrategy` enum: GroundTruth, MM2Predictive
 - New `deepbook_orders.rs`, `ptb_basics.rs`, `version_tracking_test.rs`
 - Simplified `examples/common/mod.rs` to re-export from workspace crates
 
@@ -180,7 +196,7 @@ Predictive prefetch system for dynamic field access:
 
 - Examples now use workspace crate APIs directly rather than duplicating utility code
 - Documentation consolidated and simplified (~4,300 lines removed, ~500 lines of focused docs added)
-- Outdated documentation archived to `docs/archive/`
+- Outdated documentation removed
 
 ### Fixed
 
@@ -192,7 +208,7 @@ Predictive prefetch system for dynamic field access:
 
 - `coin_transfer.rs` example (superseded by `ptb_basics.rs`)
 - Outdated documentation: LLM integration guide, local bytecode sandbox guide, migration guides
-- DeFi case studies moved to `docs/archive/`
+- DeFi case studies removed
 
 ## [0.8.0] - 2026-01-23
 
@@ -288,54 +304,18 @@ For backwards compatibility, `examples/common` still re-exports these with `pars
 
 ### Breaking Changes
 
-**JSON-RPC Removed from DataFetcher**
+**DataFetcher Removed**
 
-- `DataFetcher` now uses GraphQL exclusively (JSON-RPC backend removed)
-- Removed `with_fallback()` and `with_prefer_graphql()` methods (no longer needed)
-- `DataFetcher::new()` now takes only a GraphQL endpoint (previously took JSON-RPC + GraphQL)
-- Removed `DataSource::JsonRpc` enum variant
-- Removed `json_rpc()` accessor method
+- `DataFetcher` has been removed entirely.
+- Use `sui_transport::graphql::GraphQLClient` for current-state queries.
+- Use `sui_transport::grpc::GrpcClient` for streaming and gRPC-only queries.
+- Use `sui_state_fetcher::HistoricalStateProvider` for historical replay.
 
 **GrpcFetcher Renamed to NetworkFetcher**
 
 - `GrpcFetcher` is now `NetworkFetcher` (type alias kept for backwards compatibility)
-- `NetworkFetcher` uses `DataFetcher` internally (GraphQL-based)
+- `NetworkFetcher` uses transport clients (GraphQL/gRPC) internally
 - Removed `inner()` method that returned `TransactionFetcher`
-
-### Added
-
-**New DataFetcher Helper Methods**
-
-- `DataFetcher::extract_package_ids(tx)` - Extract all package IDs from a transaction's MoveCall commands
-- `DataFetcher::fetch_transaction_inputs(tx)` - Fetch all input objects for a transaction
-- `DataFetcher::fetch_transaction_packages(tx)` - Fetch all packages referenced in a transaction
-
-### Deprecated
-
-- `TransactionFetcher` is now deprecated. Use `DataFetcher` with GraphQL instead.
-  - Sui is deprecating JSON-RPC in April 2026
-  - GraphQL provides equivalent functionality with better data
-  - `TransactionFetcher` will be removed in v0.7.0
-
-- `GrpcFetcher` type alias is deprecated. Use `NetworkFetcher` instead.
-
-### Migration Guide
-
-To migrate from `TransactionFetcher` to `DataFetcher`:
-
-```rust
-// Before (JSON-RPC)
-let fetcher = TransactionFetcher::mainnet();
-let tx = fetcher.fetch_transaction_sync(digest)?;
-let modules = fetcher.fetch_package_modules(pkg_id)?;
-
-// After (GraphQL)
-let fetcher = DataFetcher::mainnet();
-let tx = fetcher.fetch_transaction(digest)?;
-let pkg = fetcher.fetch_package(pkg_id)?;
-let modules: Vec<(String, Vec<u8>)> = pkg.modules.into_iter()
-    .map(|m| (m.name, m.bytecode)).collect();
-```
 
 ### Removed
 
