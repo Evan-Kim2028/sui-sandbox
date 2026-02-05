@@ -10,6 +10,7 @@
 //! - **ptb**: Execute full Programmable Transaction Blocks from JSON specs
 //! - **fetch**: Import packages and objects from mainnet
 //! - **replay**: Replay historical transactions locally
+//! - **analyze**: Package and replay-state introspection
 //! - **view**: Inspect modules, objects, and session state
 //! - **bridge**: Generate sui client commands for deployment
 //!
@@ -40,9 +41,11 @@ use clap::{Parser, Subcommand};
 
 mod sandbox_cli;
 
+#[cfg(feature = "analysis")]
+use sandbox_cli::analyze::AnalyzeCmd;
 use sandbox_cli::{
     bridge::BridgeCmd, fetch::FetchCmd, ptb::PtbCmd, publish::PublishCmd, replay::ReplayCmd,
-    run::RunCmd, tool::ToolCmd, view::ViewCmd, SandboxState,
+    run::RunCmd, tools::ToolsCmd, view::ViewCmd, SandboxState,
 };
 
 #[derive(Parser)]
@@ -52,13 +55,13 @@ use sandbox_cli::{
     version,
     about = "Local Move/Sui development environment",
     long_about = "A powerful CLI for local Sui Move development, testing, and simulation.\n\n\
-                  Provides publish, run, PTB execution, mainnet state fetching, and transaction replay."
+                  Provides replay, publish, run, PTB execution, analysis, and state fetching."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// State file for session persistence (shared JSON for CLI + MCP)
+    /// State file for session persistence
     #[arg(long, global = true)]
     state_file: Option<std::path::PathBuf>,
 
@@ -96,14 +99,18 @@ enum Commands {
     /// Replay a historical transaction locally
     Replay(ReplayCmd),
 
+    /// Analyze packages or replay state
+    #[cfg(feature = "analysis")]
+    Analyze(AnalyzeCmd),
+
     /// View modules, objects, or session state
     View(ViewCmd),
 
     /// Generate sui client commands for deployment (transition helper)
     Bridge(BridgeCmd),
 
-    /// Invoke MCP tools directly from the CLI (JSON in, JSON out)
-    Tool(ToolCmd),
+    /// Extra utilities (polling, streaming, tx simulation, walrus tools)
+    Tools(ToolsCmd),
 
     /// Clean session state (remove persisted state file)
     Clean,
@@ -122,13 +129,9 @@ async fn main() -> Result<()> {
         verbose,
     } = Cli::parse();
     let base = sandbox_cli::network::sandbox_home();
-    let state_file = state_file.unwrap_or_else(|| base.join("mcp-state.json"));
+    let state_file = state_file.unwrap_or_else(|| base.join("state.json"));
 
     match command {
-        Commands::Tool(cmd) => {
-            cmd.execute(json, Some(state_file.as_path()), &rpc_url)
-                .await
-        }
         command => {
             // Load or create session state
             let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
@@ -139,9 +142,11 @@ async fn main() -> Result<()> {
                 Commands::Ptb(cmd) => cmd.execute(&mut state, json, verbose).await,
                 Commands::Fetch(cmd) => cmd.execute(&mut state, json, verbose).await,
                 Commands::Replay(cmd) => cmd.execute(&mut state, json, verbose).await,
+                #[cfg(feature = "analysis")]
+                Commands::Analyze(cmd) => cmd.execute(&mut state, json, verbose).await,
                 Commands::View(cmd) => cmd.execute(&state, json).await,
                 Commands::Bridge(cmd) => cmd.execute(json),
-                Commands::Tool(_) => Ok(()),
+                Commands::Tools(cmd) => cmd.execute().await,
                 Commands::Clean => {
                     if state_file.exists() {
                         std::fs::remove_file(&state_file)?;

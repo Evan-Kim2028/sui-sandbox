@@ -18,9 +18,15 @@ members = [
 ]
 
 [features]
+default = ["walrus", "analysis", "mm2"]
 # Forward debug-native logging to the core VM implementation.
 debug-natives = ["sui-sandbox-core/debug-natives"]
 network-tests = []
+
+# CLI capability flags
+analysis = []
+mm2 = []
+walrus = []
 
 # Centralized dependency versions for the workspace
 # Member crates use: dep = { workspace = true }

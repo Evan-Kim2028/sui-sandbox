@@ -1,7 +1,6 @@
 # sui-sandbox CLI Reference
 
 The `sui-sandbox` CLI is the primary interface for local Move/Sui development.
-For MCP server usage and tool input details, see **[MCP Reference](MCP_REFERENCE.md)**.
 For a full docs map, see **[docs/README.md](../README.md)**.
 
 ## Quick Reference
@@ -15,11 +14,10 @@ sui-sandbox fetch package 0x1eabed72...      # Import mainnet package
 sui-sandbox publish ./my_package              # Deploy locally
 sui-sandbox run 0x100::module::function       # Execute function
 sui-sandbox replay 9V3xKMnFpXyz...            # Replay mainnet tx
+sui-sandbox analyze package 0x2               # Package introspection
+sui-sandbox analyze replay 9V3xKMnFpXyz...     # Replay-state introspection
 sui-sandbox view module 0x2::coin             # Inspect interface
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
-
-# MCP tool workflow (JSON in/out)
-sui-sandbox tool get_interface --input '{"package":"0x2","module":"coin"}'
 ```
 
 ## Commands
@@ -31,13 +29,35 @@ sui-sandbox tool get_interface --input '{"package":"0x2","module":"coin"}'
 | `ptb` | Execute Programmable Transaction Blocks |
 | `fetch` | Import packages/objects from mainnet |
 | `replay` | Replay historical mainnet transactions |
+| `analyze` | Package and replay-state introspection |
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
-| `tool` | Invoke MCP tools directly (JSON in/out) |
+| `tools` | Utility commands (poll/stream/tx-sim/walrus) |
 | `status` | Show session state |
 | `clean` | Reset session |
 
 ---
+
+### `tools` - Utility Commands
+
+Low-level utilities are grouped under `sui-sandbox tools`:
+
+```bash
+# Poll recent transactions via GraphQL
+sui-sandbox tools poll-transactions --duration 300 --interval-ms 1000
+
+# Stream checkpoints via gRPC
+sui-sandbox tools stream-transactions --endpoint https://your-provider:9000
+
+# Simulate a PTB via gRPC
+sui-sandbox tools tx-sim --ptb-spec tx.json --sender 0x...
+
+# PTB replay harness (Walrus feature)
+sui-sandbox tools ptb-replay-harness --count 20 --max-total 100
+
+# Warm local Walrus store (Walrus feature)
+sui-sandbox tools walrus-warmup --count 50
+```
 
 ## Developer CLI (`sui-sandbox`)
 
@@ -54,7 +74,7 @@ cargo build --release --bin sui-sandbox
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/mcp-state.json` |
+| `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/state.json` |
 | `--rpc-url <URL>` | RPC URL for mainnet fetching | `https://fullnode.mainnet.sui.io:443` |
 | `--json` | Output as JSON instead of human-readable | `false` |
 | `-v, --verbose` | Show execution traces | `false` |
@@ -64,8 +84,8 @@ cargo build --release --bin sui-sandbox
 | Variable | Description |
 |----------|-------------|
 | `SUI_GRPC_API_KEY` | API key for authenticated gRPC endpoints (used with `--rpc-url`) |
-| `SUI_SANDBOX_HOME` | Override sandbox home for MCP cache/projects/logs (default: `~/.sui-sandbox`) |
-| `SUI_GRAPHQL_ENDPOINT` | Default GraphQL endpoint for MCP tools and `fetch`/`replay` (overridden by `--graphql-url`) |
+| `SUI_SANDBOX_HOME` | Override sandbox home for cache/logs (default: `~/.sui-sandbox`) |
+| `SUI_GRAPHQL_ENDPOINT` | Default GraphQL endpoint for `fetch`/`replay` (overridden by `--graphql-url`) |
 | `SUI_DEBUG_LINKAGE` | Set to `1` to log package linkage/version resolution during replay and fetch |
 | `SUI_DEBUG_MUTATIONS` | Set to `1` to log mutation tracking details during replay |
 | `SUI_WALRUS_ENABLED` | Set to `true` to enable Walrus checkpoint hydration (input/output objects) |
@@ -176,8 +196,7 @@ sui-sandbox ptb --spec tx.json --sender 0x1 --gas-budget 10000000
 }
 ```
 
-The CLI accepts **either** the compact `calls` spec or the MCP-style
-`inputs` + `commands` format. See `docs/reference/PTB_SCHEMA.md` for both.
+The CLI accepts the compact `calls` spec. See `docs/reference/PTB_SCHEMA.md`.
 
 #### `fetch` - Import Mainnet State
 
@@ -205,6 +224,8 @@ sui-sandbox fetch package 0x2 --verbose
 #### `replay` - Transaction Replay
 
 Replay historical mainnet transactions locally with optional effects comparison.
+On success, replay prints **PTB-style effects** (created/mutated/deleted/events/return values).
+On failure, it prints the error context when available.
 
 Replay uses the GraphQL endpoint inferred from `--rpc-url` unless `SUI_GRAPHQL_ENDPOINT` is set.
 
@@ -229,6 +250,25 @@ sui-sandbox replay 9V3xKMnFpXyz... --compare --verbose
 | `--reconcile-dynamic-fields` | Reconcile dynamic-field effects when on-chain lists omit them |
 | `--synthesize-missing` | If replay fails due to missing input objects, synthesize placeholders and retry |
 | `--self-heal-dynamic-fields` | Synthesize placeholder dynamic-field values when data is missing (testing only) |
+
+#### `analyze` - Package + Replay Readiness
+
+Analyze is a Tier-1 tool that helps you understand **what you can execute** and
+**what’s missing when replay fails**.
+
+```bash
+# Package structure + MM2 model
+sui-sandbox analyze package 0x2 --list-modules --mm2
+
+# Replay readiness: inputs, packages, and suggestions
+sui-sandbox analyze replay 9V3xKMnFpXyz...
+```
+
+Replay analysis outputs:
+- Input summary (owned/shared/immutable)
+- Command list (MoveCalls + PTB structure)
+- Missing inputs / packages (if any)
+- Suggested fixes (e.g., enable Walrus, use --synthesize, enable MM2)
 
 #### `view` - Inspect State
 
@@ -296,7 +336,7 @@ sui-sandbox bridge ptb --spec my_transaction.json
 |------------|-------------|
 | `publish <PATH>` | Generate `sui client publish` command |
 | `call <TARGET>` | Generate `sui client call` command |
-| `ptb --spec <FILE>` | Convert PTB spec (CLI or MCP) to `sui client ptb` command |
+| `ptb --spec <FILE>` | Convert PTB spec to `sui client ptb` command |
 | `info` | Show transition workflow and deployment guide |
 
 **Options:**
@@ -344,71 +384,6 @@ sui-sandbox bridge info --verbose
 
 ---
 
-#### `tool` - MCP Tools (JSON in/out)
-
-Invoke MCP tools directly from the CLI. This is the recommended way to exercise
-the MCP server surface without running a separate server process.
-
-Tool-specific options:
-
-| Flag | Description |
-|------|-------------|
-| `--network <NAME>` | Network name (e.g., mainnet, testnet). Persists across tool runs. |
-| `--graphql-url <URL>` | GraphQL endpoint (defaults to `SUI_GRAPHQL_ENDPOINT` or network default). |
-
-```bash
-# Inspect a module interface
-sui-sandbox tool get_interface --input '{"package":"0x2","module":"coin"}'
-
-# Create a Move project (persisted)
-sui-sandbox tool create_move_project --input '{"name":"demo_pkg","persist":true}'
-
-# Build and deploy
-sui-sandbox tool build_project --input '{"project_id":"<id>"}'
-sui-sandbox tool deploy_project --input '{"project_id":"<id>"}'
-
-# Upgrade a project locally (records upgrade in project registry)
-sui-sandbox tool upgrade_project --input '{"project_id":"<id>"}'
-
-# Execute a function
-sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","function":"zero","type_args":["0x2::sui::SUI"],"args":[]}'
-
-# Use object refs returned from previous calls
-sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","function":"value","args":[{"object_ref":"obj_1"}]}'
-```
-
-**Notes:**
-
-- The CLI and tool commands share the same JSON state file by default: `~/.sui-sandbox/mcp-state.json`
-- Use `--state-file` to override the state location (shared across invocations)
-- If `SUI_SANDBOX_HOME` is set, default state files live under that directory
-- MCP tool logs are written as JSONL under `$SUI_SANDBOX_HOME/logs/mcp`
-- Mainnet fetch/replay uses a shared cache under `$SUI_SANDBOX_HOME/cache/<network>`
-- Execution outputs include `object_ref` handles inside `effects.object_changes` for easy chaining.
-- MCP option enums (validated): `fetch_strategy` = `eager|full`, `cache_policy` = `default|bypass`
-- Inputs may include an optional `_meta` block for LLM reasoning/logging:
-
-```json
-{
-  "_meta": { "reason": "Inspect interface to build PTB", "request_id": "req-123" },
-  "package": "0x2",
-  "module": "coin"
-}
-```
-
-#### Running the MCP Server (stdio)
-
-Use this when you want an MCP client (Claude/GPT/etc.) to call tools directly:
-
-```bash
-cargo build --release --bin sui-sandbox-mcp
-./target/release/sui-sandbox-mcp
-```
-
-The server uses the same `SUI_SANDBOX_HOME` directories for cache, projects,
-and logs. State is kept in memory per server process, while projects and logs
-are persisted on disk.
-
 ### Session Persistence
 
 The `sui-sandbox` maintains session state across commands:
@@ -417,7 +392,7 @@ The `sui-sandbox` maintains session state across commands:
 - **Fetched objects** are cached locally
 - **Last sender** is remembered for convenience
 
-State is stored in `~/.sui-sandbox/mcp-state.json` by default for all commands unless
+State is stored in `~/.sui-sandbox/state.json` by default for all commands unless
 overridden with `--state-file`.
 
 If you have an older binary state file (`state.bin`), it will be read and

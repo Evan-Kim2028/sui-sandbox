@@ -99,6 +99,16 @@ print_step "Getting status as JSON..."
 $SUI_SANDBOX --state-file "$STATE_FILE" --json status | head -10
 
 # ==============================================================================
+# Step 2.5: Analyze Package (CLI)
+# ==============================================================================
+
+print_header "Step 2.5: Analyze Package"
+
+print_step "Analyzing framework package 0x2..."
+$SUI_SANDBOX --state-file "$STATE_FILE" analyze package --package-id 0x2 | head -20
+echo "  ... (truncated)"
+
+# ==============================================================================
 # Step 3: Publish a Test Package
 # ==============================================================================
 

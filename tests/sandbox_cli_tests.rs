@@ -819,7 +819,7 @@ fn test_bridge_ptb_with_multiple_calls() {
             },
             {
                 "target": "0x2::transfer::public_transfer",
-                "arguments": [{"Result": 0}, "0xABC"]
+                "arguments": [{"result": 0}, {"address": "0xABC"}]
             }
         ],
         "inputs": []
@@ -977,8 +977,8 @@ fn test_bridge_ptb_with_result_chaining() {
     let spec = r#"{
         "calls": [
             {"target": "0x2::coin::zero", "type_arguments": ["0x2::sui::SUI"]},
-            {"target": "0x2::coin::split", "arguments": [{"Result": 0}, 500]},
-            {"target": "0x2::transfer::public_transfer", "arguments": [{"Result": 1}, "0xABC"]}
+            {"target": "0x2::coin::split", "arguments": [{"result": 0}, {"u64": 500}]},
+            {"target": "0x2::transfer::public_transfer", "arguments": [{"result": 1}, {"address": "0xABC"}]}
         ]
     }"#;
     fs::write(&spec_file, spec).unwrap();

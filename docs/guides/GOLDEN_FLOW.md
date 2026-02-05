@@ -74,6 +74,16 @@ JSON
 ./target/debug/sui-sandbox status --state-file "$STATE_FILE"
 ```
 
+## 8) Replay + Analyze loop (debugging)
+
+```bash
+# Replay a historical transaction and view PTB-style effects
+./target/debug/sui-sandbox replay <DIGEST> --compare
+
+# If replay fails, analyze readiness + missing inputs/packages
+./target/debug/sui-sandbox analyze replay <DIGEST>
+```
+
 ## Notes
 
 - Always pass `--state-file` for reproducibility. Without it, each run starts fresh.

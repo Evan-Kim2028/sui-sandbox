@@ -9,6 +9,8 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use super::ptb_spec::{read_ptb_spec, ArgReference, ArgSpec, PureValue};
+
 /// Default gas budget for publish operations (100M MIST = 0.1 SUI)
 const DEFAULT_PUBLISH_GAS_BUDGET: u64 = 100_000_000;
 
@@ -209,17 +211,7 @@ impl BridgeCallCmd {
 impl BridgePtbCmd {
     pub fn execute(&self, json_output: bool) -> Result<()> {
         // Read and parse the sandbox PTB spec
-        let spec_content = std::fs::read_to_string(&self.spec)
-            .map_err(|e| anyhow!("Failed to read PTB spec: {}", e))?;
-
-        let spec_value: serde_json::Value = serde_json::from_str(&spec_content)
-            .map_err(|e| anyhow!("Failed to parse PTB spec: {}", e))?;
-        let spec = if spec_value.get("commands").is_some() {
-            parse_mcp_ptb_spec(&spec_value)?
-        } else {
-            serde_json::from_value(spec_value)
-                .map_err(|e| anyhow!("Failed to parse PTB spec: {}", e))?
-        };
+        let spec = read_ptb_spec(&self.spec, false)?;
 
         // Convert to sui client ptb commands
         let mut ptb_parts: Vec<String> = vec!["sui client ptb".to_string()];
@@ -234,18 +226,14 @@ impl BridgePtbCmd {
             let mut move_call = format!("--move-call {}", call.target);
 
             // Add type arguments
-            if let Some(ref type_args) = call.type_arguments {
-                if !type_args.is_empty() {
-                    move_call.push_str(&format!(" \"<{}>\"", type_args.join(", ")));
-                }
+            if !call.type_args.is_empty() {
+                move_call.push_str(&format!(" \"<{}>\"", call.type_args.join(", ")));
             }
 
             // Add arguments
-            if let Some(ref args) = call.arguments {
-                for arg in args {
-                    let arg_str = convert_ptb_argument(arg, &result_vars)?;
-                    move_call.push_str(&format!(" {}", arg_str));
-                }
+            for arg in &call.args {
+                let arg_str = convert_ptb_argument(arg, &result_vars)?;
+                move_call.push_str(&format!(" {}", arg_str));
             }
 
             ptb_parts.push(move_call);
@@ -624,85 +612,6 @@ impl PtbOutput {
 }
 
 // =============================================================================
-// Sandbox PTB Spec Types (for parsing)
-// =============================================================================
-
-#[derive(serde::Deserialize, Debug)]
-struct SandboxPtbSpec {
-    calls: Vec<SandboxPtbCall>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct SandboxPtbCall {
-    target: String,
-    #[serde(default, alias = "type_args")]
-    type_arguments: Option<Vec<String>>,
-    #[serde(default, alias = "args")]
-    arguments: Option<Vec<serde_json::Value>>,
-}
-
-fn parse_mcp_ptb_spec(value: &serde_json::Value) -> Result<SandboxPtbSpec> {
-    let commands = value
-        .get("commands")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("MCP PTB spec missing 'commands' array"))?;
-
-    if commands.is_empty() {
-        return Err(anyhow!("MCP PTB spec has no commands"));
-    }
-
-    let mut calls = Vec::new();
-
-    for (idx, cmd) in commands.iter().enumerate() {
-        let (kind, inner) = if let Some(inner) = cmd.get("MoveCall") {
-            ("MoveCall", inner)
-        } else if let Some(kind) = cmd.get("kind").and_then(|v| v.as_str()) {
-            (kind, cmd)
-        } else {
-            return Err(anyhow!("Command {} missing kind", idx));
-        };
-
-        if !matches!(kind, "MoveCall" | "move_call") {
-            return Err(anyhow!(
-                "bridge ptb only supports MoveCall commands (found {})",
-                kind
-            ));
-        }
-
-        let package = inner
-            .get("package")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("MoveCall requires package"))?;
-        let module = inner
-            .get("module")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("MoveCall requires module"))?;
-        let function = inner
-            .get("function")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("MoveCall requires function"))?;
-        let type_arguments = inner
-            .get("type_args")
-            .or_else(|| inner.get("type_arguments"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-            });
-        let arguments = inner.get("args").and_then(|v| v.as_array()).cloned();
-
-        calls.push(SandboxPtbCall {
-            target: format!("{}::{}::{}", package, module, function),
-            type_arguments,
-            arguments,
-        });
-    }
-
-    Ok(SandboxPtbSpec { calls })
-}
-
-// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -759,111 +668,55 @@ fn format_arg_for_sui_client(arg: &str) -> String {
 }
 
 /// Convert a sandbox PTB argument to sui client ptb format
-fn convert_ptb_argument(arg: &serde_json::Value, result_vars: &[String]) -> Result<String> {
+fn convert_ptb_argument(arg: &ArgSpec, result_vars: &[String]) -> Result<String> {
     match arg {
-        serde_json::Value::Object(obj) => {
-            if let Some(result_idx) = obj.get("result") {
-                let idx = result_idx
-                    .as_u64()
-                    .ok_or_else(|| anyhow!("result index must be a number"))?
-                    as usize;
-                if idx < result_vars.len() {
-                    Ok(result_vars[idx].clone())
-                } else {
-                    Ok(format!("result_{}", idx))
-                }
-            } else if let Some(input_idx) = obj.get("input") {
-                let idx = input_idx
-                    .as_u64()
-                    .ok_or_else(|| anyhow!("input index must be a number"))?;
-                Ok(format!("@input_{}", idx))
-            } else if let Some(nested) = obj.get("nested_result") {
-                if let Some(arr) = nested.as_array() {
-                    if arr.len() == 2 {
-                        let cmd = arr[0].as_u64().unwrap_or(0);
-                        let idx = arr[1].as_u64().unwrap_or(0);
-                        if idx == 0 {
-                            return Ok(format!("result_{}", cmd));
-                        }
-                        return Ok(format!("result_{}_{}", cmd, idx));
-                    }
-                }
-                Ok("<nested_result>".to_string())
-            } else if let Some(result_idx) = obj.get("Result") {
-                if let Some(idx) = result_idx.as_u64() {
-                    let idx = idx as usize;
-                    if idx < result_vars.len() {
-                        Ok(result_vars[idx].clone())
-                    } else {
-                        Ok(format!("result_{}", idx))
-                    }
-                } else if let Some(res) = result_idx.as_object() {
-                    let cmd = res.get("cmd").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let idx = res.get("idx").and_then(|v| v.as_u64()).unwrap_or(0);
-                    if idx == 0 {
-                        Ok(format!("result_{}", cmd))
-                    } else {
-                        Ok(format!("result_{}_{}", cmd, idx))
-                    }
-                } else {
-                    Ok("<result>".to_string())
-                }
-            } else if let Some(input_idx) = obj.get("Input") {
-                if let Some(idx) = input_idx.as_u64() {
-                    Ok(format!("@input_{}", idx))
-                } else if let Some(idx) = input_idx.get("index").and_then(|v| v.as_u64()) {
-                    Ok(format!("@input_{}", idx))
-                } else {
-                    Ok("@input_0".to_string())
-                }
-            } else if obj.contains_key("Pure") {
-                // Pure value - extract the value
-                if let Some(pure_obj) = obj.get("Pure").and_then(|p| p.as_object()) {
-                    if let Some(val) = pure_obj.get("value") {
-                        return Ok(format_json_value(val));
-                    }
-                }
-                Ok("<pure_value>".to_string())
-            } else if obj.get("kind").and_then(|v| v.as_str()) == Some("pure") {
-                if let Some(val) = obj.get("value") {
-                    return Ok(format_json_value(val));
-                }
-                Ok("<pure_value>".to_string())
-            } else {
-                // Unknown object type
-                Ok(format!("<{}>", serde_json::to_string(obj)?))
-            }
-        }
-        serde_json::Value::Number(n) => Ok(n.to_string()),
-        serde_json::Value::String(s) => {
-            if s.starts_with("0x") {
-                Ok(format!("@{}", s))
-            } else {
-                Ok(format!("\"{}\"", s))
-            }
-        }
-        serde_json::Value::Bool(b) => Ok(b.to_string()),
-        _ => Ok(format!("{}", arg)),
+        ArgSpec::Inline(inline) => Ok(format_pure_value_for_cli(&inline.value)),
+        ArgSpec::Reference(reference) => format_reference_for_cli(reference, result_vars),
     }
 }
 
-/// Format a JSON value for sui client
-fn format_json_value(val: &serde_json::Value) -> String {
-    match val {
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => {
-            if s.starts_with("0x") {
-                format!("@{}", s)
-            } else {
-                format!("\"{}\"", s)
-            }
+fn format_reference_for_cli(reference: &ArgReference, result_vars: &[String]) -> Result<String> {
+    if let Some(idx) = reference.input {
+        return Ok(format!("@input_{}", idx));
+    }
+    if let Some(idx) = reference.result {
+        let idx = idx as usize;
+        if idx < result_vars.len() {
+            return Ok(result_vars[idx].clone());
         }
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(format_json_value).collect();
+        return Ok(format!("result_{}", idx));
+    }
+    if let Some([cmd, res]) = reference.nested_result {
+        if res == 0 {
+            return Ok(format!("result_{}", cmd));
+        }
+        return Ok(format!("result_{}_{}", cmd, res));
+    }
+    if reference.gas_coin == Some(true) {
+        return Ok("@input_0".to_string());
+    }
+    Err(anyhow!("Invalid argument reference"))
+}
+
+fn format_pure_value_for_cli(value: &PureValue) -> String {
+    match value {
+        PureValue::U8(n) => n.to_string(),
+        PureValue::U16(n) => n.to_string(),
+        PureValue::U32(n) => n.to_string(),
+        PureValue::U64(n) => n.to_string(),
+        PureValue::U128(n) => n.to_string(),
+        PureValue::Bool(b) => b.to_string(),
+        PureValue::Address(addr) => format_arg_for_sui_client(addr),
+        PureValue::VectorU8Utf8(s) => format!("\"{}\"", s),
+        PureValue::VectorU8Hex(s) => format!("\"{}\"", s),
+        PureValue::VectorAddress(addrs) => {
+            let items: Vec<String> = addrs.iter().map(|a| format_arg_for_sui_client(a)).collect();
             format!("\"[{}]\"", items.join(", "))
         }
-        _ => format!("{}", val),
+        PureValue::VectorU64(nums) => {
+            let items: Vec<String> = nums.iter().map(|n| n.to_string()).collect();
+            format!("\"[{}]\"", items.join(", "))
+        }
     }
 }
 
@@ -883,6 +736,7 @@ fn shell_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox_cli::ptb_spec::InlineArg;
 
     #[test]
     fn test_parse_function_target_valid() {
@@ -940,7 +794,12 @@ mod tests {
     #[test]
     fn test_convert_ptb_argument_result() {
         let result_vars = vec!["result_0".to_string(), "result_1".to_string()];
-        let arg = serde_json::json!({"Result": 0});
+        let arg = ArgSpec::Reference(ArgReference {
+            input: None,
+            result: Some(0),
+            nested_result: None,
+            gas_coin: None,
+        });
         assert_eq!(
             convert_ptb_argument(&arg, &result_vars).unwrap(),
             "result_0"
@@ -950,14 +809,18 @@ mod tests {
     #[test]
     fn test_convert_ptb_argument_number() {
         let result_vars: Vec<String> = vec![];
-        let arg = serde_json::json!(42);
+        let arg = ArgSpec::Inline(InlineArg {
+            value: PureValue::U64(42),
+        });
         assert_eq!(convert_ptb_argument(&arg, &result_vars).unwrap(), "42");
     }
 
     #[test]
     fn test_convert_ptb_argument_address() {
         let result_vars: Vec<String> = vec![];
-        let arg = serde_json::json!("0x123");
+        let arg = ArgSpec::Inline(InlineArg {
+            value: PureValue::Address("0x123".to_string()),
+        });
         assert_eq!(convert_ptb_argument(&arg, &result_vars).unwrap(), "@0x123");
     }
 
