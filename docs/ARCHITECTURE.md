@@ -116,7 +116,7 @@ See [Error Codes Reference](reference/ERROR_CODES.md) for details.
 sui-sandbox/
 ├── src/                        # Main library
 │   ├── benchmark/              # Core simulation engine
-│   └── data_fetcher.rs         # Unified data fetching API
+│   └── move_stubs.rs           # Generated Move source stubs for type-checking
 ├── crates/
 │   ├── sui-sandbox-core/       # Core VM and simulation with utilities
 │   ├── sui-transport/          # Network layer (gRPC + GraphQL clients)
@@ -137,5 +137,4 @@ sui-sandbox/
 - **[Examples](../examples/README.md)** - Start here to learn the library
 - [Transaction Replay Guide](guides/TRANSACTION_REPLAY.md) - End-to-end workflow
 - [Prefetching Architecture](architecture/PREFETCHING.md) - Data fetching internals
-- [Sandbox API Reference](reference/SANDBOX_API.md) - API details
 - [Limitations](reference/LIMITATIONS.md) - Known differences from mainnet

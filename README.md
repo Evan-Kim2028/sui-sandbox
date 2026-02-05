@@ -43,53 +43,12 @@ sui-sandbox fetch package 0x2                 # Import Sui framework
 sui-sandbox publish ./my_package              # Deploy your code
 sui-sandbox run 0x100::module::func --arg 42  # Call a function
 sui-sandbox replay <TX_DIGEST> --compare      # Replay and verify
+sui-sandbox analyze package 0x2               # Package introspection
+sui-sandbox analyze replay <TX_DIGEST>        # Replay-state introspection
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
-sui-sandbox tool create_move_project --input '{"name":"demo"}' # MCP tool parity
 ```
 
 See [CLI Reference](docs/reference/CLI_REFERENCE.md) for all commands.
-
-## MCP (LLM Tools)
-
-You can use the MCP surface in two ways:
-
-1. **CLI tool mode** (JSON in/out) — best for scripts and quick parity checks.
-2. **MCP server (stdio)** — for MCP clients (Claude/GPT/etc.) to invoke tools directly.
-
-```bash
-# Build MCP server binary
-cargo build --release --bin sui-sandbox-mcp
-
-# Run MCP server over stdio (connect from your MCP client)
-./target/release/sui-sandbox-mcp
-```
-
-Example tool invocation via CLI (no server required):
-
-```bash
-sui-sandbox tool call_function --input '{"package":"0x2","module":"coin","function":"zero","type_args":["0x2::sui::SUI"],"args":[]}'
-```
-
-### Cache + Logs
-
-CLI and MCP share the same cache/log roots via `SUI_SANDBOX_HOME` (default: `~/.sui-sandbox`):
-
-```
-~/.sui-sandbox/
-├── cache/      # Global cache (shared across CLI + MCP, per-network)
-├── projects/   # MCP project workspace
-└── logs/mcp/   # MCP JSONL logs (inputs/outputs, llm_reason, tags)
-```
-
-Add optional LLM metadata to any tool input:
-
-```json
-{
-  "_meta": { "reason": "Inspect interface before PTB", "tags": ["analysis"] },
-  "package": "0x2",
-  "module": "coin"
-}
-```
 
 ## Start Here: Examples
 
@@ -101,7 +60,7 @@ Add optional LLM metadata to any tool input:
 | 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
 | 3 | `fork_state` | Yes | Fork mainnet state into local sandbox |
 | 4 | `cetus_swap` | Yes | Full transaction replay with validation |
-| 5 | `scallop_deposit` | Yes | Lending protocol replay with MM2 bytecode analysis |
+| 5 | `deepbook_orders` | Yes | BigVector replay with dynamic fields |
 | 6 | `multi_swap_flash_loan` | Yes | Complex multi-DEX arbitrage replay |
 
 ```bash
@@ -114,11 +73,10 @@ cargo run --example ptb_basics
 # Graduate to mainnet replay
 cargo run --example cetus_swap
 
-# See MM2 predictive prefetch in action
-cargo run --example scallop_deposit
+# Explore BigVector/dynamic field handling
+cargo run --example deepbook_orders
 ```
 
-For CLI+MCP parity examples, see **[examples/cli_mcp](examples/cli_mcp)**.
 For self-healing replay demos (testing only), see **[examples/self_heal](examples/self_heal)**.
 
 See **[examples/README.md](examples/README.md)** for detailed documentation on each example.
@@ -188,7 +146,6 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 | **Understand the system** | [Architecture](docs/ARCHITECTURE.md) |
 | **Debug failures** | [Limitations](docs/reference/LIMITATIONS.md) |
 | **CLI commands** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
-| **MCP server** | [MCP Reference](docs/reference/MCP_REFERENCE.md) |
 | **Testing** | [Contributing](docs/CONTRIBUTING.md) |
 
 ## Testing
@@ -221,7 +178,8 @@ sui-sandbox/
 │   ├── ptb_basics.rs       # Basic PTB
 │   ├── fork_state.rs       # Mainnet forking
 │   ├── cetus_swap.rs       # Canonical replay example
-│   └── scallop_deposit.rs  # MM2 bytecode analysis
+│   ├── deepbook_orders.rs  # BigVector replay example
+│   └── archive/            # Older/experimental examples
 ├── src/                    # Main library and CLI
 ├── crates/
 │   ├── sui-sandbox-core/   # Core VM, PTB execution, gas metering

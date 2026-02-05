@@ -59,15 +59,6 @@ cargo test
 # Fast CLI smoke tests
 cargo test -p sui-sandbox --test fast_suite
 
-# CLI tool parity tests (offline)
-cargo test --test cli_tool_tests
-
-# CLI/MCP parity fixture harness
-cargo test --test parity_harness_tests
-
-# MCP-related unit tests
-cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
-
 # Heavier integration tests (offline)
 cargo test -p sui-sandbox-integration-tests
 
@@ -75,9 +66,9 @@ cargo test -p sui-sandbox-integration-tests
 cargo test -p sui-sandbox-integration-tests --features network-tests -- --ignored --nocapture
 ```
 
-### CI Harness (Parity + Logging)
+### CI Harness
 
-Suggested CI steps to validate CLI/MCP parity and logging behavior:
+Suggested CI steps to validate CLI behavior:
 
 ```bash
 # Enforce formatting
@@ -87,9 +78,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features
 
 # Core regression suite
-cargo test --test cli_tool_tests
-cargo test --test parity_harness_tests
-cargo test --test mcp_project_tests --test mcp_logger_tests --test mcp_paths_tests
+cargo test -p sui-sandbox --test fast_suite
 
 # Optional (slower) integration suite
 cargo test -p sui-sandbox-integration-tests
@@ -241,4 +230,3 @@ cargo test benchmark_local_can_load_fixture_modules
 
 - **[Architecture](ARCHITECTURE.md)** - System architecture overview
 - **[CLI Reference](reference/CLI_REFERENCE.md)** - Rust CLI commands
-- **[Sandbox API](reference/SANDBOX_API.md)** - Simulation environment API

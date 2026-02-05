@@ -13,17 +13,12 @@ The Move package includes:
 - `oracle.move`: shared oracle for ETH/USD price (strike at offer time).
 - `convertible_debt.move`: offer, note, repay, redeem, convert.
 
-## Quick CLI demo (MCP tool mode)
+## Quick CLI demo
 
-This is the easiest way to exercise the flow with object IDs.
+Use the CLI to publish the package and call the entry functions with real object IDs.
+The flow is:
 
-```bash
-./examples/cli_mcp/12_convertible_debt.sh
-```
-
-The script will:
-
-1. Publish the package.
+1. Publish the package (`sui-sandbox publish ./examples/convertible_debt`).
 2. Create demo tokens + shared oracle.
 3. Mint USD to a lender and ETH to a borrower.
 4. Borrower creates an offer (shared).

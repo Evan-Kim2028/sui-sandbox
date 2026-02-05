@@ -14,7 +14,13 @@ It produces a report of successes, failures, and skipped functions.
 ./examples/package_analysis/cli_package_analysis.sh <PACKAGE_ID>
 ```
 
-Example package IDs (from `examples/analyze_protocols.rs`):
+For quick introspection without running calls, use:
+
+```
+sui-sandbox analyze package --package-id <PACKAGE_ID>
+```
+
+Example package IDs:
 
 - `0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb`
 - `0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf`

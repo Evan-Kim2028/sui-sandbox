@@ -49,18 +49,11 @@ cache_root/
 Build the cache:
 
 ```bash
-cargo run --release --example walrus_cache_build -- \
-  --cache-dir ./walrus-cache \
-  --blobs 10
-```
+# Warm the local Walrus store (checkpoint data + object index)
+cargo run --bin sui-sandbox --features walrus -- tools walrus-warmup --count 50
 
-Replay with the cache:
-
-```bash
-cargo run --release --example walrus_checkpoint_replay -- \
-  --start 238627315 \
-  --end 238627325 \
-  --cache-dir ./walrus-cache
+# Replay using Walrus as the primary source
+cargo run --bin sui-sandbox --features walrus -- replay <DIGEST> --source walrus
 ```
 
 ## Trade-offs

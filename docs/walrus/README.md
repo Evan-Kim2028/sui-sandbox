@@ -5,23 +5,18 @@ It is intentionally concise and organized for both users and developers.
 
 ## Quick start
 
-Run the replay example against recent checkpoints:
+Warm the Walrus local store and replay with Walrus as the primary source:
 
 ```bash
-cargo run --release --example walrus_checkpoint_replay
+cargo run --bin sui-sandbox --features walrus -- tools walrus-warmup --count 50
+
+cargo run --bin sui-sandbox --features walrus -- replay <DIGEST> --source walrus --compare
 ```
 
-Build a local historical cache and then replay with it:
+To ingest packages from a checkpoint range into the local index:
 
 ```bash
-cargo run --release --example walrus_cache_build -- \
-  --cache-dir ./walrus-cache \
-  --blobs 10
-
-cargo run --release --example walrus_checkpoint_replay -- \
-  --start 238627315 \
-  --end 238627325 \
-  --cache-dir ./walrus-cache
+cargo run --bin sui-sandbox --features walrus -- fetch checkpoints 238627315 238627325
 ```
 
 ## Documentation map

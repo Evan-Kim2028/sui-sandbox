@@ -4,42 +4,22 @@ This is the best way to learn the sui-sandbox library. Work through these exampl
 
 ## Learning Path
 
-### Level 1: MCP Tool + CLI Exploration (Minimal Setup)
+### Level 1: CLI Exploration (Minimal Setup)
 
 ```bash
-# Run the MCP tool workflow (recommended)
-./examples/mcp_cli_workflow.sh
-```
-
-This shell script walks you through the MCP tool interface (via `sui-sandbox tool`)
-without any compilation. You'll learn:
-
-- Exploring framework modules (`get_interface`)
-- Creating/building/deploying a Move package
-- Executing simple functions via `call_function`
-- Using JSON output for scripting
-
-**Prerequisites**: None beyond the `sui-sandbox` binary
-
-If you want the classic CLI walkthrough that uses `view`, `publish`, and `run`,
-use the legacy script below:
-
-```bash
-# First, build the test fixture (requires Sui CLI)
-cd tests/fixture && sui move build && cd ../..
-
-# Then run the classic CLI workflow
+# Run the CLI workflow (recommended)
 ./examples/cli_workflow.sh
 ```
 
-### New: CLI + MCP Example Suite (Parity with Rust examples)
+This shell script walks you through the CLI interface
+without any additional setup. You'll learn:
 
-For CLI equivalents of the Rust examples (with MCP tool parity and replay verification),
-see:
+- Exploring framework modules (`view`)
+- Publishing a local Move package
+- Executing simple functions via `run`
+- Using JSON output for scripting
 
-```
-./examples/cli_mcp/README.md
-```
+**Prerequisites**: None beyond the `sui-sandbox` binary.
 
 ### New: Self-Heal Replay (Testing Only)
 
@@ -171,9 +151,7 @@ Advanced replay with complex state:
 
 | Example | Level | API Key | Description |
 |---------|-------|---------|-------------|
-| `mcp_cli_workflow.sh` | 1 | No | MCP tool workflow (recommended) |
-| `cli_workflow.sh` | 1 | No | Classic CLI walkthrough |
-| `cli_mcp/12_convertible_debt.sh` | 1 | No | Convertible debt demo (CLI + shared objects) |
+| `cli_workflow.sh` | 1 | No | CLI walkthrough |
 | `convertible_simulator` | 1 | No | Convertible vs ETH vs stable APY simulator |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 | `fork_state` | 3 | Yes | Fork mainnet state locally |
@@ -182,6 +160,15 @@ Advanced replay with complex state:
 | `deepbook_replay` | 4 | Yes | DeepBook flash loan replay |
 | `deepbook_orders` | 5 | Yes | DeepBook order replay (BigVector handling) |
 | `multi_swap_flash_loan` | 6 | Yes | Multi-DEX arbitrage replay |
+
+## CLI-first replacements
+
+Several older or experimental examples were consolidated into CLI flows:
+
+- Protocol/package analysis → `sui-sandbox analyze package 0x...`
+- Historical replay demos → `sui-sandbox replay <DIGEST> --compare`
+- Walrus cache warmup → `sui-sandbox tools walrus-warmup`
+- Walrus package ingest → `sui-sandbox fetch checkpoints <START> <END>`
 
 ---
 
@@ -210,6 +197,9 @@ Example `.env`:
 SUI_GRPC_ENDPOINT=https://fullnode.mainnet.sui.io:443
 SUI_GRPC_API_KEY=your-api-key-here  # Optional, depending on provider
 ```
+
+> Note: Walrus endpoints may be unavailable at times. Use CLI replay with
+> `--source=grpc` to bypass Walrus when needed.
 
 2. Run the example:
 

@@ -198,10 +198,6 @@ name = "cetus_swap"
 path = "examples/cetus_swap.rs"
 
 [[example]]
-name = "scallop_deposit"
-path = "examples/scallop_deposit.rs"
-
-[[example]]
 name = "deepbook_replay"
 path = "examples/deepbook_replay.rs"
 
@@ -224,26 +220,6 @@ path = "examples/batch_ptb/main.rs"
 [[example]]
 name = "ptb_basics"
 path = "examples/ptb_basics.rs"
-
-[[example]]
-name = "historical_replay_demo"
-path = "examples/historical_replay_demo.rs"
-
-[[example]]
-name = "version_tracking_test"
-path = "examples/version_tracking_test.rs"
-
-[[example]]
-name = "analyze_protocols"
-path = "examples/analyze_protocols.rs"
-
-[[example]]
-name = "walrus_checkpoint_replay"
-path = "examples/walrus_checkpoint_replay.rs"
-
-[[example]]
-name = "walrus_cache_build"
-path = "examples/walrus_cache_build.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

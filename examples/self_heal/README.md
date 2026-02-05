@@ -1,11 +1,13 @@
 # Self-Heal Replay Examples (Testing Only)
 
 These examples demonstrate **self-healing replay** workflows when historical data is incomplete
-(e.g., gRPC/object availability gaps). The goal is to show how the CLI/MCP can **synthesize
+(e.g., gRPC/object availability gaps). The goal is to show how the CLI can **synthesize
 placeholder state** so PTBs can execute locally for investigation.
 
 > ⚠️ **Testing-only:** Synthesized objects and dynamic-field values are **not** high-fidelity
 > on-chain state. Use this to explore code paths and debug, not to validate economic behavior.
+
+> Requires the `mm2` feature for synthesis flags.
 
 ## CLI Self-Heal Replay
 
@@ -23,20 +25,3 @@ If no digest is provided, the script uses the first entry in `selected_digests.t
    - `--self-heal-dynamic-fields` (placeholder dynamic-field values)
 
 The script prints clear logs when synthesis is used.
-
-## MCP Self-Heal (manual)
-
-You can also invoke the MCP tool with self-heal options:
-
-```json
-{
-  "digest": "...",
-  "options": {
-    "fetch_strategy": "full",
-    "synthesize_missing": true,
-    "self_heal_dynamic_fields": true
-  }
-}
-```
-
-See `docs/reference/MCP_REFERENCE.md` for more MCP usage examples.

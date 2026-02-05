@@ -31,18 +31,11 @@ Throughput:       ~9 tx/sec
 ## How to run
 
 ```bash
-# Basic replay
-cargo run --release --example walrus_checkpoint_replay
+# Warm local Walrus cache
+cargo run --bin sui-sandbox --features walrus -- tools walrus-warmup --count 10
 
-# Cache + replay
-cargo run --release --example walrus_cache_build -- \
-  --cache-dir ./walrus-cache \
-  --blobs 10
-
-cargo run --release --example walrus_checkpoint_replay -- \
-  --start 238627315 \
-  --end 238627325 \
-  --cache-dir ./walrus-cache
+# Replay using Walrus for checkpoint data
+cargo run --bin sui-sandbox --features walrus -- replay <DIGEST> --source walrus --compare
 ```
 
 ## Notes
