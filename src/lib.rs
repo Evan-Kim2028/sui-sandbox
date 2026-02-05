@@ -12,14 +12,8 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 
-pub mod args;
 pub mod cache;
-pub mod comparator;
-pub mod corpus;
-pub mod move_stubs;
 pub mod ptb_classifier;
-pub mod rpc;
-pub mod runner;
 
 // Re-export modules from sui-package-extractor crate
 pub use sui_package_extractor::bytecode;
