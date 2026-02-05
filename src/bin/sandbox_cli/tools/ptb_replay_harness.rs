@@ -314,6 +314,7 @@ fn resolve_sandbox_binary() -> Result<PathBuf> {
     Ok(PathBuf::from("sui-sandbox"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_replay(
     sandbox_bin: &PathBuf,
     rpc_url: &str,

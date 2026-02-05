@@ -18,7 +18,9 @@
 //! We explicitly mark network-dependent tests as ignored rather than having them
 //! silently succeed with eprintln warnings.
 
-use sui_sandbox::graphql::{GraphQLClient, PageInfo, PaginationDirection, Paginator};
+use sui_sandbox::graphql::{
+    GraphQLArgument, GraphQLClient, GraphQLCommand, PageInfo, PaginationDirection, Paginator,
+};
 
 // =============================================================================
 // Unit Tests (No Network Required)

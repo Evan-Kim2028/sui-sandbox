@@ -1605,9 +1605,11 @@ pub fn replay_with_version_tracking_with_policy_with_effects(
                     eprintln!("[linkage] modules_accessed=0");
                 }
             }
-            let mut failure_effects = crate::ptb::TransactionEffects::default();
-            failure_effects.success = false;
-            failure_effects.error = Some(e.to_string());
+            let failure_effects = crate::ptb::TransactionEffects {
+                success: false,
+                error: Some(e.to_string()),
+                ..Default::default()
+            };
             return Ok(ReplayExecution {
                 result: ReplayResult {
                     digest: tx.digest.clone(),

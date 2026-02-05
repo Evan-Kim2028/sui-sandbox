@@ -1349,6 +1349,7 @@ fn process_with_mm2_predictive_prefetch(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_replay(
     rt: &tokio::runtime::Runtime,
     grpc: &Arc<GrpcClient>,

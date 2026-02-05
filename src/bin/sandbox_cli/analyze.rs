@@ -466,8 +466,10 @@ fn summarize_inputs(
     inputs: &[sui_sandbox_types::TransactionInput],
     verbose: bool,
 ) -> (ReplayInputSummary, Option<Vec<ReplayInputObject>>) {
-    let mut summary = ReplayInputSummary::default();
-    summary.total = inputs.len();
+    let mut summary = ReplayInputSummary {
+        total: inputs.len(),
+        ..Default::default()
+    };
     let mut objects = Vec::new();
 
     for input in inputs {
