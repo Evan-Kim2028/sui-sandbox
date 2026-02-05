@@ -17,7 +17,7 @@ This directory contains project documentation. Use this index to find the right 
 ## Reference
 
 - CLI reference: docs/reference/CLI_REFERENCE.md
-- Schemas: docs/reference/SCHEMA.md, docs/reference/PTB_SCHEMA.md
+- PTB schema: docs/reference/PTB_SCHEMA.md
 - Error codes: docs/reference/ERROR_CODES.md
 - Limitations: docs/reference/LIMITATIONS.md
 

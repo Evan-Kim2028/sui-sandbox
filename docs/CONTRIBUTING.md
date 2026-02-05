@@ -2,34 +2,31 @@
 
 ## Project Overview
 
-**Purpose**: Rust library and CLI for bytecode-first analysis and simulation of Sui Move packages.
+**Purpose**: Rust library and CLI for local Sui Move development, replay, and analysis.
 
 **Core capabilities**:
 
-- Deterministic, canonical bytecode-derived interface JSON (`--emit-bytecode-json`)
 - Local Move VM simulation via `SimulationEnvironment`
 - Transaction replay from mainnet with historical state reconstruction
 - PTB (Programmable Transaction Block) execution
+- Package introspection and interface inspection
 
 **Design goals**:
 
 - Prefer **bytecode ground truth** (Move binary format) over source/decompilation
-- Produce **diff-friendly** outputs (stable ordering and canonical formatting)
-- Provide **verification loops** (RPC cross-check, corpus integrity checks)
+- Provide **reproducible, inspectable** outputs and logs
+- Keep replay fidelity high (prefer complete object hydration)
 
 ## Repo Structure
 
 ```text
 .
 ├── Cargo.toml           # Workspace root
-├── src/                 # Main Rust library and CLI
-│   ├── lib.rs           # Library exports
-│   ├── main.rs          # CLI entry point
-│   ├── benchmark/       # Simulation engine
-│   ├── bytecode.rs      # Bytecode parsing
-│   └── ...
-├── crates/
-│   └── pyo3-bindings/   # Python bindings (optional)
+├── src/                 # Main Rust library
+│   └── lib.rs           # Library exports
+├── src/bin/             # CLI entry points
+│   └── sui_sandbox.rs   # Main CLI
+├── crates/              # Workspace crates (core VM, transport, etc.)
 ├── docs/                # Documentation
 ├── tests/               # Core tests + fast suite
 ├── crates/sui-sandbox-integration-tests/ # Heavier + network-gated tests
@@ -40,7 +37,6 @@
 ## Key Guardrails
 
 - Keep output deterministic: maintain stable sorting and JSON canonicalization
-- Any breaking schema change must bump `schema_version` and update `docs/reference/SCHEMA.md`
 - Avoid hard-coding local workspace paths in docs or code; show examples as placeholders
 
 ## Development Workflow
@@ -91,7 +87,7 @@ Tip: set `SUI_SANDBOX_HOME` to a temp directory in CI so cache/logs/projects sta
 
 - Prefer unit tests for:
   - Type normalization
-  - Comparator behavior (match/mismatch)
+  - Replay data integrity
   - Address normalization/stability rules
 - Avoid network tests in CI by default. Gate networked tests behind the `network-tests` feature and `#[ignore]`.
 
