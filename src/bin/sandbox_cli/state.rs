@@ -6,7 +6,6 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -18,28 +17,6 @@ use sui_sandbox_core::simulation::{
 };
 use sui_sandbox_core::types::parse_type_tag;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
-
-/// Legacy CLI state (bincode). Kept for migration to JSON state.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct LegacyPersistedState {
-    /// Package address -> list of (module_name, bytecode_base64)
-    pub packages: HashMap<String, Vec<(String, String)>>,
-    /// Object ID -> (type_tag, bcs_bytes_base64)
-    pub objects: HashMap<String, (String, String)>,
-    /// List of published package addresses in order
-    pub published_order: Vec<String>,
-    /// Last used sender address
-    pub last_sender: Option<String>,
-    /// Session metadata
-    pub metadata: LegacySessionMetadata,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct LegacySessionMetadata {
-    pub created_at: Option<String>,
-    pub last_modified: Option<String>,
-    pub rpc_url: Option<String>,
-}
 
 /// Additional object metadata for persistence.
 #[derive(Default)]
@@ -54,7 +31,7 @@ pub(crate) struct ObjectMetadata {
 pub struct SandboxState {
     /// Module resolver with loaded packages
     pub resolver: LocalModuleResolver,
-    /// Persistent JSON state (shared with MCP)
+    /// Persistent JSON state for CLI sessions
     pub persisted: PersistentState,
     /// RPC URL for fetching
     pub rpc_url: String,
@@ -86,31 +63,15 @@ impl SandboxState {
         }
     }
 
-    /// Load state from a file (JSON; falls back to legacy bincode)
+    /// Load state from a file (JSON only)
     pub fn load(path: &Path, rpc_url: &str) -> Result<Self> {
         let data = std::fs::read(path).context("Failed to read state file")?;
         match serde_json::from_slice::<PersistentState>(&data) {
             Ok(persisted) => Self::from_persistent_state(persisted, rpc_url),
-            Err(json_err) => match bincode::deserialize::<LegacyPersistedState>(&data) {
-                Ok(legacy) => {
-                    let (persisted, skipped_objects) = legacy_to_persistent(legacy);
-                    let mut state = Self::from_persistent_state(persisted, rpc_url)?;
-                    state.dirty = true;
-                    if !skipped_objects.is_empty() {
-                        eprintln!(
-                            "Warning: dropped {} legacy objects missing valid type tags: {}",
-                            skipped_objects.len(),
-                            skipped_objects.join(", ")
-                        );
-                    }
-                    Ok(state)
-                }
-                Err(bin_err) => Err(anyhow!(
-                    "Failed to parse state file as JSON or legacy bincode.\nJSON error: {}\nLegacy error: {}",
-                    json_err,
-                    bin_err
-                )),
-            },
+            Err(json_err) => Err(anyhow!(
+                "Failed to parse state file as JSON. Legacy bincode state files are no longer supported.\nJSON error: {}",
+                json_err
+            )),
         }
     }
 
@@ -472,93 +433,6 @@ fn build_resolver(persisted: &PersistentState) -> Result<LocalModuleResolver> {
     }
 
     Ok(resolver)
-}
-
-fn legacy_to_persistent(legacy: LegacyPersistedState) -> (PersistentState, Vec<String>) {
-    let mut state = default_persistent_state();
-
-    if legacy.metadata.created_at.is_some() || legacy.metadata.last_modified.is_some() {
-        state.metadata = Some(StateMetadata {
-            description: None,
-            created_at: legacy.metadata.created_at,
-            modified_at: legacy.metadata.last_modified,
-            tags: Vec::new(),
-        });
-    }
-
-    if let Some(sender) = legacy.last_sender {
-        state.sender = sender;
-    }
-
-    let mut packages = legacy.packages;
-    let mut ordered = legacy.published_order;
-
-    for addr in ordered.drain(..) {
-        if let Some(modules) = packages.remove(&addr) {
-            let address = normalize_addr(&addr).unwrap_or(addr.clone());
-            let mut package_modules = Vec::new();
-            for (name, b64) in modules {
-                package_modules.push(SerializedPackageModule {
-                    name: name.clone(),
-                    bytecode_b64: b64.clone(),
-                });
-                upsert_module(&mut state, &address, &name, b64);
-            }
-            state.packages.push(SerializedPackage {
-                address,
-                version: 0,
-                original_id: None,
-                modules: package_modules,
-                linkage: Vec::new(),
-            });
-        }
-    }
-
-    for (addr, modules) in packages {
-        let address = normalize_addr(&addr).unwrap_or(addr.clone());
-        let mut package_modules = Vec::new();
-        for (name, b64) in modules {
-            package_modules.push(SerializedPackageModule {
-                name: name.clone(),
-                bytecode_b64: b64.clone(),
-            });
-            upsert_module(&mut state, &address, &name, b64);
-        }
-        state.packages.push(SerializedPackage {
-            address,
-            version: 0,
-            original_id: None,
-            modules: package_modules,
-            linkage: Vec::new(),
-        });
-    }
-
-    let mut skipped = Vec::new();
-    for (id, (type_tag, bcs_b64)) in legacy.objects {
-        let id_literal = match AccountAddress::from_hex_literal(&id) {
-            Ok(addr) => addr.to_hex_literal(),
-            Err(_) => {
-                skipped.push(id);
-                continue;
-            }
-        };
-        if type_tag.trim().is_empty() || parse_type_tag(&type_tag).is_err() {
-            skipped.push(id_literal);
-            continue;
-        }
-        let obj = SerializedObject {
-            id: id_literal,
-            type_tag,
-            bcs_bytes_b64: bcs_b64,
-            is_shared: false,
-            is_immutable: false,
-            version: 0,
-            owner: None,
-        };
-        upsert_object(&mut state, obj);
-    }
-
-    (state, skipped)
 }
 
 fn update_metadata(state: &mut PersistentState, mark_modified: bool) {

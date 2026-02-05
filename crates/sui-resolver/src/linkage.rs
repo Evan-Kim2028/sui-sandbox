@@ -71,6 +71,7 @@ mod tests {
             package_modules: None,
             package_linkage: None,
             package_original_id: None,
+            previous_transaction: None,
         };
 
         let linkage = extract_linkage_map(&obj);
@@ -94,6 +95,7 @@ mod tests {
                 upgraded_version: 5,
             }]),
             package_original_id: None,
+            previous_transaction: None,
         };
 
         let linkage = extract_linkage_map(&obj);

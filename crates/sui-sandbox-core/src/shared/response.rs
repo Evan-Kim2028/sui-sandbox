@@ -1,14 +1,14 @@
 //! Unified tool response types.
 //!
-//! This module provides a unified response type that can be used by both
-//! CLI and MCP to ensure consistent output formatting.
+//! This module provides a unified response type for CLI tooling
+//! to ensure consistent output formatting.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Unified response type for tool execution.
 ///
-/// This type is used by both CLI and MCP to return results from tool execution.
+/// This type is used by the CLI to return results from tool execution.
 /// It provides a consistent structure for success/error states, warnings, and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResponse {

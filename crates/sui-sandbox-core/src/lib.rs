@@ -81,7 +81,7 @@ pub mod storage_log;
 // Utilities for working around infrastructure limitations
 pub mod utilities;
 
-// Shared utilities for CLI and MCP integration
+// Shared utilities for CLI tooling
 pub mod shared;
 
 // Re-export main types at crate root for convenience

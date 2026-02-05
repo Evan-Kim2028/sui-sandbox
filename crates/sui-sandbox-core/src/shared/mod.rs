@@ -1,7 +1,7 @@
-//! Shared utilities for CLI and MCP integration.
+//! Shared utilities for CLI tooling.
 //!
-//! This module provides shared abstractions that can be used by both the CLI
-//! and MCP server to ensure feature parity and reduce code duplication.
+//! This module provides shared abstractions for the CLI to ensure feature
+//! parity and reduce code duplication.
 //!
 //! # Modules
 //!

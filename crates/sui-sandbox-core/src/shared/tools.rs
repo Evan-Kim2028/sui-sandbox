@@ -1,8 +1,8 @@
 //! Shared tool registry and trait definitions.
 //!
-//! This module provides a unified tool system that can be used by both CLI and MCP.
+//! This module provides a unified tool system for CLI and programmatic use.
 //! Tools are defined as trait implementations, allowing them to be registered once
-//! and invoked from either interface.
+//! and invoked from multiple interfaces.
 //!
 //! # Architecture
 //!
@@ -23,8 +23,8 @@
 //!              ┌─────────────┴─────────────┐
 //!              │                           │
 //!       ┌──────▼──────┐            ┌───────▼──────┐
-//!       │    CLI      │            │     MCP      │
-//!       │  (clap)     │            │   (rmcp)     │
+//!       │    CLI      │            │  Programs   │
+//!       │  (clap)     │            │  (API use)  │
 //!       └─────────────┘            └──────────────┘
 //! ```
 //!
@@ -61,7 +61,7 @@ use super::response::ToolResponse;
 /// Input to a tool, either from CLI args or JSON.
 #[derive(Debug, Clone)]
 pub enum ToolInput {
-    /// JSON input (from MCP or CLI --json flag)
+    /// JSON input (from CLI --json flag or programmatic use)
     Json(Value),
     /// Structured arguments (from CLI positional args)
     Args {
@@ -193,7 +193,7 @@ impl ToolContext {
 /// Trait for tool implementations.
 ///
 /// Each tool implements this trait to define its behavior. Tools can be
-/// registered with a ToolRegistry and invoked from CLI or MCP.
+/// registered with a ToolRegistry and invoked from the CLI.
 pub trait Tool: Send + Sync {
     /// The tool's unique name (used for dispatch).
     fn name(&self) -> &'static str;
@@ -208,7 +208,7 @@ pub trait Tool: Send + Sync {
         context: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolResponse> + Send + 'a>>;
 
-    /// Get the JSON schema for this tool's input (for MCP).
+    /// Get the JSON schema for this tool's input.
     fn input_schema(&self) -> Option<Value> {
         None
     }

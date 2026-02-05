@@ -233,7 +233,7 @@ fn fetch_package(
         modules: module_names,
     });
 
-    // Populate the shared versioned cache for MCP parity.
+    // Populate the shared versioned cache for replay/bridge parity.
     let pkg = PackageData {
         address: addr,
         version: package_data.version,

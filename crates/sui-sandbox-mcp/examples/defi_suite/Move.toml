@@ -1,7 +1,0 @@
-[package]
-name = "defi_suite"
-edition = "2024.beta"
-version = "0.0.1"
-
-[addresses]
-defi_suite = "0x0"

@@ -13,7 +13,6 @@ members = [
     "crates/sui-package-extractor",
     "crates/sui-sandbox-core",
     "crates/sui-historical-cache",
-    "crates/sui-sandbox-mcp",
     "crates/sui-sandbox-integration-tests",
 ]
 
@@ -108,7 +107,6 @@ sui-state-fetcher = { path = "crates/sui-state-fetcher" }
 sui-package-extractor = { path = "crates/sui-package-extractor" }
 sui-sandbox-core = { path = "crates/sui-sandbox-core" }
 sui-historical-cache = { path = "crates/sui-historical-cache" }
-sui-sandbox-mcp = { path = "crates/sui-sandbox-mcp" }
 
 # Dev/test dependencies
 tempfile = "3"
@@ -161,14 +159,12 @@ move-bytecode-source-map.workspace = true
 move-ir-types.workspace = true
 move-command-line-common.workspace = true
 move-model-2.workspace = true
-move-package.workspace = true
 move-stdlib-natives.workspace = true
 
 # Sui SDK and types
 sui-sdk.workspace = true
 sui-types.workspace = true
 sui-json-rpc-types.workspace = true
-sui-move-build.workspace = true
 sui-transaction-builder.workspace = true
 sui-move-natives.workspace = true
 sui-protocol-config.workspace = true
@@ -186,7 +182,6 @@ sui-state-fetcher.workspace = true
 sui-package-extractor.workspace = true
 sui-sandbox-core.workspace = true
 sui-historical-cache.workspace = true
-sui-sandbox-mcp.workspace = true
 
 # NOTE: sui-framework bytecode is bundled in framework_bytecode/ instead of using the crate
 # This avoids heavy compile times while ensuring version alignment with Dockerfile's SUI_VERSION

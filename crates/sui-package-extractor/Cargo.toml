@@ -21,10 +21,8 @@ move-binary-format.workspace = true
 move-core-types.workspace = true
 
 # Sui SDK
-sui-sdk.workspace = true
 sui-types.workspace = true
 
 # Workspace crates
 sui-resolver.workspace = true
-sui-sandbox-types.workspace = true
 sui-transport.workspace = true
