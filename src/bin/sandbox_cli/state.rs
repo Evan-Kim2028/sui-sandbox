@@ -300,6 +300,59 @@ impl SandboxState {
             .and_then(|m| m.modified_at.as_deref())
     }
 
+    /// Count persisted objects in the session.
+    pub fn objects_count(&self) -> usize {
+        self.persisted.objects.len()
+    }
+
+    /// Count persisted modules (standalone + package modules).
+    pub fn modules_count(&self) -> usize {
+        let pkg_modules: usize = self
+            .persisted
+            .packages
+            .iter()
+            .map(|p| p.modules.len())
+            .sum();
+        self.persisted.modules.len() + pkg_modules
+    }
+
+    /// Count tracked dynamic field entries in persisted state.
+    pub fn dynamic_fields_count(&self) -> usize {
+        self.persisted.dynamic_fields.len()
+    }
+
+    /// Return a snapshot-safe clone of the persisted session state.
+    pub fn snapshot_state(&self) -> PersistentState {
+        let mut cloned = self.persisted.clone();
+        cloned.version = PersistentState::CURRENT_VERSION;
+        update_metadata(&mut cloned, false);
+        cloned
+    }
+
+    /// Replace in-memory state from a persisted snapshot payload.
+    pub fn replace_persistent_state(&mut self, persisted: PersistentState) -> Result<()> {
+        let loaded = Self::from_persistent_state(persisted, &self.rpc_url)?;
+        self.resolver = loaded.resolver;
+        self.persisted = loaded.persisted;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Mark the state as dirty so it will be persisted on command success.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Reset session state to a clean local baseline while keeping config defaults.
+    pub fn reset_session(&mut self) -> Result<()> {
+        let mut resolver = LocalModuleResolver::new();
+        resolver.load_sui_framework_auto()?;
+        self.resolver = resolver;
+        self.persisted = default_persistent_state();
+        self.dirty = true;
+        Ok(())
+    }
+
     /// Get last sender or default
     #[cfg(test)]
     pub fn last_sender(&self) -> AccountAddress {

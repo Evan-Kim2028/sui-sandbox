@@ -5,6 +5,7 @@
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use serde::Serialize;
+use std::path::Path;
 
 use super::SandboxState;
 use sui_sandbox_core::ptb::TransactionEffects;
@@ -220,14 +221,19 @@ pub fn format_module_interface(module: &CompiledModule) -> String {
 }
 
 /// Format session status
-pub fn print_status(state: &SandboxState, json_output: bool) {
+pub fn print_status(state: &SandboxState, json_output: bool, state_file: Option<&Path>) {
     if json_output {
         #[derive(Serialize)]
         struct StatusJson {
             packages_loaded: usize,
             packages: Vec<PackageInfo>,
+            objects_loaded: usize,
+            modules_loaded: usize,
+            dynamic_fields_loaded: usize,
             last_sender: Option<String>,
             rpc_url: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            state_file: Option<String>,
         }
 
         #[derive(Serialize)]
@@ -248,8 +254,12 @@ pub fn print_status(state: &SandboxState, json_output: bool) {
         let status = StatusJson {
             packages_loaded: packages.len(),
             packages,
+            objects_loaded: state.objects_count(),
+            modules_loaded: state.modules_count(),
+            dynamic_fields_loaded: state.dynamic_fields_count(),
             last_sender: state.last_sender_hex(),
             rpc_url: state.rpc_url.clone(),
+            state_file: state_file.map(|p| p.display().to_string()),
         };
 
         println!(
@@ -259,6 +269,15 @@ pub fn print_status(state: &SandboxState, json_output: bool) {
     } else {
         println!("\x1b[1mSui Sandbox Status\x1b[0m\n");
         println!("RPC URL: {}", state.rpc_url);
+        if let Some(path) = state_file {
+            println!("State file: {}", path.display());
+        }
+        println!(
+            "Objects loaded: {} | Modules loaded: {} | Dynamic fields: {}",
+            state.objects_count(),
+            state.modules_count(),
+            state.dynamic_fields_count()
+        );
 
         if let Some(sender) = state.last_sender_hex() {
             println!("Last sender: {}", sender);
@@ -312,6 +331,94 @@ pub fn format_error(error: &anyhow::Error, json_output: bool) -> String {
             }
         }
         out
+    }
+}
+
+/// Structured debug diagnostics suitable for tooling and CI triage.
+pub fn format_debug_diagnostic_json(
+    command: &str,
+    error: &anyhow::Error,
+    category: Option<&str>,
+    hints: Vec<String>,
+) -> String {
+    #[derive(Serialize)]
+    struct DebugDiagnostic {
+        command: String,
+        category: String,
+        error: String,
+        causes: Vec<String>,
+        hints: Vec<String>,
+        timestamp_utc: String,
+    }
+
+    let causes: Vec<String> = error.chain().skip(1).map(|c| c.to_string()).collect();
+    let inferred = category
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| classify_error(error));
+    let payload = DebugDiagnostic {
+        command: command.to_string(),
+        category: inferred,
+        error: error.to_string(),
+        causes,
+        hints,
+        timestamp_utc: chrono::Utc::now().to_rfc3339(),
+    };
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Default hints for common operational failures.
+pub fn default_diagnostic_hints(command: &str, error: &anyhow::Error) -> Vec<String> {
+    let message = error.to_string().to_ascii_lowercase();
+    let mut hints = Vec::new();
+
+    if message.contains("not found in session") {
+        hints.push(
+            "Load required data first with `sui-sandbox fetch package|object ...`".to_string(),
+        );
+    }
+    if message.contains("invalid")
+        && (message.contains("digest") || message.contains("address") || message.contains("target"))
+    {
+        hints.push(
+            "Re-run with a fully qualified value and check command help for expected formats"
+                .to_string(),
+        );
+    }
+    if message.contains("failed to fetch replay state")
+        || message.contains("network")
+        || message.contains("timeout")
+    {
+        hints.push(
+            "Check network/rpc connectivity and retry with `--source grpc` or `--source walrus`"
+                .to_string(),
+        );
+    }
+    if message.contains("state file") {
+        hints.push("Verify state-file path permissions, then retry the same command".to_string());
+    }
+    if command == "run-flow" {
+        hints.push("Run with `--dry-run` to validate flow structure before execution".to_string());
+    }
+    if hints.is_empty() {
+        hints.push("Retry with `--verbose` for additional execution details".to_string());
+    }
+    hints
+}
+
+fn classify_error(error: &anyhow::Error) -> String {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("invalid") {
+        "validation_error".to_string()
+    } else if message.contains("timeout")
+        || message.contains("network")
+        || message.contains("fetch")
+        || message.contains("grpc")
+    {
+        "network_error".to_string()
+    } else if message.contains("permission") || message.contains("state file") {
+        "io_error".to_string()
+    } else {
+        "execution_error".to_string()
     }
 }
 

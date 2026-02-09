@@ -44,8 +44,17 @@ mod sandbox_cli;
 #[cfg(feature = "analysis")]
 use sandbox_cli::analyze::AnalyzeCmd;
 use sandbox_cli::{
-    bridge::BridgeCmd, fetch::FetchCmd, ptb::PtbCmd, publish::PublishCmd, replay::ReplayCmd,
-    run::RunCmd, tools::ToolsCmd, view::ViewCmd, SandboxState,
+    bridge::BridgeCmd,
+    fetch::FetchCmd,
+    flow::{InitCmd, RunFlowCmd},
+    ptb::PtbCmd,
+    publish::PublishCmd,
+    replay::ReplayCmd,
+    run::RunCmd,
+    snapshot::SnapshotCmd,
+    tools::ToolsCmd,
+    view::ViewCmd,
+    SandboxState,
 };
 
 #[derive(Parser)]
@@ -76,6 +85,10 @@ struct Cli {
     /// Output as JSON instead of human-readable format
     #[arg(long, global = true)]
     json: bool,
+
+    /// Emit structured debug diagnostics JSON for failures
+    #[arg(long, global = true)]
+    debug_json: bool,
 
     /// Verbose output (show execution traces)
     #[arg(long, short, global = true)]
@@ -112,11 +125,46 @@ enum Commands {
     /// Extra utilities (polling, streaming, tx simulation, walrus tools)
     Tools(ToolsCmd),
 
+    /// Scaffold a task-oriented project/workflow template
+    Init(InitCmd),
+
+    /// Execute a YAML flow file with deterministic step sequencing
+    RunFlow(RunFlowCmd),
+
+    /// Save/list/load/delete named local sandbox snapshots
+    Snapshot(SnapshotCmd),
+
+    /// Reset in-memory session state while keeping configuration
+    Reset,
+
     /// Clean session state (remove persisted state file)
     Clean,
 
     /// Show session status and loaded packages
     Status,
+}
+
+impl Commands {
+    fn name(&self) -> &'static str {
+        match self {
+            Commands::Publish(_) => "publish",
+            Commands::Run(_) => "run",
+            Commands::Ptb(_) => "ptb",
+            Commands::Fetch(_) => "fetch",
+            Commands::Replay(_) => "replay",
+            #[cfg(feature = "analysis")]
+            Commands::Analyze(_) => "analyze",
+            Commands::View(_) => "view",
+            Commands::Bridge(_) => "bridge",
+            Commands::Tools(_) => "tools",
+            Commands::Init(_) => "init",
+            Commands::RunFlow(_) => "run-flow",
+            Commands::Snapshot(_) => "snapshot",
+            Commands::Reset => "reset",
+            Commands::Clean => "clean",
+            Commands::Status => "status",
+        }
+    }
 }
 
 #[tokio::main]
@@ -126,10 +174,16 @@ async fn main() -> Result<()> {
         state_file,
         rpc_url,
         json,
+        debug_json,
         verbose,
     } = Cli::parse();
     let base = sandbox_cli::network::sandbox_home();
     let state_file = state_file.unwrap_or_else(|| base.join("state.json"));
+    let command_name = command.name().to_string();
+
+    if debug_json {
+        std::env::set_var("SUI_SANDBOX_DEBUG_JSON", "1");
+    }
 
     // Load or create session state
     let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
@@ -145,6 +199,24 @@ async fn main() -> Result<()> {
         Commands::View(cmd) => cmd.execute(&state, json).await,
         Commands::Bridge(cmd) => cmd.execute(json),
         Commands::Tools(cmd) => cmd.execute().await,
+        Commands::Init(cmd) => cmd.execute().await,
+        Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
+        Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,
+        Commands::Reset => {
+            state.reset_session()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": true,
+                        "message": "Session reset",
+                    }))?
+                );
+            } else {
+                println!("Session reset");
+            }
+            Ok(())
+        }
         Commands::Clean => {
             if state_file.exists() {
                 std::fs::remove_file(&state_file)?;
@@ -155,10 +227,24 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Status => {
-            sandbox_cli::output::print_status(&state, json);
+            sandbox_cli::output::print_status(&state, json, Some(&state_file));
             Ok(())
         }
     };
+
+    if debug_json {
+        if let Err(err) = &result {
+            eprintln!(
+                "{}",
+                sandbox_cli::output::format_debug_diagnostic_json(
+                    &command_name,
+                    err,
+                    None,
+                    sandbox_cli::output::default_diagnostic_hints(&command_name, err),
+                )
+            );
+        }
+    }
 
     // Save state on success
     if result.is_ok() {

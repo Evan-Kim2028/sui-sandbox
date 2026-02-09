@@ -16,6 +16,31 @@ fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture")
 }
 
+fn write_minimal_replay_state_json(temp_dir: &TempDir) -> PathBuf {
+    let path = temp_dir.path().join("replay_state.json");
+    let state = serde_json::json!({
+        "transaction": {
+            "digest": "dummy_digest",
+            "sender": "0x1",
+            "gas_budget": 1_000_000u64,
+            "gas_price": 1_000u64,
+            "commands": [],
+            "inputs": [],
+            "effects": serde_json::Value::Null,
+            "timestamp_ms": serde_json::Value::Null,
+            "checkpoint": serde_json::Value::Null
+        },
+        "objects": {},
+        "packages": {},
+        "protocol_version": 64u64,
+        "epoch": 0u64,
+        "reference_gas_price": serde_json::Value::Null,
+        "checkpoint": serde_json::Value::Null
+    });
+    fs::write(&path, serde_json::to_string_pretty(&state).unwrap()).expect("write replay state");
+    path
+}
+
 // ============================================================================
 // Help and Basic CLI Tests
 // ============================================================================
@@ -32,7 +57,11 @@ fn test_help_output() {
         .stdout(predicate::str::contains("ptb"))
         .stdout(predicate::str::contains("fetch"))
         .stdout(predicate::str::contains("replay"))
-        .stdout(predicate::str::contains("view"));
+        .stdout(predicate::str::contains("view"))
+        .stdout(predicate::str::contains("init"))
+        .stdout(predicate::str::contains("run-flow"))
+        .stdout(predicate::str::contains("snapshot"))
+        .stdout(predicate::str::contains("reset"));
 }
 
 #[test]
@@ -129,7 +158,11 @@ fn test_status_json_output() {
     let json: Value = serde_json::from_slice(&output).expect("Should be valid JSON");
     assert!(json.get("packages_loaded").is_some());
     assert!(json.get("packages").is_some());
+    assert!(json.get("objects_loaded").is_some());
+    assert!(json.get("modules_loaded").is_some());
+    assert!(json.get("dynamic_fields_loaded").is_some());
     assert!(json.get("rpc_url").is_some());
+    assert!(json.get("state_file").is_some());
 }
 
 // ============================================================================
@@ -501,6 +534,183 @@ fn test_replay_invalid_digest() {
         .failure();
 }
 
+#[test]
+fn test_replay_and_analyze_replay_help_share_hydration_flags() {
+    let replay_help = sandbox_cmd()
+        .arg("replay")
+        .arg("--help")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let analyze_help = sandbox_cmd()
+        .arg("analyze")
+        .arg("replay")
+        .arg("--help")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let replay_help = String::from_utf8_lossy(&replay_help);
+    let analyze_help = String::from_utf8_lossy(&analyze_help);
+    let shared_flags = [
+        "--source <SOURCE>",
+        "--allow-fallback <ALLOW_FALLBACK>",
+        "--auto-system-objects <AUTO_SYSTEM_OBJECTS>",
+        "--prefetch-depth <PREFETCH_DEPTH>",
+        "--prefetch-limit <PREFETCH_LIMIT>",
+        "--no-prefetch",
+    ];
+
+    for flag in shared_flags {
+        assert!(
+            replay_help.contains(flag),
+            "replay --help missing shared hydration flag: {flag}"
+        );
+        assert!(
+            analyze_help.contains(flag),
+            "analyze replay --help missing shared hydration flag: {flag}"
+        );
+    }
+}
+
+#[test]
+fn test_replay_help_includes_execution_path_flags() {
+    sandbox_cmd()
+        .arg("replay")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source"))
+        .stdout(predicate::str::contains("--allow-fallback"))
+        .stdout(predicate::str::contains("--vm-only"));
+}
+
+#[test]
+fn test_replay_help_hides_igloo_flags_without_feature() {
+    sandbox_cmd()
+        .arg("replay")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--igloo-hybrid-loader").not())
+        .stdout(predicate::str::contains("--igloo-config").not())
+        .stdout(predicate::str::contains("--igloo-command").not());
+}
+
+#[test]
+fn test_replay_json_output_execution_path_contract_from_state_json() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state_path = write_minimal_replay_state_json(&temp_dir);
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("anydigest")
+        .arg("--state-json")
+        .arg(&replay_state_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid replay JSON");
+    let execution_path = json
+        .get("execution_path")
+        .and_then(Value::as_object)
+        .expect("execution_path object");
+
+    for key in [
+        "requested_source",
+        "effective_source",
+        "dependency_fetch_mode",
+    ] {
+        assert!(
+            execution_path.get(key).and_then(Value::as_str).is_some(),
+            "execution_path.{key} should be a string"
+        );
+    }
+    for key in [
+        "vm_only",
+        "allow_fallback",
+        "auto_system_objects",
+        "fallback_used",
+        "dynamic_field_prefetch",
+    ] {
+        assert!(
+            execution_path.get(key).and_then(Value::as_bool).is_some(),
+            "execution_path.{key} should be a bool"
+        );
+    }
+    for key in [
+        "prefetch_depth",
+        "prefetch_limit",
+        "dependency_packages_fetched",
+        "synthetic_inputs",
+    ] {
+        assert!(
+            execution_path.get(key).and_then(Value::as_u64).is_some(),
+            "execution_path.{key} should be a u64"
+        );
+    }
+}
+
+#[test]
+fn test_replay_auto_system_objects_explicit_bool_true_false() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state_path = write_minimal_replay_state_json(&temp_dir);
+
+    let false_output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("anydigest")
+        .arg("--state-json")
+        .arg(&replay_state_path)
+        .arg("--auto-system-objects")
+        .arg("false")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let false_json: Value = serde_json::from_slice(&false_output).expect("valid replay JSON");
+    assert_eq!(
+        false_json["execution_path"]["auto_system_objects"].as_bool(),
+        Some(false)
+    );
+
+    let true_output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("anydigest")
+        .arg("--state-json")
+        .arg(&replay_state_path)
+        .arg("--auto-system-objects")
+        .arg("true")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let true_json: Value = serde_json::from_slice(&true_output).expect("valid replay JSON");
+    assert_eq!(
+        true_json["execution_path"]["auto_system_objects"].as_bool(),
+        Some(true)
+    );
+}
+
 // ============================================================================
 // Session Persistence Tests
 // ============================================================================
@@ -551,6 +761,181 @@ fn test_session_persistence_across_commands() {
         .stdout(predicate::str::contains("No user packages loaded"));
 }
 
+#[test]
+fn test_reset_clears_session_packages() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let fixture = fixture_dir().join("build/fixture");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("publish")
+        .arg(&fixture)
+        .arg("--bytecode-only")
+        .arg("--address")
+        .arg("fixture=0x100")
+        .assert()
+        .success();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("reset")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Session reset"));
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("view")
+        .arg("packages")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No user packages loaded"));
+}
+
+#[test]
+fn test_snapshot_lifecycle() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let fixture = fixture_dir().join("build/fixture");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("publish")
+        .arg(&fixture)
+        .arg("--bytecode-only")
+        .arg("--address")
+        .arg("fixture=0x100")
+        .assert()
+        .success();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("snapshot")
+        .arg("save")
+        .arg("fixture-state")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Saved snapshot"));
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("snapshot")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fixture-state"));
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("reset")
+        .assert()
+        .success();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("snapshot")
+        .arg("load")
+        .arg("fixture-state")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Loaded snapshot"));
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("view")
+        .arg("packages")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Loaded Packages"));
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("snapshot")
+        .arg("delete")
+        .arg("fixture-state")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deleted snapshot"));
+}
+
+#[test]
+fn test_init_creates_flow_template() {
+    let temp_dir = TempDir::new().unwrap();
+    sandbox_cmd()
+        .arg("init")
+        .arg("--example")
+        .arg("quickstart")
+        .arg("--output-dir")
+        .arg(temp_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized workflow template"));
+
+    assert!(temp_dir.path().join("flow.quickstart.yaml").exists());
+    assert!(temp_dir.path().join("FLOW_README.md").exists());
+}
+
+#[test]
+fn test_run_flow_dry_run() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let flow_file = temp_dir.path().join("flow.yaml");
+
+    fs::write(
+        &flow_file,
+        r#"version: 1
+steps:
+  - command: ["status"]
+  - command: ["view", "packages"]
+"#,
+    )
+    .unwrap();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("run-flow")
+        .arg(&flow_file)
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Flow complete"));
+}
+
+#[test]
+fn test_run_flow_end_to_end_publish_and_view() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let flow_file = temp_dir.path().join("flow.yaml");
+
+    let fixture = fixture_dir().join("build/fixture");
+    let yaml = format!(
+        "version: 1\nsteps:\n  - command: [\"publish\", \"{}\", \"--bytecode-only\", \"--address\", \"fixture=0x100\"]\n  - command: [\"view\", \"packages\"]\n",
+        fixture.display()
+    );
+    fs::write(&flow_file, yaml).unwrap();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("run-flow")
+        .arg(&flow_file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Flow complete"));
+}
+
 // ============================================================================
 // Global Options Tests
 // ============================================================================
@@ -568,6 +953,29 @@ fn test_verbose_flag() {
         .arg("status")
         .assert()
         .success();
+}
+
+#[test]
+fn test_debug_json_on_failure_emits_structured_diagnostic() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--debug-json")
+        .arg("run")
+        .arg("invalid_target")
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output);
+    assert!(stderr.contains("\"command\": \"run\""));
+    assert!(stderr.contains("\"category\""));
+    assert!(stderr.contains("\"hints\""));
 }
 
 #[test]
