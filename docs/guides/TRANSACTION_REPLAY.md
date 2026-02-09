@@ -6,32 +6,106 @@ Replay Sui mainnet transactions locally to verify behavior and debug issues.
 
 Transaction replay:
 
-1. Fetches a historical transaction from Sui mainnet
-2. Fetches all objects at their historical versions (before the transaction modified them)
-3. Executes the transaction in the local Move VM
-4. Compares local results with on-chain effects
+1. Fetches a checkpoint from Walrus (or transaction from gRPC/JSON)
+2. Extracts all objects at their historical versions (before the transaction modified them)
+3. Resolves packages with transitive dependencies
+4. Executes the transaction in the local Move VM
+5. Compares local results with on-chain effects
 
-## Using HistoricalStateProvider (Recommended)
+## Quick Start (Walrus — Zero Setup)
 
-The simplest way to fetch all state needed for replay is using `sui_state_fetcher::HistoricalStateProvider`:
+The fastest way to replay a transaction. No API keys, no configuration:
+
+```bash
+# Replay a known-good Cetus swap
+sui-sandbox replay At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
+  --source walrus --checkpoint 239615926 --compare
+
+# Or use the example script
+./examples/replay.sh
+```
+
+Walrus provides free, unauthenticated access to all Sui checkpoint data via decentralized storage. The checkpoint contains the transaction, all input/output objects at their exact versions, and sibling package data.
+
+### Scan Latest Checkpoints
+
+Auto-discover the tip checkpoint and replay the most recent transactions:
+
+```bash
+# Scan the latest 5 checkpoints (prints success/fail summary)
+sui-sandbox replay '*' --source walrus --latest 5 --compare
+```
+
+### Batch Replay
+
+Replay all transactions in a checkpoint range:
+
+```bash
+# Replay all transactions in checkpoints 239615920 through 239615926
+sui-sandbox replay '*' --source walrus --checkpoint 239615920..239615926
+
+# Replay specific checkpoints
+sui-sandbox replay '*' --source walrus --checkpoint 239615920,239615923,239615926
+
+# Multi-digest replay
+sui-sandbox replay "digest1,digest2,digest3" --source walrus --checkpoint 239615926
+```
+
+### Export and Offline Replay
+
+Export replay state from any source, then replay offline:
+
+```bash
+# Export state to JSON
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json
+
+# Replay from JSON (completely offline, no network needed)
+sui-sandbox replay <DIGEST> --state-json state.json
+```
+
+The JSON format is a generic state container — you can produce it from any data source (custom indexers, Snowflake, etc.) and replay without network access.
+
+### gRPC Replay
+
+If you have a gRPC endpoint configured:
+
+```bash
+sui-sandbox replay <DIGEST> --source grpc --compare
+```
+
+Requires `SUI_GRPC_ENDPOINT` in `.env` or environment.
+
+## Data Sources
+
+| Source | Auth | What You Need | Best For |
+|--------|------|--------------|----------|
+| **Walrus** | None | Digest + checkpoint number | Most replay scenarios |
+| **JSON** | None | Exported state file | Offline replay, CI/CD, custom data |
+| **gRPC** | API key | `.env` configuration | Latest state, streaming |
+
+If built with `--features igloo`, you can also enable the optional igloo loader:
+
+```bash
+sui-sandbox replay <DIGEST> --source hybrid --igloo-hybrid-loader
+```
+
+This is separate from `--source hybrid` itself. The source selects hydration mode; the igloo flag selects the loader implementation.
+
+## Using HistoricalStateProvider (Rust API)
+
+For programmatic replay in Rust, use `sui_state_fetcher::HistoricalStateProvider`:
 
 ```rust
 use sui_state_fetcher::HistoricalStateProvider;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create provider for mainnet
     let provider = HistoricalStateProvider::mainnet().await?;
-
-    // Fetch everything needed to replay in one call
     let state = provider.fetch_replay_state("8JTTa...").await?;
 
     // state.transaction - PTB commands and inputs
     // state.objects - objects at their exact historical versions
     // state.packages - packages with linkage resolved
-
-    // Now use sui-sandbox-core to execute the transaction locally
-    // See examples/cetus_swap.rs for full replay implementation
 
     Ok(())
 }
@@ -44,55 +118,27 @@ The `HistoricalStateProvider`:
 - Resolves package **linkage tables** for upgraded packages
 - Provides an **on-demand fetcher** callback for dynamic field children discovered at runtime
 
-## Prerequisites
+## Replay Diagnostics
 
-- Rust 1.75+
-- gRPC endpoint with historical data access
-
-```bash
-cp .env.example .env
-# Edit .env with your gRPC endpoint and API key (if required)
-```
-
-## Quick Start
-
-The easiest way to replay transactions is using the CLI:
+If replay fails due to missing data:
 
 ```bash
-# Replay a transaction by digest
-cargo run --bin sui-sandbox -- replay <DIGEST> --compare
-
-# Prefer Walrus for historical state (requires `--features walrus`)
-cargo run --bin sui-sandbox -- replay <DIGEST> --source walrus --compare
+sui-sandbox analyze replay <DIGEST>
 ```
 
-Replay returns **PTB-style effects output** on success (created/mutated/deleted/events/return values),
-so you get the same feedback as a local PTB execution. On failure, it prints the local error context
-when available.
+This reports missing inputs/packages and suggests next steps.
 
-If replay fails due to missing data, run:
+For a compact diagnose/fix loop, see [Replay Triage Workflow](./REPLAY_TRIAGE.md).
+
+## Rust Examples
+
+For learning the replay internals, see the Rust examples (require gRPC):
 
 ```bash
-cargo run --bin sui-sandbox -- analyze replay <DIGEST>
+cargo run --example cetus_swap           # Cetus AMM swap
+cargo run --example deepbook_orders      # BigVector handling
+cargo run --example deepbook_replay      # Flash loan replay
 ```
-
-This reports missing inputs/packages and suggests next steps (enable Walrus, use `--synthesize`,
-or re-run with `--mm2` for deeper diagnostics).
-
-You can also explore the self-contained examples:
-
-```bash
-# Replay a DeepBook flash loan transaction
-cargo run --example deepbook_replay
-
-# Replay DeepBook order transactions (demonstrates BigVector handling)
-cargo run --example deepbook_orders
-
-# Replay a Cetus AMM swap
-cargo run --example cetus_swap
-```
-
-Each example is self-contained and fetches all data fresh via gRPC.
 
 ## How It Works
 

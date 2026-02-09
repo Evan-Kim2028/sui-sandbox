@@ -4,28 +4,44 @@ This guide covers how to fetch on-chain data (objects, packages, transactions) f
 
 ## Choosing the Right API
 
-| Use Case | Recommended API | Why |
-|----------|-----------------|-----|
-| **Historical transaction replay** | `sui_state_fetcher::HistoricalStateProvider` | Versioned cache, fetches objects at exact historical versions |
-| Current state queries | `sui_transport::graphql::GraphQLClient` | Direct GraphQL access |
-| Real-time streaming | `sui_transport::grpc::GrpcClient` | Native streaming client |
+| Use Case | Recommended API | Auth Required | Why |
+|----------|-----------------|---------------|-----|
+| **Transaction replay** | **Walrus CLI** (`--source walrus`) | **None** | Free checkpoint data, zero setup |
+| **Offline/custom replay** | **JSON state** (`--state-json`) | **None** | Bring your own data, no network |
+| Programmatic replay (Rust) | `HistoricalStateProvider` | gRPC key | Versioned cache, exact historical versions |
+| Current state queries | `GraphQLClient` | None | Direct GraphQL access |
+| Real-time streaming | `GrpcClient` | gRPC key | Native streaming client |
 
-## Historical Transaction Replay
+## Transaction Replay (CLI)
 
-**For replaying historical transactions, use `sui_state_fetcher::HistoricalStateProvider`.**
+**For most users, the CLI with Walrus is the recommended approach.** No API keys or configuration needed:
 
-This is critical because objects change between transactions - you need the exact version
-of each object as it existed when the transaction was executed.
+```bash
+# Replay a specific transaction
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare
+
+# Replay all transactions in a checkpoint range
+sui-sandbox replay '*' --source walrus --checkpoint 100..110
+
+# Export state for offline use
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json
+
+# Replay from exported JSON (completely offline)
+sui-sandbox replay <DIGEST> --state-json state.json
+```
+
+See [Transaction Replay Guide](TRANSACTION_REPLAY.md) for details.
+
+## Historical Transaction Replay (Rust API)
+
+For programmatic replay in Rust, use `sui_state_fetcher::HistoricalStateProvider`:
 
 ```rust
 use sui_state_fetcher::HistoricalStateProvider;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Create provider for mainnet
     let provider = HistoricalStateProvider::mainnet().await?;
-
-    // Fetch everything needed to replay a transaction
     let state = provider.fetch_replay_state("8JTTa...").await?;
 
     // state.transaction - PTB commands and inputs
@@ -425,8 +441,10 @@ Both tools save to JSONL with compatible formats:
 
 | Scenario | Recommendation | Why |
 |----------|----------------|-----|
+| **Replaying transactions (CLI)** | **Walrus** (`--source walrus`) | Zero auth, complete checkpoint data, free |
+| **Offline/CI replay** | **JSON** (`--state-json`) | No network, deterministic |
 | **Building a transaction indexer** | gRPC streaming | Need every tx, can fetch effects separately if needed |
-| **Replaying transactions** | GraphQL | Need full effects to verify correctness |
+| **Replaying transactions (Rust API)** | GraphQL | Need full effects to verify correctness |
 | **Monitoring specific contracts** | gRPC streaming | Real-time, filter by package in commands |
 | **Analyzing transaction patterns** | Either | Both have complete PTB structure |
 | **Fetching historical transactions** | GraphQL | Better for point queries |

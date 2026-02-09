@@ -5,14 +5,18 @@ This directory contains project documentation. Use this index to find the right 
 ## Start here
 
 - Root overview: README.md
+- **Transaction replay** (primary workflow): docs/guides/TRANSACTION_REPLAY.md
 - Examples walkthroughs: examples/README.md
 - CLI commands: docs/reference/CLI_REFERENCE.md
 
 ## Guides
 
-- Golden flow (CLI): docs/guides/GOLDEN_FLOW.md
-- Transaction replay: docs/guides/TRANSACTION_REPLAY.md
+- **Transaction replay**: docs/guides/TRANSACTION_REPLAY.md
+- Replay triage workflow: docs/guides/REPLAY_TRIAGE.md
+- **Walrus checkpoint storage**: docs/walrus/README.md
 - Data fetching: docs/guides/DATA_FETCHING.md
+- Golden flow (CLI): docs/guides/GOLDEN_FLOW.md
+- UX baseline (Issue #20): docs/ux/PHASE0_BASELINE.md
 
 ## Reference
 

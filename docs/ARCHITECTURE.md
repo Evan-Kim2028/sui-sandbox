@@ -55,11 +55,11 @@ Technical overview of the sui-sandbox system internals.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `SimulationEnvironment` | `benchmark/simulation.rs` | State management, object store |
-| `PTBExecutor` | `benchmark/ptb.rs` | PTB command execution |
-| `VMHarness` | `benchmark/vm.rs` | Move VM configuration |
-| `ModuleBytecodeResolver` | `benchmark/resolver.rs` | Package loading and address aliasing |
-| `tx_replay` | `benchmark/tx_replay.rs` | Transaction replay orchestration |
+| `SimulationEnvironment` | `crates/sui-sandbox-core/src/simulation/` | State management, object store |
+| `PTBExecutor` | `crates/sui-sandbox-core/src/ptb.rs` | PTB command execution |
+| `VMHarness` | `crates/sui-sandbox-core/src/vm.rs` | Move VM configuration |
+| `LocalModuleResolver` | `crates/sui-sandbox-core/src/resolver.rs` | Package loading and address aliasing |
+| `tx_replay` | `crates/sui-sandbox-core/src/tx_replay.rs` | Transaction replay orchestration |
 
 ## Transaction Replay Pipeline
 
@@ -82,6 +82,22 @@ Technical overview of the sui-sandbox system internals.
 ```
 
 **Critical insight**: Objects must be fetched at their *input* versions (before the transaction modified them). The `unchanged_loaded_runtime_objects` field from gRPC provides this.
+
+## CLI Boundary: Replay vs Analyze
+
+`replay` and `analyze replay` intentionally share the same hydration contract so data loading behavior is consistent across execution and introspection flows.
+
+- Shared hydration contract: `src/bin/sandbox_cli/replay.rs` (`ReplayHydrationArgs`)
+- Hydration implementation: `src/bin/sandbox_cli/replay/hydration.rs`
+- Execution path: `src/bin/sandbox_cli/replay.rs`
+- Introspection path: `src/bin/sandbox_cli/analyze/replay_cmd.rs`
+
+Feature-specific integrations are isolated into dedicated modules:
+
+- Optional igloo/snowflake path (feature-gated): `src/bin/sandbox_cli/replay/igloo.rs`
+- Core/non-igloo fallback path: `src/bin/sandbox_cli/replay/hybrid.rs`
+
+Design goal: keep default replay/analyze paths dependency-light and deterministic, while allowing optional data-source integrations behind feature flags.
 
 ## Data Fetching
 
@@ -114,9 +130,10 @@ See [Error Codes Reference](reference/ERROR_CODES.md) for details.
 
 ```
 sui-sandbox/
-├── src/                        # Main library
-│   ├── benchmark/              # Core simulation engine
-│   └── move_stubs.rs           # Generated Move source stubs for type-checking
+├── src/
+│   └── bin/
+│       ├── sui_sandbox.rs      # CLI entrypoint + command dispatch
+│       └── sandbox_cli/        # CLI command modules (replay/analyze/etc.)
 ├── crates/
 │   ├── sui-sandbox-core/       # Core VM and simulation with utilities
 │   ├── sui-transport/          # Network layer (gRPC + GraphQL clients)

@@ -1,23 +1,19 @@
 # Package Analysis (CLI)
 
-This example fetches a package's bytecode, loads it into the sandbox, inspects modules,
-then **attempts to call every entry function that requires no arguments**.
+This folder contains CLI-first examples for package and corpus analysis with `sui-sandbox analyze`.
 
-It produces a report of successes, failures, and skipped functions.
+## 1) Single Package Analysis
 
-> ⚠️ Many entry functions require object inputs, type args, or specific on-chain state.
-> This script only calls entry functions with **0 params** and **0 type params**.
+Fetch a package, inspect modules, and attempt to call entry functions that require no args:
 
-## Usage
-
-```
+```bash
 ./examples/package_analysis/cli_package_analysis.sh <PACKAGE_ID>
 ```
 
-For quick introspection without running calls, use:
+For introspection only (no function execution):
 
-```
-sui-sandbox analyze package --package-id <PACKAGE_ID>
+```bash
+sui-sandbox analyze package --package-id <PACKAGE_ID> --list-modules --mm2
 ```
 
 Example package IDs:
@@ -25,16 +21,110 @@ Example package IDs:
 - `0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb`
 - `0xefe8b36d5b2e43728cc323298626b83177803521d195cfb11e15b910e892fddf`
 
-## What it does
+`cli_package_analysis.sh` report output:
 
-1. `sui-sandbox fetch package <ID> --with-deps`
-2. `sui-sandbox view modules <ID>` → list modules
-3. For each module:
-   - `sui-sandbox view module <ID>::<module>` → list functions
-   - Attempt to run entry functions with `params=0` and `type_params=0`
-4. Write a report to `/tmp/sui-sandbox-package-analysis/report.jsonl`
+- `/tmp/sui-sandbox-package-analysis/report.jsonl`
 
-## Notes
+## 2) Corpus Object Classification (Sam-style)
 
-- To exercise more functions, you need typed arguments and object inputs.
-- For deeper testing, add a Rust analysis harness that synthesizes inputs.
+Run `analyze objects` across a local corpus, save JSON, and print a compact summary:
+
+```bash
+./examples/package_analysis/cli_corpus_objects_analysis.sh <CORPUS_DIR>
+```
+
+Direct command:
+
+```bash
+sui-sandbox --json analyze objects --corpus-dir <CORPUS_DIR> --top 20 > /tmp/objects.json
+
+# Built-in profile
+sui-sandbox --json analyze objects --corpus-dir <CORPUS_DIR> --profile strict
+
+# Custom profile file
+sui-sandbox --json analyze objects --corpus-dir <CORPUS_DIR> --profile-file ./profiles/team.yaml
+```
+
+Notes:
+
+- The script defaults to `../sui-packages/packages/mainnet_most_used` when available.
+- Set `LIST_TYPES=1` to include per-type rows (`--list-types`) in the output JSON.
+- Set `PROFILE=strict|broad|hybrid` to switch built-in profile mode.
+- Set `PROFILE_FILE=./profiles/team.yaml` to force a custom profile file.
+- Named custom profiles are loaded from:
+  - `.sui-sandbox/analyze/profiles/<name>.yaml` (repo-local)
+  - `${XDG_CONFIG_HOME:-~/.config}/sui-sandbox/analyze/profiles/<name>.yaml` (user-global)
+- Raw output is written under `/tmp/sui-sandbox-corpus-analysis/`.
+- Output now separates `party_transfer_eligible` (`key + store`) from `party_transfer_observed_in_bytecode` (bytecode evidence of `party_transfer` usage).
+- JSON output includes a `profile` section showing effective settings and source path.
+
+## 3) Corpus MM2 Stability Sweep
+
+Run `analyze package --bytecode-dir ... --mm2` over many packages and summarize failures:
+
+```bash
+# Smoke check 100 packages
+./examples/package_analysis/cli_mm2_corpus_sweep.sh <CORPUS_DIR> 100
+
+# Full sweep (1k corpus)
+./examples/package_analysis/cli_mm2_corpus_sweep.sh <CORPUS_DIR> 1000
+```
+
+Direct single-package command:
+
+```bash
+sui-sandbox --json analyze package --bytecode-dir <PACKAGE_DIR> --mm2
+```
+
+Sweep output:
+
+- TSV report under `/tmp/sui-sandbox-mm2-sweep/` with per-package status and MM2 error text.
+- Terminal summary with `ok`, `failed`, and `panic` counts.
+
+## What the corpus workflows show
+
+- How to use `analyze objects` for object ownership and usage pattern statistics.
+- How to distinguish `party_transfer_eligible` types from party usage observed in Move code.
+- How to regression-check MM2 robustness on real package corpora.
+- How close your current local analysis is to previously reported baselines.
+
+## Developer Workflow (Recommended)
+
+Use `analyze` as a practical loop, not just as a one-off report:
+
+1. **Start with package introspection**
+   - Use this when you are editing or debugging one package.
+   - `sui-sandbox analyze package --package-id <PACKAGE_ID> --list-modules --mm2`
+   - Or local bytecode: `sui-sandbox --json analyze package --bytecode-dir <PACKAGE_DIR> --mm2`
+
+2. **Get corpus-level baseline**
+   - Use this to understand ecosystem patterns and compare with prior runs.
+   - `./examples/package_analysis/cli_corpus_objects_analysis.sh <CORPUS_DIR>`
+   - Focus first on:
+     - `object_types_discovered` (coverage sanity)
+     - ownership counts
+     - `party_transfer_eligible` vs `party_transfer_observed_in_bytecode`
+
+3. **Interpret the party split**
+   - `party_transfer_eligible`: objects with `key + store` (can be party-transferred publicly).
+   - `party_transfer_observed_in_bytecode`: object types where package bytecode shows party-transfer usage.
+   - Large gap (`eligible >> observed_in_bytecode`) means latent capability exists but is rarely exercised in package code.
+   - Detection rules:
+     - `party_transfer_eligible` is inferred from struct abilities (`key` + `store`) in bytecode type definitions.
+     - `party_transfer_observed_in_bytecode` is inferred from transfer call-site patterns (functions containing `party_transfer` under module `transfer`).
+   - Caveat: `observed_in_bytecode = 0` does not mean "cannot be party-transferred". PTBs can still party-transfer any `key + store` object even if package Move code does not call party transfer itself.
+
+4. **Interpret dynamic-field counts carefully**
+   - `dynamic_field_types` uses semantic bytecode evidence: nearby UID-borrow flow into `0x2::dynamic_field` / `0x2::dynamic_object_field` calls.
+   - This is stricter than container-name matching and may undercount wrapper-style patterns (`table`, `bag`, etc.).
+
+5. **Drill into concrete types**
+   - Add `LIST_TYPES=1` to get per-type flags in JSON.
+   - Inspect examples from:
+     - `party_transfer_eligible_not_observed_examples`
+     - `party_examples` (party-observed)
+   - Then inspect modules/functions with `view module` or `analyze package`.
+
+6. **Run MM2 stability as a regression guard**
+   - `./examples/package_analysis/cli_mm2_corpus_sweep.sh <CORPUS_DIR> 100`
+   - Scale to full corpus in CI/nightly for reliability tracking.

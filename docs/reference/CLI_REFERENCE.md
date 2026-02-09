@@ -14,7 +14,7 @@ sui-sandbox fetch package 0x1eabed72...      # Import mainnet package
 sui-sandbox publish ./my_package              # Deploy locally
 sui-sandbox run 0x100::module::function       # Execute function
 sui-sandbox replay 9V3xKMnFpXyz...            # Replay mainnet tx
-sui-sandbox analyze package 0x2               # Package introspection
+sui-sandbox analyze package --package-id 0x2  # Package introspection
 sui-sandbox analyze replay 9V3xKMnFpXyz...     # Replay-state introspection
 sui-sandbox view module 0x2::coin             # Inspect interface
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
@@ -33,8 +33,20 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
 | `tools` | Utility commands (poll/stream/tx-sim/walrus) |
+| `init` | Scaffold task-oriented workflow templates |
+| `run-flow` | Execute deterministic YAML workflow files |
+| `snapshot` | Save/list/load/delete named session snapshots |
+| `reset` | Reset in-memory session state |
 | `status` | Show session state |
-| `clean` | Reset session |
+| `clean` | Remove session state file |
+
+---
+
+### Replay + Analyze Contract
+
+`sui-sandbox replay` and `sui-sandbox analyze replay` share the same hydration flags (`--source`, `--allow-fallback`, `--auto-system-objects`, dynamic-field prefetch flags). This is intentional: you can inspect hydration behavior in `analyze replay` and execute with the same settings in `replay` without re-learning a second flag model.
+
+Use `analyze replay` first when debugging data-quality or dependency issues, then run `replay` with the same hydration settings to validate end-to-end execution.
 
 ---
 
@@ -77,6 +89,7 @@ cargo build --release --bin sui-sandbox
 | `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/state.json` |
 | `--rpc-url <URL>` | RPC URL for mainnet fetching | `https://fullnode.mainnet.sui.io:443` |
 | `--json` | Output as JSON instead of human-readable | `false` |
+| `--debug-json` | Emit structured debug diagnostics on failures | `false` |
 | `-v, --verbose` | Show execution traces | `false` |
 
 ### Environment Variables
@@ -227,29 +240,85 @@ Replay historical mainnet transactions locally with optional effects comparison.
 On success, replay prints **PTB-style effects** (created/mutated/deleted/events/return values).
 On failure, it prints the error context when available.
 
-Replay uses the GraphQL endpoint inferred from `--rpc-url` unless `SUI_GRAPHQL_ENDPOINT` is set.
+**Walrus replay (recommended — zero setup):**
 
 ```bash
-# Replay a transaction
-sui-sandbox replay 9V3xKMnFpXyz...
+# Replay a specific transaction from Walrus (no API key needed)
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare
 
-# Compare local execution with on-chain effects
-sui-sandbox replay 9V3xKMnFpXyz... --compare
+# Scan the latest 5 checkpoints (auto-discovers tip, prints summary)
+sui-sandbox replay '*' --source walrus --latest 5 --compare
 
-# Verbose output showing execution details
-sui-sandbox replay 9V3xKMnFpXyz... --compare --verbose
+# Replay ALL transactions in a checkpoint range
+sui-sandbox replay '*' --source walrus --checkpoint 239615920..239615926
+
+# Replay specific checkpoints (comma-separated)
+sui-sandbox replay '*' --source walrus --checkpoint 239615920,239615923
+
+# Multi-digest replay
+sui-sandbox replay "digest1,digest2,digest3" --source walrus --checkpoint 239615926
+
+# Export state for offline replay
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json
+
+# Replay from exported JSON (completely offline, no network)
+sui-sandbox replay <DIGEST> --state-json state.json
 ```
+
+**gRPC replay (requires endpoint configuration):**
+
+```bash
+sui-sandbox replay <DIGEST> --source grpc --compare
+sui-sandbox replay <DIGEST> --source grpc --compare --verbose
+sui-sandbox replay <DIGEST> --vm-only    # Deterministic VM-only mode
+```
+
+**Data source flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--source <grpc\|walrus\|hybrid>` | Replay hydration source (default: `hybrid`) |
+| `--checkpoint <SPEC>` | Walrus checkpoint: single (`239615926`), range (`100..200`), or list (`100,105,110`) |
+| `--latest <N>` | Auto-discover tip and replay the latest N checkpoints (max 100) |
+| `--state-json <PATH>` | Load replay state from a JSON file (no network needed) |
+| `--export-state <PATH>` | Export fetched replay state as JSON before executing |
+
+**Behavior flags:**
 
 | Flag | Description |
 |------|-------------|
 | `--compare` | Compare local effects with on-chain effects |
+| `--allow-fallback` / `--fallback` | Allow fallback to secondary data sources |
+| `--vm-only` | Disable fallback and force direct VM replay path |
 | `--fetch-strategy` | Dynamic field strategy: `eager` (only accessed) or `full` (prefetch) |
 | `--prefetch-depth` | Max dynamic field discovery depth (default: 3) |
 | `--prefetch-limit` | Max children per parent when prefetching (default: 200) |
-| `--auto-system-objects` | Auto-inject Clock/Random system objects when missing |
+| `--no-prefetch` | Disable dynamic field prefetch regardless of fetch strategy |
+| `--auto-system-objects <true\|false>` | Auto-inject Clock/Random system objects when missing |
 | `--reconcile-dynamic-fields` | Reconcile dynamic-field effects when on-chain lists omit them |
 | `--synthesize-missing` | If replay fails due to missing input objects, synthesize placeholders and retry |
 | `--self-heal-dynamic-fields` | Synthesize placeholder dynamic-field values when data is missing (testing only) |
+
+**Igloo loader (feature-gated):**
+
+When built with `--features igloo`, replay exposes an extra loader flag:
+
+| Flag | Description |
+|------|-------------|
+| `--igloo-hybrid-loader` | Use igloo-mcp/Snowflake for tx/effects/packages and gRPC for objects |
+| `--igloo-config <PATH>` | Path to igloo mcp service config |
+| `--igloo-command <CMD>` | Override igloo executable path |
+
+Note: `--source hybrid` and `--igloo-hybrid-loader` are different knobs.
+- `--source hybrid` selects the core replay hydration source mode.
+- `--igloo-hybrid-loader` switches to the optional igloo-specific loader path.
+
+Replay output includes an **Execution Path** summary (requested/effective source, fallback usage, auto-system-object flag, dependency mode, and prefetch settings) in both human and JSON modes.
+
+**Digest format:**
+
+- Single digest: `At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2`
+- Wildcard: `'*'` — replay all transactions in the specified checkpoint(s)
 
 #### `analyze` - Package + Replay Readiness
 
@@ -257,11 +326,26 @@ Analyze is a Tier-1 tool that helps you understand **what you can execute** and
 **what’s missing when replay fails**.
 
 ```bash
-# Package structure + MM2 model
-sui-sandbox analyze package 0x2 --list-modules --mm2
+# Package structure + MM2 model (package id)
+sui-sandbox analyze package --package-id 0x2 --list-modules --mm2
+
+# Package structure + MM2 model (local bytecode dir)
+sui-sandbox analyze package --bytecode-dir /path/to/pkg_dir --mm2
 
 # Replay readiness: inputs, packages, and suggestions
 sui-sandbox analyze replay 9V3xKMnFpXyz...
+
+# Replay readiness with explicit fallback toggle
+sui-sandbox analyze replay 9V3xKMnFpXyz... --allow-fallback false
+
+# Corpus object classification (ownership/singleton/dynamic field heuristics)
+sui-sandbox analyze objects --corpus-dir /path/to/sui-packages/packages/mainnet_most_used --top 20
+
+# Use a built-in analysis profile
+sui-sandbox analyze objects --corpus-dir /path/to/corpus --profile strict
+
+# Use a custom profile file
+sui-sandbox analyze objects --corpus-dir /path/to/corpus --profile-file ./profiles/team.yaml
 ```
 
 Replay analysis outputs:
@@ -269,6 +353,63 @@ Replay analysis outputs:
 - Command list (MoveCalls + PTB structure)
 - Missing inputs / packages (if any)
 - Suggested fixes (e.g., enable Walrus, use --synthesize, enable MM2)
+- Hydration flag state (for example `--allow-fallback` and `--auto-system-objects`)
+
+Objects analysis outputs:
+- `object_types_discovered` and `object_types_unique`
+- `profile` provenance (name/source/path + effective semantic/dynamic settings)
+- Ownership counts (occurrence-weighted and unique-type)
+- Party split: `party_transfer_eligible` (`key+store`) vs `party_transfer_observed_in_bytecode` (party-transfer call evidence in package bytecode)
+- Singleton and dynamic-field counts
+- Rare-mode examples (immutable, party, receive)
+
+Objects profile resolution:
+- Built-in profiles: `broad`, `strict`, `hybrid`
+- Custom named profiles are searched in:
+  - repo-local: `.sui-sandbox/analyze/profiles/<name>.yaml`
+  - user-global: `${XDG_CONFIG_HOME:-~/.config}/sui-sandbox/analyze/profiles/<name>.yaml`
+- `--profile-file` bypasses lookup and loads that file directly.
+- CLI overrides:
+  - `--semantic-mode <broad|strict|hybrid>`
+  - `--dynamic-lookback <N>`
+
+Analyze command UX notes:
+- Subcommand aliases: `package|pkg`, `replay|tx`, `objects|objs|corpus`.
+- `analyze package` requires exactly one source: `--package-id` or `--bytecode-dir`.
+- `analyze replay` exposes explicit boolean controls:
+  - `--allow-fallback <true|false>` (alias: `--fallback`)
+  - `--auto-system-objects <true|false>`
+
+Custom profile YAML shape:
+```yaml
+name: my-team
+extends: strict
+dynamic:
+  lookback: 30
+  include_wrapper_apis: true
+```
+
+Switching behavior:
+- One-off run: pass `--profile <name>` or `--profile-file <path>`.
+- Inspect effective settings via JSON `profile` output (`name`, `source`, `path`, and resolved dynamic knobs).
+
+Party split interpretation notes:
+- `party_transfer_eligible` is ability-based (`key + store`) and approximates transfer eligibility at the type level.
+- `party_transfer_observed_in_bytecode` is call-site-based and tracks whether package bytecode appears to invoke party-transfer helpers.
+- A large eligibility/observed gap usually means latent capability: the type can be party-transferred, but package Move code does not commonly perform it directly.
+- `observed_in_bytecode = 0` is not proof of impossibility; PTB-level usage outside package bytecode can still party-transfer `key + store` objects.
+
+Dynamic field interpretation notes:
+- `dynamic_field_types` is semantic/call-site based: it tracks object types with nearby UID-borrow flow into `0x2::dynamic_field` / `0x2::dynamic_object_field` API calls.
+- This is conservative for wrapper-style usage (for example table/bag helpers) and may undercount those patterns.
+
+For runnable corpus workflows, see `examples/package_analysis/README.md`.
+
+Quick workflow:
+1. `analyze package` for a single package/module debugging pass.
+2. `analyze objects` on corpus for baseline and trend diffs.
+3. Use `party_transfer_eligible` vs `party_transfer_observed_in_bytecode` to spot latent capabilities not exercised in package code.
+4. Run MM2 corpus sweep (`examples/package_analysis/cli_mm2_corpus_sweep.sh`) as a reliability check.
 
 #### `view` - Inspect State
 
@@ -302,6 +443,53 @@ Show current session state including loaded packages and configuration.
 ```bash
 sui-sandbox status
 sui-sandbox status --json
+```
+
+Status includes package/object/module counts, dynamic field count, sender, rpc URL, and current state file path.
+
+#### `snapshot` - Snapshot Lifecycle
+
+Save, list, load, and delete named snapshots of local session state.
+
+```bash
+# Save current session state
+sui-sandbox snapshot save baseline
+
+# List snapshots
+sui-sandbox snapshot list
+
+# Restore a snapshot
+sui-sandbox snapshot load baseline
+
+# Delete a snapshot
+sui-sandbox snapshot delete baseline
+```
+
+#### `reset` - Reset Session In-Memory
+
+Reset current in-memory session while keeping CLI configuration defaults.
+
+```bash
+sui-sandbox reset
+```
+
+Use `clean` when you specifically want to remove the state file from disk.
+
+#### `init` - Scaffold Workflow
+
+Create a task-oriented flow template for reproducible local execution.
+
+```bash
+sui-sandbox init --example quickstart --output-dir .
+```
+
+#### `run-flow` - Execute Workflow File
+
+Run deterministic YAML workflows where each step is one `sui-sandbox` argv list.
+
+```bash
+sui-sandbox run-flow flow.quickstart.yaml
+sui-sandbox run-flow flow.quickstart.yaml --dry-run
 ```
 
 #### `clean` - Reset Session
@@ -467,5 +655,6 @@ With `--json`, errors include structured information:
 
 - [Architecture](../ARCHITECTURE.md) - System internals
 - [Transaction Replay Guide](../guides/TRANSACTION_REPLAY.md) - Detailed replay workflow
+- [Replay Triage Workflow](../guides/REPLAY_TRIAGE.md) - Fast diagnose/fix loop for replay failures
 - [Limitations](LIMITATIONS.md) - Known differences from mainnet
 - [Examples](../../examples/README.md) - Working code examples

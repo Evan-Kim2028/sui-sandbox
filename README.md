@@ -1,6 +1,6 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.11.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.14.0-green.svg)](Cargo.toml)
 [![Sui](https://img.shields.io/badge/sui-mainnet--v1.63.4-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.
@@ -16,82 +16,131 @@ This tool runs the **real Sui Move VM** locally, enabling you to:
 
 ## Quick Start
 
+**Zero setup required.** Walrus provides free, unauthenticated access to Sui checkpoint data.
+
 ```bash
 # Build
-cargo build --release
+cargo build --release --bin sui-sandbox
 
-# Set up gRPC configuration
-cp .env.example .env
-# Edit .env with your endpoint (default: https://fullnode.mainnet.sui.io:443)
-# If your endpoint requires auth, set SUI_GRPC_API_KEY in .env
+# Replay a real mainnet transaction (no API key, no configuration)
+sui-sandbox replay At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
+  --source walrus --checkpoint 239615926 --compare
 
-# Build the test fixture (required for CLI workflow example)
-cd tests/fixture && sui move build && cd ../..
+# Or use the example script
+./examples/replay.sh
+```
 
-# Replay a DeepBook transaction
-cargo run --example deepbook_replay
+That's it. The replay command fetches the transaction, all objects, and all packages from Walrus decentralized storage, executes it in the local Move VM, and compares the results against on-chain effects.
+
+### More Ways to Replay
+
+```bash
+# Scan the latest 5 checkpoints (auto-discovers tip, prints summary)
+sui-sandbox replay '*' --source walrus --latest 5 --compare
+
+# Replay a checkpoint range (all transactions)
+sui-sandbox replay '*' --source walrus --checkpoint 239615920..239615926
+
+# Export state for offline replay later
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json
+
+# Replay from exported JSON (completely offline, no network)
+sui-sandbox replay <DIGEST> --state-json state.json
+
+# Use gRPC if you have an endpoint configured
+sui-sandbox replay <DIGEST> --source grpc --compare
 ```
 
 ## CLI
 
-For interactive development, use the `sui-sandbox` CLI:
+The `sui-sandbox` CLI is the primary developer interface. Replay is the flagship feature — everything else builds on it.
 
 ```bash
-cargo build --release --bin sui-sandbox
+# Transaction replay (primary workflow)
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare
+sui-sandbox replay '*' --source walrus --latest 5 --compare        # Scan latest
+sui-sandbox replay '*' --source walrus --checkpoint 100..110       # Batch replay
+sui-sandbox replay <DIGEST> --state-json state.json                # Offline replay
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state out.json
 
+# Development workflow
 sui-sandbox fetch package 0x2                 # Import Sui framework
 sui-sandbox publish ./my_package              # Deploy your code
 sui-sandbox run 0x100::module::func --arg 42  # Call a function
-sui-sandbox replay <TX_DIGEST> --compare      # Replay and verify
-sui-sandbox analyze package 0x2               # Package introspection
-sui-sandbox analyze replay <TX_DIGEST>        # Replay-state introspection
+sui-sandbox analyze package --package-id 0x2  # Package introspection
+sui-sandbox analyze replay <DIGEST>           # Replay-state introspection
+
+# Session management
+sui-sandbox init --example quickstart         # Scaffold workflow template
+sui-sandbox run-flow flow.quickstart.yaml     # Run deterministic YAML workflow
+sui-sandbox snapshot save baseline            # Save session snapshot
+sui-sandbox status --json                     # Inspect state + counts
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
 ```
 
 See [CLI Reference](docs/reference/CLI_REFERENCE.md) for all commands.
 
+## Data Sources
+
+| Source | Auth Required | Setup | Best For |
+|--------|--------------|-------|----------|
+| **Walrus** (default) | None | Zero | Replaying any transaction — just need digest + checkpoint |
+| **JSON** | None | Zero | Offline replay, custom data pipelines, CI/CD |
+| **gRPC** | API key | `.env` file | Real-time monitoring, streaming, latest state queries |
+
+Walrus is the recommended starting point. It provides free, unauthenticated access to all Sui checkpoint data via decentralized storage.
+
+## Troubleshooting
+
+- Replay fails while hydrating state:
+  - Try `--source walrus --checkpoint <CP>` (no auth needed).
+  - Try `--source grpc` if you have a gRPC endpoint configured.
+  - If deterministic behavior is required, use `--vm-only`.
+  - If missing historical data is acceptable, enable `--allow-fallback`.
+- Command failed and output is unclear:
+  - Re-run with `--verbose`.
+  - Add `--debug-json` to emit structured failure diagnostics.
+- Session looks inconsistent:
+  - Use `sui-sandbox snapshot load <name>` to restore a known-good snapshot.
+  - Use `sui-sandbox reset` to clear in-memory session state.
+  - Use `sui-sandbox clean` to remove persisted state file.
+
 ## Start Here: Examples
 
-**The best way to understand the library is through the examples.** They're ordered from simple to complex:
+**The best way to understand the library is through the examples.** Start with replay — no setup needed:
 
 | Level | Example | API Key | What You'll Learn |
 |-------|---------|---------|-------------------|
+| 0 | `replay.sh` | **No** | Transaction replay via Walrus (zero setup) |
+| 0.5 | `scan_checkpoints.sh` | **No** | Scan & replay latest N checkpoints with summary |
 | 1 | `cli_workflow.sh` | No | CLI basics, no compilation needed |
 | 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
-| 3 | `fork_state` | Yes | Fork mainnet state into local sandbox |
-| 4 | `cetus_swap` | Yes | Full transaction replay with validation |
-| 5 | `deepbook_orders` | Yes | BigVector replay with dynamic fields |
-| 6 | `multi_swap_flash_loan` | Yes | Complex multi-DEX arbitrage replay |
+| 3+ | `fork_state`, `cetus_swap`, etc. | Yes | Advanced: mainnet forking, DeFi replay |
 
 ```bash
-# Start with the CLI workflow (no setup required)
+# Start here: replay a real transaction (no API key needed)
+./examples/replay.sh
+
+# CLI exploration (no setup required)
 ./examples/cli_workflow.sh
 
-# Then try a simple code example
+# Your first Rust example
 cargo run --example ptb_basics
-
-# Graduate to mainnet replay
-cargo run --example cetus_swap
-
-# Explore BigVector/dynamic field handling
-cargo run --example deepbook_orders
 ```
 
-For self-healing replay demos (testing only), see **[examples/self_heal](examples/self_heal)**.
-
-See **[examples/README.md](examples/README.md)** for detailed documentation on each example.
+See **[examples/README.md](examples/README.md)** for the full learning path.
 
 ## How Replay Works
 
 ```
-1. Fetch transaction from gRPC
-2. Fetch objects at their HISTORICAL versions (before modification)
-3. Fetch packages with transitive dependencies
+1. Fetch checkpoint from Walrus (or transaction from gRPC/JSON)
+2. Extract objects at their HISTORICAL versions (before modification)
+3. Resolve packages with transitive dependencies
 4. Execute in local Move VM
 5. Compare local effects with on-chain effects
 ```
 
-**Key insight**: Objects must be fetched at their *input* versions, not current versions. The `unchanged_loaded_runtime_objects` field from gRPC provides this.
+**Key insight**: Objects must be fetched at their *input* versions, not current versions. Walrus checkpoints contain objects at their exact versions. For gRPC, the `unchanged_loaded_runtime_objects` field provides this.
 
 ## What's Real vs Simulated
 
@@ -133,7 +182,7 @@ This sandbox uses **the same Move VM** that powers Sui validators, not a reimple
 
 Move bytecode is deterministic—given the same bytecode, inputs, and object state, execution produces identical results whether run locally or on mainnet. The sandbox replaces only the *storage layer* (objects live in memory instead of the blockchain) while keeping bytecode execution and cryptography real.
 
-**Verify it yourself**: Run `cargo run --example deepbook_replay` to execute a real mainnet transaction locally and compare effects byte-for-byte against on-chain results.
+**Verify it yourself**: Run `./examples/replay.sh` to replay a real mainnet Cetus swap locally and compare effects against on-chain results. No API key needed.
 
 ## Documentation
 
@@ -174,16 +223,17 @@ Tip: set `SUI_SANDBOX_HOME` to isolate cache/logs/projects during tests.
 ```
 sui-sandbox/
 ├── examples/               # ← START HERE
+│   ├── replay.sh           # Flagship: replay via Walrus (zero setup)
+│   ├── scan_checkpoints.sh # Scan latest N checkpoints with summary
 │   ├── cli_workflow.sh     # CLI demo (no setup)
-│   ├── ptb_basics.rs       # Basic PTB
-│   ├── fork_state.rs       # Mainnet forking
-│   ├── cetus_swap.rs       # Canonical replay example
-│   ├── deepbook_orders.rs  # BigVector replay example
-│   └── archive/            # Older/experimental examples
+│   ├── ptb_basics.rs       # Basic PTB operations
+│   ├── fork_state.rs       # Mainnet forking (requires gRPC)
+│   ├── cetus_swap.rs       # DeFi replay (requires gRPC)
+│   └── deepbook_orders.rs  # BigVector replay (requires gRPC)
 ├── src/                    # Main library and CLI
 ├── crates/
 │   ├── sui-sandbox-core/   # Core VM, PTB execution, gas metering
-│   ├── sui-transport/      # Network layer (gRPC + GraphQL)
+│   ├── sui-transport/      # Network layer (gRPC, GraphQL, Walrus)
 │   ├── sui-prefetch/       # Strategic data loading, MM2 analysis
 │   ├── sui-resolver/       # Address resolution & normalization
 │   └── sui-state-fetcher/  # State provider abstraction
