@@ -2,21 +2,18 @@
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
 use move_binary_format::CompiledModule;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use super::network::{cache_dir, infer_network, resolve_graphql_endpoint};
-use super::output::{format_effects, format_error};
+use self::hydration::{build_historical_state_provider, build_replay_state, ReplayHydrationConfig};
+use self::presentation::{build_replay_debug_json, enforce_strict, print_replay_result};
+use super::network::resolve_graphql_endpoint;
+use super::output::format_error;
 use super::SandboxState;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
@@ -26,44 +23,52 @@ use sui_prefetch::compute_dynamic_field_id;
 use sui_sandbox_core::mm2::{TypeModel, TypeSynthesizer};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy, MissingInputObject};
-use sui_sandbox_core::types::{format_type_tag, is_system_package_address, parse_type_tag};
+use sui_sandbox_core::types::{format_type_tag, parse_type_tag};
 use sui_sandbox_core::utilities::historical_state::HistoricalStateReconstructor;
 use sui_sandbox_core::utilities::rewrite_type_tag;
 use sui_sandbox_core::vm::SimulationConfig;
 use sui_sandbox_types::{
-    normalize_address as normalize_address_shared, FetchedTransaction, GasSummary, PtbArgument,
-    PtbCommand, TransactionDigest as SandboxTransactionDigest, TransactionEffectsSummary,
-    TransactionInput, TransactionStatus, CLOCK_OBJECT_ID, RANDOM_OBJECT_ID,
+    normalize_address as normalize_address_shared, PtbCommand, TransactionInput, CLOCK_OBJECT_ID,
+    RANDOM_OBJECT_ID,
 };
 use sui_state_fetcher::{
-    build_aliases as build_aliases_shared, fetch_child_object as fetch_child_object_shared,
-    fetch_object_via_grpc as fetch_object_via_grpc_shared, HistoricalStateProvider, PackageData,
-    ReplayState, VersionedCache, VersionedObject,
+    build_aliases as build_aliases_shared, checkpoint_to_replay_state,
+    fetch_child_object as fetch_child_object_shared,
+    fetch_object_via_grpc as fetch_object_via_grpc_shared, find_tx_in_checkpoint,
+    HistoricalStateProvider, PackageData, ReplayState, VersionedObject,
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
-use sui_transport::grpc::GrpcOwner;
 use sui_types::digests::TransactionDigest;
-use sui_types::move_package::MovePackage;
-use sui_types::object::{Data as SuiData, Object as SuiObject};
-use sui_types::transaction::{
-    Argument as SuiArgument, CallArg, Command as SuiCommand, ObjectArg, SharedObjectMutability,
-    TransactionData, TransactionDataAPI, TransactionKind,
+use sui_types::effects::TransactionEffectsAPI;
+
+mod batch;
+mod deps;
+mod hybrid;
+pub(crate) mod hydration;
+#[cfg(feature = "igloo")]
+mod igloo;
+mod presentation;
+mod walrus_batch;
+mod walrus_helpers;
+
+use self::deps::{
+    fetch_dependency_closure, fetch_dependency_closure_walrus, fetch_package_via_walrus,
 };
-use sui_types::type_input::TypeInput;
+use self::walrus_helpers::{fetch_via_prev_tx, parse_checkpoint_spec};
 
 #[derive(Parser, Debug)]
 pub struct ReplayCmd {
     /// Transaction digest
     pub digest: String,
 
-    /// Data source for replay hydration
-    #[arg(long, value_enum, default_value = "hybrid")]
-    pub source: ReplaySource,
+    /// Shared replay hydration controls (source/fallback/prefetch/system-object injection).
+    #[command(flatten)]
+    pub hydration: ReplayHydrationArgs,
 
-    /// Allow fallback to secondary sources when data is missing
-    #[arg(long, default_value_t = true)]
-    pub fallback: bool,
+    /// Disable fallback paths and force direct VM path execution only
+    #[arg(long, default_value_t = false)]
+    pub vm_only: bool,
 
     /// Fail with non-zero status if replay or comparison mismatches occur
     #[arg(long, default_value_t = false)]
@@ -77,21 +82,9 @@ pub struct ReplayCmd {
     #[arg(long, short)]
     pub verbose: bool,
 
-    /// Prefetch depth for dynamic fields (default: 3)
-    #[arg(long, default_value_t = 3)]
-    pub prefetch_depth: usize,
-
-    /// Prefetch limit for dynamic fields (default: 200)
-    #[arg(long, default_value_t = 200)]
-    pub prefetch_limit: usize,
-
     /// Fetch strategy for dynamic field children during replay
     #[arg(long, value_enum, default_value = "full")]
     pub fetch_strategy: FetchStrategy,
-
-    /// Auto-inject system objects (Clock/Random) when missing
-    #[arg(long, default_value_t = true)]
-    pub auto_system_objects: bool,
 
     /// Reconcile dynamic-field effects when on-chain lists omit them
     #[arg(long, default_value_t = true)]
@@ -105,45 +98,32 @@ pub struct ReplayCmd {
     #[arg(long, default_value_t = false)]
     pub self_heal_dynamic_fields: bool,
 
-    /// Use hybrid loader (igloo-mcp Snowflake for tx/effects/packages, gRPC for objects)
-    #[arg(long)]
-    pub hybrid: bool,
-
-    /// Path to mcp_service_config.json for igloo-mcp (defaults to nearest ancestor)
-    #[arg(long)]
-    pub igloo_config: Option<PathBuf>,
-
-    /// Override igloo-mcp command path (defaults to config or igloo_mcp in PATH)
-    #[arg(long)]
-    pub igloo_command: Option<String>,
-
-    /// Groot database name (default: PIPELINE_V2_GROOT_DB)
-    #[arg(long, default_value = "PIPELINE_V2_GROOT_DB")]
-    pub groot_db: String,
-
-    /// Groot schema name (default: PIPELINE_V2_GROOT_SCHEMA)
-    #[arg(long, default_value = "PIPELINE_V2_GROOT_SCHEMA")]
-    pub groot_schema: String,
-
-    /// Analytics database name (default: ANALYTICS_DB_V2)
-    #[arg(long, default_value = "ANALYTICS_DB_V2")]
-    pub analytics_db: String,
-
-    /// Analytics schema name (default: CHAINDATA_MAINNET)
-    #[arg(long, default_value = "CHAINDATA_MAINNET")]
-    pub analytics_schema: String,
-
-    /// Fetch packages from Snowflake when available (fallback to gRPC if missing)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    pub snowflake_packages: bool,
-
-    /// Require packages to be loaded from Snowflake (no gRPC fallback)
-    #[arg(long, default_value_t = false)]
-    pub require_snowflake_packages: bool,
+    /// Igloo/Snowflake hybrid replay controls (only available with `igloo` feature).
+    #[cfg(feature = "igloo")]
+    #[command(flatten)]
+    pub igloo: ReplayIglooArgs,
 
     /// Timeout in seconds for gRPC object fetches (default: 30)
     #[arg(long, default_value_t = 30)]
     pub grpc_timeout_secs: u64,
+
+    /// Checkpoint(s) for Walrus-first replay (no gRPC/API key needed).
+    /// Accepts: single (239615926), range (100..200), or list (100,105,110).
+    #[arg(long)]
+    pub checkpoint: Option<String>,
+
+    /// Load replay state from a JSON file (custom data source, no network needed)
+    #[arg(long)]
+    pub state_json: Option<PathBuf>,
+
+    /// Export fetched replay state as JSON before executing
+    #[arg(long)]
+    pub export_state: Option<PathBuf>,
+
+    /// Replay the latest N checkpoints from Walrus (auto-discovers tip).
+    /// Implies --source walrus and digest '*'.
+    #[arg(long)]
+    pub latest: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,6 +132,7 @@ pub struct ReplayOutput {
     pub local_success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_error: Option<String>,
+    pub execution_path: ReplayExecutionPath,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,6 +140,27 @@ pub struct ReplayOutput {
     #[serde(skip)]
     pub effects_full: Option<sui_sandbox_core::ptb::TransactionEffects>,
     pub commands_executed: usize,
+    /// When true, the batch summary was already printed; skip individual output.
+    #[serde(skip)]
+    pub batch_summary_printed: bool,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct ReplayExecutionPath {
+    pub requested_source: String,
+    pub effective_source: String,
+    pub vm_only: bool,
+    pub allow_fallback: bool,
+    pub auto_system_objects: bool,
+    pub fallback_used: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fallback_reasons: Vec<String>,
+    pub dynamic_field_prefetch: bool,
+    pub prefetch_depth: usize,
+    pub prefetch_limit: usize,
+    pub dependency_fetch_mode: String,
+    pub dependency_packages_fetched: usize,
+    pub synthetic_inputs: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +205,18 @@ pub struct ComparisonResult {
     pub notes: Vec<String>,
 }
 
+/// Shared object cache for batch replay: id_hex → (type_str, bcs_bytes, version)
+type SharedObjCache = Arc<parking_lot::Mutex<HashMap<String, (String, Vec<u8>, u64)>>>;
+/// Shared package cache for batch replay: address → PackageData
+type SharedPkgCache = Arc<parking_lot::Mutex<HashMap<AccountAddress, PackageData>>>;
+
+#[cfg(feature = "walrus")]
+pub(super) struct WalrusReplayData<'a> {
+    pub preloaded_checkpoint: Option<&'a sui_types::full_checkpoint_content::CheckpointData>,
+    pub shared_obj_cache: Option<SharedObjCache>,
+    pub shared_pkg_cache: Option<SharedPkgCache>,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum FetchStrategy {
     Eager,
@@ -216,28 +230,135 @@ pub enum ReplaySource {
     Hybrid,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct ReplayHydrationArgs {
+    /// Data source for replay hydration
+    #[arg(long, value_enum, default_value = "hybrid", help_heading = "Hydration")]
+    pub source: ReplaySource,
+
+    /// Allow fallback to secondary sources when data is missing
+    #[arg(
+        long = "allow-fallback",
+        alias = "fallback",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help_heading = "Hydration"
+    )]
+    pub allow_fallback: bool,
+
+    /// Prefetch depth for dynamic fields (default: 3)
+    #[arg(long, default_value_t = 3, help_heading = "Dynamic Field")]
+    pub prefetch_depth: usize,
+
+    /// Prefetch limit for dynamic fields (default: 200)
+    #[arg(long, default_value_t = 200, help_heading = "Dynamic Field")]
+    pub prefetch_limit: usize,
+
+    /// Disable dynamic field prefetch
+    #[arg(long, default_value_t = false, help_heading = "Dynamic Field")]
+    pub no_prefetch: bool,
+
+    /// Auto-inject system objects (Clock/Random) when missing
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help_heading = "Hydration"
+    )]
+    pub auto_system_objects: bool,
+}
+
+#[cfg(feature = "igloo")]
+#[derive(Args, Debug, Clone)]
+pub struct ReplayIglooArgs {
+    /// Use igloo hybrid loader (Snowflake for tx/effects/packages, gRPC for objects).
+    /// Backward-compatible alias: --hybrid
+    #[arg(long = "igloo-hybrid-loader", alias = "hybrid", help_heading = "Igloo")]
+    pub hybrid_loader: bool,
+
+    /// Path to mcp_service_config.json for igloo-mcp (defaults to nearest ancestor)
+    #[arg(long, help_heading = "Igloo")]
+    pub config: Option<PathBuf>,
+
+    /// Override igloo-mcp command path (defaults to config or igloo_mcp in PATH)
+    #[arg(long, help_heading = "Igloo")]
+    pub command: Option<String>,
+
+    /// Groot database name (default: PIPELINE_V2_GROOT_DB)
+    #[arg(long, default_value = "PIPELINE_V2_GROOT_DB", help_heading = "Igloo")]
+    pub groot_db: String,
+
+    /// Groot schema name (default: PIPELINE_V2_GROOT_SCHEMA)
+    #[arg(
+        long,
+        default_value = "PIPELINE_V2_GROOT_SCHEMA",
+        help_heading = "Igloo"
+    )]
+    pub groot_schema: String,
+
+    /// Analytics database name (default: ANALYTICS_DB_V2)
+    #[arg(long, default_value = "ANALYTICS_DB_V2", help_heading = "Igloo")]
+    pub analytics_db: String,
+
+    /// Analytics schema name (default: CHAINDATA_MAINNET)
+    #[arg(long, default_value = "CHAINDATA_MAINNET", help_heading = "Igloo")]
+    pub analytics_schema: String,
+
+    /// Fetch packages from Snowflake when available (fallback to gRPC if missing)
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help_heading = "Igloo"
+    )]
+    pub snowflake_packages: bool,
+
+    /// Require packages to be loaded from Snowflake (no gRPC fallback)
+    #[arg(long, default_value_t = false, help_heading = "Igloo")]
+    pub require_snowflake_packages: bool,
+}
+
 impl ReplayCmd {
+    fn igloo_hybrid_loader_enabled(&self) -> bool {
+        #[cfg(feature = "igloo")]
+        {
+            self.igloo.hybrid_loader
+        }
+        #[cfg(not(feature = "igloo"))]
+        {
+            false
+        }
+    }
+
     pub async fn execute(
         &self,
         state: &mut SandboxState,
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
+        let debug_json = env_bool_opt("SUI_SANDBOX_DEBUG_JSON").unwrap_or(false);
+        let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
+
         if (self.synthesize_missing || self.self_heal_dynamic_fields) && !cfg!(feature = "mm2") {
             return Err(anyhow!(
                 "dynamic field synthesis requires the `mm2` feature"
             ));
         }
-        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid)
-            && !cfg!(feature = "walrus")
+        if matches!(
+            self.hydration.source,
+            ReplaySource::Walrus | ReplaySource::Hybrid
+        ) && !cfg!(feature = "walrus")
         {
             return Err(anyhow!("Walrus source requires the `walrus` feature"));
         }
-
         let result = self.execute_inner(state, verbose || self.verbose).await;
 
         match result {
             Ok(output) => {
+                // In batch mode the summary was already printed; skip individual output.
+                if output.batch_summary_printed {
+                    return Ok(());
+                }
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
@@ -249,6 +370,17 @@ impl ReplayCmd {
                 if output.local_success {
                     Ok(())
                 } else {
+                    if debug_json {
+                        eprintln!(
+                            "{}",
+                            build_replay_debug_json(
+                                "replay_execution_failed",
+                                output.local_error.as_deref().unwrap_or("Replay failed"),
+                                Some(&output),
+                                allow_fallback,
+                            )?
+                        );
+                    }
                     Err(anyhow!(output
                         .local_error
                         .unwrap_or_else(|| "Replay failed".to_string())))
@@ -256,13 +388,24 @@ impl ReplayCmd {
             }
             Err(e) => {
                 eprintln!("{}", format_error(&e, json_output));
+                if debug_json {
+                    eprintln!(
+                        "{}",
+                        build_replay_debug_json(
+                            "replay_fetch_failed",
+                            &e.to_string(),
+                            None,
+                            allow_fallback
+                        )?
+                    );
+                }
                 Err(e)
             }
         }
     }
 
     async fn execute_inner(&self, state: &SandboxState, verbose: bool) -> Result<ReplayOutput> {
-        let dotenv = load_dotenv_vars();
+        let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
         let replay_progress = std::env::var("SUI_REPLAY_PROGRESS")
             .ok()
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
@@ -271,71 +414,86 @@ impl ReplayCmd {
             eprintln!("Fetching transaction {}...", self.digest);
         }
 
-        // Fetch full replay state using gRPC + GraphQL
-        let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
-        let network = infer_network(&state.rpc_url, &graphql_endpoint);
-        let cache = Arc::new(VersionedCache::with_storage(cache_dir(&network))?);
-        let api_key = std::env::var("SUI_GRPC_API_KEY")
-            .ok()
-            .or_else(|| dotenv.get("SUI_GRPC_API_KEY").cloned());
-        let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-            .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
-            .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
-            .or_else(|_| {
-                dotenv
-                    .get("SUI_GRPC_ENDPOINT")
-                    .cloned()
-                    .ok_or(std::env::VarError::NotPresent)
-            })
-            .or_else(|_| {
-                dotenv
-                    .get("SUI_GRPC_ARCHIVE_ENDPOINT")
-                    .cloned()
-                    .ok_or(std::env::VarError::NotPresent)
-            })
-            .or_else(|_| {
-                dotenv
-                    .get("SUI_GRPC_HISTORICAL_ENDPOINT")
-                    .cloned()
-                    .ok_or(std::env::VarError::NotPresent)
-            })
-            .unwrap_or_else(|_| state.rpc_url.clone());
-        if verbose && grpc_endpoint != state.rpc_url {
-            eprintln!("[grpc] using endpoint override {}", grpc_endpoint);
+        // JSON state path: --state-json provided, load from file (no network)
+        if let Some(json_path) = &self.state_json {
+            return self
+                .execute_from_json(state, verbose, json_path, replay_progress)
+                .await;
         }
-        let grpc_client = GrpcClient::with_api_key(&grpc_endpoint, api_key).await?;
-        let graphql_client = sui_transport::graphql::GraphQLClient::new(&graphql_endpoint);
-        if matches!(self.source, ReplaySource::Walrus) && !self.fallback {
-            std::env::set_var("SUI_WALRUS_PACKAGE_ONLY", "1");
-        }
-        let mut provider =
-            HistoricalStateProvider::with_clients(grpc_client, graphql_client).with_cache(cache);
-        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid) {
-            provider = provider
-                .with_walrus_from_env()
-                .with_local_object_store_from_env();
-        }
-        let provider = Arc::new(provider);
 
-        let enable_dynamic_fields = self.hybrid || self.fetch_strategy == FetchStrategy::Full;
-        let strict_df_checkpoint = env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.hybrid);
+        // --latest N: auto-discover tip checkpoint and replay the latest N checkpoints
+        #[cfg(feature = "walrus")]
+        if let Some(count) = self.latest {
+            use sui_transport::walrus::WalrusClient;
+            if count == 0 {
+                return Err(anyhow!("--latest must be at least 1"));
+            }
+            if count > 100 {
+                return Err(anyhow!("--latest max is 100 (got {})", count));
+            }
+            let tip =
+                tokio::task::spawn_blocking(|| WalrusClient::mainnet().get_latest_checkpoint())
+                    .await
+                    .context("Walrus tip fetch task panicked")?
+                    .context("Failed to get latest checkpoint from Walrus")?;
+            let start = tip.saturating_sub(count - 1);
+            let checkpoints: Vec<u64> = (start..=tip).collect();
+            if replay_progress || verbose {
+                eprintln!(
+                    "[walrus] latest {} checkpoints: {}..{} (tip={})",
+                    checkpoints.len(),
+                    start,
+                    tip,
+                    tip
+                );
+            }
+            return self
+                .execute_walrus_batch_v2(state, verbose, &checkpoints, replay_progress)
+                .await;
+        }
+
+        // Walrus-first path: --checkpoint provided, skip gRPC entirely
+        #[cfg(feature = "walrus")]
+        if let Some(ref checkpoint_str) = self.checkpoint {
+            let checkpoints = parse_checkpoint_spec(checkpoint_str)?;
+            if checkpoints.len() == 1 && self.digest != "*" && !self.digest.contains(',') {
+                return self
+                    .execute_walrus_first(state, verbose, checkpoints[0], replay_progress)
+                    .await;
+            } else {
+                return self
+                    .execute_walrus_batch_v2(state, verbose, &checkpoints, replay_progress)
+                    .await;
+            }
+        }
+
+        let provider =
+            build_historical_state_provider(state, self.hydration.source, allow_fallback, verbose)
+                .await?;
+
+        let enable_dynamic_fields = !self.hydration.no_prefetch
+            && (self.igloo_hybrid_loader_enabled() || self.fetch_strategy == FetchStrategy::Full);
+        let strict_df_checkpoint =
+            env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.igloo_hybrid_loader_enabled());
         if strict_df_checkpoint {
             std::env::set_var("SUI_DF_STRICT_CHECKPOINT", "1");
         }
-        let replay_state = if self.hybrid {
+        let replay_state = if self.igloo_hybrid_loader_enabled() {
             self.build_replay_state_hybrid(provider.as_ref(), verbose)
                 .await
-                .context("Failed to fetch replay state (hybrid)")?
+                .context("Failed to fetch replay state (igloo hybrid loader)")?
         } else {
-            provider
-                .replay_state_builder()
-                .prefetch_dynamic_fields(enable_dynamic_fields)
-                .dynamic_field_depth(self.prefetch_depth)
-                .dynamic_field_limit(self.prefetch_limit)
-                .auto_system_objects(self.auto_system_objects)
-                .build(&self.digest)
-                .await
-                .context("Failed to fetch replay state")?
+            build_replay_state(
+                provider.as_ref(),
+                &self.digest,
+                ReplayHydrationConfig {
+                    prefetch_dynamic_fields: enable_dynamic_fields,
+                    prefetch_depth: self.hydration.prefetch_depth,
+                    prefetch_limit: self.hydration.prefetch_limit,
+                    auto_system_objects: self.hydration.auto_system_objects,
+                },
+            )
+            .await?
         };
         if replay_progress {
             eprintln!("[replay] state built");
@@ -359,27 +517,12 @@ impl ReplayCmd {
             eprintln!("[replay] aliases built");
         }
 
-        // Create a resolver with packages from replay state
-        let mut resolver = state.resolver.clone();
-        let mut packages: Vec<&PackageData> = replay_state.packages.values().collect();
-        packages.sort_by(|a, b| {
-            let ra = a.runtime_id();
-            let rb = b.runtime_id();
-            if ra == rb {
-                a.version.cmp(&b.version)
-            } else {
-                ra.as_ref().cmp(rb.as_ref())
-            }
-        });
-        for pkg in packages {
-            let _ = resolver.add_package_modules_at(pkg.modules.clone(), Some(pkg.address));
-        }
-        for (original, upgraded) in &pkg_aliases.linkage_upgrades {
-            resolver.add_linkage_upgrade(*original, *upgraded);
-        }
-        for (storage, runtime) in &pkg_aliases.aliases {
-            resolver.add_address_alias(*storage, *runtime);
-        }
+        let mut resolver = hydrate_resolver_from_replay_state(
+            state,
+            &replay_state,
+            &pkg_aliases.linkage_upgrades,
+            &pkg_aliases.aliases,
+        );
         if replay_progress {
             eprintln!("[replay] resolver hydrated");
         }
@@ -388,7 +531,7 @@ impl ReplayCmd {
             .ok()
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        let fetched_deps = if self.hybrid && !allow_graphql_deps {
+        let fetched_deps = if self.igloo_hybrid_loader_enabled() && !allow_graphql_deps {
             if verbose {
                 eprintln!("[deps] skipping GraphQL dependency fetch in hybrid mode");
             }
@@ -412,6 +555,11 @@ impl ReplayCmd {
         if replay_progress {
             eprintln!("[replay] dependency closure done");
         }
+        let dependency_fetch_mode = if self.igloo_hybrid_loader_enabled() && !allow_graphql_deps {
+            "igloo_hybrid_skip_graphql_deps".to_string()
+        } else {
+            "graphql_dependency_closure".to_string()
+        };
         if verbose && fetched_deps > 0 {
             eprintln!(
                 "[deps] fetched {} missing dependency packages",
@@ -503,78 +651,23 @@ impl ReplayCmd {
             eprintln!("[replay] executing locally");
         }
 
-        let versions_str: HashMap<String, u64> = pkg_aliases
-            .versions
-            .iter()
-            .map(|(addr, ver)| (addr.to_hex_literal(), *ver))
-            .collect();
-        let mut cached_objects: HashMap<String, String> = HashMap::new();
-        let mut version_map: HashMap<String, u64> = HashMap::new();
-        let mut object_bytes: HashMap<String, Vec<u8>> = HashMap::new();
-        let mut object_types: HashMap<String, String> = HashMap::new();
-        for (id, obj) in &replay_state.objects {
-            let id_hex = id.to_hex_literal();
-            cached_objects.insert(
-                id_hex.clone(),
-                base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
-            );
-            version_map.insert(id_hex.clone(), obj.version);
-            object_bytes.insert(id_hex.clone(), obj.bcs_bytes.clone());
-            if let Some(type_tag) = &obj.type_tag {
-                object_types.insert(id_hex, type_tag.clone());
-            }
-        }
-
-        let disable_version_patch = std::env::var("SUI_DISABLE_VERSION_PATCH")
+        let mut maps = build_replay_object_maps(&replay_state, &pkg_aliases.versions);
+        let debug_patcher = std::env::var("SUI_DEBUG_PATCHER")
             .ok()
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        if !disable_version_patch {
-            if replay_progress {
-                eprintln!("[replay] version patcher start");
-            }
-            let mut reconstructor = HistoricalStateReconstructor::new();
-            reconstructor.configure_from_modules(resolver.iter_modules());
-            if let Some(ts) = replay_state.transaction.timestamp_ms {
-                reconstructor.set_timestamp(ts);
-            }
-            // Register versions for both storage and runtime addresses.
-            for (storage, ver) in &pkg_aliases.versions {
-                let storage_hex = storage.to_hex_literal();
-                reconstructor.register_version(&storage_hex, *ver);
-            }
-            for (storage, runtime) in &pkg_aliases.aliases {
-                if let Some(ver) = pkg_aliases.versions.get(storage) {
-                    let runtime_hex = runtime.to_hex_literal();
-                    reconstructor.register_version(&runtime_hex, *ver);
-                }
-            }
-            let reconstructed = reconstructor.reconstruct(&object_bytes, &object_types);
-            for (id, bytes) in reconstructed.objects {
-                cached_objects.insert(id, base64::engine::general_purpose::STANDARD.encode(&bytes));
-            }
-            if replay_progress {
-                eprintln!("[replay] version patcher done");
-            }
-            if verbose
-                || std::env::var("SUI_DEBUG_PATCHER")
-                    .ok()
-                    .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-                    .unwrap_or(false)
-            {
-                let stats = reconstructed.stats;
-                if stats.total_patched() > 0 {
-                    eprintln!(
-                        "[patch] patched_objects={} overrides={} raw={} struct={} skips={}",
-                        stats.total_patched(),
-                        stats.override_patched,
-                        stats.raw_patched,
-                        stats.struct_patched,
-                        stats.skipped
-                    );
-                }
-            }
-        }
+        maybe_patch_replay_objects(
+            &resolver,
+            &replay_state,
+            &pkg_aliases.versions,
+            &pkg_aliases.aliases,
+            &mut maps,
+            replay_progress,
+            verbose || debug_patcher,
+        );
+        let versions_str = maps.versions_str.clone();
+        let mut cached_objects = maps.cached_objects;
+        let mut version_map = maps.version_map;
 
         let synth_modules = if self.self_heal_dynamic_fields {
             let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
@@ -597,24 +690,7 @@ impl ReplayCmd {
         };
         let make_harness =
             |version_map: &HashMap<String, u64>| -> Result<sui_sandbox_core::vm::VMHarness> {
-                let mut config = SimulationConfig::default()
-                    .with_sender_address(replay_state.transaction.sender)
-                    .with_gas_budget(Some(replay_state.transaction.gas_budget))
-                    .with_gas_price(replay_state.transaction.gas_price)
-                    .with_epoch(replay_state.epoch);
-                if let Some(rgp) = replay_state.reference_gas_price {
-                    config = config.with_reference_gas_price(rgp);
-                }
-                if replay_state.protocol_version > 0 {
-                    config = config.with_protocol_version(replay_state.protocol_version);
-                }
-                if let Some(ts) = replay_state.transaction.timestamp_ms {
-                    config = config.with_tx_timestamp(ts);
-                }
-                if let Ok(digest) = TransactionDigest::from_str(&replay_state.transaction.digest.0)
-                {
-                    config = config.with_tx_hash(digest.into_inner());
-                }
+                let config = build_simulation_config(&replay_state);
                 let mut harness =
                     sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
                 harness.set_address_aliases_with_versions(
@@ -811,6 +887,8 @@ impl ReplayCmd {
             eprintln!("[replay] first execution attempt done");
         }
         let mut synthetic_logs: Vec<String> = Vec::new();
+        let mut fallback_used = false;
+        let mut fallback_reasons: Vec<String> = Vec::new();
 
         if self.synthesize_missing
             && replay_result
@@ -840,6 +918,10 @@ impl ReplayCmd {
                             eprintln!(
                                 "[replay_fallback] synthesized_inputs={}",
                                 synthetic_logs.len()
+                            );
+                            fallback_used = true;
+                            fallback_reasons.push(
+                                "synthesized_missing_inputs_after_initial_failure".to_string(),
                             );
                             replay_result = replay_once(&cached_objects, &version_map);
                         }
@@ -897,1355 +979,1446 @@ impl ReplayCmd {
                     digest: self.digest.clone(),
                     local_success: result.local_success,
                     local_error: result.local_error,
+                    execution_path: ReplayExecutionPath {
+                        requested_source: self
+                            .hydration
+                            .source
+                            .to_possible_value()
+                            .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
+                        effective_source: if self.igloo_hybrid_loader_enabled() {
+                            "igloo_hybrid_loader".to_string()
+                        } else {
+                            self.hydration
+                                .source
+                                .to_possible_value()
+                                .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string())
+                        },
+                        vm_only: self.vm_only,
+                        allow_fallback,
+                        auto_system_objects: self.hydration.auto_system_objects,
+                        fallback_used,
+                        fallback_reasons,
+                        dynamic_field_prefetch: enable_dynamic_fields,
+                        prefetch_depth: self.hydration.prefetch_depth,
+                        prefetch_limit: self.hydration.prefetch_limit,
+                        dependency_fetch_mode,
+                        dependency_packages_fetched: fetched_deps,
+                        synthetic_inputs: synthetic_logs.len(),
+                    },
                     comparison,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
+                    batch_summary_printed: false,
                 })
             }
             Err(e) => Ok(ReplayOutput {
                 digest: self.digest.clone(),
                 local_success: false,
                 local_error: Some(e.to_string()),
+                execution_path: ReplayExecutionPath {
+                    requested_source: self
+                        .hydration
+                        .source
+                        .to_possible_value()
+                        .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
+                    effective_source: if self.igloo_hybrid_loader_enabled() {
+                        "igloo_hybrid_loader".to_string()
+                    } else {
+                        self.hydration
+                            .source
+                            .to_possible_value()
+                            .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string())
+                    },
+                    vm_only: self.vm_only,
+                    allow_fallback,
+                    auto_system_objects: self.hydration.auto_system_objects,
+                    fallback_used,
+                    fallback_reasons,
+                    dynamic_field_prefetch: enable_dynamic_fields,
+                    prefetch_depth: self.hydration.prefetch_depth,
+                    prefetch_limit: self.hydration.prefetch_limit,
+                    dependency_fetch_mode,
+                    dependency_packages_fetched: fetched_deps,
+                    synthetic_inputs: synthetic_logs.len(),
+                },
                 comparison: None,
                 effects: None,
                 effects_full: None,
                 commands_executed: 0,
+                batch_summary_printed: false,
             }),
         }
     }
 
-    fn resolve_igloo_config(&self) -> Result<IglooConfig> {
-        let explicit_path = self.igloo_config.clone();
-        if let Some(path) = explicit_path.as_ref() {
-            if !path.exists() {
-                return Err(anyhow!("Igloo config not found: {}", path.display()));
-            }
-        }
-        let config_path = explicit_path
-            .or_else(|| {
-                std::env::var("IGLOO_MCP_SERVICE_CONFIG")
-                    .ok()
-                    .map(PathBuf::from)
-            })
-            .or_else(|| std::env::var("IGLOO_MCP_CONFIG").ok().map(PathBuf::from))
-            .or_else(|| find_mcp_service_config(&std::env::current_dir().unwrap_or_default()));
-
-        let mut config = if let Some(path) = config_path {
-            if path.exists() {
-                load_igloo_config(&path)?
-            } else {
-                IglooConfig::default()
-            }
-        } else {
-            IglooConfig::default()
-        };
-
-        if let Some(cmd) = &self.igloo_command {
-            config.command = cmd.clone();
-        }
-
-        config.command =
-            resolve_igloo_command(&config.command).unwrap_or_else(|| config.command.clone());
-        apply_snowflake_config(&mut config);
-
-        Ok(config)
+    /// Walrus-first replay: fetch checkpoint data from Walrus, convert to ReplayState,
+    /// and execute locally. No gRPC, GraphQL, or API keys needed.
+    #[cfg(feature = "walrus")]
+    async fn execute_walrus_first(
+        &self,
+        state: &SandboxState,
+        verbose: bool,
+        checkpoint_num: u64,
+        replay_progress: bool,
+    ) -> Result<ReplayOutput> {
+        self.execute_walrus_with_data(
+            state,
+            verbose,
+            checkpoint_num,
+            replay_progress,
+            WalrusReplayData {
+                preloaded_checkpoint: None,
+                shared_obj_cache: None,
+                shared_pkg_cache: None,
+            },
+        )
+        .await
     }
 
-    async fn build_replay_state_hybrid(
+    /// Core Walrus replay logic. Accepts optional pre-loaded checkpoint data and shared caches
+    /// to avoid re-fetching in batch mode.
+    #[cfg(feature = "walrus")]
+    async fn execute_walrus_with_data(
         &self,
-        provider: &HistoricalStateProvider,
+        state: &SandboxState,
         verbose: bool,
-    ) -> Result<ReplayState> {
-        let mut igloo = IglooMcpClient::connect(self.resolve_igloo_config()?).await?;
-        let result = async {
-            let digest_sql = escape_sql_literal(&self.digest);
+        checkpoint_num: u64,
+        replay_progress: bool,
+        data: WalrusReplayData<'_>,
+    ) -> Result<ReplayOutput> {
+        use sui_transport::walrus::WalrusClient;
 
-            let meta_query = format!(
-                "select CHECKPOINT, EPOCH, TIMESTAMP_MS, EFFECTS_JSON from {}.{}.TRANSACTION where TRANSACTION_DIGEST = '{}' limit 1",
-                self.analytics_db, self.analytics_schema, digest_sql
-            );
-            let meta_row = igloo
-                .query_one(&meta_query, "hybrid replay: transaction metadata")
-                .await
-                .context("TRANSACTION metadata query failed")?;
-            let checkpoint = row_get_u64(&meta_row, "CHECKPOINT")
-                .ok_or_else(|| anyhow!("Missing CHECKPOINT in TRANSACTION for {}", self.digest))?;
-            let mut epoch = row_get_u64(&meta_row, "EPOCH").unwrap_or(0);
-            let timestamp_ms = row_get_u64(&meta_row, "TIMESTAMP_MS")
-                .ok_or_else(|| anyhow!("Missing TIMESTAMP_MS in TRANSACTION for {}", self.digest))?;
-            let timestamp_ms_opt = Some(timestamp_ms);
-            let effects_raw = row_get_value(&meta_row, "EFFECTS_JSON")
-                .ok_or_else(|| anyhow!("Missing EFFECTS_JSON for {}", self.digest))?;
-            let effects_json = parse_effects_value(effects_raw)?;
-            let shared_versions = parse_effects_versions(&effects_json);
-            let effects_summary = build_onchain_effects_summary(&effects_json, &shared_versions);
-            if epoch == 0 {
-                if let Some(executed) = extract_executed_epoch(&effects_json) {
-                    epoch = executed;
-                }
-            }
-
-            let tx_query = format!(
-                "select BCS from {}.{}.TRANSACTION_BCS where TRANSACTION_DIGEST = '{}' and TIMESTAMP_MS = {} and CHECKPOINT = {} limit 1",
-                self.analytics_db, self.analytics_schema, digest_sql, timestamp_ms, checkpoint
-            );
-            let tx_row = igloo
-                .query_one(&tx_query, "hybrid replay: transaction_bcs")
-                .await
-                .context("TRANSACTION_BCS query failed")?;
-            let tx_bcs = row_get_string(&tx_row, "BCS")
-                .ok_or_else(|| anyhow!("Missing BCS in TRANSACTION_BCS for {}", self.digest))?;
-
-            let tx_data = decode_transaction_bcs(&tx_bcs)?;
-            let ptb = match tx_data.kind() {
-                TransactionKind::ProgrammableTransaction(ptb) => ptb,
-                other => {
-                    return Err(anyhow!(
-                        "Hybrid loader only supports programmable transactions (got {:?})",
-                        other
-                    ))
-                }
-            };
-
-            let mut input_specs: Vec<InputSpec> = Vec::with_capacity(ptb.inputs.len());
-            let mut object_requests: HashMap<AccountAddress, u64> = HashMap::new();
-            let mut historical_versions: HashMap<String, u64> = HashMap::new();
-
-            for input in &ptb.inputs {
-                match input {
-                    CallArg::Pure(bytes) => input_specs.push(InputSpec::Pure(bytes.clone())),
-                    CallArg::FundsWithdrawal(_) => {
-                        return Err(anyhow!(
-                            "Hybrid loader does not support FundsWithdrawal inputs yet"
-                        ))
-                    }
-                    CallArg::Object(obj_arg) => match obj_arg {
-                        ObjectArg::ImmOrOwnedObject(obj_ref) => {
-                            let addr = AccountAddress::from(obj_ref.0);
-                            let version = obj_ref.1.value();
-                            let digest = obj_ref.2.to_string();
-                            input_specs.push(InputSpec::ImmOrOwned {
-                                id: addr,
-                                version,
-                                digest,
-                            });
-                            object_requests.insert(addr, version);
-                            historical_versions
-                                .insert(normalize_address_shared(&addr.to_hex_literal()), version);
-                        }
-                        ObjectArg::Receiving(obj_ref) => {
-                            let addr = AccountAddress::from(obj_ref.0);
-                            let version = obj_ref.1.value();
-                            let digest = obj_ref.2.to_string();
-                            input_specs.push(InputSpec::Receiving {
-                                id: addr,
-                                version,
-                                digest,
-                            });
-                            object_requests.insert(addr, version);
-                            historical_versions
-                                .insert(normalize_address_shared(&addr.to_hex_literal()), version);
-                        }
-                        ObjectArg::SharedObject {
-                            id,
-                            initial_shared_version,
-                            mutability,
-                        } => {
-                            let addr = AccountAddress::from(*id);
-                            let initial = initial_shared_version.value();
-                            let normalized = normalize_address_shared(&addr.to_hex_literal());
-                            let actual = shared_versions.get(&normalized).copied().unwrap_or(initial);
-                            let mutable = matches!(mutability, SharedObjectMutability::Mutable);
-                            input_specs.push(InputSpec::Shared {
-                                id: addr,
-                                initial_shared_version: initial,
-                                mutable,
-                            });
-                            object_requests.insert(addr, actual);
-                            historical_versions
-                                .insert(normalize_address_shared(&addr.to_hex_literal()), actual);
-                        }
-                    },
-                }
-            }
-
+        // Fetch checkpoint if not pre-loaded
+        let owned_checkpoint;
+        let checkpoint_data = if let Some(pre) = data.preloaded_checkpoint {
+            pre
+        } else {
             if verbose {
                 eprintln!(
-                    "[hybrid] inputs={} object_requests={}",
-                    input_specs.len(),
-                    object_requests.len()
+                    "[walrus] fetching checkpoint {} for digest {}",
+                    checkpoint_num, self.digest
                 );
             }
+            owned_checkpoint = tokio::task::spawn_blocking(move || {
+                let walrus = WalrusClient::mainnet();
+                walrus.get_checkpoint(checkpoint_num)
+            })
+            .await
+            .context("Walrus fetch task panicked")?
+            .context("Failed to fetch checkpoint from Walrus")?;
+            if replay_progress {
+                eprintln!(
+                    "[walrus] checkpoint fetched ({} transactions)",
+                    owned_checkpoint.transactions.len()
+                );
+            }
+            &owned_checkpoint
+        };
+        let shared_obj_cache = data.shared_obj_cache.clone();
+        let shared_pkg_cache = data.shared_pkg_cache.clone();
 
-            let mut objects: HashMap<AccountAddress, VersionedObject> = HashMap::new();
-            let mut owner_map: HashMap<AccountAddress, GrpcOwner> = HashMap::new();
-            for (addr, version) in object_requests {
-                let id_hex = addr.to_hex_literal();
-                if verbose {
-                    eprintln!("[hybrid] fetch object {} @{}", id_hex, version);
+        let mut replay_state = checkpoint_to_replay_state(checkpoint_data, &self.digest)
+            .context("Failed to convert checkpoint to replay state")?;
+
+        // Build a map of shared object versions from effects' input_consensus_objects.
+        // Read-only shared objects are NOT included in checkpoint input_objects,
+        // so we need their exact versions from effects to fetch them correctly.
+        let shared_obj_versions: HashMap<AccountAddress, u64> = {
+            let mut map = HashMap::new();
+            if let Some(tx_idx) = find_tx_in_checkpoint(checkpoint_data, &self.digest) {
+                let effects = &checkpoint_data.transactions[tx_idx].effects;
+                for ico in effects.input_consensus_objects() {
+                    let (obj_id, seq) = ico.id_and_version();
+                    map.insert(AccountAddress::from(obj_id), seq.value());
                 }
-                let grpc_obj = match tokio::time::timeout(
-                    Duration::from_secs(self.grpc_timeout_secs),
-                    provider.grpc().get_object_at_version(&id_hex, Some(version)),
-                )
-                .await
+            }
+            map
+        };
+
+        if replay_progress {
+            eprintln!("[walrus] replay state built");
+        }
+
+        if verbose {
+            eprintln!(
+                "  Sender: {}",
+                replay_state.transaction.sender.to_hex_literal()
+            );
+            eprintln!("  Commands: {}", replay_state.transaction.commands.len());
+            eprintln!("  Inputs: {}", replay_state.transaction.inputs.len());
+            eprintln!(
+                "  Packages from checkpoint: {}",
+                replay_state.packages.len()
+            );
+            for (addr, pkg) in &replay_state.packages {
+                eprintln!(
+                    "    pkg {} v{} original={:?} linkage_entries={}",
+                    addr.to_hex_literal(),
+                    pkg.version,
+                    pkg.original_id.map(|a| a.to_hex_literal()),
+                    pkg.linkage.len()
+                );
+            }
+        }
+
+        // Build initial aliases from checkpoint packages
+        let mut pkg_aliases =
+            build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
+        if replay_progress {
+            eprintln!("[walrus] aliases built");
+        }
+
+        let mut resolver = hydrate_resolver_from_replay_state(
+            state,
+            &replay_state,
+            &pkg_aliases.linkage_upgrades,
+            &pkg_aliases.aliases,
+        );
+        if replay_progress {
+            eprintln!("[walrus] resolver hydrated");
+        }
+
+        // Fetch missing packages via Walrus (previousTransaction → checkpoint)
+        // Falls back to GraphQL module fetch for system packages
+        let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
+        let graphql_client = GraphQLClient::new(&graphql_endpoint);
+
+        // Package cache: shared across direct fetch and dependency closure
+        // Use shared cache if provided (batch mode), otherwise create from checkpoint
+        let walrus_pkg_cache: Arc<parking_lot::Mutex<HashMap<AccountAddress, PackageData>>> =
+            if let Some(cache) = shared_pkg_cache {
+                // Merge checkpoint packages into shared cache
                 {
-                    Ok(result) => result?
-                        .ok_or_else(|| anyhow!("Object not found: {} @{}", id_hex, version))?,
-                    Err(_) => {
-                        return Err(anyhow!(
-                            "gRPC timeout fetching object {} @{} ({}s)",
-                            id_hex,
-                            version,
-                            self.grpc_timeout_secs
-                        ))
+                    let mut c = cache.lock();
+                    for (addr, pkg) in &replay_state.packages {
+                        c.entry(*addr).or_insert_with(|| pkg.clone());
                     }
-                };
-                if verbose {
-                    eprintln!("[hybrid] fetched object {} @{}", id_hex, version);
                 }
-                let versioned = grpc_object_to_versioned(&grpc_obj, addr, version)?;
-                owner_map.insert(addr, grpc_obj.owner.clone());
-                objects.insert(addr, versioned);
-            }
-
-            if self.auto_system_objects {
-                ensure_system_objects(
-                    &mut objects,
-                    &historical_versions,
-                    timestamp_ms_opt,
-                    Some(checkpoint),
-                );
-            }
-
-            let inputs = build_transaction_inputs(&input_specs, &owner_map);
-            let commands = convert_sui_commands(&ptb.commands)?;
-
-            let sender = AccountAddress::from(tx_data.sender());
-            let transaction = FetchedTransaction {
-                digest: SandboxTransactionDigest(self.digest.clone()),
-                sender,
-                gas_budget: tx_data.gas_budget(),
-                gas_price: tx_data.gas_price(),
-                commands,
-                inputs,
-                effects: effects_summary,
-                timestamp_ms: timestamp_ms_opt,
-                checkpoint: Some(checkpoint),
+                cache
+            } else {
+                let mut cache = HashMap::new();
+                for (addr, pkg) in &replay_state.packages {
+                    cache.insert(*addr, pkg.clone());
+                }
+                Arc::new(parking_lot::Mutex::new(cache))
             };
 
-            let mut package_ids = collect_package_ids_from_commands(&ptb.commands);
-            for obj in objects.values() {
-                if let Some(type_tag) = &obj.type_tag {
-                    collect_package_ids_from_type_str(type_tag, &mut package_ids);
+        // Extract required package IDs from PTB commands
+        {
+            let mut required_pkgs: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for cmd in &replay_state.transaction.commands {
+                match cmd {
+                    PtbCommand::MoveCall {
+                        package,
+                        type_arguments,
+                        ..
+                    } => {
+                        required_pkgs.insert(package.clone());
+                        for ty in type_arguments {
+                            for pkg_id in
+                                sui_sandbox_core::utilities::extract_package_ids_from_type(ty)
+                            {
+                                required_pkgs.insert(pkg_id);
+                            }
+                        }
+                    }
+                    PtbCommand::Publish { dependencies, .. } => {
+                        for dep in dependencies {
+                            required_pkgs.insert(dep.clone());
+                        }
+                    }
+                    PtbCommand::Upgrade { package, .. } => {
+                        required_pkgs.insert(package.clone());
+                    }
+                    _ => {}
                 }
             }
-            if verbose {
-                eprintln!("[hybrid] package seeds={}", package_ids.len());
+
+            // Fetch any that aren't already in the resolver
+            let mut direct_fetched = 0usize;
+            for pkg_hex in &required_pkgs {
+                if let Ok(addr) = AccountAddress::from_hex_literal(pkg_hex) {
+                    if !replay_state.packages.contains_key(&addr) && !resolver.has_package(&addr) {
+                        if verbose {
+                            eprintln!("[walrus] fetching package {} via Walrus", pkg_hex);
+                        }
+                        // Try Walrus-backed fetch (previousTransaction → checkpoint)
+                        if let Some(pkg_data) = fetch_package_via_walrus(
+                            &graphql_client,
+                            &walrus_pkg_cache,
+                            pkg_hex,
+                            verbose,
+                        ) {
+                            if verbose {
+                                eprintln!(
+                                    "[walrus] got pkg {} v{} original={:?} linkage_entries={}",
+                                    pkg_data.address.to_hex_literal(),
+                                    pkg_data.version,
+                                    pkg_data.original_id.map(|a| a.to_hex_literal()),
+                                    pkg_data.linkage.len()
+                                );
+                                for (orig, upgraded) in &pkg_data.linkage {
+                                    eprintln!(
+                                        "  linkage: {} → {}",
+                                        orig.to_hex_literal(),
+                                        upgraded.to_hex_literal()
+                                    );
+                                }
+                            }
+                            let _ = resolver.add_package_modules_at(
+                                pkg_data.modules.clone(),
+                                Some(pkg_data.address),
+                            );
+                            // Register per-package linkage + global linkage + aliases
+                            resolver.add_package_linkage(
+                                pkg_data.address,
+                                pkg_data.runtime_id(),
+                                &pkg_data.linkage,
+                            );
+                            for (original, upgraded) in &pkg_data.linkage {
+                                resolver.add_linkage_upgrade(*original, *upgraded);
+                            }
+                            if let Some(orig_id) = pkg_data.original_id {
+                                if orig_id != pkg_data.address {
+                                    resolver.add_address_alias(pkg_data.address, orig_id);
+                                }
+                            }
+                            replay_state.packages.insert(pkg_data.address, pkg_data);
+                            direct_fetched += 1;
+                        } else {
+                            // Fallback: GraphQL module fetch (no linkage, but works for
+                            // system packages 0x1/0x2/0x3 which don't need linkage)
+                            if verbose {
+                                eprintln!(
+                                    "[walrus] Walrus fallback failed for {}, trying GraphQL",
+                                    pkg_hex
+                                );
+                            }
+                            match graphql_client.fetch_package(pkg_hex) {
+                                Ok(gql_pkg) => {
+                                    let mut modules = Vec::new();
+                                    for module in gql_pkg.modules {
+                                        if let Some(b64) = module.bytecode_base64 {
+                                            if let Ok(bytes) =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .decode(b64)
+                                            {
+                                                modules.push((module.name, bytes));
+                                            }
+                                        }
+                                    }
+                                    if !modules.is_empty() {
+                                        let _ =
+                                            resolver.add_package_modules_at(modules, Some(addr));
+                                        direct_fetched += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    if verbose {
+                                        eprintln!(
+                                            "[walrus] failed to fetch package {}: {}",
+                                            pkg_hex, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            if direct_fetched > 0 && verbose {
+                eprintln!("[walrus] fetched {} direct packages", direct_fetched);
+            }
+        }
 
-            let mut packages: HashMap<AccountAddress, PackageData> = HashMap::new();
-            let mut pending: VecDeque<AccountAddress> = package_ids.into_iter().collect();
-            let mut seen: HashSet<AccountAddress> = HashSet::new();
-            let mut have_storage: HashSet<AccountAddress> = HashSet::new();
-            let mut have_runtime: HashSet<AccountAddress> = HashSet::new();
+        // Resolve transitive dependency closure (Walrus-backed)
+        let fetched_deps = fetch_dependency_closure_walrus(
+            &mut resolver,
+            &graphql_client,
+            &walrus_pkg_cache,
+            &mut replay_state,
+            verbose,
+        )
+        .unwrap_or(0);
+        if fetched_deps > 0 && verbose {
+            eprintln!(
+                "[walrus] fetched {} transitive dependency packages",
+                fetched_deps
+            );
+        }
+        if replay_progress {
+            eprintln!("[walrus] dependency closure done");
+        }
 
-            while let Some(pkg_id) = pending.pop_front() {
-                if !seen.insert(pkg_id) {
-                    continue;
+        // Rebuild aliases now that all packages are loaded
+        pkg_aliases = build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
+        // Re-register new aliases in the resolver
+        for (original, upgraded) in &pkg_aliases.linkage_upgrades {
+            resolver.add_linkage_upgrade(*original, *upgraded);
+        }
+        for (storage, runtime) in &pkg_aliases.aliases {
+            resolver.add_address_alias(*storage, *runtime);
+        }
+
+        // Inject system objects (Clock, Random)
+        if self.hydration.auto_system_objects {
+            ensure_system_objects(
+                &mut replay_state.objects,
+                &HashMap::new(),
+                replay_state.transaction.timestamp_ms,
+                replay_state.checkpoint,
+            );
+        }
+
+        // Fetch missing input objects via GraphQL
+        {
+            let mut missing_ids: Vec<(AccountAddress, Option<u64>)> = Vec::new();
+            for input in &replay_state.transaction.inputs {
+                let (id_str, version) = match input {
+                    TransactionInput::Object {
+                        object_id, version, ..
+                    } => (Some(object_id.clone()), Some(*version)),
+                    TransactionInput::SharedObject { object_id, .. } => {
+                        // Look up the exact version from effects' input_consensus_objects
+                        let version = AccountAddress::from_hex_literal(object_id)
+                            .ok()
+                            .and_then(|addr| shared_obj_versions.get(&addr).copied());
+                        (Some(object_id.clone()), version)
+                    }
+                    TransactionInput::ImmutableObject {
+                        object_id, version, ..
+                    } => (Some(object_id.clone()), Some(*version)),
+                    TransactionInput::Receiving {
+                        object_id, version, ..
+                    } => (Some(object_id.clone()), Some(*version)),
+                    TransactionInput::Pure { .. } => (None, None),
+                };
+                if let Some(id_str) = id_str {
+                    if let Ok(addr) = AccountAddress::from_hex_literal(&id_str) {
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            replay_state.objects.entry(addr)
+                        {
+                            // Check shared object cache first (populated from
+                            // other checkpoints' data) before falling back to GraphQL
+                            let addr_hex = addr.to_hex_literal();
+                            let found_in_cache = if let Some(ref cache) = shared_obj_cache {
+                                if let Some((ts, bcs, ver)) = cache.lock().get(&addr_hex).cloned() {
+                                    entry.insert(VersionedObject {
+                                        id: addr,
+                                        version: ver,
+                                        digest: None,
+                                        type_tag: Some(ts),
+                                        bcs_bytes: bcs,
+                                        is_shared: shared_obj_versions.contains_key(&addr),
+                                        is_immutable: false,
+                                    });
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if !found_in_cache {
+                                missing_ids.push((addr, version));
+                            }
+                        }
+                    }
                 }
-                if have_storage.contains(&pkg_id) || have_runtime.contains(&pkg_id) {
-                    continue;
-                }
-
+            }
+            if !missing_ids.is_empty() {
                 if verbose {
-                    eprintln!("[hybrid] fetch package {}", pkg_id.to_hex_literal());
-                }
-                let is_system_pkg = is_system_package_address(&pkg_id);
-                if is_system_pkg && verbose {
                     eprintln!(
-                        "[hybrid] system package -> gRPC {}",
-                        pkg_id.to_hex_literal()
+                        "[walrus] fetching {} missing input objects via GraphQL",
+                        missing_ids.len()
                     );
                 }
-                let mut pkg_opt = None;
-                if self.snowflake_packages && !is_system_pkg {
-                    pkg_opt = fetch_package_from_snowflake(
-                        &mut igloo,
-                        &self.analytics_db,
-                        &self.analytics_schema,
-                        &pkg_id,
-                        Some(checkpoint),
-                        timestamp_ms_opt,
-                    )
-                    .await?;
-                }
-                if pkg_opt.is_none() && self.require_snowflake_packages && !is_system_pkg {
-                    return Err(anyhow!(
-                        "Snowflake package missing for {}",
-                        pkg_id.to_hex_literal()
-                    ));
-                }
-                if pkg_opt.is_none() {
-                    pkg_opt = fetch_package_via_grpc(provider, &pkg_id, None).await?;
-                }
-
-                if let Some(pkg) = pkg_opt {
-                    if verbose {
-                        eprintln!(
-                            "[hybrid] fetched package {} (modules={})",
-                            pkg.address.to_hex_literal(),
-                            pkg.modules.len()
-                        );
-                    }
-                    let deps = extract_module_dependency_ids(&pkg.modules);
-                    for dep in deps {
-                        if !seen.contains(&dep)
-                            && !have_storage.contains(&dep)
-                            && !have_runtime.contains(&dep)
-                        {
-                            pending.push_back(dep);
+                for (addr, version) in &missing_ids {
+                    let addr_hex = addr.to_hex_literal();
+                    let obj_result = match version {
+                        Some(v) => graphql_client
+                            .fetch_object_at_version(&addr_hex, *v)
+                            .or_else(|_| graphql_client.fetch_object(&addr_hex)),
+                        _ => graphql_client.fetch_object(&addr_hex),
+                    };
+                    match obj_result {
+                        Ok(gql_obj) => {
+                            if let Some(bcs_b64) = &gql_obj.bcs_base64 {
+                                if let Ok(bcs_bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(bcs_b64)
+                                {
+                                    let (is_shared, is_immutable) = match &gql_obj.owner {
+                                        sui_transport::graphql::ObjectOwner::Shared { .. } => {
+                                            (true, false)
+                                        }
+                                        sui_transport::graphql::ObjectOwner::Immutable => {
+                                            (false, true)
+                                        }
+                                        _ => (false, false),
+                                    };
+                                    replay_state.objects.insert(
+                                        *addr,
+                                        VersionedObject {
+                                            id: *addr,
+                                            version: gql_obj.version,
+                                            digest: gql_obj.digest.clone(),
+                                            type_tag: gql_obj.type_string.clone(),
+                                            bcs_bytes,
+                                            is_shared,
+                                            is_immutable,
+                                        },
+                                    );
+                                    if verbose {
+                                        eprintln!(
+                                            "[walrus] fetched object {} v{}",
+                                            addr_hex, gql_obj.version
+                                        );
+                                    }
+                                }
+                            }
                         }
-                    }
-                    have_storage.insert(pkg.address);
-                    have_runtime.insert(pkg.runtime_id());
-                    packages.insert(pkg.address, pkg);
-                } else if verbose {
-                    eprintln!("[hybrid] missing package {}", pkg_id.to_hex_literal());
-                }
-            }
-
-            let mut protocol_version = 0u64;
-            let mut reference_gas_price = None;
-            if epoch > 0 {
-                match tokio::time::timeout(
-                    Duration::from_secs(self.grpc_timeout_secs),
-                    provider.grpc().get_epoch(Some(epoch)),
-                )
-                .await
-                {
-                    Ok(Ok(Some(ep))) => {
-                        protocol_version = ep.protocol_version.unwrap_or(0);
-                        reference_gas_price = ep.reference_gas_price;
-                    }
-                    Ok(Ok(None)) => {}
-                    Ok(Err(err)) => {
-                        if verbose {
-                            eprintln!(
-                                "[hybrid] get_epoch failed for epoch {}: {}",
-                                epoch, err
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        if verbose {
-                            eprintln!(
-                                "[hybrid] get_epoch timeout for epoch {} ({}s)",
-                                epoch, self.grpc_timeout_secs
-                            );
+                        Err(e) => {
+                            if verbose {
+                                eprintln!("[walrus] failed to fetch object {}: {}", addr_hex, e);
+                            }
                         }
                     }
                 }
             }
-
-            Ok(ReplayState {
-                transaction,
-                objects,
-                packages,
-                protocol_version,
-                epoch,
-                reference_gas_price,
-                checkpoint: Some(checkpoint),
-            })
         }
-        .await;
 
-        let _ = igloo.shutdown().await;
-        result
-    }
-}
-
-#[derive(Debug, Clone)]
-enum InputSpec {
-    Pure(Vec<u8>),
-    ImmOrOwned {
-        id: AccountAddress,
-        version: u64,
-        digest: String,
-    },
-    Receiving {
-        id: AccountAddress,
-        version: u64,
-        digest: String,
-    },
-    Shared {
-        id: AccountAddress,
-        initial_shared_version: u64,
-        mutable: bool,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct IglooConfigFile {
-    igloo: Option<IglooConfigSection>,
-    snowflake: Option<SnowflakeConfigSection>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct IglooConfigSection {
-    command: Option<String>,
-    args: Option<Vec<String>>,
-    cwd: Option<String>,
-    env: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct SnowflakeConfigSection {
-    account: Option<String>,
-    user: Option<String>,
-    database: Option<String>,
-    schema: Option<String>,
-    warehouse: Option<String>,
-    role: Option<String>,
-    authenticator: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct IglooConfig {
-    command: String,
-    args: Vec<String>,
-    cwd: Option<PathBuf>,
-    env: HashMap<String, String>,
-    snowflake: Option<SnowflakeConfigSection>,
-}
-
-impl Default for IglooConfig {
-    fn default() -> Self {
-        Self {
-            command: "igloo_mcp".to_string(),
-            args: Vec::new(),
-            cwd: None,
-            env: HashMap::new(),
-            snowflake: None,
+        // Export state if requested (before execution, after all data gathered)
+        if let Some(export_path) = &self.export_state {
+            let json = serde_json::to_string_pretty(&replay_state)
+                .context("Failed to serialize replay state")?;
+            std::fs::write(export_path, json)
+                .with_context(|| format!("Failed to write state to {}", export_path.display()))?;
+            if verbose {
+                eprintln!("[export] wrote replay state to {}", export_path.display());
+            }
         }
-    }
-}
 
-struct IglooMcpClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
-}
-
-const IGLOO_QUERY_TIMEOUT_SECS: u64 = 120;
-
-impl IglooMcpClient {
-    async fn connect(config: IglooConfig) -> Result<Self> {
-        let mut cmd = Command::new(&config.command);
-        cmd.args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let Some(cwd) = &config.cwd {
-            cmd.current_dir(cwd);
+        if verbose {
+            eprintln!("Executing locally...");
         }
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
-        let mut child = cmd.spawn().context("Failed to spawn igloo-mcp")?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open igloo-mcp stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open igloo-mcp stdout"))?;
-        let mut client = Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-            next_id: 1,
+
+        let mut maps = build_replay_object_maps(&replay_state, &pkg_aliases.versions);
+        maybe_patch_replay_objects(
+            &resolver,
+            &replay_state,
+            &pkg_aliases.versions,
+            &pkg_aliases.aliases,
+            &mut maps,
+            false,
+            verbose,
+        );
+        let versions_str = maps.versions_str.clone();
+        let cached_objects = maps.cached_objects;
+
+        let reconcile_policy = if self.reconcile_dynamic_fields {
+            EffectsReconcilePolicy::DynamicFields
+        } else {
+            EffectsReconcilePolicy::Strict
         };
-        client.initialize().await?;
-        Ok(client)
-    }
 
-    async fn initialize(&mut self) -> Result<()> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let init = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "sui-sandbox",
-                    "version": env!("CARGO_PKG_VERSION"),
+        // Build VM harness and execute
+        let config = build_simulation_config(&replay_state);
+        let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
+        harness
+            .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), versions_str.clone());
+
+        // Set up Walrus+GraphQL child fetcher for dynamic fields
+        {
+            let gql = Arc::new(graphql_client);
+            let checkpoint = replay_state.checkpoint;
+
+            // Pre-populate child cache from all objects in the checkpoint data.
+            // Use shared cache if provided (batch mode), otherwise create a fresh one.
+            let walrus_obj_cache: SharedObjCache = shared_obj_cache
+                .clone()
+                .unwrap_or_else(|| Arc::new(parking_lot::Mutex::new(HashMap::new())));
+            if shared_obj_cache.is_none() {
+                // Only pre-populate from checkpoint if we didn't get a shared cache
+                // (shared cache is already pre-populated by batch v2)
+                let mut prepop_count = 0usize;
+                for tx in &checkpoint_data.transactions {
+                    for obj in tx.input_objects.iter().chain(tx.output_objects.iter()) {
+                        let oid = format!("0x{}", hex::encode(obj.id().into_bytes()));
+                        if let Some((ts, bcs, ver, _shared)) =
+                            sui_transport::walrus::extract_object_bcs(obj)
+                        {
+                            walrus_obj_cache.lock().insert(oid, (ts, bcs, ver));
+                            prepop_count += 1;
+                        }
+                    }
+                }
+                if verbose {
+                    eprintln!(
+                        "[walrus-df] pre-populated cache with {} objects from checkpoint",
+                        prepop_count
+                    );
                 }
             }
-        });
-        self.send_message(&init).await?;
-        let _ = self.read_response(id).await?;
 
-        let initialized = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        });
-        self.send_message(&initialized).await?;
-        Ok(())
-    }
-
-    async fn query_one(&mut self, statement: &str, reason: &str) -> Result<Value> {
-        let rows = self.query_rows(statement, reason).await?;
-        rows.into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("No rows returned for query"))
-    }
-
-    async fn query_rows(&mut self, statement: &str, reason: &str) -> Result<Vec<Value>> {
-        let payload = serde_json::json!({
-            "statement": statement,
-            "reason": reason,
-            "result_mode": "full",
-            "timeout_seconds": IGLOO_QUERY_TIMEOUT_SECS,
-        });
-        let result = self.call_tool("execute_query", payload).await?;
-        let mut structured = result
-            .get("structuredContent")
-            .cloned()
-            .unwrap_or(result.clone());
-        if let Some(inner) = structured.get("result") {
-            structured = inner.clone();
-        }
-        let rows = structured
-            .get("rows")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(rows)
-    }
-
-    async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "tools/call",
-            "params": {
-                "name": name,
-                "arguments": arguments,
+            // Fetch unchanged_loaded_runtime_objects via gRPC — these are the
+            // dynamic field children that were loaded during execution.
+            // For each, use previous_transaction → checkpoint → Walrus to get BCS.
+            {
+                // Try archive endpoint first (has full history), fall back to live fullnode
+                let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
+                    .unwrap_or_else(|_| "https://archive.mainnet.sui.io:443".to_string());
+                match GrpcClient::new(&grpc_endpoint).await {
+                    Ok(grpc) => {
+                        match grpc.get_transaction(&self.digest).await {
+                            Ok(Some(tx)) => {
+                                let runtime_objs = &tx.unchanged_loaded_runtime_objects;
+                                if !runtime_objs.is_empty() {
+                                    if verbose {
+                                        eprintln!(
+                                            "[walrus-df] gRPC: {} unchanged_loaded_runtime_objects",
+                                            runtime_objs.len()
+                                        );
+                                    }
+                                    // For each runtime object, try to fetch via previous_transaction
+                                    for (obj_id, version) in runtime_objs {
+                                        if walrus_obj_cache.lock().contains_key(obj_id) {
+                                            continue;
+                                        }
+                                        // Try gRPC get_object_at_version to get previous_transaction
+                                        match grpc
+                                            .get_object_at_version(obj_id, Some(*version))
+                                            .await
+                                        {
+                                            Ok(Some(grpc_obj)) => {
+                                                // If we got BCS directly from gRPC, use it
+                                                if let (Some(type_str), Some(bcs_bytes)) =
+                                                    (&grpc_obj.type_string, &grpc_obj.bcs)
+                                                {
+                                                    if !bcs_bytes.is_empty() {
+                                                        walrus_obj_cache.lock().insert(
+                                                            obj_id.clone(),
+                                                            (
+                                                                type_str.clone(),
+                                                                bcs_bytes.clone(),
+                                                                *version,
+                                                            ),
+                                                        );
+                                                        if verbose {
+                                                            eprintln!(
+                                                                "[walrus-df] gRPC: fetched {} v{} directly",
+                                                                obj_id, version
+                                                            );
+                                                        }
+                                                        continue;
+                                                    }
+                                                }
+                                                // Fallback: use previous_transaction to find via Walrus
+                                                if let Some(prev_tx) =
+                                                    &grpc_obj.previous_transaction
+                                                {
+                                                    if let Some(found) = fetch_via_prev_tx(
+                                                        &gql,
+                                                        &walrus_obj_cache,
+                                                        obj_id,
+                                                        prev_tx,
+                                                    ) {
+                                                        if verbose {
+                                                            eprintln!(
+                                                                "[walrus-df] Walrus: fetched {} via prevTx {}",
+                                                                obj_id, prev_tx
+                                                            );
+                                                        }
+                                                        let _ = found; // already cached by fetch_via_prev_tx
+                                                    }
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                // Object not found at version (pruned) — try latest
+                                                if let Ok(gql_obj) = gql.fetch_object(obj_id) {
+                                                    if let Some(prev_tx) =
+                                                        &gql_obj.previous_transaction
+                                                    {
+                                                        let _ = fetch_via_prev_tx(
+                                                            &gql,
+                                                            &walrus_obj_cache,
+                                                            obj_id,
+                                                            prev_tx,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                if verbose {
+                                                    eprintln!(
+                                                        "[walrus-df] gRPC: failed to fetch {} v{}: {}",
+                                                        obj_id, version, e
+                                                    );
+                                                }
+                                                // Fallback: try GraphQL + Walrus
+                                                if let Ok(gql_obj) = gql.fetch_object(obj_id) {
+                                                    if let Some(prev_tx) =
+                                                        &gql_obj.previous_transaction
+                                                    {
+                                                        let _ = fetch_via_prev_tx(
+                                                            &gql,
+                                                            &walrus_obj_cache,
+                                                            obj_id,
+                                                            prev_tx,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let cached = walrus_obj_cache.lock().len();
+                                    if verbose {
+                                        eprintln!(
+                                            "[walrus-df] cache now has {} objects after runtime obj fetch",
+                                            cached
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                if verbose {
+                                    eprintln!("[walrus-df] gRPC: transaction not found");
+                                }
+                            }
+                            Err(e) => {
+                                if verbose {
+                                    eprintln!("[walrus-df] gRPC: failed to get transaction: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if verbose {
+                            eprintln!("[walrus-df] gRPC: failed to connect: {}", e);
+                        }
+                    }
+                }
             }
-        });
-        self.send_message(&request).await?;
-        let result = self.read_response(id).await?;
-        if result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            let message = extract_text_from_content(result.get("content"))
-                .unwrap_or_else(|| "igloo-mcp tool error".to_string());
-            return Err(anyhow!("igloo-mcp {} failed: {}", name, message));
-        }
-        Ok(result)
-    }
 
-    async fn send_message(&mut self, value: &Value) -> Result<()> {
-        let json = serde_json::to_string(value)?;
-        self.stdin.write_all(json.as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
-        Ok(())
-    }
-
-    async fn read_response(&mut self, expected_id: u64) -> Result<Value> {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = self.stdout.read_line(&mut line).await?;
-            if bytes == 0 {
-                return Err(anyhow!("igloo-mcp closed stdout unexpectedly"));
+            // Build parent→children index from checkpoint data for DF resolution.
+            // For each dynamic_field::Field object, record (parent, actual_id, type_str, key_bcs_size).
+            // This allows the child fetcher to find objects by parent when computed hash differs.
+            struct DfChild {
+                actual_id: String,
+                key_type_str: String,
             }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let parsed: Value = match serde_json::from_str(trimmed) {
-                Ok(val) => val,
-                Err(_) => continue,
+            let df_children_by_parent: Arc<HashMap<String, Vec<DfChild>>> = {
+                let mut map: HashMap<String, Vec<DfChild>> = HashMap::new();
+                let tx_index = checkpoint_data
+                    .transactions
+                    .iter()
+                    .position(|tx| tx.transaction.digest().to_string() == self.digest);
+                if let Some(idx) = tx_index {
+                    let target_tx = &checkpoint_data.transactions[idx];
+                    for obj in &target_tx.input_objects {
+                        if let sui_types::object::Data::Move(move_obj) = &obj.data {
+                            let type_str = move_obj.type_().to_string();
+                            if type_str.contains("::dynamic_field::Field<")
+                                || type_str.contains("::dynamic_object_field::Wrapper<")
+                            {
+                                let parent_addr = match obj.owner {
+                                    sui_types::object::Owner::ObjectOwner(addr) => {
+                                        Some(AccountAddress::from(addr).to_hex_literal())
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(parent_hex) = parent_addr {
+                                    // Extract K from Field<K, V> or Wrapper<K>
+                                    let key_type_str = if let Some(rest) = type_str
+                                        .find("::dynamic_field::Field<")
+                                        .map(|i| &type_str[i + "::dynamic_field::Field<".len()..])
+                                    {
+                                        rest.strip_suffix('>').and_then(split_first_type_param)
+                                    } else if let Some(rest) =
+                                        type_str.find("::dynamic_object_field::Wrapper<").map(|i| {
+                                            &type_str
+                                                [i + "::dynamic_object_field::Wrapper<".len()..]
+                                        })
+                                    {
+                                        rest.strip_suffix('>').map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(kt) = key_type_str {
+                                        let actual_id =
+                                            format!("0x{}", hex::encode(obj.id().into_bytes()));
+                                        map.entry(parent_hex).or_default().push(DfChild {
+                                            actual_id,
+                                            key_type_str: kt,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if verbose && !map.is_empty() {
+                    let total: usize = map.values().map(|v| v.len()).sum();
+                    eprintln!(
+                        "[walrus-df] indexed {} DF children across {} parents from checkpoint",
+                        total,
+                        map.len()
+                    );
+                }
+                Arc::new(map)
             };
-            let Some(id_value) = parsed.get("id") else {
-                continue;
+
+            // Helper: fetch object by ID, trying targeted strategies:
+            // 1. Cache (pre-populated from checkpoint data)
+            // 2. GraphQL latest (works for objects that still exist)
+            // 3. Targeted Walrus lookup via previousTransaction → checkpoint
+            let fetch_child_obj = {
+                let gql = Arc::clone(&gql);
+                let cache = Arc::clone(&walrus_obj_cache);
+                move |id_hex: &str| -> Option<(String, Vec<u8>, u64)> {
+                    // Strategy 1: Check pre-populated cache
+                    if let Some(cached) = cache.lock().get(id_hex) {
+                        return Some(cached.clone());
+                    }
+
+                    // Strategy 2: GraphQL latest — get object + previousTransactionBlock
+                    if let Ok(obj) = gql.fetch_object(id_hex) {
+                        if let (Some(type_str), Some(bcs_b64)) =
+                            (obj.type_string.as_ref(), obj.bcs_base64.as_ref())
+                        {
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(bcs_b64)
+                            {
+                                let result = (type_str.clone(), bytes, obj.version);
+                                cache.lock().insert(id_hex.to_string(), result.clone());
+                                return Some(result);
+                            }
+                        }
+
+                        // Object exists but BCS not available at latest — use
+                        // previousTransactionBlock to find it in Walrus
+                        if let Some(prev_tx) = &obj.previous_transaction {
+                            if let Some(found) = fetch_via_prev_tx(&gql, &cache, id_hex, prev_tx) {
+                                return Some(found);
+                            }
+                        }
+                    }
+
+                    None
+                }
             };
-            if !json_id_matches(id_value, expected_id) {
-                continue;
+            let fetch_child_obj = Arc::new(fetch_child_obj);
+
+            // Versioned child fetcher (ID-based)
+            let fetcher_fn = Arc::clone(&fetch_child_obj);
+            let fetcher = move |_parent: AccountAddress,
+                                child_id: AccountAddress|
+                  -> Option<(TypeTag, Vec<u8>, u64)> {
+                let id_hex = child_id.to_hex_literal();
+                let (type_str, bytes, version) = fetcher_fn(&id_hex)?;
+                let tag = parse_type_tag(&type_str).ok()?;
+                Some((tag, bytes, version))
+            };
+            harness.set_versioned_child_fetcher(Box::new(fetcher));
+
+            // Key-based child fetcher — uses parent→children index from checkpoint
+            // to find DF children when the computed hash doesn't match the on-chain ID.
+            let key_fetcher_fn = Arc::clone(&fetch_child_obj);
+            let key_fetcher_cache = Arc::clone(&walrus_obj_cache);
+            let key_fetcher_df_index = Arc::clone(&df_children_by_parent);
+            let key_fetcher = move |parent: AccountAddress,
+                                    child_id: AccountAddress,
+                                    key_type: &TypeTag,
+                                    key_bytes: &[u8]|
+                  -> Option<(TypeTag, Vec<u8>)> {
+                let id_hex = child_id.to_hex_literal();
+                // Try direct ID lookup first
+                if let Some((type_str, bytes, _version)) = key_fetcher_fn(&id_hex) {
+                    let tag = parse_type_tag(&type_str).ok()?;
+                    return Some((tag, bytes));
+                }
+
+                // Direct lookup failed — search parent's DF children from checkpoint.
+                let parent_hex = parent.to_hex_literal();
+                if let Some(children) = key_fetcher_df_index.get(&parent_hex) {
+                    // Try each child of this parent
+                    if let Ok(type_bcs) = bcs::to_bytes(key_type) {
+                        for child in children {
+                            // Compute hash for this child's key type
+                            if let Ok(child_key_tag) = parse_type_tag(&child.key_type_str) {
+                                if let Ok(child_type_bcs) = bcs::to_bytes(&child_key_tag) {
+                                    if let Some(computed) = compute_dynamic_field_id(
+                                        &parent_hex,
+                                        key_bytes,
+                                        &child_type_bcs,
+                                    ) {
+                                        if computed == id_hex {
+                                            // This child matches! Fetch by actual ID.
+                                            if let Some((ts, bytes, _ver)) =
+                                                key_fetcher_fn(&child.actual_id)
+                                            {
+                                                // Cache under computed ID too
+                                                key_fetcher_cache.lock().insert(
+                                                    id_hex.clone(),
+                                                    (ts.clone(), bytes.clone(), _ver),
+                                                );
+                                                let tag = parse_type_tag(&ts).ok()?;
+                                                return Some((tag, bytes));
+                                            }
+                                        }
+                                    }
+                                    // Also try with the VM's key_type (may differ due to aliases)
+                                    if type_bcs != child_type_bcs {
+                                        if let Some(computed) = compute_dynamic_field_id(
+                                            &parent_hex,
+                                            key_bytes,
+                                            &type_bcs,
+                                        ) {
+                                            if computed == id_hex {
+                                                if let Some((ts, bytes, _ver)) =
+                                                    key_fetcher_fn(&child.actual_id)
+                                                {
+                                                    key_fetcher_cache.lock().insert(
+                                                        id_hex.clone(),
+                                                        (ts.clone(), bytes.clone(), _ver),
+                                                    );
+                                                    let tag = parse_type_tag(&ts).ok()?;
+                                                    return Some((tag, bytes));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If we have children but couldn't match by hash, try by key_type string match
+                    let key_type_str = format!("{}", key_type);
+                    for child in children {
+                        if child.key_type_str == key_type_str
+                            || child.key_type_str.ends_with(&key_type_str)
+                        {
+                            if let Some((ts, bytes, _ver)) = key_fetcher_fn(&child.actual_id) {
+                                key_fetcher_cache
+                                    .lock()
+                                    .insert(id_hex.clone(), (ts.clone(), bytes.clone(), _ver));
+                                let tag = parse_type_tag(&ts).ok()?;
+                                return Some((tag, bytes));
+                            }
+                        }
+                    }
+                }
+
+                None
+            };
+            harness.set_key_based_child_fetcher(Box::new(key_fetcher));
+
+            // Child ID aliases for dynamic field hash overrides
+            let child_id_aliases: Arc<parking_lot::Mutex<HashMap<AccountAddress, AccountAddress>>> =
+                Arc::new(parking_lot::Mutex::new(HashMap::new()));
+            harness.set_child_id_aliases(child_id_aliases.clone());
+
+            // Key type resolver — resolves dynamic field key types via GraphQL
+            let gql_for_resolver = Arc::clone(&gql);
+            let alias_map_for_resolver = pkg_aliases.aliases.clone();
+            let child_id_aliases_for_resolver = child_id_aliases.clone();
+            let resolver_cache: Arc<Mutex<HashMap<String, TypeTag>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+            let key_type_resolver = move |parent: AccountAddress,
+                                          key_bytes: &[u8]|
+                  -> Option<TypeTag> {
+                let parent_hex = parent.to_hex_literal();
+                let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
+                let cache_key = format!("{}:{}", parent_hex, key_b64);
+                if let Ok(cache) = resolver_cache.lock() {
+                    if let Some(tag) = cache.get(&cache_key) {
+                        return Some(tag.clone());
+                    }
+                }
+                let enum_limit = std::env::var("SUI_DF_ENUM_LIMIT")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(1000);
+                let field = match checkpoint {
+                    Some(cp) => gql_for_resolver
+                        .find_dynamic_field_by_bcs(&parent_hex, key_bytes, Some(cp), enum_limit)
+                        .or_else(|_| {
+                            gql_for_resolver.find_dynamic_field_by_bcs(
+                                &parent_hex,
+                                key_bytes,
+                                None,
+                                enum_limit,
+                            )
+                        }),
+                    None => gql_for_resolver.find_dynamic_field_by_bcs(
+                        &parent_hex,
+                        key_bytes,
+                        None,
+                        enum_limit,
+                    ),
+                };
+                if let Ok(Some(df)) = field {
+                    if let Ok(tag) = parse_type_tag(&df.name_type) {
+                        if let Some(object_id) = df.object_id.as_deref() {
+                            let mut candidate_tags = vec![tag.clone()];
+                            let rewritten = rewrite_type_tag(tag.clone(), &alias_map_for_resolver);
+                            if rewritten != tag {
+                                candidate_tags.push(rewritten);
+                            }
+                            for candidate in candidate_tags {
+                                if let Ok(type_bcs) = bcs::to_bytes(&candidate) {
+                                    if let Some(computed_hex) =
+                                        compute_dynamic_field_id(&parent_hex, key_bytes, &type_bcs)
+                                    {
+                                        if let (Ok(computed_id), Ok(actual_id)) = (
+                                            AccountAddress::from_hex_literal(&computed_hex),
+                                            AccountAddress::from_hex_literal(object_id),
+                                        ) {
+                                            if computed_id != actual_id {
+                                                let mut map = child_id_aliases_for_resolver.lock();
+                                                map.insert(computed_id, actual_id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Ok(mut cache) = resolver_cache.lock() {
+                            cache.insert(cache_key.clone(), tag.clone());
+                        }
+                        return Some(tag);
+                    }
+                }
+                None
+            };
+            harness.set_key_type_resolver(Box::new(key_type_resolver));
+        }
+
+        let replay_result =
+            sui_sandbox_core::tx_replay::replay_with_version_tracking_with_policy_with_effects(
+                &replay_state.transaction,
+                &mut harness,
+                &cached_objects,
+                &pkg_aliases.aliases,
+                Some(&versions_str),
+                reconcile_policy,
+            );
+
+        match replay_result {
+            Ok(execution) => {
+                let result = execution.result;
+                let effects_summary = build_effects_summary(&execution.effects);
+                let comparison = if self.compare {
+                    result.comparison.map(|c| ComparisonResult {
+                        status_match: c.status_match,
+                        created_match: c.created_count_match,
+                        mutated_match: c.mutated_count_match,
+                        deleted_match: c.deleted_count_match,
+                        on_chain_status: if c.status_match && result.local_success {
+                            "success".to_string()
+                        } else if c.status_match && !result.local_success {
+                            "failed".to_string()
+                        } else {
+                            "unknown".to_string()
+                        },
+                        local_status: if result.local_success {
+                            "success".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                        notes: c.notes.clone(),
+                    })
+                } else {
+                    None
+                };
+
+                Ok(ReplayOutput {
+                    digest: self.digest.clone(),
+                    local_success: result.local_success,
+                    local_error: result.local_error,
+                    execution_path: ReplayExecutionPath {
+                        requested_source: "walrus".to_string(),
+                        effective_source: "walrus_checkpoint".to_string(),
+                        vm_only: true,
+                        allow_fallback: false,
+                        auto_system_objects: self.hydration.auto_system_objects,
+                        fallback_used: false,
+                        fallback_reasons: Vec::new(),
+                        dynamic_field_prefetch: false,
+                        prefetch_depth: 0,
+                        prefetch_limit: 0,
+                        dependency_fetch_mode: "walrus_checkpoint".to_string(),
+                        dependency_packages_fetched: 0,
+                        synthetic_inputs: 0,
+                    },
+                    comparison,
+                    effects: Some(effects_summary),
+                    effects_full: Some(execution.effects),
+                    commands_executed: result.commands_executed,
+                    batch_summary_printed: false,
+                })
             }
-            if let Some(err) = parsed.get("error") {
-                return Err(anyhow!("igloo-mcp error: {}", err));
-            }
-            return Ok(parsed.get("result").cloned().unwrap_or(Value::Null));
+            Err(e) => Ok(ReplayOutput {
+                digest: self.digest.clone(),
+                local_success: false,
+                local_error: Some(e.to_string()),
+                execution_path: ReplayExecutionPath {
+                    requested_source: "walrus".to_string(),
+                    effective_source: "walrus_checkpoint".to_string(),
+                    vm_only: true,
+                    allow_fallback: false,
+                    auto_system_objects: self.hydration.auto_system_objects,
+                    fallback_used: false,
+                    fallback_reasons: Vec::new(),
+                    dynamic_field_prefetch: false,
+                    prefetch_depth: 0,
+                    prefetch_limit: 0,
+                    dependency_fetch_mode: "walrus_checkpoint".to_string(),
+                    dependency_packages_fetched: 0,
+                    synthetic_inputs: 0,
+                },
+                comparison: None,
+                effects: None,
+                effects_full: None,
+                commands_executed: 0,
+                batch_summary_printed: false,
+            }),
         }
     }
 
-    async fn shutdown(&mut self) -> Result<()> {
-        let _ = self.stdin.shutdown().await;
-        let wait = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
-        if wait.is_err() {
-            let _ = self.child.kill().await;
-            let _ = self.child.wait().await;
+    /// Execute replay from a JSON state file (custom data source).
+    async fn execute_from_json(
+        &self,
+        state: &SandboxState,
+        verbose: bool,
+        json_path: &Path,
+        _replay_progress: bool,
+    ) -> Result<ReplayOutput> {
+        let contents = std::fs::read_to_string(json_path)
+            .with_context(|| format!("Failed to read state from {}", json_path.display()))?;
+        let replay_state: ReplayState = serde_json::from_str(&contents)
+            .with_context(|| format!("Failed to parse state JSON from {}", json_path.display()))?;
+
+        if verbose {
+            eprintln!(
+                "[json] loaded state from {} ({} objects, {} packages)",
+                json_path.display(),
+                replay_state.objects.len(),
+                replay_state.packages.len()
+            );
         }
-        Ok(())
+
+        let pkg_aliases =
+            build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
+        let resolver = hydrate_resolver_from_replay_state(
+            state,
+            &replay_state,
+            &pkg_aliases.linkage_upgrades,
+            &pkg_aliases.aliases,
+        );
+        let mut maps = build_replay_object_maps(&replay_state, &pkg_aliases.versions);
+        maybe_patch_replay_objects(
+            &resolver,
+            &replay_state,
+            &pkg_aliases.versions,
+            &pkg_aliases.aliases,
+            &mut maps,
+            false,
+            false,
+        );
+        let versions_str = maps.versions_str.clone();
+        let cached_objects = maps.cached_objects;
+
+        let reconcile_policy = if self.reconcile_dynamic_fields {
+            EffectsReconcilePolicy::DynamicFields
+        } else {
+            EffectsReconcilePolicy::Strict
+        };
+
+        // Build VM harness and execute
+        let config = build_simulation_config(&replay_state);
+        let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
+        harness
+            .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), versions_str.clone());
+
+        let replay_result =
+            sui_sandbox_core::tx_replay::replay_with_version_tracking_with_policy_with_effects(
+                &replay_state.transaction,
+                &mut harness,
+                &cached_objects,
+                &pkg_aliases.aliases,
+                Some(&versions_str),
+                reconcile_policy,
+            );
+
+        match replay_result {
+            Ok(execution) => {
+                let result = execution.result;
+                let effects_summary = build_effects_summary(&execution.effects);
+                let comparison = if self.compare {
+                    result.comparison.map(|c| ComparisonResult {
+                        status_match: c.status_match,
+                        created_match: c.created_count_match,
+                        mutated_match: c.mutated_count_match,
+                        deleted_match: c.deleted_count_match,
+                        on_chain_status: if c.status_match && result.local_success {
+                            "success".to_string()
+                        } else if c.status_match && !result.local_success {
+                            "failed".to_string()
+                        } else {
+                            "unknown".to_string()
+                        },
+                        local_status: if result.local_success {
+                            "success".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                        notes: c.notes.clone(),
+                    })
+                } else {
+                    None
+                };
+
+                Ok(ReplayOutput {
+                    digest: self.digest.clone(),
+                    local_success: result.local_success,
+                    local_error: result.local_error,
+                    execution_path: ReplayExecutionPath {
+                        requested_source: "json".to_string(),
+                        effective_source: "state_json".to_string(),
+                        vm_only: true,
+                        allow_fallback: false,
+                        auto_system_objects: self.hydration.auto_system_objects,
+                        fallback_used: false,
+                        fallback_reasons: Vec::new(),
+                        dynamic_field_prefetch: false,
+                        prefetch_depth: 0,
+                        prefetch_limit: 0,
+                        dependency_fetch_mode: "state_json".to_string(),
+                        dependency_packages_fetched: 0,
+                        synthetic_inputs: 0,
+                    },
+                    comparison,
+                    effects: Some(effects_summary),
+                    effects_full: Some(execution.effects),
+                    commands_executed: result.commands_executed,
+                    batch_summary_printed: false,
+                })
+            }
+            Err(e) => Ok(ReplayOutput {
+                digest: self.digest.clone(),
+                local_success: false,
+                local_error: Some(e.to_string()),
+                execution_path: ReplayExecutionPath {
+                    requested_source: "json".to_string(),
+                    effective_source: "state_json".to_string(),
+                    vm_only: true,
+                    allow_fallback: false,
+                    auto_system_objects: self.hydration.auto_system_objects,
+                    fallback_used: false,
+                    fallback_reasons: Vec::new(),
+                    dynamic_field_prefetch: false,
+                    prefetch_depth: 0,
+                    prefetch_limit: 0,
+                    dependency_fetch_mode: "state_json".to_string(),
+                    dependency_packages_fetched: 0,
+                    synthetic_inputs: 0,
+                },
+                comparison: None,
+                effects: None,
+                effects_full: None,
+                commands_executed: 0,
+                batch_summary_printed: false,
+            }),
+        }
     }
+
+    /// Efficient batch replay: fetches all checkpoints in one batched call,
+    /// pre-populates shared object/package caches, classifies transactions,
+    /// and prints a summary report.
+    #[cfg(feature = "walrus")]
+    async fn execute_walrus_batch_v2(
+        &self,
+        state: &SandboxState,
+        verbose: bool,
+        checkpoints: &[u64],
+        replay_progress: bool,
+    ) -> Result<ReplayOutput> {
+        walrus_batch::execute_walrus_batch_v2(self, state, verbose, checkpoints, replay_progress)
+            .await
+    }
+}
+
+struct ReplayObjectMaps {
+    versions_str: HashMap<String, u64>,
+    cached_objects: HashMap<String, String>,
+    version_map: HashMap<String, u64>,
+    object_bytes: HashMap<String, Vec<u8>>,
+    object_types: HashMap<String, String>,
+}
+
+fn hydrate_resolver_from_replay_state(
+    state: &SandboxState,
+    replay_state: &ReplayState,
+    linkage_upgrades: &HashMap<AccountAddress, AccountAddress>,
+    aliases: &HashMap<AccountAddress, AccountAddress>,
+) -> LocalModuleResolver {
+    let mut resolver = state.resolver.clone();
+    let mut packages: Vec<&PackageData> = replay_state.packages.values().collect();
+    packages.sort_by(|a, b| {
+        let ra = a.runtime_id();
+        let rb = b.runtime_id();
+        if ra == rb {
+            a.version.cmp(&b.version)
+        } else {
+            ra.as_ref().cmp(rb.as_ref())
+        }
+    });
+    for pkg in packages {
+        let _ = resolver.add_package_modules_at(pkg.modules.clone(), Some(pkg.address));
+        resolver.add_package_linkage(pkg.address, pkg.runtime_id(), &pkg.linkage);
+    }
+    for (original, upgraded) in linkage_upgrades {
+        resolver.add_linkage_upgrade(*original, *upgraded);
+    }
+    for (storage, runtime) in aliases {
+        resolver.add_address_alias(*storage, *runtime);
+    }
+    resolver
+}
+
+fn build_replay_object_maps(
+    replay_state: &ReplayState,
+    versions: &HashMap<AccountAddress, u64>,
+) -> ReplayObjectMaps {
+    let versions_str: HashMap<String, u64> = versions
+        .iter()
+        .map(|(addr, ver)| (addr.to_hex_literal(), *ver))
+        .collect();
+    let mut cached_objects: HashMap<String, String> = HashMap::new();
+    let mut version_map: HashMap<String, u64> = HashMap::new();
+    let mut object_bytes: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut object_types: HashMap<String, String> = HashMap::new();
+    for (id, obj) in &replay_state.objects {
+        let id_hex = id.to_hex_literal();
+        cached_objects.insert(
+            id_hex.clone(),
+            base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
+        );
+        version_map.insert(id_hex.clone(), obj.version);
+        object_bytes.insert(id_hex.clone(), obj.bcs_bytes.clone());
+        if let Some(type_tag) = &obj.type_tag {
+            object_types.insert(id_hex, type_tag.clone());
+        }
+    }
+    ReplayObjectMaps {
+        versions_str,
+        cached_objects,
+        version_map,
+        object_bytes,
+        object_types,
+    }
+}
+
+fn maybe_patch_replay_objects(
+    resolver: &LocalModuleResolver,
+    replay_state: &ReplayState,
+    versions: &HashMap<AccountAddress, u64>,
+    aliases: &HashMap<AccountAddress, AccountAddress>,
+    maps: &mut ReplayObjectMaps,
+    progress_logging: bool,
+    patch_stats_logging: bool,
+) {
+    let disable_version_patch = std::env::var("SUI_DISABLE_VERSION_PATCH")
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if disable_version_patch {
+        return;
+    }
+    if progress_logging {
+        eprintln!("[replay] version patcher start");
+    }
+    let mut reconstructor = HistoricalStateReconstructor::new();
+    reconstructor.configure_from_modules(resolver.iter_modules());
+    if let Some(ts) = replay_state.transaction.timestamp_ms {
+        reconstructor.set_timestamp(ts);
+    }
+    for (storage, ver) in versions {
+        reconstructor.register_version(&storage.to_hex_literal(), *ver);
+    }
+    for (storage, runtime) in aliases {
+        if let Some(ver) = versions.get(storage) {
+            reconstructor.register_version(&runtime.to_hex_literal(), *ver);
+        }
+    }
+    let reconstructed = reconstructor.reconstruct(&maps.object_bytes, &maps.object_types);
+    for (id, bytes) in reconstructed.objects {
+        maps.cached_objects
+            .insert(id, base64::engine::general_purpose::STANDARD.encode(&bytes));
+    }
+    if progress_logging {
+        eprintln!("[replay] version patcher done");
+    }
+    if patch_stats_logging {
+        let stats = reconstructed.stats;
+        if stats.total_patched() > 0 {
+            eprintln!(
+                "[patch] patched_objects={} overrides={} raw={} struct={} skips={}",
+                stats.total_patched(),
+                stats.override_patched,
+                stats.raw_patched,
+                stats.struct_patched,
+                stats.skipped
+            );
+        }
+    }
+}
+
+fn build_simulation_config(replay_state: &ReplayState) -> SimulationConfig {
+    let mut config = SimulationConfig::default()
+        .with_sender_address(replay_state.transaction.sender)
+        .with_gas_budget(Some(replay_state.transaction.gas_budget))
+        .with_gas_price(replay_state.transaction.gas_price)
+        .with_epoch(replay_state.epoch);
+    if let Some(rgp) = replay_state.reference_gas_price {
+        config = config.with_reference_gas_price(rgp);
+    }
+    if replay_state.protocol_version > 0 {
+        config = config.with_protocol_version(replay_state.protocol_version);
+    }
+    if let Some(ts) = replay_state.transaction.timestamp_ms {
+        config = config.with_tx_timestamp(ts);
+    }
+    if let Ok(digest) = TransactionDigest::from_str(&replay_state.transaction.digest.0) {
+        config = config.with_tx_hash(digest.into_inner());
+    }
+    config
+}
+
+/// Split the first type parameter from a comma-separated type list,
+/// respecting angle bracket nesting.
+/// e.g. "u64, SomeStruct<A, B>" -> Some("u64")
+/// e.g. "SomeStruct<A, B>" -> Some("SomeStruct<A, B>")
+fn split_first_type_param(s: &str) -> Option<String> {
+    let mut depth = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                return Some(s[..i].trim().to_string());
+            }
+            _ => {}
+        }
+    }
+    Some(s.trim().to_string())
 }
 
 fn env_bool_opt(key: &str) -> Option<bool> {
     std::env::var(key)
         .ok()
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-}
-
-fn find_mcp_service_config(start: &Path) -> Option<PathBuf> {
-    for ancestor in start.ancestors().take(6) {
-        let candidate = ancestor.join("mcp_service_config.json");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn find_dotenv(start: &Path) -> Option<PathBuf> {
-    for ancestor in start.ancestors().take(6) {
-        let candidate = ancestor.join(".env");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn load_dotenv_vars() -> HashMap<String, String> {
-    let mut vars = HashMap::new();
-    let Ok(start) = std::env::current_dir() else {
-        return vars;
-    };
-    let Some(path) = find_dotenv(&start) else {
-        return vars;
-    };
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return vars;
-    };
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let mut parts = line.splitn(2, '=');
-        let key = match parts.next() {
-            Some(k) => k.trim(),
-            None => continue,
-        };
-        let value = parts.next().unwrap_or("").trim();
-        if key.is_empty() {
-            continue;
-        }
-        let unquoted = value
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-            .unwrap_or(value)
-            .to_string();
-        vars.insert(key.to_string(), unquoted);
-    }
-    vars
-}
-
-fn load_igloo_config(path: &Path) -> Result<IglooConfig> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read igloo config: {}", path.display()))?;
-    let parsed: IglooConfigFile =
-        serde_json::from_str(&raw).context("Failed to parse igloo config JSON")?;
-    let igloo = parsed.igloo.unwrap_or_default();
-    Ok(IglooConfig {
-        command: igloo.command.unwrap_or_else(|| "igloo_mcp".to_string()),
-        args: igloo.args.unwrap_or_default(),
-        cwd: igloo.cwd.map(PathBuf::from),
-        env: igloo.env.unwrap_or_default(),
-        snowflake: parsed.snowflake,
-    })
-}
-
-fn resolve_igloo_command(command: &str) -> Option<String> {
-    let path = Path::new(command);
-    if command.contains('/') || path.is_absolute() {
-        if path.exists() {
-            return Some(command.to_string());
-        }
-        if command.ends_with("igloo-mcp") {
-            let alt = command.replace("igloo-mcp", "igloo_mcp");
-            if Path::new(&alt).exists() {
-                return Some(alt);
-            }
-        }
-        return find_in_path("igloo_mcp");
-    }
-    find_in_path(command).or_else(|| find_in_path("igloo_mcp"))
-}
-
-fn find_in_path(command: &str) -> Option<String> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(command);
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
-}
-
-fn apply_snowflake_config(config: &mut IglooConfig) {
-    let Some(sf) = config.snowflake.as_ref() else {
-        return;
-    };
-    let has_profile = has_arg(&config.args, &["--profile"])
-        || config.env.contains_key("SNOWFLAKE_PROFILE")
-        || config.env.contains_key("SNOWCLI_DEFAULT_PROFILE");
-    if has_profile {
-        strip_login_env(&mut config.env);
-        set_env_if_missing(&mut config.env, "SNOWFLAKE_DATABASE", sf.database.as_ref());
-        set_env_if_missing(&mut config.env, "SNOWFLAKE_SCHEMA", sf.schema.as_ref());
-        return;
-    }
-
-    push_arg_if_missing(
-        &mut config.args,
-        &["--account", "--account-identifier"],
-        sf.account.as_deref(),
-    );
-    push_arg_if_missing(
-        &mut config.args,
-        &["--user", "--username"],
-        sf.user.as_deref(),
-    );
-    push_arg_if_missing(&mut config.args, &["--warehouse"], sf.warehouse.as_deref());
-    push_arg_if_missing(&mut config.args, &["--role"], sf.role.as_deref());
-    push_arg_if_missing(
-        &mut config.args,
-        &["--authenticator"],
-        sf.authenticator.as_deref(),
-    );
-
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_ACCOUNT", sf.account.as_ref());
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_USER", sf.user.as_ref());
-    set_env_if_missing(
-        &mut config.env,
-        "SNOWFLAKE_AUTHENTICATOR",
-        sf.authenticator.as_ref(),
-    );
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_DATABASE", sf.database.as_ref());
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_SCHEMA", sf.schema.as_ref());
-    set_env_if_missing(
-        &mut config.env,
-        "SNOWFLAKE_WAREHOUSE",
-        sf.warehouse.as_ref(),
-    );
-    set_env_if_missing(&mut config.env, "SNOWFLAKE_ROLE", sf.role.as_ref());
-}
-
-fn push_arg_if_missing(args: &mut Vec<String>, names: &[&str], value: Option<&str>) {
-    let Some(value) = value else {
-        return;
-    };
-    if value.trim().is_empty() {
-        return;
-    }
-    if has_arg(args, names) {
-        return;
-    }
-    args.push(names[0].to_string());
-    args.push(value.to_string());
-}
-
-fn has_arg(args: &[String], names: &[&str]) -> bool {
-    args.iter().any(|arg| {
-        names.iter().any(|name| {
-            if arg == name {
-                return true;
-            }
-            let prefix = format!("{}=", name);
-            arg.starts_with(&prefix)
-        })
-    })
-}
-
-fn strip_login_env(env: &mut HashMap<String, String>) {
-    for key in [
-        "SNOWFLAKE_ACCOUNT",
-        "SNOWFLAKE_USER",
-        "SNOWFLAKE_PASSWORD",
-        "SNOWFLAKE_PAT",
-        "SNOWFLAKE_ROLE",
-        "SNOWFLAKE_WAREHOUSE",
-        "SNOWFLAKE_PASSCODE",
-        "SNOWFLAKE_PASSCODE_IN_PASSWORD",
-        "SNOWFLAKE_PRIVATE_KEY",
-        "SNOWFLAKE_PRIVATE_KEY_FILE",
-        "SNOWFLAKE_PRIVATE_KEY_FILE_PWD",
-        "SNOWFLAKE_AUTHENTICATOR",
-        "SNOWFLAKE_HOST",
-    ] {
-        env.remove(key);
-    }
-}
-
-fn set_env_if_missing(env: &mut HashMap<String, String>, key: &str, value: Option<&String>) {
-    if env.contains_key(key) {
-        return;
-    }
-    let Some(value) = value else {
-        return;
-    };
-    if value.trim().is_empty() {
-        return;
-    }
-    env.insert(key.to_string(), value.clone());
-}
-
-fn json_id_matches(value: &Value, expected: u64) -> bool {
-    match value {
-        Value::Number(num) => num.as_u64() == Some(expected),
-        Value::String(s) => s.parse::<u64>().ok() == Some(expected),
-        _ => false,
-    }
-}
-
-fn extract_text_from_content(value: Option<&Value>) -> Option<String> {
-    let content = value?.as_array()?;
-    for item in content {
-        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-            return Some(text.to_string());
-        }
-    }
-    None
-}
-
-fn escape_sql_literal(input: &str) -> String {
-    input.replace('\'', "''")
-}
-
-fn row_get_value<'a>(row: &'a Value, key: &str) -> Option<&'a Value> {
-    let obj = row.as_object()?;
-    if let Some(val) = obj.get(key) {
-        return Some(val);
-    }
-    let upper = key.to_ascii_uppercase();
-    if let Some(val) = obj.get(&upper) {
-        return Some(val);
-    }
-    let lower = key.to_ascii_lowercase();
-    obj.get(&lower)
-}
-
-fn row_get_string(row: &Value, key: &str) -> Option<String> {
-    row_get_value(row, key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn row_get_u64(row: &Value, key: &str) -> Option<u64> {
-    row_get_value(row, key).and_then(value_as_u64)
-}
-
-fn value_as_u64(value: &Value) -> Option<u64> {
-    match value {
-        Value::Number(num) => num.as_u64(),
-        Value::String(s) => s.parse::<u64>().ok(),
-        _ => None,
-    }
-}
-
-fn parse_effects_value(value: &Value) -> Result<Value> {
-    match value {
-        Value::String(text) => serde_json::from_str(text).context("Failed to parse EFFECTS_JSON"),
-        Value::Object(_) | Value::Array(_) => Ok(value.clone()),
-        _ => Err(anyhow!("Unexpected EFFECTS_JSON format")),
-    }
-}
-
-fn parse_effects_versions(effects: &Value) -> HashMap<String, u64> {
-    let mut versions = HashMap::new();
-    let root = effects.get("V2").unwrap_or(effects);
-
-    if let Some(changed) = root.get("changed_objects").and_then(|v| v.as_array()) {
-        for entry in changed {
-            let id = entry.get(0).and_then(|v| v.as_str());
-            let Some(id_str) = id else { continue };
-            let input_state = entry.get(1).and_then(|v| v.get("input_state"));
-            if let Some(version) = input_state.and_then(extract_version_from_input_state) {
-                versions.insert(normalize_address_shared(id_str), version);
-            }
-        }
-    }
-
-    if let Some(unchanged) = root
-        .get("unchanged_consensus_objects")
-        .and_then(|v| v.as_array())
-    {
-        for entry in unchanged {
-            let id = entry.get(0).and_then(|v| v.as_str());
-            let Some(id_str) = id else { continue };
-            let info = entry.get(1);
-            let Some(info) = info else { continue };
-            let version = info
-                .get("ReadOnlyRoot")
-                .or_else(|| info.get("ReadOnly"))
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(value_as_u64);
-            if let Some(ver) = version {
-                versions.insert(normalize_address_shared(id_str), ver);
-            }
-        }
-    }
-
-    versions
-}
-
-fn extract_version_from_input_state(input_state: &Value) -> Option<u64> {
-    let exist = input_state.get("Exist")?;
-    let arr = exist.as_array()?;
-    let version_entry = arr.first()?.as_array()?;
-    value_as_u64(version_entry.first()?)
-}
-
-fn extract_executed_epoch(effects: &Value) -> Option<u64> {
-    let root = effects.get("V2").unwrap_or(effects);
-    root.get("executed_epoch").and_then(value_as_u64)
-}
-
-fn build_onchain_effects_summary(
-    effects: &Value,
-    shared_versions: &HashMap<String, u64>,
-) -> Option<TransactionEffectsSummary> {
-    let root = effects.get("V2").unwrap_or(effects);
-    let status_value = root.get("status")?;
-    let status = match status_value {
-        Value::String(s) => {
-            if s.eq_ignore_ascii_case("success") {
-                TransactionStatus::Success
-            } else {
-                TransactionStatus::Failure { error: s.clone() }
-            }
-        }
-        Value::Object(map) => {
-            if map.contains_key("Success") {
-                TransactionStatus::Success
-            } else if let Some(err) = map
-                .get("Failure")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-            {
-                TransactionStatus::Failure { error: err }
-            } else {
-                TransactionStatus::Failure {
-                    error: "Unknown failure".to_string(),
-                }
-            }
-        }
-        _ => TransactionStatus::Failure {
-            error: "Unknown failure".to_string(),
-        },
-    };
-
-    let mut created = Vec::new();
-    let mut mutated = Vec::new();
-    let mut deleted = Vec::new();
-
-    if let Some(changed) = root.get("changed_objects").and_then(|v| v.as_array()) {
-        for entry in changed {
-            let id = entry.get(0).and_then(|v| v.as_str()).map(|s| s.to_string());
-            let Some(id) = id else { continue };
-            let op = entry
-                .get(1)
-                .and_then(|v| v.get("id_operation"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("None");
-            match op {
-                "Created" => created.push(id),
-                "Deleted" => deleted.push(id),
-                _ => mutated.push(id),
-            }
-        }
-    }
-
-    Some(TransactionEffectsSummary {
-        status,
-        created,
-        mutated,
-        deleted,
-        wrapped: Vec::new(),
-        unwrapped: Vec::new(),
-        gas_used: GasSummary::default(),
-        events_count: 0,
-        shared_object_versions: shared_versions.clone(),
-    })
-}
-
-fn decode_transaction_bcs(bcs_str: &str) -> Result<TransactionData> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(bcs_str)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(bcs_str))
-        .context("Failed to decode transaction BCS")?;
-    let tx: TransactionData = bcs::from_bytes(&bytes).context("Failed to parse transaction BCS")?;
-    Ok(tx)
-}
-
-fn convert_sui_commands(commands: &[SuiCommand]) -> Result<Vec<PtbCommand>> {
-    commands.iter().map(convert_sui_command).collect()
-}
-
-fn convert_sui_command(command: &SuiCommand) -> Result<PtbCommand> {
-    Ok(match command {
-        SuiCommand::MoveCall(call) => PtbCommand::MoveCall {
-            package: format!("{}", call.package),
-            module: call.module.clone(),
-            function: call.function.clone(),
-            type_arguments: call
-                .type_arguments
-                .iter()
-                .map(|t| t.to_canonical_string(true))
-                .collect(),
-            arguments: call.arguments.iter().map(convert_sui_argument).collect(),
-        },
-        SuiCommand::TransferObjects(objs, addr) => PtbCommand::TransferObjects {
-            objects: objs.iter().map(convert_sui_argument).collect(),
-            address: convert_sui_argument(addr),
-        },
-        SuiCommand::SplitCoins(coin, amounts) => PtbCommand::SplitCoins {
-            coin: convert_sui_argument(coin),
-            amounts: amounts.iter().map(convert_sui_argument).collect(),
-        },
-        SuiCommand::MergeCoins(dest, sources) => PtbCommand::MergeCoins {
-            destination: convert_sui_argument(dest),
-            sources: sources.iter().map(convert_sui_argument).collect(),
-        },
-        SuiCommand::MakeMoveVec(type_arg, elems) => PtbCommand::MakeMoveVec {
-            type_arg: type_arg.as_ref().map(|t| t.to_canonical_string(true)),
-            elements: elems.iter().map(convert_sui_argument).collect(),
-        },
-        SuiCommand::Publish(modules, deps) => PtbCommand::Publish {
-            modules: modules
-                .iter()
-                .map(|m| base64::engine::general_purpose::STANDARD.encode(m))
-                .collect(),
-            dependencies: deps.iter().map(|d| format!("{}", d)).collect(),
-        },
-        SuiCommand::Upgrade(modules, _deps, package, ticket) => PtbCommand::Upgrade {
-            modules: modules
-                .iter()
-                .map(|m| base64::engine::general_purpose::STANDARD.encode(m))
-                .collect(),
-            package: format!("{}", package),
-            ticket: convert_sui_argument(ticket),
-        },
-    })
-}
-
-fn convert_sui_argument(arg: &SuiArgument) -> PtbArgument {
-    match arg {
-        SuiArgument::GasCoin => PtbArgument::GasCoin,
-        SuiArgument::Input(index) => PtbArgument::Input { index: *index },
-        SuiArgument::Result(index) => PtbArgument::Result { index: *index },
-        SuiArgument::NestedResult(index, result_index) => PtbArgument::NestedResult {
-            index: *index,
-            result_index: *result_index,
-        },
-    }
-}
-
-fn build_transaction_inputs(
-    specs: &[InputSpec],
-    owner_map: &HashMap<AccountAddress, GrpcOwner>,
-) -> Vec<TransactionInput> {
-    specs
-        .iter()
-        .map(|spec| match spec {
-            InputSpec::Pure(bytes) => TransactionInput::Pure {
-                bytes: bytes.clone(),
-            },
-            InputSpec::ImmOrOwned {
-                id,
-                version,
-                digest,
-            } => {
-                let is_immutable = matches!(owner_map.get(id), Some(GrpcOwner::Immutable));
-                if is_immutable {
-                    TransactionInput::ImmutableObject {
-                        object_id: id.to_hex_literal(),
-                        version: *version,
-                        digest: digest.clone(),
-                    }
-                } else {
-                    TransactionInput::Object {
-                        object_id: id.to_hex_literal(),
-                        version: *version,
-                        digest: digest.clone(),
-                    }
-                }
-            }
-            InputSpec::Receiving {
-                id,
-                version,
-                digest,
-            } => TransactionInput::Receiving {
-                object_id: id.to_hex_literal(),
-                version: *version,
-                digest: digest.clone(),
-            },
-            InputSpec::Shared {
-                id,
-                initial_shared_version,
-                mutable,
-            } => TransactionInput::SharedObject {
-                object_id: id.to_hex_literal(),
-                initial_shared_version: *initial_shared_version,
-                mutable: *mutable,
-            },
-        })
-        .collect()
-}
-
-fn collect_package_ids_from_commands(commands: &[SuiCommand]) -> HashSet<AccountAddress> {
-    let mut packages = HashSet::new();
-    for cmd in commands {
-        match cmd {
-            SuiCommand::MoveCall(call) => {
-                packages.insert(AccountAddress::from(call.package));
-                for ty in &call.type_arguments {
-                    collect_packages_from_type_input(ty, &mut packages);
-                }
-            }
-            SuiCommand::Publish(_, deps) => {
-                for dep in deps {
-                    packages.insert(AccountAddress::from(*dep));
-                }
-            }
-            SuiCommand::Upgrade(_, deps, package, _) => {
-                packages.insert(AccountAddress::from(*package));
-                for dep in deps {
-                    packages.insert(AccountAddress::from(*dep));
-                }
-            }
-            SuiCommand::MakeMoveVec(Some(tag), _) => {
-                collect_packages_from_type_input(tag, &mut packages);
-            }
-            _ => {}
-        }
-    }
-    packages
-}
-
-fn collect_packages_from_type_input(input: &TypeInput, out: &mut HashSet<AccountAddress>) {
-    match input {
-        TypeInput::Struct(s) => {
-            out.insert(s.address);
-            for ty in &s.type_params {
-                collect_packages_from_type_input(ty, out);
-            }
-        }
-        TypeInput::Vector(inner) => collect_packages_from_type_input(inner, out),
-        _ => {}
-    }
-}
-
-fn collect_package_ids_from_type_str(type_str: &str, out: &mut HashSet<AccountAddress>) {
-    if let Ok(tag) = parse_type_tag(type_str) {
-        collect_package_ids_from_type_tag(&tag, out);
-    }
-}
-
-fn collect_package_ids_from_type_tag(tag: &TypeTag, out: &mut HashSet<AccountAddress>) {
-    match tag {
-        TypeTag::Struct(s) => {
-            out.insert(s.address);
-            for ty in &s.type_params {
-                collect_package_ids_from_type_tag(ty, out);
-            }
-        }
-        TypeTag::Vector(inner) => collect_package_ids_from_type_tag(inner, out),
-        _ => {}
-    }
-}
-
-async fn fetch_package_from_snowflake(
-    igloo: &mut IglooMcpClient,
-    database: &str,
-    schema: &str,
-    package_id: &AccountAddress,
-    checkpoint: Option<u64>,
-    timestamp_ms: Option<u64>,
-) -> Result<Option<PackageData>> {
-    let pkg_hex = package_id.to_hex_literal();
-    let mut statement = format!(
-        "select BCS, CHECKPOINT from {}.{}.MOVE_PACKAGE_BCS where PACKAGE_ID = '{}'",
-        database,
-        schema,
-        escape_sql_literal(&pkg_hex)
-    );
-    if let Some(ts) = timestamp_ms {
-        statement.push_str(&format!(" and TIMESTAMP_MS <= {}", ts));
-    }
-    if let Some(cp) = checkpoint {
-        statement.push_str(&format!(" and CHECKPOINT <= {}", cp));
-    }
-    if timestamp_ms.is_some() {
-        statement.push_str(" order by TIMESTAMP_MS desc limit 1");
-    } else {
-        statement.push_str(" order by CHECKPOINT desc limit 1");
-    }
-    let rows = igloo
-        .query_rows(&statement, "hybrid replay: package_bcs")
-        .await?;
-    let row = match rows.first() {
-        Some(row) => row,
-        None => return Ok(None),
-    };
-    let bcs = match row_get_string(row, "BCS") {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let pkg = decode_move_package_bcs(&bcs)?;
-    Ok(Some(pkg))
-}
-
-async fn fetch_package_via_grpc(
-    provider: &HistoricalStateProvider,
-    package_id: &AccountAddress,
-    version: Option<u64>,
-) -> Result<Option<PackageData>> {
-    let pkg_hex = package_id.to_hex_literal();
-    let obj = provider
-        .grpc()
-        .get_object_at_version(&pkg_hex, version)
-        .await?;
-    let Some(obj) = obj else { return Ok(None) };
-    if obj.package_modules.is_none() {
-        return Ok(None);
-    }
-    let pkg = grpc_object_to_package_data(&obj, *package_id)?;
-    Ok(Some(pkg))
-}
-
-fn decode_move_package_bcs(bcs_str: &str) -> Result<PackageData> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(bcs_str)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(bcs_str))
-        .context("Failed to decode package BCS")?;
-    if let Ok(obj) = bcs::from_bytes::<SuiObject>(&bytes) {
-        if let SuiData::Package(pkg) = &obj.data {
-            return Ok(package_data_from_move_package(pkg));
-        }
-    }
-    let pkg: MovePackage = bcs::from_bytes(&bytes).context("Failed to parse package BCS")?;
-    Ok(package_data_from_move_package(&pkg))
-}
-
-fn grpc_object_to_versioned(
-    grpc_obj: &sui_transport::grpc::GrpcObject,
-    id: AccountAddress,
-    version: u64,
-) -> Result<VersionedObject> {
-    let (is_shared, is_immutable) = match &grpc_obj.owner {
-        GrpcOwner::Shared { .. } => (true, false),
-        GrpcOwner::Immutable => (false, true),
-        _ => (false, false),
-    };
-    Ok(VersionedObject {
-        id,
-        version,
-        digest: Some(grpc_obj.digest.clone()),
-        type_tag: grpc_obj.type_string.clone(),
-        bcs_bytes: grpc_obj.bcs.clone().unwrap_or_default(),
-        is_shared,
-        is_immutable,
-    })
-}
-
-fn grpc_object_to_package_data(
-    grpc_obj: &sui_transport::grpc::GrpcObject,
-    address: AccountAddress,
-) -> Result<PackageData> {
-    let modules = grpc_obj.package_modules.clone().unwrap_or_default();
-    let mut linkage = HashMap::new();
-    if let Some(entries) = &grpc_obj.package_linkage {
-        for entry in entries {
-            if let (Ok(orig), Ok(upg)) = (
-                AccountAddress::from_hex_literal(&entry.original_id),
-                AccountAddress::from_hex_literal(&entry.upgraded_id),
-            ) {
-                linkage.insert(orig, upg);
-            }
-        }
-    }
-    let original_id = grpc_obj
-        .package_original_id
-        .as_ref()
-        .and_then(|s| AccountAddress::from_hex_literal(s).ok());
-    Ok(PackageData {
-        address,
-        version: grpc_obj.version,
-        modules,
-        linkage,
-        original_id,
-    })
-}
-
-fn extract_module_dependency_ids(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {
-    let mut deps: HashSet<AccountAddress> = HashSet::new();
-    for (_, bytes) in modules {
-        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
-            for dep in module.immediate_dependencies() {
-                deps.insert(*dep.address());
-            }
-        }
-    }
-    deps.into_iter().collect()
-}
-
-fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
-    let modules = pkg
-        .serialized_module_map()
-        .iter()
-        .map(|(name, bytes)| (name.clone(), bytes.clone()))
-        .collect::<Vec<_>>();
-
-    let linkage = pkg
-        .linkage_table()
-        .iter()
-        .map(|(orig_id, info)| {
-            (
-                AccountAddress::from(*orig_id),
-                AccountAddress::from(info.upgraded_id),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    let original_id = Some(AccountAddress::from(pkg.original_package_id()));
-
-    PackageData {
-        address: AccountAddress::from(pkg.id()),
-        version: pkg.version().value(),
-        modules,
-        linkage,
-        original_id,
-    }
 }
 
 const CLOCK_TYPE: &str = "0x2::clock::Clock";
@@ -3368,190 +3541,9 @@ fn fetch_child_object_by_key(
     None
 }
 
-fn print_replay_result(result: &ReplayOutput, show_comparison: bool, verbose: bool) {
-    println!("\x1b[1mTransaction Replay: {}\x1b[0m\n", result.digest);
-
-    if let Some(effects) = result.effects_full.as_ref() {
-        println!("\x1b[1mLocal PTB Result:\x1b[0m");
-        println!("{}", format_effects(effects, verbose));
-        println!("  Commands executed: {}", result.commands_executed);
-    } else if result.local_success {
-        println!("\x1b[32m✓ Local execution succeeded\x1b[0m");
-        println!("  Commands executed: {}", result.commands_executed);
-    } else {
-        println!("\x1b[31m✗ Local execution failed\x1b[0m");
-        if let Some(err) = &result.local_error {
-            println!("  Error: {}", err);
-        }
-        println!("  Commands executed: {}", result.commands_executed);
-    }
-
-    if show_comparison {
-        if let Some(cmp) = &result.comparison {
-            println!("\n\x1b[1mComparison with on-chain:\x1b[0m");
-            println!(
-                "  Status: {} (local: {}, on-chain: {})",
-                if cmp.status_match {
-                    "\x1b[32m✓ match\x1b[0m"
-                } else {
-                    "\x1b[31m✗ mismatch\x1b[0m"
-                },
-                cmp.local_status,
-                cmp.on_chain_status
-            );
-            println!(
-                "  Created objects: {}",
-                if cmp.created_match {
-                    "\x1b[32m✓ match\x1b[0m"
-                } else {
-                    "\x1b[33m~ count differs\x1b[0m"
-                }
-            );
-            println!(
-                "  Mutated objects: {}",
-                if cmp.mutated_match {
-                    "\x1b[32m✓ match\x1b[0m"
-                } else {
-                    "\x1b[33m~ count differs\x1b[0m"
-                }
-            );
-            println!(
-                "  Deleted objects: {}",
-                if cmp.deleted_match {
-                    "\x1b[32m✓ match\x1b[0m"
-                } else {
-                    "\x1b[33m~ count differs\x1b[0m"
-                }
-            );
-        } else {
-            println!("\n\x1b[33mNote: No on-chain effects available for comparison\x1b[0m");
-        }
-    }
-}
-
-fn enforce_strict(output: &ReplayOutput) -> Result<()> {
-    if !output.local_success {
-        return Err(anyhow!(
-            "strict replay failed: {}",
-            output
-                .local_error
-                .as_deref()
-                .unwrap_or("local execution failed")
-        ));
-    }
-    if let Some(comp) = output.comparison.as_ref() {
-        let ok =
-            comp.status_match && comp.created_match && comp.mutated_match && comp.deleted_match;
-        if !ok {
-            return Err(anyhow!(
-                "strict replay mismatch: status={} created={} mutated={} deleted={}",
-                comp.status_match,
-                comp.created_match,
-                comp.mutated_match,
-                comp.deleted_match
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn fetch_dependency_closure(
-    resolver: &mut LocalModuleResolver,
-    graphql: &GraphQLClient,
-    checkpoint: Option<u64>,
-    verbose: bool,
-) -> Result<usize> {
-    use std::collections::BTreeSet;
-
-    const MAX_ROUNDS: usize = 8;
-    let mut fetched = 0usize;
-    let mut seen: BTreeSet<AccountAddress> = BTreeSet::new();
-
-    for _ in 0..MAX_ROUNDS {
-        let missing = resolver.get_missing_dependencies();
-        let pending: Vec<AccountAddress> = missing
-            .into_iter()
-            .filter(|addr| !seen.contains(addr))
-            .collect();
-        if pending.is_empty() {
-            break;
-        }
-        for addr in pending {
-            let mut candidates = Vec::new();
-            candidates.push(addr);
-            if let Some(upgraded) = resolver.get_linkage_upgrade(&addr) {
-                candidates.push(upgraded);
-            }
-            if let Some(alias) = resolver.get_alias(&addr) {
-                candidates.push(alias);
-            }
-            for (target, source) in resolver.get_all_aliases() {
-                if source == addr {
-                    candidates.push(target);
-                }
-            }
-            candidates.sort();
-            candidates.dedup();
-
-            let mut fetched_this = false;
-            for candidate in candidates {
-                if seen.contains(&candidate) {
-                    continue;
-                }
-                seen.insert(candidate);
-                let addr_hex = candidate.to_hex_literal();
-                if verbose {
-                    eprintln!("[deps] fetching {}", addr_hex);
-                }
-                let pkg = match checkpoint {
-                    Some(cp) => match graphql.fetch_package_at_checkpoint(&addr_hex, cp) {
-                        Ok(p) => p,
-                        Err(err) => {
-                            if verbose {
-                                eprintln!(
-                                    "[deps] failed to fetch {} at checkpoint {}: {}",
-                                    addr_hex, cp, err
-                                );
-                                eprintln!("[deps] falling back to latest package for {}", addr_hex);
-                            }
-                            graphql.fetch_package(&addr_hex)?
-                        }
-                    },
-                    None => graphql.fetch_package(&addr_hex)?,
-                };
-                let mut modules = Vec::new();
-                for module in pkg.modules {
-                    if let Some(bytes_b64) = module.bytecode_base64 {
-                        if let Ok(bytes) =
-                            base64::engine::general_purpose::STANDARD.decode(bytes_b64)
-                        {
-                            modules.push((module.name, bytes));
-                        }
-                    }
-                }
-                if modules.is_empty() {
-                    if verbose {
-                        eprintln!("[deps] no modules for {}", addr_hex);
-                    }
-                    continue;
-                }
-                let _ = resolver.add_package_modules_at(modules, Some(candidate));
-                fetched += 1;
-                fetched_this = true;
-                break;
-            }
-            if !fetched_this && verbose {
-                eprintln!(
-                    "[deps] failed to fetch any candidate for {}",
-                    addr.to_hex_literal()
-                );
-            }
-        }
-    }
-
-    Ok(fetched)
-}
-
+/// Apply a transaction's output_objects to shared caches for intra-checkpoint
+/// state progression. This ensures subsequent transactions in the same checkpoint
+/// see post-execution object state from earlier transactions.
 #[cfg(feature = "mm2")]
 fn synthesize_missing_inputs(
     missing: &[MissingInputObject],
@@ -3649,6 +3641,7 @@ fn synthesize_missing_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_replay_output_serialization() {
@@ -3656,6 +3649,7 @@ mod tests {
             digest: "test123".to_string(),
             local_success: true,
             local_error: None,
+            execution_path: ReplayExecutionPath::default(),
             comparison: Some(ComparisonResult {
                 status_match: true,
                 created_match: true,
@@ -3668,10 +3662,55 @@ mod tests {
             effects: None,
             effects_full: None,
             commands_executed: 3,
+            batch_summary_printed: false,
         };
 
         let json = serde_json::to_string(&output).unwrap();
         assert!(json.contains("\"local_success\":true"));
         assert!(json.contains("\"status_match\":true"));
+    }
+
+    #[test]
+    fn test_replay_cmd_explicit_bool_flags_parse() {
+        let defaults =
+            ReplayCmd::try_parse_from(["replay", "dummy-digest"]).expect("defaults parse");
+        assert!(defaults.hydration.allow_fallback);
+        assert!(defaults.hydration.auto_system_objects);
+
+        let disabled = ReplayCmd::try_parse_from([
+            "replay",
+            "dummy-digest",
+            "--allow-fallback",
+            "false",
+            "--auto-system-objects",
+            "false",
+        ])
+        .expect("disabled parse");
+        assert!(!disabled.hydration.allow_fallback);
+        assert!(!disabled.hydration.auto_system_objects);
+
+        let enabled = ReplayCmd::try_parse_from([
+            "replay",
+            "dummy-digest",
+            "--allow-fallback",
+            "true",
+            "--auto-system-objects",
+            "true",
+        ])
+        .expect("enabled parse");
+        assert!(enabled.hydration.allow_fallback);
+        assert!(enabled.hydration.auto_system_objects);
+    }
+
+    #[cfg(feature = "igloo")]
+    #[test]
+    fn test_replay_cmd_igloo_hybrid_alias_parse() {
+        let modern = ReplayCmd::try_parse_from(["replay", "dummy-digest", "--igloo-hybrid-loader"])
+            .expect("modern igloo flag parse");
+        assert!(modern.igloo.hybrid_loader);
+
+        let compat =
+            ReplayCmd::try_parse_from(["replay", "dummy-digest", "--hybrid"]).expect("alias parse");
+        assert!(compat.igloo.hybrid_loader);
     }
 }
