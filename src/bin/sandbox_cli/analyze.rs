@@ -1,23 +1,24 @@
 //! Analyze command - package and replay introspection
 
-use anyhow::{anyhow, Context, Result};
-use base64::Engine;
-use clap::{Parser, Subcommand};
-use move_binary_format::CompiledModule;
-use serde::Serialize;
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::network::resolve_graphql_endpoint;
-use super::replay::ReplaySource;
+use super::replay::ReplayHydrationArgs;
 use super::SandboxState;
-use sui_package_extractor::bytecode::{
-    build_bytecode_interface_value_from_compiled_modules, extract_sanity_counts,
-    read_local_compiled_modules,
-};
-use sui_state_fetcher::{HistoricalStateProvider, ReplayStateConfig};
-use sui_transport::graphql::GraphQLClient;
+
+mod mm2_common;
+mod objects_classifier;
+mod objects_cmd;
+mod objects_profile;
+mod package_cmd;
+mod replay_cmd;
 
 #[derive(Parser, Debug)]
+#[command(
+    after_help = "Examples:\n  sui-sandbox analyze package --package-id 0x2 --list-modules --mm2\n  sui-sandbox analyze package --bytecode-dir ./path/to/pkg --mm2\n  sui-sandbox analyze replay <DIGEST> --source hybrid --allow-fallback true\n  sui-sandbox analyze objects --corpus-dir ./sui-packages/packages/mainnet_most_used --profile hybrid"
+)]
 pub struct AnalyzeCmd {
     #[command(subcommand)]
     command: AnalyzeCommand,
@@ -26,27 +27,47 @@ pub struct AnalyzeCmd {
 #[derive(Subcommand, Debug)]
 enum AnalyzeCommand {
     /// Analyze a package by id or local bytecode directory
+    #[command(alias = "pkg")]
     Package(AnalyzePackageCmd),
     /// Analyze replay state hydration for a transaction digest
+    #[command(alias = "tx")]
     Replay(AnalyzeReplayCmd),
+    /// Analyze object type usage across a local package corpus
+    #[command(alias = "corpus", alias = "objs")]
+    Objects(AnalyzeObjectsCmd),
 }
 
 #[derive(Parser, Debug)]
+#[command(group(
+    clap::ArgGroup::new("source")
+        .required(true)
+        .args(["package_id", "bytecode_dir"])
+))]
 pub struct AnalyzePackageCmd {
     /// Package id (0x...)
-    #[arg(long, value_name = "ID", conflicts_with = "bytecode_dir")]
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with = "bytecode_dir",
+        help_heading = "Source"
+    )]
     pub package_id: Option<String>,
 
     /// Local package directory containing bytecode_modules/*.mv
-    #[arg(long, value_name = "DIR", conflicts_with = "package_id")]
+    #[arg(
+        long,
+        value_name = "DIR",
+        conflicts_with = "package_id",
+        help_heading = "Source"
+    )]
     pub bytecode_dir: Option<PathBuf>,
 
     /// Include module names in output
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help_heading = "Analysis")]
     pub list_modules: bool,
 
     /// Attempt MM2 model build for the package
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help_heading = "Analysis")]
     pub mm2: bool,
 }
 
@@ -55,33 +76,146 @@ pub struct AnalyzeReplayCmd {
     /// Transaction digest
     pub digest: String,
 
-    /// Data source for replay hydration
-    #[arg(long, value_enum, default_value = "hybrid")]
-    pub source: ReplaySource,
-
-    /// Allow fallback to secondary sources when data is missing
-    #[arg(long, default_value_t = true)]
-    pub fallback: bool,
-
-    /// Prefetch depth for dynamic fields (default: 3)
-    #[arg(long, default_value_t = 3)]
-    pub prefetch_depth: usize,
-
-    /// Prefetch limit for dynamic fields (default: 200)
-    #[arg(long, default_value_t = 200)]
-    pub prefetch_limit: usize,
-
-    /// Disable dynamic field prefetch
-    #[arg(long, default_value_t = false)]
-    pub no_prefetch: bool,
-
-    /// Auto-inject system objects (Clock/Random) when missing
-    #[arg(long, default_value_t = true)]
-    pub auto_system_objects: bool,
+    #[command(flatten)]
+    pub hydration: ReplayHydrationArgs,
 
     /// Attempt MM2 model build across replay packages
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help_heading = "Analysis")]
     pub mm2: bool,
+
+    /// Checkpoint number for Walrus-first analysis (no gRPC/API key needed)
+    #[arg(long, help_heading = "Hydration")]
+    pub checkpoint: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct AnalyzeObjectsCmd {
+    /// Root corpus directory (e.g. .../sui-packages/packages/mainnet_most_used)
+    #[arg(
+        long,
+        visible_alias = "corpus",
+        value_name = "DIR",
+        help_heading = "Source"
+    )]
+    pub corpus_dir: PathBuf,
+
+    /// Analysis profile name: built-in (broad|strict|hybrid) or custom from profile dirs
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with = "profile_file",
+        help_heading = "Profile"
+    )]
+    pub profile: Option<String>,
+
+    /// Explicit analysis profile YAML file
+    #[arg(
+        long,
+        value_name = "FILE",
+        conflicts_with = "profile",
+        help_heading = "Profile"
+    )]
+    pub profile_file: Option<PathBuf>,
+
+    /// Override semantic mode regardless of selected profile
+    #[arg(long, value_enum, help_heading = "Profile")]
+    pub semantic_mode: Option<AnalyzeSemanticMode>,
+
+    /// Override dynamic-field UID lookback window regardless of selected profile
+    #[arg(long, value_name = "N", help_heading = "Profile")]
+    pub dynamic_lookback: Option<usize>,
+
+    /// Include per-type records in output
+    #[arg(long, default_value_t = false, help_heading = "Output")]
+    pub list_types: bool,
+
+    /// Max records per category/example list
+    #[arg(long, default_value_t = 20, help_heading = "Output")]
+    pub top: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyzeSemanticMode {
+    Broad,
+    Strict,
+    Hybrid,
+}
+
+impl AnalyzeSemanticMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Broad => "broad",
+            Self::Strict => "strict",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AnalyzeDynamicMode {
+    Broad,
+    Strict,
+    Hybrid,
+}
+
+impl AnalyzeDynamicMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Broad => "broad",
+            Self::Strict => "strict",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnalyzeObjectsProfileInfo {
+    pub name: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub semantic_mode: AnalyzeSemanticMode,
+    pub dynamic: AnalyzeObjectsDynamicSettings,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnalyzeObjectsDynamicSettings {
+    pub mode: AnalyzeDynamicMode,
+    pub lookback: usize,
+    pub include_wrapper_apis: bool,
+    pub field_container_heuristic: bool,
+    pub use_uid_owner_flow: bool,
+    pub use_ref_param_owner_fallback: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AnalyzeObjectsProfileFile {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    extends: Option<String>,
+    #[serde(default)]
+    semantic_mode: Option<AnalyzeSemanticMode>,
+    #[serde(default)]
+    dynamic: AnalyzeObjectsDynamicSettingsOverride,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AnalyzeObjectsDynamicSettingsOverride {
+    #[serde(default)]
+    mode: Option<AnalyzeDynamicMode>,
+    #[serde(default)]
+    lookback: Option<usize>,
+    #[serde(default)]
+    include_wrapper_apis: Option<bool>,
+    #[serde(default)]
+    field_container_heuristic: Option<bool>,
+    #[serde(default)]
+    use_uid_owner_flow: Option<bool>,
+    #[serde(default)]
+    use_ref_param_owner_fallback: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,6 +235,92 @@ struct AnalyzePackageOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct AnalyzeObjectsOutput {
+    pub corpus_dir: String,
+    pub profile: AnalyzeObjectsProfileInfo,
+    pub packages_scanned: usize,
+    pub packages_failed: usize,
+    pub modules_scanned: usize,
+    pub object_types_discovered: usize,
+    pub object_types_unique: usize,
+    pub ownership: ObjectOwnershipCounts,
+    pub ownership_unique: ObjectOwnershipCounts,
+    pub party_transfer_eligible: ObjectCountSummary,
+    pub party_transfer_observed_in_bytecode: ObjectCountSummary,
+    pub singleton_types: usize,
+    pub singleton_occurrences: usize,
+    pub dynamic_field_types: usize,
+    pub dynamic_field_occurrences: usize,
+    pub unclassified_types: usize,
+    pub multi_mode_types: usize,
+    pub confidence: AnalyzeObjectsConfidence,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub immutable_examples: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub party_transfer_eligible_examples: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub party_transfer_eligible_not_observed_examples: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub party_examples: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub receive_examples: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub types: Option<Vec<ObjectTypeRow>>,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct ObjectOwnershipCounts {
+    pub owned: usize,
+    pub shared: usize,
+    pub immutable: usize,
+    pub party: usize,
+    pub receive: usize,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct ObjectCountSummary {
+    pub types: usize,
+    pub occurrences: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AnalyzeObjectsConfidence {
+    pub ownership: String,
+    pub party_metrics: String,
+    pub singleton: String,
+    pub dynamic_fields: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ObjectTypeRow {
+    pub type_tag: String,
+    pub party_transfer_eligible: bool,
+    pub owned: bool,
+    pub shared: bool,
+    pub immutable: bool,
+    pub party: bool,
+    pub receive: bool,
+    pub singleton: bool,
+    pub dynamic_fields: bool,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ObjectTypeStats {
+    has_store: bool,
+    owned: bool,
+    shared: bool,
+    immutable: bool,
+    party: bool,
+    receive: bool,
+    dynamic_fields: bool,
+    packed_in_init: bool,
+    packed_outside_init: bool,
+    pack_count: usize,
+    key_struct: bool,
+    occurrences: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct AnalyzeReplayOutput {
     pub digest: String,
     pub sender: String,
@@ -111,6 +331,7 @@ struct AnalyzeReplayOutput {
     pub modules: usize,
     pub input_summary: ReplayInputSummary,
     pub command_summaries: Vec<ReplayCommandSummary>,
+    pub hydration: AnalyzeReplayHydrationSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_objects: Option<Vec<ReplayInputObject>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,6 +356,16 @@ struct AnalyzeReplayOutput {
     pub mm2_model_ok: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mm2_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AnalyzeReplayHydrationSummary {
+    pub source: String,
+    pub allow_fallback: bool,
+    pub auto_system_objects: bool,
+    pub dynamic_field_prefetch: bool,
+    pub prefetch_depth: usize,
+    pub prefetch_limit: usize,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -188,7 +419,7 @@ impl AnalyzeCmd {
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    print_package_output(&output);
+                    package_cmd::print_package_output(&output);
                 }
                 Ok(())
             }
@@ -197,7 +428,16 @@ impl AnalyzeCmd {
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    print_replay_output(&output);
+                    replay_cmd::print_replay_output(&output);
+                }
+                Ok(())
+            }
+            AnalyzeCommand::Objects(cmd) => {
+                let output = cmd.execute(state, verbose).await?;
+                if json_output {
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                } else {
+                    objects_cmd::print_objects_output(&output);
                 }
                 Ok(())
             }
@@ -205,618 +445,283 @@ impl AnalyzeCmd {
     }
 }
 
-impl AnalyzePackageCmd {
-    async fn execute(&self, state: &SandboxState, verbose: bool) -> Result<AnalyzePackageOutput> {
-        let (package_id, modules, module_names, source) = if let Some(dir) = &self.bytecode_dir {
-            let compiled = read_local_compiled_modules(dir)?;
-            let pkg_id = dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("local")
-                .to_string();
-            let (module_names, interface_value) =
-                build_bytecode_interface_value_from_compiled_modules(&pkg_id, &compiled)?;
-            let counts = extract_sanity_counts(
-                interface_value
-                    .get("modules")
-                    .unwrap_or(&serde_json::Value::Null),
-            );
-            let (mm2_ok, mm2_err) = build_mm2_summary(self.mm2, compiled, verbose);
-            return Ok(AnalyzePackageOutput {
-                source: "local-bytecode".to_string(),
-                package_id: pkg_id,
-                modules: counts.modules,
-                structs: counts.structs,
-                functions: counts.functions,
-                key_structs: counts.key_structs,
-                module_names: if self.list_modules {
-                    Some(module_names)
-                } else {
-                    None
-                },
-                mm2_model_ok: mm2_ok,
-                mm2_error: mm2_err,
-            });
-        } else if let Some(pkg_id) = &self.package_id {
-            let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
-            let graphql = GraphQLClient::new(&graphql_endpoint);
-            let pkg = graphql
-                .fetch_package(pkg_id)
-                .with_context(|| format!("fetch package {}", pkg_id))?;
-            let mut compiled_modules = Vec::with_capacity(pkg.modules.len());
-            let mut names = Vec::with_capacity(pkg.modules.len());
-            for module in pkg.modules {
-                names.push(module.name.clone());
-                let Some(b64) = module.bytecode_base64 else {
-                    continue;
-                };
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .context("decode module bytecode")?;
-                let compiled = CompiledModule::deserialize_with_defaults(&bytes)
-                    .context("deserialize module")?;
-                compiled_modules.push(compiled);
-            }
-            names.sort();
-            (
-                pkg.address,
-                compiled_modules,
-                if self.list_modules { Some(names) } else { None },
-                "graphql".to_string(),
-            )
-        } else {
-            return Err(anyhow!("--package-id or --bytecode-dir is required"));
-        };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
 
-        let (mm2_ok, mm2_err) = build_mm2_summary(self.mm2, modules.clone(), verbose);
-        let counts = {
-            let (_, interface_value) =
-                build_bytecode_interface_value_from_compiled_modules(&package_id, &modules)?;
-            extract_sanity_counts(
-                interface_value
-                    .get("modules")
-                    .unwrap_or(&serde_json::Value::Null),
-            )
-        };
-
-        Ok(AnalyzePackageOutput {
-            source,
-            package_id,
-            modules: counts.modules,
-            structs: counts.structs,
-            functions: counts.functions,
-            key_structs: counts.key_structs,
-            module_names,
-            mm2_model_ok: mm2_ok,
-            mm2_error: mm2_err,
-        })
+    #[test]
+    fn test_normalize_package_id() {
+        let normalized = mm2_common::normalize_package_id("0x2").unwrap();
+        assert_eq!(
+            normalized,
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+        );
+        assert!(mm2_common::normalize_package_id("xyz").is_none());
     }
-}
 
-impl AnalyzeReplayCmd {
-    async fn execute(&self, state: &SandboxState, verbose: bool) -> Result<AnalyzeReplayOutput> {
-        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid)
-            && !cfg!(feature = "walrus")
-        {
-            return Err(anyhow!("Walrus source requires the `walrus` feature"));
-        }
-        if self.mm2 && !cfg!(feature = "mm2") {
-            return Err(anyhow!("MM2 analysis requires the `mm2` feature"));
-        }
+    #[test]
+    fn test_mode_from_transfer_function() {
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "transfer", "public_transfer"),
+            Some("owned")
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "transfer", "share_object"),
+            Some("shared")
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "transfer", "freeze_object"),
+            Some("immutable")
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "transfer", "party_transfer"),
+            Some("party")
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "transfer", "receive"),
+            Some("receive")
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x2", "coin", "transfer"),
+            None
+        );
+        assert_eq!(
+            objects_classifier::mode_from_transfer_function("0x3", "transfer", "party_transfer"),
+            None
+        );
+    }
 
-        if matches!(self.source, ReplaySource::Walrus) && !self.fallback {
-            std::env::set_var("SUI_WALRUS_PACKAGE_ONLY", "1");
-        }
+    #[test]
+    fn test_is_dynamic_field_api_function() {
+        assert!(objects_classifier::is_dynamic_field_api_function(
+            "0x2",
+            "dynamic_field",
+            "add",
+            false
+        ));
+        assert!(objects_classifier::is_dynamic_field_api_function(
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "dynamic_object_field",
+            "borrow",
+            false
+        ));
+        assert!(!objects_classifier::is_dynamic_field_api_function(
+            "0x2", "table", "add", false
+        ));
+        assert!(objects_classifier::is_dynamic_field_api_function(
+            "0x2", "table", "add", true
+        ));
+        assert!(!objects_classifier::is_dynamic_field_api_function(
+            "0x2",
+            "object_bag",
+            "borrow",
+            false
+        ));
+        assert!(objects_classifier::is_dynamic_field_api_function(
+            "0x2",
+            "object_bag",
+            "borrow",
+            true
+        ));
+        assert!(!objects_classifier::is_dynamic_field_api_function(
+            "0x3",
+            "dynamic_field",
+            "add",
+            true
+        ));
+        assert!(!objects_classifier::is_dynamic_field_api_function(
+            "0x2", "coin", "mint", true
+        ));
+    }
 
-        let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
-        let grpc = sui_transport::grpc::GrpcClient::with_api_key(
-            &state.rpc_url,
-            std::env::var("SUI_GRPC_API_KEY").ok(),
+    #[test]
+    fn test_resolve_objects_profile_builtin() {
+        let cmd = AnalyzeObjectsCmd {
+            corpus_dir: PathBuf::from("/tmp/corpus"),
+            profile: Some("strict".to_string()),
+            profile_file: None,
+            semantic_mode: None,
+            dynamic_lookback: None,
+            list_types: false,
+            top: 20,
+        };
+        let profile = objects_profile::resolve_objects_profile(&cmd).unwrap();
+        assert_eq!(profile.name, "strict");
+        assert_eq!(profile.source, "builtin");
+        assert_eq!(profile.semantic_mode, AnalyzeSemanticMode::Strict);
+        assert_eq!(profile.dynamic.mode, AnalyzeDynamicMode::Strict);
+        assert_eq!(profile.dynamic.lookback, 12);
+    }
+
+    #[test]
+    fn test_resolve_objects_profile_file_extends_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile_path = dir.path().join("team.yaml");
+        std::fs::write(
+            &profile_path,
+            r#"
+name: team
+extends: strict
+dynamic:
+  lookback: 33
+  include_wrapper_apis: true
+"#,
         )
-        .await?;
-        let graphql = GraphQLClient::new(&graphql_endpoint);
+        .unwrap();
 
-        let mut provider = HistoricalStateProvider::with_clients(grpc, graphql);
-        if matches!(self.source, ReplaySource::Walrus | ReplaySource::Hybrid) {
-            provider = provider
-                .with_walrus_from_env()
-                .with_local_object_store_from_env();
-        }
-
-        let config = ReplayStateConfig {
-            prefetch_dynamic_fields: !self.no_prefetch,
-            df_depth: self.prefetch_depth,
-            df_limit: self.prefetch_limit,
-            auto_system_objects: self.auto_system_objects,
+        let cmd = AnalyzeObjectsCmd {
+            corpus_dir: PathBuf::from("/tmp/corpus"),
+            profile: None,
+            profile_file: Some(profile_path.clone()),
+            semantic_mode: None,
+            dynamic_lookback: None,
+            list_types: false,
+            top: 20,
         };
-        let replay_state = provider
-            .replay_state_builder()
-            .with_config(config)
-            .build(&self.digest)
-            .await?;
-
-        let (input_summary, input_objects) =
-            summarize_inputs(&replay_state.transaction.inputs, verbose);
-        let command_summaries = summarize_commands(&replay_state.transaction.commands);
-
-        let mut modules_total = 0usize;
-        for pkg in replay_state.packages.values() {
-            modules_total += pkg.modules.len();
-        }
-        let package_ids = if verbose {
-            Some(
-                replay_state
-                    .packages
-                    .keys()
-                    .map(|id| id.to_hex_literal())
-                    .collect(),
-            )
-        } else {
-            None
-        };
-        let object_ids = if verbose {
-            Some(
-                replay_state
-                    .objects
-                    .keys()
-                    .map(|id| id.to_hex_literal())
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        let object_types = if verbose {
-            Some(
-                replay_state
-                    .objects
-                    .values()
-                    .map(|obj| ReplayObjectType {
-                        id: obj.id.to_hex_literal(),
-                        type_tag: obj.type_tag.clone(),
-                        version: obj.version,
-                        shared: obj.is_shared,
-                        immutable: obj.is_immutable,
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        let (missing_inputs, missing_packages, suggestions) = build_readiness_notes(
-            &replay_state,
-            &input_summary,
-            self.source,
-            self.fallback,
-            self.no_prefetch,
-            self.mm2,
-        );
-
-        let (mm2_ok, mm2_err) = if self.mm2 {
-            let modules: Vec<CompiledModule> = replay_state
-                .packages
-                .values()
-                .flat_map(|pkg| {
-                    pkg.modules.iter().filter_map(|(_, bytes)| {
-                        CompiledModule::deserialize_with_defaults(bytes).ok()
-                    })
-                })
-                .collect();
-            build_mm2_summary(true, modules, verbose)
-        } else {
-            (None, None)
-        };
-
-        Ok(AnalyzeReplayOutput {
-            digest: replay_state.transaction.digest.0.clone(),
-            sender: replay_state.transaction.sender.to_hex_literal(),
-            commands: replay_state.transaction.commands.len(),
-            inputs: replay_state.transaction.inputs.len(),
-            objects: replay_state.objects.len(),
-            packages: replay_state.packages.len(),
-            modules: modules_total,
-            input_summary,
-            command_summaries,
-            input_objects,
-            object_types,
-            missing_inputs,
-            missing_packages,
-            suggestions,
-            epoch: replay_state.epoch,
-            protocol_version: replay_state.protocol_version,
-            checkpoint: replay_state.checkpoint,
-            reference_gas_price: replay_state.reference_gas_price,
-            package_ids,
-            object_ids,
-            mm2_model_ok: mm2_ok,
-            mm2_error: mm2_err,
-        })
-    }
-}
-
-fn build_mm2_summary(
-    enabled: bool,
-    modules: Vec<CompiledModule>,
-    verbose: bool,
-) -> (Option<bool>, Option<String>) {
-    if !enabled {
-        return (None, None);
-    }
-    #[cfg(feature = "mm2")]
-    {
-        match sui_sandbox_core::mm2::TypeModel::from_modules(modules) {
-            Ok(_) => (Some(true), None),
-            Err(err) => {
-                if verbose {
-                    eprintln!("[mm2] type model build failed: {}", err);
-                }
-                (Some(false), Some(err.to_string()))
-            }
-        }
-    }
-    #[cfg(not(feature = "mm2"))]
-    {
-        let _ = modules;
-        (Some(false), Some("mm2 feature disabled".to_string()))
-    }
-}
-
-fn summarize_inputs(
-    inputs: &[sui_sandbox_types::TransactionInput],
-    verbose: bool,
-) -> (ReplayInputSummary, Option<Vec<ReplayInputObject>>) {
-    let mut summary = ReplayInputSummary {
-        total: inputs.len(),
-        ..Default::default()
-    };
-    let mut objects = Vec::new();
-
-    for input in inputs {
-        match input {
-            sui_sandbox_types::TransactionInput::Pure { .. } => summary.pure += 1,
-            sui_sandbox_types::TransactionInput::Object { object_id, .. } => {
-                summary.owned += 1;
-                if verbose {
-                    objects.push(ReplayInputObject {
-                        id: object_id.clone(),
-                        kind: "owned".to_string(),
-                        mutable: None,
-                    });
-                }
-            }
-            sui_sandbox_types::TransactionInput::SharedObject {
-                object_id, mutable, ..
-            } => {
-                if *mutable {
-                    summary.shared_mutable += 1;
-                } else {
-                    summary.shared_immutable += 1;
-                }
-                if verbose {
-                    objects.push(ReplayInputObject {
-                        id: object_id.clone(),
-                        kind: "shared".to_string(),
-                        mutable: Some(*mutable),
-                    });
-                }
-            }
-            sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
-                summary.immutable += 1;
-                if verbose {
-                    objects.push(ReplayInputObject {
-                        id: object_id.clone(),
-                        kind: "immutable".to_string(),
-                        mutable: None,
-                    });
-                }
-            }
-            sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => {
-                summary.receiving += 1;
-                if verbose {
-                    objects.push(ReplayInputObject {
-                        id: object_id.clone(),
-                        kind: "receiving".to_string(),
-                        mutable: None,
-                    });
-                }
-            }
-        }
+        let profile = objects_profile::resolve_objects_profile(&cmd).unwrap();
+        assert_eq!(profile.name, "team");
+        assert_eq!(profile.source, "file");
+        assert_eq!(profile.path, Some(profile_path.display().to_string()));
+        assert_eq!(profile.semantic_mode, AnalyzeSemanticMode::Strict);
+        assert_eq!(profile.dynamic.mode, AnalyzeDynamicMode::Strict);
+        assert_eq!(profile.dynamic.lookback, 33);
+        assert!(profile.dynamic.include_wrapper_apis);
     }
 
-    let objects = if verbose { Some(objects) } else { None };
-    (summary, objects)
-}
-
-fn summarize_commands(commands: &[sui_sandbox_types::PtbCommand]) -> Vec<ReplayCommandSummary> {
-    commands
-        .iter()
-        .map(|cmd| match cmd {
-            sui_sandbox_types::PtbCommand::MoveCall {
-                package,
-                module,
-                function,
-                type_arguments,
-                arguments,
-            } => ReplayCommandSummary {
-                kind: "MoveCall".to_string(),
-                target: Some(format!("{}::{}::{}", package, module, function)),
-                type_args: type_arguments.len(),
-                args: arguments.len(),
-            },
-            sui_sandbox_types::PtbCommand::SplitCoins { amounts, .. } => ReplayCommandSummary {
-                kind: "SplitCoins".to_string(),
-                target: None,
-                type_args: 0,
-                args: 1 + amounts.len(),
-            },
-            sui_sandbox_types::PtbCommand::MergeCoins { sources, .. } => ReplayCommandSummary {
-                kind: "MergeCoins".to_string(),
-                target: None,
-                type_args: 0,
-                args: 1 + sources.len(),
-            },
-            sui_sandbox_types::PtbCommand::TransferObjects { objects, .. } => {
-                ReplayCommandSummary {
-                    kind: "TransferObjects".to_string(),
-                    target: None,
-                    type_args: 0,
-                    args: 1 + objects.len(),
-                }
-            }
-            sui_sandbox_types::PtbCommand::MakeMoveVec { elements, type_arg } => {
-                ReplayCommandSummary {
-                    kind: "MakeMoveVec".to_string(),
-                    target: None,
-                    type_args: usize::from(type_arg.is_some()),
-                    args: elements.len(),
-                }
-            }
-            sui_sandbox_types::PtbCommand::Publish { dependencies, .. } => ReplayCommandSummary {
-                kind: "Publish".to_string(),
-                target: None,
-                type_args: 0,
-                args: dependencies.len(),
-            },
-            sui_sandbox_types::PtbCommand::Upgrade { package, .. } => ReplayCommandSummary {
-                kind: "Upgrade".to_string(),
-                target: Some(package.clone()),
-                type_args: 0,
-                args: 1,
-            },
-        })
-        .collect()
-}
-
-fn build_readiness_notes(
-    replay_state: &sui_state_fetcher::ReplayState,
-    input_summary: &ReplayInputSummary,
-    source: ReplaySource,
-    fallback: bool,
-    no_prefetch: bool,
-    mm2_enabled: bool,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
-    use move_core_types::account_address::AccountAddress;
-    use std::collections::BTreeSet;
-
-    let mut missing_inputs = Vec::new();
-    for input in &replay_state.transaction.inputs {
-        let id = match input {
-            sui_sandbox_types::TransactionInput::Object { object_id, .. } => Some(object_id),
-            sui_sandbox_types::TransactionInput::SharedObject { object_id, .. } => Some(object_id),
-            sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
-                Some(object_id)
-            }
-            sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => Some(object_id),
-            sui_sandbox_types::TransactionInput::Pure { .. } => None,
-        };
-        if let Some(id) = id {
-            match AccountAddress::from_hex_literal(id) {
-                Ok(addr) => {
-                    if !replay_state.objects.contains_key(&addr) {
-                        missing_inputs.push(addr.to_hex_literal());
-                    }
-                }
-                Err(_) => missing_inputs.push(id.clone()),
-            }
-        }
-    }
-
-    let mut required_packages: BTreeSet<AccountAddress> = BTreeSet::new();
-    for cmd in &replay_state.transaction.commands {
-        match cmd {
-            sui_sandbox_types::PtbCommand::MoveCall {
-                package,
-                type_arguments,
-                ..
-            } => {
-                if let Ok(addr) = AccountAddress::from_hex_literal(package) {
-                    required_packages.insert(addr);
-                }
-                for ty in type_arguments {
-                    for pkg in sui_sandbox_core::utilities::extract_package_ids_from_type(ty) {
-                        if let Ok(addr) = AccountAddress::from_hex_literal(&pkg) {
-                            required_packages.insert(addr);
-                        }
-                    }
-                }
-            }
-            sui_sandbox_types::PtbCommand::Upgrade { package, .. } => {
-                if let Ok(addr) = AccountAddress::from_hex_literal(package) {
-                    required_packages.insert(addr);
-                }
-            }
-            sui_sandbox_types::PtbCommand::Publish { dependencies, .. } => {
-                for dep in dependencies {
-                    if let Ok(addr) = AccountAddress::from_hex_literal(dep) {
-                        required_packages.insert(addr);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut missing_packages = Vec::new();
-    for addr in required_packages {
-        if !replay_state.packages.contains_key(&addr) {
-            missing_packages.push(addr.to_hex_literal());
-        }
-    }
-
-    let mut suggestions = Vec::new();
-    if !missing_inputs.is_empty() {
-        suggestions.push(format!(
-            "Missing {} input object(s); try replay with --synthesize or ensure historical gRPC/Walrus access",
-            missing_inputs.len()
-        ));
-    }
-    if !missing_packages.is_empty() {
-        suggestions.push(format!(
-            "Missing {} package(s); try `sui-sandbox fetch package <ID> --with-deps`",
-            missing_packages.len()
-        ));
-    }
-    if input_summary.shared_mutable + input_summary.shared_immutable > 0 {
-        suggestions.push(
-            "Shared inputs detected; ensure you have historical versions (Walrus or archive gRPC)"
-                .to_string(),
+    #[test]
+    fn test_analyze_package_cmd_requires_source() {
+        let err = AnalyzePackageCmd::try_parse_from(["analyze-package"]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--package-id") || msg.contains("--bytecode-dir"),
+            "unexpected clap error: {msg}"
         );
     }
-    if no_prefetch {
-        suggestions.push(
-            "Dynamic-field prefetch is disabled; enable prefetch for more complete replay data"
-                .to_string(),
+
+    #[test]
+    fn test_analyze_replay_cmd_bool_defaults_and_overrides() {
+        let defaults = AnalyzeReplayCmd::try_parse_from(["analyze-replay", "dummy-digest"])
+            .expect("parse replay defaults");
+        assert!(defaults.hydration.allow_fallback);
+        assert!(defaults.hydration.auto_system_objects);
+
+        let disabled = AnalyzeReplayCmd::try_parse_from([
+            "analyze-replay",
+            "dummy-digest",
+            "--allow-fallback",
+            "false",
+            "--auto-system-objects",
+            "false",
+        ])
+        .expect("parse replay overrides");
+        assert!(!disabled.hydration.allow_fallback);
+        assert!(!disabled.hydration.auto_system_objects);
+
+        let enabled = AnalyzeReplayCmd::try_parse_from([
+            "analyze-replay",
+            "dummy-digest",
+            "--allow-fallback",
+            "true",
+            "--auto-system-objects",
+            "true",
+        ])
+        .expect("parse explicit replay enables");
+        assert!(enabled.hydration.allow_fallback);
+        assert!(enabled.hydration.auto_system_objects);
+    }
+
+    #[test]
+    fn test_analyze_replay_output_serialization_hydration_contract() {
+        let output = AnalyzeReplayOutput {
+            digest: "dummy".to_string(),
+            sender: "0x1".to_string(),
+            commands: 0,
+            inputs: 0,
+            objects: 0,
+            packages: 0,
+            modules: 0,
+            input_summary: ReplayInputSummary::default(),
+            command_summaries: Vec::new(),
+            hydration: AnalyzeReplayHydrationSummary {
+                source: "hybrid".to_string(),
+                allow_fallback: true,
+                auto_system_objects: false,
+                dynamic_field_prefetch: true,
+                prefetch_depth: 3,
+                prefetch_limit: 200,
+            },
+            input_objects: None,
+            object_types: None,
+            missing_inputs: Vec::new(),
+            missing_packages: Vec::new(),
+            suggestions: Vec::new(),
+            epoch: 0,
+            protocol_version: 64,
+            checkpoint: None,
+            reference_gas_price: None,
+            package_ids: None,
+            object_ids: None,
+            mm2_model_ok: None,
+            mm2_error: None,
+        };
+
+        let value = serde_json::to_value(&output).expect("serialize replay output");
+        let hydration = value
+            .get("hydration")
+            .and_then(serde_json::Value::as_object)
+            .expect("hydration object");
+
+        assert!(hydration
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .is_some());
+        assert!(hydration
+            .get("allow_fallback")
+            .and_then(serde_json::Value::as_bool)
+            .is_some());
+        assert!(hydration
+            .get("auto_system_objects")
+            .and_then(serde_json::Value::as_bool)
+            .is_some());
+        assert!(hydration
+            .get("dynamic_field_prefetch")
+            .and_then(serde_json::Value::as_bool)
+            .is_some());
+        assert!(hydration
+            .get("prefetch_depth")
+            .and_then(serde_json::Value::as_u64)
+            .is_some());
+        assert!(hydration
+            .get("prefetch_limit")
+            .and_then(serde_json::Value::as_u64)
+            .is_some());
+    }
+
+    #[test]
+    fn test_parse_bcs_linkage_upgraded_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let bcs_path = dir.path().join("bcs.json");
+        std::fs::write(
+            &bcs_path,
+            r#"{
+                "linkageTable": {
+                    "0x2": {"upgraded_id": "0x2", "upgraded_version": 1},
+                    "0xabc": {"upgraded_id": "0x0000000000000000000000000000000000000000000000000000000000000abc", "upgraded_version": 7}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let ids = mm2_common::parse_bcs_linkage_upgraded_ids(dir.path()).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            ids[0],
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
         );
-    }
-    if !fallback {
-        suggestions.push(
-            "Fallback disabled; enable fallback to allow GraphQL current-state fills when historical data is missing".to_string(),
+        assert_eq!(
+            ids[1],
+            "0x0000000000000000000000000000000000000000000000000000000000000abc"
         );
-    }
-    if !mm2_enabled {
-        suggestions
-            .push("Run `analyze replay --mm2` for synthesis + type-model diagnostics".to_string());
-    }
-    if matches!(source, ReplaySource::Grpc) {
-        suggestions.push("If data is incomplete, try `--source walrus` when available".to_string());
-    }
-
-    (missing_inputs, missing_packages, suggestions)
-}
-
-fn print_package_output(output: &AnalyzePackageOutput) {
-    println!("Package Analysis: {}", output.package_id);
-    println!("  Source:   {}", output.source);
-    println!(
-        "  Counts:   modules={} structs={} functions={} key_structs={}",
-        output.modules, output.structs, output.functions, output.key_structs
-    );
-    if let Some(names) = output.module_names.as_ref() {
-        println!("  Modules:  {}", names.join(", "));
-    }
-    if let Some(ok) = output.mm2_model_ok {
-        println!("  MM2:      {}", if ok { "ok" } else { "failed" });
-    }
-    if let Some(err) = output.mm2_error.as_ref() {
-        println!("  MM2 Err:  {}", err);
-    }
-}
-
-fn print_replay_output(output: &AnalyzeReplayOutput) {
-    println!("Replay Analysis: {}", output.digest);
-    println!("  Sender:   {}", output.sender);
-    println!(
-        "  Tx:       commands={} inputs={}",
-        output.commands, output.inputs
-    );
-    println!(
-        "  State:    objects={} packages={} modules={}",
-        output.objects, output.packages, output.modules
-    );
-    println!(
-        "  Inputs:   total={} pure={} owned={} shared(mutable/imm)={}/{} immutable={} receiving={}",
-        output.input_summary.total,
-        output.input_summary.pure,
-        output.input_summary.owned,
-        output.input_summary.shared_mutable,
-        output.input_summary.shared_immutable,
-        output.input_summary.immutable,
-        output.input_summary.receiving
-    );
-    if !output.command_summaries.is_empty() {
-        println!("  Commands:");
-        for (idx, cmd) in output.command_summaries.iter().enumerate() {
-            if let Some(target) = cmd.target.as_ref() {
-                println!(
-                    "    [{}] {} {} (type_args={}, args={})",
-                    idx, cmd.kind, target, cmd.type_args, cmd.args
-                );
-            } else {
-                println!(
-                    "    [{}] {} (type_args={}, args={})",
-                    idx, cmd.kind, cmd.type_args, cmd.args
-                );
-            }
-        }
-    }
-    println!(
-        "  Epoch:    {} (protocol v{})",
-        output.epoch, output.protocol_version
-    );
-    if let Some(cp) = output.checkpoint {
-        println!("  Checkpoint: {}", cp);
-    }
-    if let Some(rgp) = output.reference_gas_price {
-        println!("  RGP:      {}", rgp);
-    }
-    if !output.missing_inputs.is_empty() {
-        println!("  Missing inputs: {}", output.missing_inputs.join(", "));
-    }
-    if !output.missing_packages.is_empty() {
-        println!("  Missing packages: {}", output.missing_packages.join(", "));
-    }
-    if let Some(objs) = output.input_objects.as_ref() {
-        println!("  Input objects:");
-        for obj in objs {
-            match obj.mutable {
-                Some(mutable) => println!("    {} ({}, mutable={})", obj.id, obj.kind, mutable),
-                None => println!("    {} ({})", obj.id, obj.kind),
-            }
-        }
-    }
-    if let Some(types) = output.object_types.as_ref() {
-        println!("  Object types:");
-        for obj in types {
-            if let Some(tag) = obj.type_tag.as_ref() {
-                println!(
-                    "    {} v{} {} (shared={}, immutable={})",
-                    obj.id, obj.version, tag, obj.shared, obj.immutable
-                );
-            } else {
-                println!(
-                    "    {} v{} <unknown> (shared={}, immutable={})",
-                    obj.id, obj.version, obj.shared, obj.immutable
-                );
-            }
-        }
-    }
-    if let Some(ids) = output.package_ids.as_ref() {
-        println!("  Packages: {}", ids.join(", "));
-    }
-    if let Some(ids) = output.object_ids.as_ref() {
-        println!("  Objects:  {}", ids.join(", "));
-    }
-    if let Some(ok) = output.mm2_model_ok {
-        println!("  MM2:      {}", if ok { "ok" } else { "failed" });
-    }
-    if let Some(err) = output.mm2_error.as_ref() {
-        println!("  MM2 Err:  {}", err);
-    }
-    if !output.suggestions.is_empty() {
-        println!("  Suggestions:");
-        for suggestion in &output.suggestions {
-            println!("    - {}", suggestion);
-        }
     }
 }
