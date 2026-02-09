@@ -13,7 +13,7 @@ pub use sui_sandbox_types::ObjectID;
 /// Everything needed to replay a single transaction.
 ///
 /// This is the main output of [`HistoricalStateProvider::fetch_replay_state`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayState {
     /// The transaction to replay (commands, inputs, sender, gas).
     pub transaction: FetchedTransaction,

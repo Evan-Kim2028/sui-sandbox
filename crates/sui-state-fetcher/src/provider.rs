@@ -3839,7 +3839,7 @@ fn extract_module_dependency_ids(modules: &[(String, Vec<u8>)]) -> Vec<AccountAd
     deps.into_iter().collect()
 }
 
-fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
+pub fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
     let modules = pkg
         .serialized_module_map()
         .iter()

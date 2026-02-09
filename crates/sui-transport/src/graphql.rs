@@ -226,6 +226,8 @@ pub struct GraphQLObject {
     pub owner: ObjectOwner,
     pub bcs_base64: Option<String>,
     pub content_json: Option<Value>,
+    /// Digest of the transaction that last modified this object.
+    pub previous_transaction: Option<String>,
 }
 
 /// Object ownership information.
@@ -573,6 +575,7 @@ impl GraphQLClient {
                     address
                     version
                     digest
+                    previousTransaction { digest }
                     owner {
                         __typename
                         ... on AddressOwner {
@@ -626,6 +629,12 @@ impl GraphQLClient {
             .map(|s| s.to_string());
         let content_json = move_obj.and_then(|c| c.get("json")).cloned();
 
+        let previous_transaction = obj
+            .get("previousTransaction")
+            .and_then(|p| p.get("digest"))
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string());
+
         Ok(GraphQLObject {
             address: obj
                 .get("address")
@@ -641,6 +650,7 @@ impl GraphQLClient {
             owner,
             bcs_base64,
             content_json,
+            previous_transaction,
         })
     }
 
@@ -652,6 +662,7 @@ impl GraphQLClient {
                     address
                     version
                     digest
+                    previousTransaction { digest }
                     owner {
                         __typename
                         ... on AddressOwner {
@@ -707,6 +718,12 @@ impl GraphQLClient {
             .map(|s| s.to_string());
         let content_json = move_obj.and_then(|c| c.get("json")).cloned();
 
+        let previous_transaction = obj
+            .get("previousTransaction")
+            .and_then(|p| p.get("digest"))
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string());
+
         Ok(GraphQLObject {
             address: obj
                 .get("address")
@@ -725,6 +742,7 @@ impl GraphQLClient {
             owner,
             bcs_base64,
             content_json,
+            previous_transaction,
         })
     }
 
@@ -741,6 +759,7 @@ impl GraphQLClient {
                     address
                     version
                     digest
+                    previousTransaction { digest }
                     owner {
                         __typename
                         ... on AddressOwner {
@@ -811,6 +830,11 @@ impl GraphQLClient {
             owner,
             bcs_base64,
             content_json,
+            previous_transaction: obj
+                .get("previousTransaction")
+                .and_then(|p| p.get("digest"))
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
@@ -2458,6 +2482,7 @@ impl GraphQLClient {
                     owner,
                     bcs_base64,
                     content_json: None,
+                    previous_transaction: None,
                 })
             })
             .collect();
