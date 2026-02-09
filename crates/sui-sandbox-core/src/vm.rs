@@ -1716,6 +1716,10 @@ pub struct InMemoryStorage<'a> {
     module_resolver: &'a LocalModuleResolver,
     /// Shared trace to record module accesses during execution
     trace: Arc<Mutex<ModuleAccessTrace>>,
+    /// Current link context for package-scoped dependency resolution.
+    /// Set before each MoveCall to the calling package's storage address.
+    /// Uses Cell for interior mutability since link_context(&self) takes &self.
+    current_link_context: std::cell::Cell<AccountAddress>,
 }
 
 impl<'a> InMemoryStorage<'a> {
@@ -1735,6 +1739,7 @@ impl<'a> InMemoryStorage<'a> {
         let mut storage = Self {
             module_resolver,
             trace,
+            current_link_context: std::cell::Cell::new(AccountAddress::ZERO),
         };
 
         if restricted {
@@ -1765,31 +1770,122 @@ impl<'a> InMemoryStorage<'a> {
     pub fn module_resolver(&self) -> &LocalModuleResolver {
         self.module_resolver
     }
+
+    /// Set the link context for the next MoveCall execution.
+    /// This should be called before each MoveCall with the calling package's
+    /// storage address so the VM uses per-package dependency resolution.
+    pub fn set_link_context(&self, context: AccountAddress) {
+        self.current_link_context.set(context);
+    }
+
+    /// Reset the link context back to ZERO after execution.
+    pub fn reset_link_context(&self) {
+        self.current_link_context.set(AccountAddress::ZERO);
+    }
 }
 
 impl<'a> LinkageResolver for InMemoryStorage<'a> {
     type Error = anyhow::Error;
 
     fn link_context(&self) -> AccountAddress {
-        AccountAddress::ZERO
+        self.current_link_context.get()
     }
 
     fn relocate(&self, module_id: &ModuleId) -> Result<ModuleId, Self::Error> {
-        // Prefer linkage upgrades (original -> upgraded) for package version resolution.
+        let ctx = self.current_link_context.get();
+        let trace_relocate = std::env::var("SANDBOX_TRACE_RELOCATE").is_ok();
+
+        // Per-package linkage: when a link context is set, use that package's
+        // specific dependency table to resolve modules.
+        if ctx != AccountAddress::ZERO {
+            // Self-relocation: if the module is from the link context package
+            // itself (by runtime ID), map to the storage address.
+            if let Some(runtime_id) = self.module_resolver.get_link_context_runtime_id(&ctx) {
+                if module_id.address() == &runtime_id && runtime_id != ctx {
+                    let relocated = ModuleId::new(ctx, module_id.name().to_owned());
+                    if self.module_resolver.has_module(&relocated) {
+                        if trace_relocate {
+                            eprintln!("[relocate] {} -> {} (self-reloc)", module_id, relocated);
+                        }
+                        return Ok(relocated);
+                    }
+                }
+            }
+
+            // Per-package dependency lookup (link context package's own linkage table).
+            // Returns the storage address from the linkage table. has_module() and
+            // get_module() handle storage→runtime mapping for upgraded packages.
+            if let Some(storage_addr) = self
+                .module_resolver
+                .get_per_package_linkage(&ctx, module_id.address())
+            {
+                let relocated = ModuleId::new(storage_addr, module_id.name().to_owned());
+                if self.module_resolver.has_module(&relocated) {
+                    if trace_relocate {
+                        eprintln!(
+                            "[relocate] {} -> {} (per-pkg ctx={:#x})",
+                            module_id, relocated, ctx
+                        );
+                    }
+                    return Ok(relocated);
+                }
+            }
+
+            // Transitive linkage: search ALL registered packages' linkage tables.
+            if let Some(storage_addr) = self
+                .module_resolver
+                .find_in_any_package_linkage(module_id.address())
+            {
+                let relocated = ModuleId::new(storage_addr, module_id.name().to_owned());
+                if self.module_resolver.has_module(&relocated) {
+                    if trace_relocate {
+                        eprintln!("[relocate] {} -> {} (transitive-any)", module_id, relocated);
+                    }
+                    return Ok(relocated);
+                }
+            }
+        }
+
+        // Fallback: global linkage upgrades (original -> upgraded).
+        // Uses has_module() guard since these may not have aliases registered.
         if let Some(upgraded_addr) = self
             .module_resolver
             .get_linkage_upgrade(module_id.address())
         {
             let upgraded_id = ModuleId::new(upgraded_addr, module_id.name().to_owned());
-            // Only relocate if the upgraded module exists at that address.
             if self.module_resolver.has_module(&upgraded_id) {
+                if trace_relocate {
+                    eprintln!(
+                        "[relocate] {} -> {} (global-linkage)",
+                        module_id, upgraded_id
+                    );
+                }
                 return Ok(upgraded_id);
             }
         }
         // Fallback to alias-based relocation (storage -> original).
         if let Some(aliased_addr) = self.module_resolver.get_alias(module_id.address()) {
             let relocated = ModuleId::new(aliased_addr, module_id.name().to_owned());
+            if trace_relocate {
+                eprintln!("[relocate] {} -> {} (alias)", module_id, relocated);
+            }
             return Ok(relocated);
+        }
+        if trace_relocate
+            && module_id.address() != &AccountAddress::ZERO
+            && module_id.address() != &AccountAddress::ONE
+            && module_id.address() != &AccountAddress::TWO
+            && *module_id.address() != AccountAddress::from_hex_literal("0x3").unwrap()
+        {
+            eprintln!(
+                "[relocate] {} -> IDENTITY (no mapping, ctx={})",
+                module_id,
+                if ctx == AccountAddress::ZERO {
+                    "ZERO".to_string()
+                } else {
+                    format!("{:#x}", ctx)
+                }
+            );
         }
         Ok(module_id.clone())
     }
@@ -1801,7 +1897,16 @@ impl<'a> ModuleResolver for InMemoryStorage<'a> {
     fn get_module(&self, id: &ModuleId) -> Result<Option<Vec<u8>>, Self::Error> {
         // Track module access (parking_lot::Mutex doesn't poison, so lock() is infallible)
         self.trace.lock().modules_accessed.insert(id.clone());
-        self.module_resolver.get_module(id)
+        let result = self.module_resolver.get_module(id);
+        // DEBUG: trace module load failures
+        if std::env::var("SANDBOX_TRACE_RELOCATE").is_ok() {
+            if let Ok(ref opt) = result {
+                if opt.is_none() {
+                    eprintln!("[get_module] NOT FOUND: {}", id);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -2692,9 +2797,6 @@ impl<'a> VMHarness<'a> {
         };
 
         let extensions = self.create_extensions();
-        let mut session = self
-            .vm
-            .new_session_with_extensions(&self.storage, extensions);
 
         // Relocate module ID if there's an address alias.
         // This is necessary because the VM's function resolution doesn't use LinkageResolver
@@ -2704,12 +2806,23 @@ impl<'a> VMHarness<'a> {
             .relocate(module)
             .unwrap_or_else(|_| module.clone());
 
+        // Set per-package link context BEFORE creating the session.
+        // The VM captures link_context() at execute_main entry and uses it as a
+        // cache key for loaded modules. This ensures each package gets its own
+        // dependency resolution via per-package linkage tables.
+        self.storage.set_link_context(*relocated_module.address());
+
+        let mut session = self
+            .vm
+            .new_session_with_extensions(&self.storage, extensions);
+
         // Load type arguments
         let mut loaded_ty_args = Vec::new();
         for tag in &ty_args {
             match session.load_type(tag) {
                 Ok(ty) => loaded_ty_args.push(ty),
                 Err(e) => {
+                    self.storage.reset_link_context();
                     let structured = StructuredVMError::from_vm_error(&e);
                     return ExecutionResult::Failure {
                         error: structured,
@@ -2732,6 +2845,7 @@ impl<'a> VMHarness<'a> {
         ) {
             Ok(result) => result,
             Err(vm_error) => {
+                self.storage.reset_link_context();
                 // Extract structured error BEFORE converting to string
                 let mut structured = StructuredVMError::from_vm_error(&vm_error);
 
@@ -2750,6 +2864,7 @@ impl<'a> VMHarness<'a> {
 
         // Finish session
         let (result, _store) = session.finish();
+        self.storage.reset_link_context();
         if let Err(vm_error) = result {
             let structured = StructuredVMError::from_vm_error(&vm_error);
             return ExecutionResult::Failure {

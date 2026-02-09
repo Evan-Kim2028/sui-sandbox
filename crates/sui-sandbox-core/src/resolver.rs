@@ -152,6 +152,16 @@ pub struct LocalModuleResolver {
     function_cache: std::sync::Arc<
         parking_lot::RwLock<std::collections::HashMap<FunctionKey, CachedFunctionInfo>>,
     >,
+    /// Per-package linkage tables: storage_addr → (dep_runtime_id → dep_storage_id).
+    /// Each package carries its own view of which storage addresses its dependencies
+    /// should resolve to, enabling correct multi-version dependency resolution.
+    per_package_linkage: std::collections::HashMap<
+        AccountAddress,
+        std::collections::HashMap<AccountAddress, AccountAddress>,
+    >,
+    /// Maps storage_addr → runtime_id for upgraded packages.
+    /// Used by relocate() to detect when a module belongs to the link context package.
+    package_runtime_ids: std::collections::HashMap<AccountAddress, AccountAddress>,
 }
 
 impl Default for LocalModuleResolver {
@@ -170,6 +180,8 @@ impl LocalModuleResolver {
             function_cache: std::sync::Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            per_package_linkage: std::collections::HashMap::new(),
+            package_runtime_ids: std::collections::HashMap::new(),
         }
     }
 
@@ -488,8 +500,20 @@ impl LocalModuleResolver {
     }
 
     /// Check if a module is loaded.
+    /// Also checks storage→runtime mapping for upgraded packages.
     pub fn has_module(&self, id: &ModuleId) -> bool {
-        self.modules.contains_key(id)
+        if self.modules.contains_key(id) {
+            return true;
+        }
+        // For upgraded packages, the requested address may be a storage address
+        // but modules are stored under the runtime_id (bytecode self-address).
+        if let Some(runtime_id) = self.package_runtime_ids.get(id.address()) {
+            if runtime_id != id.address() {
+                let runtime_mod = ModuleId::new(*runtime_id, id.name().to_owned());
+                return self.modules.contains_key(&runtime_mod);
+            }
+        }
+        false
     }
 
     /// Check if a package (any module at this address) is loaded.
@@ -603,6 +627,86 @@ impl LocalModuleResolver {
     /// Get the upgraded storage address for an original (runtime) address, if any.
     pub fn get_linkage_upgrade(&self, original: &AccountAddress) -> Option<AccountAddress> {
         self.linkage_upgrades.get(original).copied()
+    }
+
+    /// Register a package's linkage table for per-package dependency resolution.
+    /// `storage_addr` is the on-chain address where the package bytes live.
+    /// `runtime_id` is the package's original/bytecode address.
+    /// `linkage` maps dep_runtime_id → dep_storage_id for this package's dependencies.
+    pub fn add_package_linkage(
+        &mut self,
+        storage_addr: AccountAddress,
+        runtime_id: AccountAddress,
+        linkage: &std::collections::HashMap<AccountAddress, AccountAddress>,
+    ) {
+        if std::env::var("SANDBOX_TRACE_RELOCATE").is_ok() {
+            eprintln!(
+                "[add_pkg_linkage] storage={:#x} runtime={:#x} entries={}",
+                storage_addr,
+                runtime_id,
+                linkage.len()
+            );
+            for (dep_runtime, dep_storage) in linkage {
+                eprintln!("  linkage: {:#x} -> {:#x}", dep_runtime, dep_storage);
+            }
+        }
+        self.package_runtime_ids.insert(storage_addr, runtime_id);
+        if !linkage.is_empty() {
+            self.per_package_linkage
+                .insert(storage_addr, linkage.clone());
+        }
+    }
+
+    /// Look up a dependency's storage address for a specific calling package.
+    pub fn get_per_package_linkage(
+        &self,
+        link_context: &AccountAddress,
+        dep_runtime_id: &AccountAddress,
+    ) -> Option<AccountAddress> {
+        let result = self
+            .per_package_linkage
+            .get(link_context)
+            .and_then(|table| table.get(dep_runtime_id).copied());
+        if std::env::var("SANDBOX_TRACE_RELOCATE").is_ok()
+            && result.is_none()
+            && link_context != &AccountAddress::ZERO
+        {
+            let has_table = self.per_package_linkage.contains_key(link_context);
+            eprintln!(
+                "[per_pkg_linkage] ctx={:#x} dep={:#x} -> None (has_table={})",
+                link_context, dep_runtime_id, has_table
+            );
+        }
+        result
+    }
+
+    /// Get the runtime ID for a package at the given storage address.
+    pub fn get_link_context_runtime_id(
+        &self,
+        storage_addr: &AccountAddress,
+    ) -> Option<AccountAddress> {
+        self.package_runtime_ids.get(storage_addr).copied()
+    }
+
+    /// Search ALL registered packages' linkage tables for a dependency mapping.
+    ///
+    /// This handles transitive dependency resolution: when the link context package
+    /// (A) loads a dependency (B), and B's bytecode references B's own dependencies
+    /// using runtime addresses, A's linkage table may not contain those mappings.
+    /// In that case, we search B's linkage table (and all other packages') to find
+    /// the correct storage address.
+    ///
+    /// Returns the first matching storage address found across any package's linkage.
+    pub fn find_in_any_package_linkage(
+        &self,
+        dep_runtime_id: &AccountAddress,
+    ) -> Option<AccountAddress> {
+        for table in self.per_package_linkage.values() {
+            if let Some(storage_addr) = table.get(dep_runtime_id) {
+                return Some(*storage_addr);
+            }
+        }
+        None
     }
 
     /// Import address aliases from a PackageUpgradeResolver.
@@ -2168,6 +2272,18 @@ impl ModuleResolver for LocalModuleResolver {
             let aliased_id = ModuleId::new(*aliased_addr, id.name().to_owned());
             if let Some(bytes) = self.modules_bytes.get(&aliased_id) {
                 return Ok(Some(bytes.clone()));
+            }
+        }
+
+        // For upgraded packages: storage_addr → runtime_id mapping.
+        // When relocate() returns a storage address, the VM looks up the module
+        // by storage address. Modules are stored under runtime_id, so we map here.
+        if let Some(runtime_id) = self.package_runtime_ids.get(id.address()) {
+            if runtime_id != id.address() {
+                let runtime_mod = ModuleId::new(*runtime_id, id.name().to_owned());
+                if let Some(bytes) = self.modules_bytes.get(&runtime_mod) {
+                    return Ok(Some(bytes.clone()));
+                }
             }
         }
 

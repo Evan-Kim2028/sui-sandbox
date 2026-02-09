@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_command_error_context_with_abort() {
-        let abort = AbortInfo {
+        let abort = TransactionAbortInfo {
             module: "0x2::coin".into(),
             function: "split".into(),
             abort_code: 1,
