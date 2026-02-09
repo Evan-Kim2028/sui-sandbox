@@ -2,6 +2,25 @@
 
 All notable changes to the Sui Move Interface Extractor project will be documented in this file.
 
+## [Unreleased]
+
+## [0.15.0] - 2026-02-09
+
+### Added
+
+- **Workflow commands**: `init --example quickstart` and `run-flow <flow.yaml>` for deterministic CLI task execution.
+- **Snapshot lifecycle commands**: `snapshot save|list|load|delete` for named local state checkpoints.
+- **Session reset command**: `reset` to clear in-memory session while preserving defaults.
+- **Structured diagnostics**: global `--debug-json` emits machine-readable error diagnostics.
+- **Phase 0 UX baseline artifacts**: `docs/ux/PHASE0_BASELINE.md` and `scripts/phase0_baseline.sh`.
+
+### Changed
+
+- **Replay controls**: added `--allow-fallback` (`--fallback` alias) and `--vm-only`.
+- **Replay output**: now includes execution-path summary (requested/effective source, fallback usage, prefetch/dependency modes).
+- **Status output**: now includes object/module/dynamic-field counts and state file path in human and JSON modes.
+- **CLI docs refresh**: reference and README updated with workflow, snapshot, reset, and troubleshooting paths.
+
 ## [0.14.0] - 2026-02-05
 
 ### Breaking Changes
