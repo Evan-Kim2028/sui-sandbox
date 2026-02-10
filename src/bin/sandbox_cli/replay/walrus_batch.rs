@@ -27,7 +27,7 @@ pub(super) async fn execute_walrus_batch_v2(
     use sui_sandbox::ptb_classifier::classify_checkpoint_tx;
     use sui_transport::walrus::WalrusClient;
 
-    let digest_filter = DigestFilter::parse(&cmd.digest);
+    let digest_filter = DigestFilter::parse(cmd.digest.as_deref().unwrap_or("*"));
 
     if replay_progress || verbose {
         eprintln!(
@@ -180,7 +180,7 @@ pub(super) async fn execute_walrus_batch_v2(
             }
 
             let single = ReplayCmd {
-                digest: tx_digest.clone(),
+                digest: Some(tx_digest.clone()),
                 hydration: ReplayHydrationArgs {
                     source: cmd.hydration.source,
                     allow_fallback: cmd.hydration.allow_fallback,
@@ -197,8 +197,6 @@ pub(super) async fn execute_walrus_batch_v2(
                 reconcile_dynamic_fields: cmd.reconcile_dynamic_fields,
                 synthesize_missing: cmd.synthesize_missing,
                 self_heal_dynamic_fields: cmd.self_heal_dynamic_fields,
-                #[cfg(feature = "igloo")]
-                igloo: cmd.igloo.clone(),
                 grpc_timeout_secs: cmd.grpc_timeout_secs,
                 checkpoint: Some(cp_num.to_string()),
                 state_json: None,

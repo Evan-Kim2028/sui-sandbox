@@ -1794,37 +1794,44 @@ impl<'a> LinkageResolver for InMemoryStorage<'a> {
     fn relocate(&self, module_id: &ModuleId) -> Result<ModuleId, Self::Error> {
         let ctx = self.current_link_context.get();
         let trace_relocate = std::env::var("SANDBOX_TRACE_RELOCATE").is_ok();
+        let resolve_storage_target = |storage_addr: AccountAddress| {
+            self.module_resolver
+                .get_alias(&storage_addr)
+                .unwrap_or(storage_addr)
+        };
 
         // Per-package linkage: when a link context is set, use that package's
         // specific dependency table to resolve modules.
         if ctx != AccountAddress::ZERO {
-            // Self-relocation: if the module is from the link context package
-            // itself (by runtime ID), map to the storage address.
+            // Keep self references on runtime IDs. The Move VM function cache is keyed
+            // by runtime module IDs, so rewriting self-calls to storage IDs causes
+            // FUNCTION_RESOLUTION_FAILURE cache misses for upgraded packages.
             if let Some(runtime_id) = self.module_resolver.get_link_context_runtime_id(&ctx) {
-                if module_id.address() == &runtime_id && runtime_id != ctx {
-                    let relocated = ModuleId::new(ctx, module_id.name().to_owned());
-                    if self.module_resolver.has_module(&relocated) {
-                        if trace_relocate {
-                            eprintln!("[relocate] {} -> {} (self-reloc)", module_id, relocated);
-                        }
-                        return Ok(relocated);
+                if module_id.address() == &runtime_id
+                    && runtime_id != ctx
+                    && self.module_resolver.has_module(module_id)
+                {
+                    if trace_relocate {
+                        eprintln!("[relocate] {} -> {} (self-runtime)", module_id, module_id);
                     }
+                    return Ok(module_id.clone());
                 }
             }
 
             // Per-package dependency lookup (link context package's own linkage table).
-            // Returns the storage address from the linkage table. has_module() and
-            // get_module() handle storage→runtime mapping for upgraded packages.
+            // Linkage tables store storage addresses; normalize to runtime IDs for
+            // VM cache compatibility.
             if let Some(storage_addr) = self
                 .module_resolver
                 .get_per_package_linkage(&ctx, module_id.address())
             {
-                let relocated = ModuleId::new(storage_addr, module_id.name().to_owned());
+                let runtime_addr = resolve_storage_target(storage_addr);
+                let relocated = ModuleId::new(runtime_addr, module_id.name().to_owned());
                 if self.module_resolver.has_module(&relocated) {
                     if trace_relocate {
                         eprintln!(
-                            "[relocate] {} -> {} (per-pkg ctx={:#x})",
-                            module_id, relocated, ctx
+                            "[relocate] {} -> {} (per-pkg ctx={:#x}, via={:#x})",
+                            module_id, relocated, ctx, storage_addr
                         );
                     }
                     return Ok(relocated);
@@ -1836,10 +1843,14 @@ impl<'a> LinkageResolver for InMemoryStorage<'a> {
                 .module_resolver
                 .find_in_any_package_linkage(module_id.address())
             {
-                let relocated = ModuleId::new(storage_addr, module_id.name().to_owned());
+                let runtime_addr = resolve_storage_target(storage_addr);
+                let relocated = ModuleId::new(runtime_addr, module_id.name().to_owned());
                 if self.module_resolver.has_module(&relocated) {
                     if trace_relocate {
-                        eprintln!("[relocate] {} -> {} (transitive-any)", module_id, relocated);
+                        eprintln!(
+                            "[relocate] {} -> {} (transitive-any via={:#x})",
+                            module_id, relocated, storage_addr
+                        );
                     }
                     return Ok(relocated);
                 }
@@ -1847,17 +1858,18 @@ impl<'a> LinkageResolver for InMemoryStorage<'a> {
         }
 
         // Fallback: global linkage upgrades (original -> upgraded).
-        // Uses has_module() guard since these may not have aliases registered.
+        // Normalize upgraded storage IDs back to runtime IDs for VM cache compatibility.
         if let Some(upgraded_addr) = self
             .module_resolver
             .get_linkage_upgrade(module_id.address())
         {
-            let upgraded_id = ModuleId::new(upgraded_addr, module_id.name().to_owned());
+            let runtime_addr = resolve_storage_target(upgraded_addr);
+            let upgraded_id = ModuleId::new(runtime_addr, module_id.name().to_owned());
             if self.module_resolver.has_module(&upgraded_id) {
                 if trace_relocate {
                     eprintln!(
-                        "[relocate] {} -> {} (global-linkage)",
-                        module_id, upgraded_id
+                        "[relocate] {} -> {} (global-linkage via={:#x})",
+                        module_id, upgraded_id, upgraded_addr
                     );
                 }
                 return Ok(upgraded_id);
@@ -2805,12 +2817,17 @@ impl<'a> VMHarness<'a> {
             .storage
             .relocate(module)
             .unwrap_or_else(|_| module.clone());
+        let link_context = self
+            .storage
+            .module_resolver()
+            .get_linkage_upgrade(relocated_module.address())
+            .unwrap_or(*relocated_module.address());
 
         // Set per-package link context BEFORE creating the session.
         // The VM captures link_context() at execute_main entry and uses it as a
         // cache key for loaded modules. This ensures each package gets its own
         // dependency resolution via per-package linkage tables.
-        self.storage.set_link_context(*relocated_module.address());
+        self.storage.set_link_context(link_context);
 
         let mut session = self
             .vm
@@ -3149,6 +3166,39 @@ impl<'a, 'b> PTBSession<'a, 'b> {
             .collect();
 
         (DynamicFieldSnapshot { children }, all_bytes)
+    }
+}
+
+#[cfg(test)]
+mod linkage_resolver_tests {
+    use super::*;
+    use move_core_types::identifier::Identifier;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_relocate_keeps_runtime_id_for_self_calls() {
+        let mut resolver = LocalModuleResolver::with_sui_framework().expect("load framework");
+        let runtime_addr = AccountAddress::from_hex_literal("0x2").unwrap();
+        let storage_addr = AccountAddress::from_hex_literal("0xb2").unwrap();
+
+        resolver.add_address_alias(storage_addr, runtime_addr);
+        resolver.add_linkage_upgrade(runtime_addr, storage_addr);
+        resolver.add_package_linkage(storage_addr, runtime_addr, &HashMap::new());
+
+        let storage = InMemoryStorage::new(&resolver, false);
+        storage.set_link_context(storage_addr);
+
+        let runtime_module = ModuleId::new(runtime_addr, Identifier::new("tx_context").unwrap());
+        let relocated_runtime =
+            <InMemoryStorage<'_> as LinkageResolver>::relocate(&storage, &runtime_module)
+                .expect("relocate runtime");
+        assert_eq!(relocated_runtime, runtime_module);
+
+        let storage_module = ModuleId::new(storage_addr, Identifier::new("tx_context").unwrap());
+        let relocated_storage =
+            <InMemoryStorage<'_> as LinkageResolver>::relocate(&storage, &storage_module)
+                .expect("relocate storage");
+        assert_eq!(relocated_storage.address(), &runtime_addr);
     }
 }
 

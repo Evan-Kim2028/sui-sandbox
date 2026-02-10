@@ -6167,6 +6167,7 @@ dependencies = [
  "dirs",
  "dotenv",
  "fastcrypto",
+ "futures",
  "hex",
  "move-binary-format",
  "move-core-types",

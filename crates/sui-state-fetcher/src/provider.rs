@@ -2319,6 +2319,14 @@ impl HistoricalStateProvider {
                 .as_deref(),
             Some("1") | Some("true") | Some("yes") | Some("on")
         );
+        let allow_package_graphql = !matches!(
+            std::env::var("SUI_PACKAGE_LOOKUP_GRAPHQL")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        );
 
         while let Some(pkg_id) = to_process.pop() {
             if processed.contains(&pkg_id) {
@@ -2337,21 +2345,21 @@ impl HistoricalStateProvider {
                     }
                 }
             }
-            if version_hint.is_none() {
+            if version_hint.is_none()
+                && std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
+                    .ok()
+                    .as_deref()
+                    .map(|v| v.to_ascii_lowercase())
+                    .as_deref()
+                    != Some("0")
+                && allow_package_graphql
+            {
                 if let Some(cp) = checkpoint {
-                    if std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
-                        .ok()
-                        .as_deref()
-                        .map(|v| v.to_ascii_lowercase())
-                        .as_deref()
-                        != Some("0")
-                    {
-                        if let Ok(Some(ver)) = self.graphql.fetch_package_version_at_checkpoint(
-                            &format!("0x{}", hex::encode(pkg_id.as_ref())),
-                            cp,
-                        ) {
-                            version_hint = Some(ver);
-                        }
+                    if let Ok(Some(ver)) = self.graphql.fetch_package_version_at_checkpoint(
+                        &format!("0x{}", hex::encode(pkg_id.as_ref())),
+                        cp,
+                    ) {
+                        version_hint = Some(ver);
                     }
                 }
             }
@@ -2675,23 +2683,25 @@ impl HistoricalStateProvider {
             let mut gql_pkg: Option<GraphQLPackage> = None;
             if version_hint.is_none() {
                 if let Some(cp) = checkpoint {
-                    let gql_start = std::time::Instant::now();
-                    let gql_res = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
-                    gql_fetches += 1;
-                    gql_elapsed += gql_start.elapsed().as_millis();
-                    if let Ok(pkg) = gql_res {
-                        version_hint = Some(pkg.version);
-                        gql_pkg = Some(pkg);
-                        gql_ok += 1;
-                        if linkage_debug_enabled() {
-                            eprintln!(
-                                "[linkage] graphql_checkpoint_version pkg={} version={}",
-                                pkg_id_str,
-                                version_hint.unwrap_or(0)
-                            );
+                    if allow_package_graphql {
+                        let gql_start = std::time::Instant::now();
+                        let gql_res = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
+                        gql_fetches += 1;
+                        gql_elapsed += gql_start.elapsed().as_millis();
+                        if let Ok(pkg) = gql_res {
+                            version_hint = Some(pkg.version);
+                            gql_pkg = Some(pkg);
+                            gql_ok += 1;
+                            if linkage_debug_enabled() {
+                                eprintln!(
+                                    "[linkage] graphql_checkpoint_version pkg={} version={}",
+                                    pkg_id_str,
+                                    version_hint.unwrap_or(0)
+                                );
+                            }
+                        } else {
+                            gql_fail += 1;
                         }
-                    } else {
-                        gql_fail += 1;
                     }
                 }
             }
@@ -2725,7 +2735,7 @@ impl HistoricalStateProvider {
                                     pkg_id_str, expected_version, grpc_obj.version
                                 );
                             }
-                            if gql_pkg_override.is_none() {
+                            if gql_pkg_override.is_none() && allow_package_graphql {
                                 if let Some(cp) = checkpoint {
                                     let gql_start = std::time::Instant::now();
                                     let gql_res =
@@ -2898,7 +2908,7 @@ impl HistoricalStateProvider {
 
                     let mut pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
                     if let Some(cp) = checkpoint {
-                        if gql_pkg_override.is_none() {
+                        if gql_pkg_override.is_none() && allow_package_graphql {
                             let gql_start = std::time::Instant::now();
                             let gql_res = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
                             gql_fetches += 1;

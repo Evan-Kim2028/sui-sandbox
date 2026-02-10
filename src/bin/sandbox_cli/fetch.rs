@@ -15,6 +15,7 @@ use sui_state_fetcher::types::{PackageData, VersionedObject};
 use sui_state_fetcher::{HistoricalStateProvider, VersionedCache};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::graphql::ObjectOwner;
+use sui_transport::walrus::WalrusClient;
 
 #[derive(Parser, Debug)]
 pub struct FetchCmd {
@@ -112,7 +113,12 @@ impl FetchCmd {
             );
         }
 
-        let provider = HistoricalStateProvider::mainnet().await?;
+        // Checkpoint ingest is Walrus-backed; wire Walrus explicitly and enable
+        // local stores/indexes from env when configured.
+        let provider = HistoricalStateProvider::mainnet()
+            .await?
+            .with_walrus(WalrusClient::mainnet())
+            .with_local_object_store_from_env();
 
         let ingested = provider
             .ingest_packages_from_checkpoint_range(start, end, concurrency)
