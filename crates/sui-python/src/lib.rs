@@ -35,9 +35,8 @@ fn to_py_err(e: anyhow::Error) -> PyErr {
 
 /// Convert a serde_json::Value to a Python object via JSON round-trip.
 fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObject> {
-    let json_str = serde_json::to_string(value).map_err(|e| {
-        PyRuntimeError::new_err(format!("JSON serialization failed: {}", e))
-    })?;
+    let json_str = serde_json::to_string(value)
+        .map_err(|e| PyRuntimeError::new_err(format!("JSON serialization failed: {}", e)))?;
     let json_mod = py.import("json")?;
     let result = json_mod.call_method1("loads", (json_str,))?;
     Ok(result.into())
@@ -124,8 +123,8 @@ fn analyze_package_inner(
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .context("decode module bytecode")?;
-        let compiled = CompiledModule::deserialize_with_defaults(&bytes)
-            .context("deserialize module")?;
+        let compiled =
+            CompiledModule::deserialize_with_defaults(&bytes).context("deserialize module")?;
         compiled_modules.push(compiled);
     }
     names.sort();
@@ -197,8 +196,8 @@ fn extract_interface_inner(
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .context("decode module bytecode")?;
-        let compiled = CompiledModule::deserialize_with_defaults(&bytes)
-            .context("deserialize module")?;
+        let compiled =
+            CompiledModule::deserialize_with_defaults(&bytes).context("deserialize module")?;
         compiled_modules.push(compiled);
     }
 
@@ -211,6 +210,7 @@ fn extract_interface_inner(
 // analyze_replay
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn analyze_replay_inner(
     digest: &str,
     rpc_url: &str,
@@ -249,11 +249,9 @@ fn analyze_replay_inner(
             sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key).await?;
         let graphql_client = GraphQLClient::new(&graphql_endpoint);
 
-        let mut provider = sui_state_fetcher::HistoricalStateProvider::with_clients(
-            grpc_client,
-            graphql_client,
-        )
-        .with_cache(cache);
+        let mut provider =
+            sui_state_fetcher::HistoricalStateProvider::with_clients(grpc_client, graphql_client)
+                .with_cache(cache);
 
         if source == "walrus" || source == "hybrid" {
             provider = provider
@@ -422,9 +420,7 @@ fn analyze_replay_inner(
                 sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
                     Some(object_id)
                 }
-                sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => {
-                    Some(object_id)
-                }
+                sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => Some(object_id),
                 sui_sandbox_types::TransactionInput::Pure { .. } => None,
             };
             if let Some(id) = id {
@@ -448,9 +444,7 @@ fn analyze_replay_inner(
                     required_packages.insert(addr);
                 }
                 for ty in type_arguments {
-                    for pkg in
-                        sui_sandbox_core::utilities::extract_package_ids_from_type(ty)
-                    {
+                    for pkg in sui_sandbox_core::utilities::extract_package_ids_from_type(ty) {
                         if let Ok(addr) = AccountAddress::from_hex_literal(&pkg) {
                             required_packages.insert(addr);
                         }
@@ -589,8 +583,7 @@ fn replay_inner(
         ));
     }
 
-    serde_json::from_str(&stdout)
-        .context("Failed to parse sui-sandbox replay JSON output")
+    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox replay JSON output")
 }
 
 // ---------------------------------------------------------------------------
@@ -708,16 +701,14 @@ fn analyze_replay_walrus_inner(
                 input_summary["immutable"] =
                     serde_json::json!(input_summary["immutable"].as_u64().unwrap_or(0) + 1);
                 if verbose {
-                    input_objects
-                        .push(serde_json::json!({"id": object_id, "kind": "immutable"}));
+                    input_objects.push(serde_json::json!({"id": object_id, "kind": "immutable"}));
                 }
             }
             sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => {
                 input_summary["receiving"] =
                     serde_json::json!(input_summary["receiving"].as_u64().unwrap_or(0) + 1);
                 if verbose {
-                    input_objects
-                        .push(serde_json::json!({"id": object_id, "kind": "receiving"}));
+                    input_objects.push(serde_json::json!({"id": object_id, "kind": "receiving"}));
                 }
             }
         }
@@ -728,7 +719,11 @@ fn analyze_replay_walrus_inner(
     for cmd in &replay_state.transaction.commands {
         let summary = match cmd {
             sui_sandbox_types::PtbCommand::MoveCall {
-                package, module, function, type_arguments, arguments,
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
             } => serde_json::json!({
                 "kind": "MoveCall",
                 "target": format!("{}::{}::{}", package, module, function),
@@ -744,11 +739,13 @@ fn analyze_replay_walrus_inner(
             sui_sandbox_types::PtbCommand::TransferObjects { objects, .. } => serde_json::json!({
                 "kind": "TransferObjects", "type_args": 0, "args": 1 + objects.len(),
             }),
-            sui_sandbox_types::PtbCommand::MakeMoveVec { elements, type_arg } => serde_json::json!({
-                "kind": "MakeMoveVec",
-                "type_args": usize::from(type_arg.is_some()),
-                "args": elements.len(),
-            }),
+            sui_sandbox_types::PtbCommand::MakeMoveVec { elements, type_arg } => {
+                serde_json::json!({
+                    "kind": "MakeMoveVec",
+                    "type_args": usize::from(type_arg.is_some()),
+                    "args": elements.len(),
+                })
+            }
             sui_sandbox_types::PtbCommand::Publish { dependencies, .. } => serde_json::json!({
                 "kind": "Publish", "type_args": 0, "args": dependencies.len(),
             }),
@@ -895,8 +892,7 @@ fn extract_interface(
     bytecode_dir: Option<&str>,
     rpc_url: &str,
 ) -> PyResult<PyObject> {
-    let value =
-        extract_interface_inner(package_id, bytecode_dir, rpc_url).map_err(to_py_err)?;
+    let value = extract_interface_inner(package_id, bytecode_dir, rpc_url).map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
 
@@ -920,6 +916,7 @@ fn extract_interface(
     no_prefetch=false,
     verbose=false,
 ))]
+#[allow(clippy::too_many_arguments)]
 fn analyze_replay(
     py: Python<'_>,
     digest: &str,

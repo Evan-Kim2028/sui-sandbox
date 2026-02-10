@@ -7,6 +7,24 @@ name = "sui-move-extractor"
 version = "0.1.0"
 description = "Python bindings for Sui Move package analysis and transaction replay"
 requires-python = ">=3.9"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+keywords = ["sui", "move", "blockchain", "walrus", "replay"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Repository = "https://github.com/Evan-Kim2028/sui-sandbox"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
