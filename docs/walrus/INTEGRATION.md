@@ -49,8 +49,8 @@ cache_root/
 Build the cache:
 
 ```bash
-# Warm the local Walrus store (checkpoint data + object index)
-cargo run --bin sui-sandbox --features walrus -- tools walrus-warmup --count 50
+# Ingest package data from a checkpoint range into the local index
+cargo run --bin sui-sandbox --features walrus -- fetch checkpoints 238627315 238627365
 
 # Replay using Walrus as the primary source
 cargo run --bin sui-sandbox --features walrus -- replay <DIGEST> --source walrus

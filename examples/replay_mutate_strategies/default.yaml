@@ -1,0 +1,22 @@
+name: default
+mutators:
+  - state_drop_required_object
+  - state_input_rewire
+  - state_object_version_skew
+  - state_shared_object_substitute
+  - state_pure_type_aware
+  - state_pure_signature_aware
+  - baseline_vs_heal
+oracles:
+  - fail_to_heal
+  - forced_mutation_recovery
+  - state_rehydration_success
+  - source_divergence
+invariants:
+  - commands_executed_gt_zero
+  - heal_not_timed_out
+  - baseline_failed_before_heal
+scoring: status-first
+minimization:
+  enabled: true
+  mode: state-diff

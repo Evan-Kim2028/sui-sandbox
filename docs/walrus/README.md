@@ -45,10 +45,9 @@ sui-sandbox replay <DIGEST> --state-json state.json
 
 ### Cache Warmup (Optional)
 
-Pre-cache checkpoint data for faster replay:
+Pre-ingest package index entries from a checkpoint range:
 
 ```bash
-sui-sandbox tools walrus-warmup --count 50
 sui-sandbox fetch checkpoints 238627315 238627325
 ```
 

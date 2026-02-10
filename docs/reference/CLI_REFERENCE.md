@@ -14,6 +14,7 @@ sui-sandbox fetch package 0x1eabed72...      # Import mainnet package
 sui-sandbox publish ./my_package              # Deploy locally
 sui-sandbox run 0x100::module::function       # Execute function
 sui-sandbox replay 9V3xKMnFpXyz...            # Replay mainnet tx
+sui-sandbox replay mutate --demo              # Guided replay-mutation demo
 sui-sandbox analyze package --package-id 0x2  # Package introspection
 sui-sandbox analyze replay 9V3xKMnFpXyz...     # Replay-state introspection
 sui-sandbox view module 0x2::coin             # Inspect interface
@@ -28,11 +29,11 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `run` | Execute a single Move function call |
 | `ptb` | Execute Programmable Transaction Blocks |
 | `fetch` | Import packages/objects from mainnet |
-| `replay` | Replay historical mainnet transactions |
+| `replay` | Replay historical mainnet transactions and replay-mutation workflows |
 | `analyze` | Package and replay-state introspection |
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
-| `tools` | Utility commands (poll/stream/tx-sim/walrus) |
+| `tools` | Utility commands (poll/stream/tx-sim) |
 | `init` | Scaffold task-oriented workflow templates |
 | `run-flow` | Execute deterministic YAML workflow files |
 | `snapshot` | Save/list/load/delete named session snapshots |
@@ -52,7 +53,7 @@ Use `analyze replay` first when debugging data-quality or dependency issues, the
 
 ### `tools` - Utility Commands
 
-Low-level utilities are grouped under `sui-sandbox tools`:
+Low-level streaming/simulation utilities are grouped under `sui-sandbox tools`:
 
 ```bash
 # Poll recent transactions via GraphQL
@@ -63,12 +64,6 @@ sui-sandbox tools stream-transactions --endpoint https://your-provider:9000
 
 # Simulate a PTB via gRPC
 sui-sandbox tools tx-sim --ptb-spec tx.json --sender 0x...
-
-# PTB replay harness (Walrus feature)
-sui-sandbox tools ptb-replay-harness --count 20 --max-total 100
-
-# Warm local Walrus store (Walrus feature)
-sui-sandbox tools walrus-warmup --count 50
 ```
 
 ## Developer CLI (`sui-sandbox`)
@@ -233,6 +228,7 @@ sui-sandbox fetch package 0x2 --verbose
 |------------|-------------|
 | `package <ID>` | Fetch and load a package with all modules |
 | `object <ID>` | Fetch an object's current state |
+| `checkpoints <START> <END>` | Ingest package index entries from a checkpoint range |
 
 #### `replay` - Transaction Replay
 
@@ -273,6 +269,44 @@ sui-sandbox replay <DIGEST> --source grpc --compare --verbose
 sui-sandbox replay <DIGEST> --vm-only    # Deterministic VM-only mode
 ```
 
+**Replay mutate (fail -> heal orchestration):**
+
+```bash
+# Deterministic one-command demo (uses pinned fixture candidates)
+sui-sandbox replay mutate --demo
+
+# Fixture-driven mutate run
+sui-sandbox replay mutate \
+  --fixture examples/data/replay_mutation_fixture_v1.json \
+  --replay-source walrus \
+  --differential-source grpc \
+  --jobs 4 \
+  --retries 1 \
+  --keep-going \
+  --corpus-out examples/out/replay_mutation_corpus.json \
+  --max-transactions 4 \
+  --replay-timeout 35
+
+# Single explicit target
+sui-sandbox replay mutate \
+  --digest 5WqivEXirxeLLENpZEhEdGzprwJ6yRbeVJTqJ3KkyGP5 \
+  --checkpoint 239615931
+
+# Plan-only/no-op (target validation + report contract, no replay)
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --no-op --json
+
+# Strategy-driven mutate run (YAML/JSON)
+sui-sandbox replay mutate \
+  --fixture examples/data/replay_mutation_fixture_v1.json \
+  --strategy examples/replay_mutate_strategies/default.yaml \
+  --mutator state_input_rewire \
+  --mutator state_object_version_skew \
+  --oracle fail_to_heal \
+  --invariant commands_executed_gt_zero \
+  --minimize true \
+  --minimization-mode operator-specific
+```
+
 **Data source flags:**
 
 | Flag | Description |
@@ -298,20 +332,6 @@ sui-sandbox replay <DIGEST> --vm-only    # Deterministic VM-only mode
 | `--reconcile-dynamic-fields` | Reconcile dynamic-field effects when on-chain lists omit them |
 | `--synthesize-missing` | If replay fails due to missing input objects, synthesize placeholders and retry |
 | `--self-heal-dynamic-fields` | Synthesize placeholder dynamic-field values when data is missing (testing only) |
-
-**Igloo loader (feature-gated):**
-
-When built with `--features igloo`, replay exposes an extra loader flag:
-
-| Flag | Description |
-|------|-------------|
-| `--igloo-hybrid-loader` | Use igloo-mcp/Snowflake for tx/effects/packages and gRPC for objects |
-| `--igloo-config <PATH>` | Path to igloo mcp service config |
-| `--igloo-command <CMD>` | Override igloo executable path |
-
-Note: `--source hybrid` and `--igloo-hybrid-loader` are different knobs.
-- `--source hybrid` selects the core replay hydration source mode.
-- `--igloo-hybrid-loader` switches to the optional igloo-specific loader path.
 
 Replay output includes an **Execution Path** summary (requested/effective source, fallback usage, auto-system-object flag, dependency mode, and prefetch settings) in both human and JSON modes.
 

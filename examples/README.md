@@ -4,13 +4,78 @@ This is the best way to learn the sui-sandbox library. Work through these exampl
 
 ## Learning Path
 
-### Level 0: Transaction Replay
+### Level 0: Walrus Checkpoint Stream (Core External Flow)
+
+```bash
+./examples/scan_checkpoints.sh
+```
+
+This is the primary external-facing example.
+It streams across recent checkpoints from Walrus, replays PTBs locally, and prints
+an actionable summary (success/fail rates + tags).
+
+```bash
+./examples/scan_checkpoints.sh                    # Latest 5 checkpoints
+./examples/scan_checkpoints.sh 10                 # Latest 10 checkpoints
+./examples/scan_checkpoints.sh --range 100..110   # Explicit checkpoint range
+```
+
+Equivalent CLI commands:
+
+```bash
+sui-sandbox replay '*' --source walrus --latest 5 --compare
+sui-sandbox replay '*' --source walrus --checkpoint 239615920..239615926 --compare
+```
+
+Why this is the core example:
+
+- Zero setup, no API key
+- Exercises the real replay path on fresh mainnet activity
+- Gives instant signal on replay health across multiple transactions
+
+**Prerequisites**: None.
+
+#### Recommended External User Flow
+
+1. Run latest checkpoint stream scan (`./examples/scan_checkpoints.sh`).
+2. If failures appear, rerun a narrower range with `--range`.
+3. Drill into a specific digest with `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare`.
+
+---
+
+### Level 0.25: Walrus PTB Universe (Mock PTB Generation)
+
+```bash
+./examples/walrus_ptb_universe.sh
+```
+
+Builds a real PTB universe from the latest Walrus checkpoints, then generates and executes
+mock local PTBs from observed package/module/function usage.
+
+```bash
+./examples/walrus_ptb_universe.sh
+./examples/walrus_ptb_universe.sh --latest 10 --top-packages 8 --max-ptbs 20
+./examples/walrus_ptb_universe.sh --out-dir /tmp/walrus-ptb-universe
+```
+
+Artifacts written to `examples/out/walrus_ptb_universe/`:
+
+- `universe_summary.json` (checkpoint/package/function distribution)
+- `package_downloads.json` (top packages + dependency closure fetch/deploy status)
+- `function_candidates.json` (which observed calls are mockable)
+- `ptb_specs/*.json` and `ptb_execution_results.json` (generated PTBs + execution outcomes)
+
+**Prerequisites**: None (Walrus + public GraphQL endpoints).
+
+---
+
+### Level 0.5: Single-Transaction Replay
 
 ```bash
 ./examples/replay.sh
 ```
 
-Replay a real mainnet transaction locally. Supports multiple data sources:
+Replay a specific mainnet transaction locally. Supports multiple data sources:
 
 ```bash
 ./examples/replay.sh                                        # Walrus (default, zero setup)
@@ -42,38 +107,137 @@ sui-sandbox replay <DIGEST> --source grpc --compare
 
 ---
 
-### Level 0.5: Scan Latest Checkpoints
+### Level 0.75: Replay Mutation Lab (Fail -> Heal)
 
 ```bash
-./examples/scan_checkpoints.sh       # Latest 5 checkpoints (default)
-./examples/scan_checkpoints.sh 10    # Latest 10 checkpoints
+./target/debug/sui-sandbox replay mutate --demo
+./examples/replay_mutation_lab.sh
+./examples/replay_mutation_guided_demo.sh
 ```
 
-Automatically discovers the tip checkpoint from Walrus, fetches the latest N checkpoints
-in a single batched request, replays every PTB transaction, and prints a summary:
+Scans recent Walrus transactions and searches for a practical fail->heal replay path:
 
-```
-━━━ Batch Replay Summary ━━━
-  Checkpoints scanned: 5
-  Total transactions:  115 (89 PTBs, 26 system)
-  Replayed:            89
-  Succeeded:           82 (92.1%)
-  Failed:              7
+- **Baseline pass**: constrained hydration (`--fetch-strategy eager --no-prefetch --allow-fallback false`)
+- **Heal pass**: full hydration + synthesis (`--synthesize-missing --self-heal-dynamic-fields`)
 
-  By tag:
-    app_call                 replayed=67 ok=62 fail=5
-    framework_only           replayed=22 ok=20 fail=2
-    shared                   replayed=45 ok=42 fail=3
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
+The lab records the first transaction where baseline fails but heal succeeds, then exports
+the winning replay state and writes a concise report.
 
-Or use the CLI directly:
+For a deterministic, one-command onboarding flow, use the guided demo wrapper:
 
 ```bash
-sui-sandbox replay "*" --source walrus --latest 5 --compare
+./examples/replay_mutation_guided_demo.sh
+# Equivalent CLI entrypoint
+sui-sandbox replay mutate --demo
 ```
 
-**Prerequisites**: None. Zero setup, no API keys.
+This uses a pinned fixture candidate set (`examples/data/replay_mutation_fixture_v1.json`)
+to make replay target selection deterministic across runs while still replaying real Walrus data.
+
+```bash
+./examples/replay_mutation_lab.sh --latest 10 --max-transactions 80
+./examples/replay_mutation_lab.sh --digest <DIGEST> --checkpoint <CP>
+./examples/replay_mutation_lab.sh --digest At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 --checkpoint 239615926
+./examples/replay_mutation_lab.sh --fixture examples/data/replay_mutation_fixture_v1.json --max-transactions 4
+./examples/replay_mutation_guided_demo.sh --max-transactions 2
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --max-transactions 4
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --replay-source walrus --jobs 4 --retries 1
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --keep-going --differential-source grpc --corpus-out examples/out/replay_mutation_corpus.json
+sui-sandbox replay mutate --digest 5WqivEXirxeLLENpZEhEdGzprwJ6yRbeVJTqJ3KkyGP5 --checkpoint 239615931
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --no-op --json
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --strategy examples/replay_mutate_strategies/default.yaml
+```
+
+`examples/replay_mutation_lab.sh` is now a thin wrapper around the native CLI engine (`sui-sandbox replay mutate`), so behavior and artifacts stay aligned with the primary command surface.
+
+Strategy config is optional but recommended for reusable plans:
+
+- `examples/replay_mutate_strategies/default.yaml`
+- Supports: mutators, oracles, invariants, scoring, minimization mode (`state-diff`, `operator-specific`, `none`).
+- Concrete state mutators now include: `state_drop_required_object`, `state_input_rewire`,
+  `state_object_version_skew`, `state_shared_object_substitute`, `state_pure_type_aware`,
+  `state_pure_signature_aware`.
+
+Artifacts are written under `examples/out/replay_mutation_lab/run_<timestamp>/`:
+
+- `candidate_pool.json`
+- `attempts.json`
+- `report.json`
+- `attempt_*/baseline_stdout.json` + `heal_stdout.json`
+- `winning_state.json` (when a fail->heal pair is found)
+
+Guided demo artifacts are written under `examples/out/replay_mutation_guided_demo/run_<timestamp>/`.
+
+**Prerequisites**: None.
+
+---
+
+### Level 0.9: Entry Function Practical Fuzzer
+
+```bash
+./examples/entry_function_practical_fuzzer.sh
+```
+
+Builds a practical function target set from recent Walrus MoveCall activity, then runs
+replay-backed baseline vs heal passes per target:
+
+- **Baseline pass**: constrained hydration (`--fetch-strategy eager --no-prefetch --allow-fallback false`)
+- **Heal pass**: by default only when baseline fails (`--heal-mode on-failure`)
+- **Checkpoint pre-ingest**: by default ingests the scanned checkpoint window into local Walrus indexes before replay.
+- **Parallel replay**: runs with bounded worker pool (`--replay-jobs`, default `2`)
+- **Phased pipeline** (default): Phase A broad baseline triage, then Phase B focused deep replay on shortlisted failures (`--phase-mode phased`)
+- **Mutation stage**: replay mutation operators over Phase B targets plus oracle/invariant evaluation (`--mutation-budget`, `--mutation-jobs`)
+  - Flag/profile operators: `baseline_repeat`, `strict_vm`, `heal_aggressive`, `heal_no_prefetch`
+  - State-json mutation operators: `state_pure_type_aware`, `state_pure_signature_aware`, `state_shared_object_substitute`, `state_object_version_skew`, `state_input_rewire`
+  - State-json operators export replay state once per candidate, then run local `--state-json --vm-only` mutations (minimal network overhead after export)
+  - `state_pure_signature_aware` uses local transaction-input inference by default (no extra package RPC fan-out), and is enriched by module metadata only when `--metadata-lookup` is enabled
+  - Oracle includes transport-vs-VM plane separation, per-operator signal scores, and top-ranked operator findings per target
+  - Stability mode repeats each operator (`--stability-runs`) and reports unstable operators
+  - Automatic minimization shrinks interesting state mutations to minimal diffs (`--no-minimize`, `--minimize-max-trials`)
+  - Finding fingerprints deduplicate repeated issues into `findings_index.json`
+
+Default practical profile is network-light:
+
+- Uses Walrus for checkpoint/transaction discovery.
+- Disables GraphQL lookup fallback during replay (`SUI_CHECKPOINT_LOOKUP_GRAPHQL=0`, `SUI_PACKAGE_LOOKUP_GRAPHQL=0`), preferring gRPC fallback where needed.
+- Disables package/module metadata lookup by default to avoid extra `fetch package` + `view module` fan-out.
+
+```bash
+./examples/entry_function_practical_fuzzer.sh --latest 10 --max-transactions 150 --max-targets 25
+./examples/entry_function_practical_fuzzer.sh --latest 10 --max-targets 30 --replay-jobs 4
+./examples/entry_function_practical_fuzzer.sh --phase-mode phased --phase-a-timeout 12 --phase-a-targets 90 --max-targets 30
+./examples/entry_function_practical_fuzzer.sh --phase-mode single --max-targets 30
+./examples/entry_function_practical_fuzzer.sh --mutation-budget 5 --mutation-jobs 4
+./examples/entry_function_practical_fuzzer.sh --max-targets 120 --mutation-budget 40 --stability-runs 3 --replay-jobs 8 --mutation-jobs 8
+./examples/entry_function_practical_fuzzer.sh --no-typed-mutators
+./examples/entry_function_practical_fuzzer.sh --no-minimize
+./examples/entry_function_practical_fuzzer.sh --minimize-max-trials 20
+./examples/entry_function_practical_fuzzer.sh --no-mutations
+./examples/entry_function_practical_fuzzer.sh --heal-mode always
+./examples/entry_function_practical_fuzzer.sh --include-public --max-targets 30
+./examples/entry_function_practical_fuzzer.sh --metadata-lookup --include-public
+./examples/entry_function_practical_fuzzer.sh --replay-timeout 20 --out-dir /tmp/entry-fuzzer
+```
+
+Artifacts are written under `examples/out/entry_function_practical_fuzzer/run_<timestamp>/`:
+
+- `function_universe.json` (observed package/module/function target universe)
+- `checkpoint_ingest.json` (Walrus checkpoint ingest prepass status)
+- `phase_a_attempts.json` (Phase A baseline triage outcomes)
+- `phase_b_selection.json` (which candidates were promoted to Phase B)
+- `attempts.json` (per-target metadata + replay outcome)
+- `mutation_results.json` (operator-level mutation outcomes)
+- `oracle_report.json` (recovery/regression/timeout-resolution findings + operator signal ranking + stability/plane-shift metrics)
+- `invariant_violations.json` (violated invariants for quick triage)
+- `minimization_results.json` (before/after mutation diff counts and minimized state paths)
+- `findings_index.json` (fingerprinted deduplicated findings with counts/examples)
+- `coverage.json` (replay coverage and status distributions)
+- `failure_clusters.json` (grouped failure signatures)
+- `interesting_successes.json` (fail->heal outcomes)
+- `report.json` and `README.md`
+- `raw/*.json` (cached replay stdout/stderr snapshots, including `mut_state_export_*` and `state_mut_*` state mutation artifacts)
+
+**Prerequisites**: None.
 
 ---
 
@@ -137,8 +301,12 @@ Your first Rust example. Creates a local simulation environment and executes bas
 
 | Example | Level | API Key | Description |
 |---------|-------|---------|-------------|
-| `replay.sh` | 0 | **No** | Transaction replay (walrus/grpc/json) |
-| `scan_checkpoints.sh` | 0.5 | **No** | Scan & replay latest N checkpoints with summary |
+| `scan_checkpoints.sh` | 0 | **No** | Core flow: stream replay over Walrus checkpoints |
+| `walrus_ptb_universe.sh` | 0.25 | **No** | Build observed Walrus PTB universe, generate mock PTBs, execute locally |
+| `replay.sh` | 0.5 | **No** | Single-transaction replay (walrus/grpc/json) |
+| `replay_mutation_lab.sh` | 0.75 | **No** | Discover fail->heal replay cases with synthetic hydration passes |
+| `replay_mutation_guided_demo.sh` | 0.75 | **No** | One-command deterministic replay mutation walkthrough |
+| `entry_function_practical_fuzzer.sh` | 0.9 | **No** | Replay-backed practical fuzzer over observed Walrus function targets |
 | `cli_workflow.sh` | 1 | No | CLI walkthrough |
 | `package_analysis/cli_corpus_objects_analysis.sh` | 1 | No | Corpus-wide `analyze objects` summary + baseline deltas |
 | `package_analysis/cli_mm2_corpus_sweep.sh` | 1 | No | Corpus MM2 regression sweep (`analyze package --mm2`) |
@@ -151,8 +319,7 @@ Several older or experimental examples were consolidated into CLI flows:
 
 - Protocol/package analysis → `sui-sandbox analyze package --package-id 0x...`
 - Historical replay demos → `sui-sandbox replay <DIGEST> --compare`
-- Walrus cache warmup → `sui-sandbox tools walrus-warmup`
-- Walrus package ingest → `sui-sandbox fetch checkpoints <START> <END>`
+- Walrus package ingest / checkpoint preload → `sui-sandbox fetch checkpoints <START> <END>`
 
 ---
 
