@@ -46,6 +46,7 @@ pub mod address;
 pub mod bcs_scanner;
 pub mod enhanced_patcher;
 pub mod generic_patcher;
+pub mod json_to_bcs;
 pub mod historical_bytecode;
 pub mod historical_package;
 pub mod historical_state;
@@ -57,6 +58,7 @@ pub mod version_utils;
 
 // Re-export commonly used items
 pub use address::{is_framework_package, normalize_address};
+pub use json_to_bcs::JsonToBcsConverter;
 pub use generic_patcher::{FieldPatchRule, GenericObjectPatcher, PatchAction, PatchCondition};
 pub use type_utils::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type,

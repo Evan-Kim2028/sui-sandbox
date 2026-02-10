@@ -4,7 +4,7 @@
 //! - `analyze_package`: Extract Move package interface from bytecode or GraphQL
 //! - `analyze_replay`: Inspect replay state hydration for a transaction digest
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,8 +12,11 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::TypeTag;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict};
 
 use sui_package_extractor::bytecode::{
     build_bytecode_interface_value_from_compiled_modules, extract_sanity_counts,
@@ -811,6 +814,378 @@ fn analyze_replay_walrus_inner(
 }
 
 // ---------------------------------------------------------------------------
+// json_to_bcs: Convert Sui object JSON to BCS bytes
+// ---------------------------------------------------------------------------
+
+fn json_to_bcs_inner(
+    type_str: &str,
+    object_json: &str,
+    package_bytecodes: Vec<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let json_value: serde_json::Value =
+        serde_json::from_str(object_json).context("Failed to parse object_json")?;
+
+    let mut converter = sui_sandbox_core::utilities::JsonToBcsConverter::new();
+    converter.add_modules_from_bytes(&package_bytecodes)?;
+    converter.convert(type_str, &json_value)
+}
+
+// ---------------------------------------------------------------------------
+// call_view_function: Execute a view function via local Move VM
+// ---------------------------------------------------------------------------
+
+/// Extract dependency package addresses from compiled module bytecodes.
+fn extract_dependency_addrs(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {
+    let mut deps = HashSet::new();
+    for (_, bytes) in modules {
+        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
+            for dep_module_id in module.immediate_dependencies() {
+                deps.insert(*dep_module_id.address());
+            }
+        }
+    }
+    deps.into_iter().collect()
+}
+
+/// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
+fn fetch_package_modules(
+    graphql: &GraphQLClient,
+    package_id: &str,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let pkg = graphql
+        .fetch_package(package_id)
+        .with_context(|| format!("fetch package {}", package_id))?;
+
+    let mut modules = Vec::with_capacity(pkg.modules.len());
+    for module in pkg.modules {
+        let Some(b64) = module.bytecode_base64 else {
+            continue;
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("decode module bytecode")?;
+        modules.push((module.name.clone(), bytes));
+    }
+    Ok(modules)
+}
+
+/// Framework package addresses that are bundled into LocalModuleResolver::with_sui_framework().
+fn is_framework_addr(addr: &AccountAddress) -> bool {
+    let hex = addr.to_hex_literal();
+    hex == "0x0000000000000000000000000000000000000000000000000000000000000001"
+        || hex == "0x0000000000000000000000000000000000000000000000000000000000000002"
+        || hex == "0x0000000000000000000000000000000000000000000000000000000000000003"
+        || hex == "0x1" || hex == "0x2" || hex == "0x3"
+}
+
+fn call_view_function_inner(
+    package_id: &str,
+    module: &str,
+    function: &str,
+    type_args: Vec<String>,
+    object_inputs: Vec<(String, Vec<u8>, String, bool)>, // (object_id, bcs_bytes, type_tag_str, is_shared)
+    pure_inputs: Vec<Vec<u8>>,
+    child_objects: HashMap<String, Vec<(String, Vec<u8>, String)>>, // parent_id -> [(child_id, bcs, type_tag)]
+    package_bytecodes: HashMap<String, Vec<Vec<u8>>>, // package_id -> [module_bytecodes]
+    fetch_deps: bool,
+) -> Result<serde_json::Value> {
+    use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
+    use sui_sandbox_core::resolver::ModuleProvider;
+    use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+
+    // 1. Build LocalModuleResolver with sui framework
+    let mut resolver = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
+
+    // 2. Load provided package bytecodes
+    let mut loaded_packages = HashSet::new();
+    // Mark framework as loaded
+    loaded_packages.insert(AccountAddress::from_hex_literal("0x1").unwrap());
+    loaded_packages.insert(AccountAddress::from_hex_literal("0x2").unwrap());
+    loaded_packages.insert(AccountAddress::from_hex_literal("0x3").unwrap());
+
+    for (pkg_id_str, module_bytecodes) in &package_bytecodes {
+        let addr = AccountAddress::from_hex_literal(pkg_id_str)
+            .with_context(|| format!("invalid package address: {}", pkg_id_str))?;
+        if is_framework_addr(&addr) {
+            continue;
+        }
+        let modules: Vec<(String, Vec<u8>)> = module_bytecodes
+            .iter()
+            .enumerate()
+            .map(|(i, bytes)| {
+                // Try to extract module name from bytecode
+                if let Ok(compiled) = CompiledModule::deserialize_with_defaults(bytes) {
+                    let name = compiled.self_id().name().to_string();
+                    (name, bytes.clone())
+                } else {
+                    (format!("module_{}", i), bytes.clone())
+                }
+            })
+            .collect();
+        resolver.load_package_at(modules, addr)?;
+        loaded_packages.insert(addr);
+    }
+
+    // 3. If fetch_deps, resolve transitive dependencies via GraphQL
+    if fetch_deps {
+        let graphql_endpoint =
+            resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+        let graphql = GraphQLClient::new(&graphql_endpoint);
+
+        // Collect all packages we need to resolve
+        let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
+
+        // Start with the target package if not already loaded
+        let target_addr = AccountAddress::from_hex_literal(package_id)
+            .with_context(|| format!("invalid target package: {}", package_id))?;
+        if !loaded_packages.contains(&target_addr) {
+            to_fetch.push_back(target_addr);
+        }
+
+        // Also fetch packages referenced in type_args and object type_tags
+        for ta_str in &type_args {
+            for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(ta_str) {
+                if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
+                    if !loaded_packages.contains(&addr) && !is_framework_addr(&addr) {
+                        to_fetch.push_back(addr);
+                    }
+                }
+            }
+        }
+        for (_, _, type_tag_str, _) in &object_inputs {
+            for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_tag_str) {
+                if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
+                    if !loaded_packages.contains(&addr) && !is_framework_addr(&addr) {
+                        to_fetch.push_back(addr);
+                    }
+                }
+            }
+        }
+
+        // Also check packages from provided bytecodes for their dependencies
+        for (_, module_bytecodes) in &package_bytecodes {
+            let modules: Vec<(String, Vec<u8>)> = module_bytecodes
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (format!("m{}", i), b.clone()))
+                .collect();
+            for dep_addr in extract_dependency_addrs(&modules) {
+                if !loaded_packages.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
+                    to_fetch.push_back(dep_addr);
+                }
+            }
+        }
+
+        // BFS fetch dependencies
+        let mut visited = loaded_packages.clone();
+        while let Some(addr) = to_fetch.pop_front() {
+            if visited.contains(&addr) || is_framework_addr(&addr) {
+                continue;
+            }
+            visited.insert(addr);
+
+            let hex = addr.to_hex_literal();
+            match fetch_package_modules(&graphql, &hex) {
+                Ok(modules) => {
+                    // Extract deps before loading
+                    let dep_addrs = extract_dependency_addrs(&modules);
+                    resolver.load_package_at(modules, addr)?;
+                    loaded_packages.insert(addr);
+
+                    for dep_addr in dep_addrs {
+                        if !visited.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
+                            to_fetch.push_back(dep_addr);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Log warning but continue — some deps may be optional
+                    eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
+                }
+            }
+        }
+    }
+
+    // 4. Create VMHarness with simulation config
+    let config = SimulationConfig::default();
+    let mut vm = VMHarness::with_config(&resolver, false, config)?;
+
+    // 5. Set up child fetcher if child_objects provided
+    if !child_objects.is_empty() {
+        let mut child_map: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)> =
+            HashMap::new();
+        for (parent_id_str, children) in &child_objects {
+            let parent_addr = AccountAddress::from_hex_literal(parent_id_str)
+                .with_context(|| format!("invalid parent_id: {}", parent_id_str))?;
+            for (child_id_str, bcs_bytes, type_tag_str) in children {
+                let child_addr = AccountAddress::from_hex_literal(child_id_str)
+                    .with_context(|| format!("invalid child_id: {}", child_id_str))?;
+                let type_tag = sui_sandbox_core::types::parse_type_tag(type_tag_str)
+                    .with_context(|| format!("invalid type tag: {}", type_tag_str))?;
+                child_map.insert((parent_addr, child_addr), (type_tag, bcs_bytes.clone()));
+            }
+        }
+
+        let fetcher: sui_sandbox_core::sandbox_runtime::ChildFetcherFn =
+            Box::new(move |parent, child| child_map.get(&(parent, child)).cloned());
+        vm.set_child_fetcher(fetcher);
+    }
+
+    // 6. Build PTB and execute
+    let mut executor = PTBExecutor::new(&mut vm);
+
+    // Add object inputs
+    let mut input_indices = Vec::new();
+    for (obj_id_str, bcs_bytes, type_tag_str, is_shared) in &object_inputs {
+        let id = AccountAddress::from_hex_literal(obj_id_str)
+            .with_context(|| format!("invalid object_id: {}", obj_id_str))?;
+        let type_tag = sui_sandbox_core::types::parse_type_tag(type_tag_str)
+            .with_context(|| format!("invalid type tag: {}", type_tag_str))?;
+
+        let obj_input = if *is_shared {
+            ObjectInput::Shared {
+                id,
+                bytes: bcs_bytes.clone(),
+                type_tag: Some(type_tag),
+                version: None,
+                mutable: false,
+            }
+        } else {
+            ObjectInput::ImmRef {
+                id,
+                bytes: bcs_bytes.clone(),
+                type_tag: Some(type_tag),
+                version: None,
+            }
+        };
+
+        let idx = executor
+            .add_object_input(obj_input)
+            .with_context(|| format!("add object input {}", obj_id_str))?;
+        input_indices.push(idx);
+    }
+
+    // Add pure inputs
+    for pure_bytes in &pure_inputs {
+        let idx = executor
+            .add_pure_input(pure_bytes.clone())
+            .context("add pure input")?;
+        input_indices.push(idx);
+    }
+
+    // Parse type arguments
+    let mut parsed_type_args = Vec::new();
+    for ta_str in &type_args {
+        let tt = sui_sandbox_core::types::parse_type_tag(ta_str)
+            .with_context(|| format!("invalid type arg: {}", ta_str))?;
+        parsed_type_args.push(tt);
+    }
+
+    // Build args list: all inputs as Argument::Input
+    let args: Vec<Argument> = (0..input_indices.len() as u16)
+        .map(Argument::Input)
+        .collect();
+
+    // Build move call command
+    let target_addr = AccountAddress::from_hex_literal(package_id)
+        .with_context(|| format!("invalid package address: {}", package_id))?;
+    let commands = vec![Command::MoveCall {
+        package: target_addr,
+        module: Identifier::new(module).context("invalid module name")?,
+        function: Identifier::new(function).context("invalid function name")?,
+        type_args: parsed_type_args,
+        args,
+    }];
+
+    // 7. Execute
+    let effects = executor.execute_commands(&commands)?;
+
+    // 8. Build result
+    let mut return_values_b64 = Vec::new();
+    let return_type_tags: Vec<String> = Vec::new();
+
+    if let Some(cmd_returns) = effects.return_values.first() {
+        for rv_bytes in cmd_returns {
+            return_values_b64.push(base64::engine::general_purpose::STANDARD.encode(rv_bytes));
+        }
+    }
+
+    Ok(serde_json::json!({
+        "success": effects.success,
+        "error": effects.error,
+        "return_values": return_values_b64,
+        "return_type_tags": return_type_tags,
+        "gas_used": effects.gas_used,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// fetch_package_bytecodes: Fetch package bytecode via GraphQL
+// ---------------------------------------------------------------------------
+
+fn fetch_package_bytecodes_inner(
+    package_id: &str,
+    resolve_deps: bool,
+) -> Result<serde_json::Value> {
+    let graphql_endpoint =
+        resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+    let graphql = GraphQLClient::new(&graphql_endpoint);
+
+    let mut all_packages: HashMap<String, Vec<String>> = HashMap::new(); // pkg_id -> [base64 module bytes]
+    let mut visited = HashSet::new();
+
+    let target_addr = AccountAddress::from_hex_literal(package_id)
+        .with_context(|| format!("invalid package address: {}", package_id))?;
+
+    // Mark framework as visited for dependency resolution (but not if target IS framework)
+    let fw1 = AccountAddress::from_hex_literal("0x1").unwrap();
+    let fw2 = AccountAddress::from_hex_literal("0x2").unwrap();
+    let fw3 = AccountAddress::from_hex_literal("0x3").unwrap();
+    for fw in [fw1, fw2, fw3] {
+        if fw != target_addr {
+            visited.insert(fw);
+        }
+    }
+
+    let mut to_fetch = VecDeque::new();
+    to_fetch.push_back(target_addr);
+
+    while let Some(addr) = to_fetch.pop_front() {
+        if visited.contains(&addr) {
+            continue;
+        }
+        visited.insert(addr);
+
+        let hex = addr.to_hex_literal();
+        match fetch_package_modules(&graphql, &hex) {
+            Ok(modules) => {
+                if resolve_deps {
+                    for dep_addr in extract_dependency_addrs(&modules) {
+                        if !visited.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
+                            to_fetch.push_back(dep_addr);
+                        }
+                    }
+                }
+
+                let b64_modules: Vec<String> = modules
+                    .iter()
+                    .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
+                    .collect();
+                all_packages.insert(hex, b64_modules);
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "packages": all_packages,
+        "count": all_packages.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Python module
 // ---------------------------------------------------------------------------
 
@@ -892,7 +1267,19 @@ fn extract_interface(
     bytecode_dir: Option<&str>,
     rpc_url: &str,
 ) -> PyResult<PyObject> {
-    let value = extract_interface_inner(package_id, bytecode_dir, rpc_url).map_err(to_py_err)?;
+    // Release GIL during GraphQL fetching so Python threads can run concurrently
+    let pkg_id_owned = package_id.map(|s| s.to_string());
+    let bytecode_dir_owned = bytecode_dir.map(|s| s.to_string());
+    let rpc_url_owned = rpc_url.to_string();
+    let value = py
+        .allow_threads(move || {
+            extract_interface_inner(
+                pkg_id_owned.as_deref(),
+                bytecode_dir_owned.as_deref(),
+                &rpc_url_owned,
+            )
+        })
+        .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
 
@@ -969,6 +1356,178 @@ fn replay(
     json_value_to_py(py, &value)
 }
 
+/// Convert Sui object JSON to BCS bytes using struct layouts from bytecode.
+///
+/// Accepts the standard Sui object JSON format used by the RPC, GraphQL,
+/// Snowflake, and other data providers.
+///
+/// Args:
+///     type_str: Full Sui type string (e.g., "0x2::coin::Coin<0x2::sui::SUI>")
+///     object_json: JSON string of the decoded object data
+///     package_bytecodes: List of raw bytecode bytes for all needed package modules
+///
+/// Returns: BCS-encoded bytes
+#[pyfunction]
+#[pyo3(signature = (type_str, object_json, package_bytecodes))]
+fn json_to_bcs<'py>(
+    py: Python<'py>,
+    type_str: &str,
+    object_json: &str,
+    package_bytecodes: Vec<Vec<u8>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    // Release GIL during computation so Python threads can run concurrently
+    let type_str_owned = type_str.to_string();
+    let object_json_owned = object_json.to_string();
+    let bcs_bytes = py
+        .allow_threads(move || {
+            json_to_bcs_inner(&type_str_owned, &object_json_owned, package_bytecodes)
+        })
+        .map_err(to_py_err)?;
+    Ok(PyBytes::new(py, &bcs_bytes))
+}
+
+/// Execute a view function via local Move VM.
+///
+/// Args:
+///     package_id: Package containing the view function
+///     module: Module name
+///     function: Function name
+///     type_args: List of type argument strings (e.g., ["0x2::sui::SUI"])
+///     object_inputs: List of dicts with keys: object_id, bcs_bytes, type_tag, is_shared
+///     pure_inputs: List of BCS-encoded pure argument bytes
+///     child_objects: Dict mapping parent_id -> list of {child_id, bcs_bytes, type_tag}
+///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
+///     fetch_deps: If True, automatically resolve transitive deps via GraphQL
+///
+/// Returns: Dict with success, error, return_values (base64), gas_used
+#[pyfunction]
+#[pyo3(signature = (
+    package_id,
+    module,
+    function,
+    *,
+    type_args=vec![],
+    object_inputs=vec![],
+    pure_inputs=vec![],
+    child_objects=None,
+    package_bytecodes=None,
+    fetch_deps=true,
+))]
+fn call_view_function(
+    py: Python<'_>,
+    package_id: &str,
+    module: &str,
+    function: &str,
+    type_args: Vec<String>,
+    object_inputs: Vec<Bound<'_, PyDict>>,
+    pure_inputs: Vec<Vec<u8>>,
+    child_objects: Option<Bound<'_, PyDict>>,
+    package_bytecodes: Option<Bound<'_, PyDict>>,
+    fetch_deps: bool,
+) -> PyResult<PyObject> {
+    // Parse object_inputs from Python dicts
+    let mut parsed_obj_inputs: Vec<(String, Vec<u8>, String, bool)> = Vec::new();
+    for dict in &object_inputs {
+        let obj_id: String = dict
+            .get_item("object_id")?
+            .ok_or_else(|| PyRuntimeError::new_err("missing 'object_id' in object_inputs"))?
+            .extract()?;
+        let bcs_bytes: Vec<u8> = dict
+            .get_item("bcs_bytes")?
+            .ok_or_else(|| PyRuntimeError::new_err("missing 'bcs_bytes' in object_inputs"))?
+            .extract()?;
+        let type_tag: String = dict
+            .get_item("type_tag")?
+            .ok_or_else(|| PyRuntimeError::new_err("missing 'type_tag' in object_inputs"))?
+            .extract()?;
+        let is_shared: bool = dict
+            .get_item("is_shared")?
+            .map(|v| v.extract().unwrap_or(false))
+            .unwrap_or(false);
+        parsed_obj_inputs.push((obj_id, bcs_bytes, type_tag, is_shared));
+    }
+
+    // Parse child_objects from Python dict
+    let mut parsed_children: HashMap<String, Vec<(String, Vec<u8>, String)>> = HashMap::new();
+    if let Some(ref co) = child_objects {
+        for (key, value) in co.iter() {
+            let parent_id: String = key.extract()?;
+            let children_list: Vec<Bound<'_, PyDict>> = value.extract()?;
+            let mut children = Vec::new();
+            for child_dict in &children_list {
+                let child_id: String = child_dict
+                    .get_item("child_id")?
+                    .ok_or_else(|| PyRuntimeError::new_err("missing 'child_id'"))?
+                    .extract()?;
+                let bcs: Vec<u8> = child_dict
+                    .get_item("bcs_bytes")?
+                    .ok_or_else(|| PyRuntimeError::new_err("missing 'bcs_bytes'"))?
+                    .extract()?;
+                let tt: String = child_dict
+                    .get_item("type_tag")?
+                    .ok_or_else(|| PyRuntimeError::new_err("missing 'type_tag'"))?
+                    .extract()?;
+                children.push((child_id, bcs, tt));
+            }
+            parsed_children.insert(parent_id, children);
+        }
+    }
+
+    // Parse package_bytecodes from Python dict
+    let mut parsed_pkg_bytes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+    if let Some(ref pb) = package_bytecodes {
+        for (key, value) in pb.iter() {
+            let pkg_id: String = key.extract()?;
+            let bytecodes: Vec<Vec<u8>> = value.extract()?;
+            parsed_pkg_bytes.insert(pkg_id, bytecodes);
+        }
+    }
+
+    // Release GIL during VM execution so Python threads can run concurrently
+    let pkg_id_owned = package_id.to_string();
+    let module_owned = module.to_string();
+    let function_owned = function.to_string();
+    let value = py
+        .allow_threads(move || {
+            call_view_function_inner(
+                &pkg_id_owned,
+                &module_owned,
+                &function_owned,
+                type_args,
+                parsed_obj_inputs,
+                pure_inputs,
+                parsed_children,
+                parsed_pkg_bytes,
+                fetch_deps,
+            )
+        })
+        .map_err(to_py_err)?;
+
+    json_value_to_py(py, &value)
+}
+
+/// Fetch package bytecodes via GraphQL, optionally resolving transitive dependencies.
+///
+/// Args:
+///     package_id: The package to fetch
+///     resolve_deps: If True, recursively fetch all dependency packages
+///
+/// Returns: Dict with packages (pkg_id -> [base64 module bytes]) and count
+#[pyfunction]
+#[pyo3(signature = (package_id, *, resolve_deps=true))]
+fn fetch_package_bytecodes(
+    py: Python<'_>,
+    package_id: &str,
+    resolve_deps: bool,
+) -> PyResult<PyObject> {
+    // Release GIL during GraphQL fetching so Python threads can run concurrently
+    let pkg_id_owned = package_id.to_string();
+    let value = py
+        .allow_threads(move || fetch_package_bytecodes_inner(&pkg_id_owned, resolve_deps))
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
 /// Python module: sui_sandbox
 #[pymodule]
 fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -980,5 +1539,9 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(walrus_analyze_replay, m)?)?;
+    // View function execution
+    m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
+    m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
+    m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
     Ok(())
 }

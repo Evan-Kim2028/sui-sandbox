@@ -14,10 +14,9 @@
 //! ```
 
 mod common;
-mod json_to_bcs;
 
 use anyhow::{anyhow, Result};
-use json_to_bcs::JsonToBcsConverter;
+use sui_sandbox_core::utilities::json_to_bcs::JsonToBcsConverter;
 use move_core_types::account_address::AccountAddress;
 use serde::Deserialize;
 use std::collections::HashMap;
