@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "sui-move-extractor"
+version = "0.1.0"
+description = "Python bindings for Sui Move package analysis and transaction replay"
+requires-python = ">=3.9"
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "sui_move_extractor"

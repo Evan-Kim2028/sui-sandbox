@@ -1,6 +1,6 @@
 [package]
 name = "sui-sandbox"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2021"
 
 [workspace]
@@ -14,6 +14,7 @@ members = [
     "crates/sui-sandbox-core",
     "crates/sui-historical-cache",
     "crates/sui-sandbox-integration-tests",
+    "crates/sui-python",
 ]
 
 [features]
