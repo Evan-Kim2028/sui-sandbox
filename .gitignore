@@ -35,6 +35,7 @@ EXAMPLES_IMPROVEMENT_PLAN.md
 
 # Framework bytecode (regenerated from sui-framework source)
 /framework_bytecode/
+/examples/out/
 
 # Transaction cache and experiment data
 .tx-cache/
