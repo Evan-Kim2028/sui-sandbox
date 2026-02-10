@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "sui-move-extractor"
+name = "sui-sandbox"
 version = "0.1.0"
 description = "Python bindings for Sui Move package analysis and transaction replay"
 requires-python = ">=3.9"
@@ -28,4 +28,4 @@ Repository = "https://github.com/Evan-Kim2028/sui-sandbox"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"
-module-name = "sui_move_extractor"
+module-name = "sui_sandbox"

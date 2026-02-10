@@ -253,7 +253,7 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 ## Python Bindings
 
-The core analysis and Walrus replay features are available as a Python package via `sui-move-extractor`.
+The core analysis and Walrus replay features are available as a Python package via `sui-sandbox`.
 
 ```bash
 # Install from source (requires Rust toolchain)
@@ -263,19 +263,19 @@ maturin develop --release
 ```
 
 ```python
-import sui_move_extractor
+import sui_sandbox
 
 # Analyze any on-chain package (no API key needed)
-info = sui_move_extractor.analyze_package(package_id="0x2")
+info = sui_sandbox.analyze_package(package_id="0x2")
 print(f"{info['modules']} modules, {info['functions']} functions")
 
 # Full interface extraction
-interface = sui_move_extractor.extract_interface(package_id="0x1")
+interface = sui_sandbox.extract_interface(package_id="0x1")
 
 # Walrus checkpoint replay (no API key needed)
-cp = sui_move_extractor.get_latest_checkpoint()
-data = sui_move_extractor.get_checkpoint(cp)
-state = sui_move_extractor.walrus_analyze_replay(
+cp = sui_sandbox.get_latest_checkpoint()
+data = sui_sandbox.get_checkpoint(cp)
+state = sui_sandbox.walrus_analyze_replay(
     data["transactions"][0]["digest"], cp
 )
 ```

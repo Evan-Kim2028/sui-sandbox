@@ -969,9 +969,9 @@ fn replay(
     json_value_to_py(py, &value)
 }
 
-/// Python module: sui_move_extractor
+/// Python module: sui_sandbox
 #[pymodule]
-fn sui_move_extractor(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_package, m)?)?;
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
