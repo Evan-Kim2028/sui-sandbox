@@ -4,6 +4,20 @@ All notable changes to the Sui Move Interface Extractor project will be document
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-02-10
+
+### Added
+
+- **View function execution bindings**: new PyO3 bindings `call_view_function()`, `json_to_bcs()`, and `fetch_package_bytecodes()` for executing Move view functions from Python via local VM.
+- **GIL release on all Python bindings**: all Rust-backed Python functions release the GIL during computation, enabling ~15x speedup with `ThreadPoolExecutor`.
+- **`JsonToBcsConverter` in core**: moved JSON-to-BCS conversion from example code into `sui_sandbox_core::utilities` for reuse across Python bindings, examples, and tools.
+- **BFS dependency resolution**: `fetch_package_bytecodes` and `call_view_function` automatically resolve transitive package dependencies via GraphQL.
+- **Python demo scripts**: `call_view_functions.py` (end-to-end wallet profiling), `scan_view_functions.py` (ecosystem view function discovery).
+
+### Fixed
+
+- **Clippy lint fixes**: resolved `manual_strip`, `redundant_closure`, `map_or` simplification, and `iter_kv_map` warnings in `json_to_bcs.rs` and Python bindings.
+
 ## [0.16.0] - 2026-02-10
 
 ### Added

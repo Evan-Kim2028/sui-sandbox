@@ -16,6 +16,11 @@
 .pytest_cache/
 __pycache__/
 *.pyc
+.venv/
+python_sui_sandbox/wallet_data/
+python_sui_sandbox/wallet_profile.json
+python_sui_sandbox/scan_results/
+python_sui_sandbox/view_results/
 
 # macOS
 .DS_Store
