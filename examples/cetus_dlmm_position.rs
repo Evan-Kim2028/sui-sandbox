@@ -1,11 +1,11 @@
-//! Cetus DLMM Position Inspector with Snowflake Historical Data
+//! Cetus DLMM Position Inspector with Historical Data
 //!
 //! This example demonstrates the end-to-end flow of:
-//! 1. Loading OBJECT_JSON from Snowflake (or a JSON file)
+//! 1. Loading OBJECT_JSON from a data file
 //! 2. Reconstructing BCS from JSON using Move bytecode layouts
 //! 3. Loading objects into the Move VM simulation
 //! 4. Executing DLMM view functions via PTB
-//! 5. Calculating position token amounts from Snowflake bin data
+//! 5. Calculating position token amounts from bin data
 //!
 //! ## Usage
 //!
@@ -29,11 +29,11 @@ use sui_sandbox_core::simulation::SimulationEnvironment;
 use sui_sandbox_core::utilities::is_framework_package;
 use sui_state_fetcher::HistoricalStateProvider;
 
-use common::snowflake_bcs::JsonToBcsConverter;
+use common::json_bcs::JsonToBcsConverter;
 use common::{
     calculate_position_amounts, create_child_fetcher, display_historical_view,
     display_position_amounts, extract_coin_types_from_pool, extract_package_ids_from_type,
-    load_extended_position_data, load_historical_data, load_snowflake_data, parse_type_tag,
+    load_extended_position_data, load_historical_data, load_object_json_data, parse_type_tag,
 };
 
 // =============================================================================
@@ -44,7 +44,7 @@ const CETUS_DLMM_POOL_PACKAGE: &str =
     "0x5664f9d3fd82c84023870cfbda8ea84e14c8dd56ce557ad2116e0668581a682b";
 
 const DEFAULT_DATA_FILE: &str =
-    "./examples/cetus_historical_position_fees/data/dlmm_snowflake_objects.json";
+    "./examples/cetus_historical_position_fees/data/dlmm_objects.json";
 
 const DEFAULT_EXTENDED_DATA_FILE: &str =
     "./examples/cetus_historical_position_fees/data/dlmm_extended_data.json";
@@ -75,24 +75,24 @@ fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
     println!("╔══════════════════════════════════════════════════════════════════════╗");
-    println!("║          Cetus DLMM Position - Snowflake Historical PTB              ║");
+    println!("║          Cetus DLMM Position - Historical PTB                         ║");
     println!("╚══════════════════════════════════════════════════════════════════════╝\n");
 
     // -------------------------------------------------------------------------
-    // Step 1: Load Snowflake data
+    // Step 1: Load object JSON data
     // -------------------------------------------------------------------------
     let data_file =
         std::env::var("DLMM_DATA_FILE").unwrap_or_else(|_| DEFAULT_DATA_FILE.to_string());
 
-    println!("Step 1: Load Snowflake data from {}", data_file);
+    println!("Step 1: Load object JSON data from {}", data_file);
 
-    let data = match load_snowflake_data(&data_file) {
+    let data = match load_object_json_data(&data_file) {
         Ok(d) => d,
         Err(e) => {
             println!("  ! Data file not found: {}", e);
             println!("  ! Creating sample data file...");
             create_sample_data_file(&data_file)?;
-            println!("  ! Please populate the data file with Snowflake OBJECT_JSON and re-run.");
+            println!("  ! Please populate the data file with OBJECT_JSON and re-run.");
             return Ok(());
         }
     };
@@ -275,7 +275,7 @@ fn main() -> Result<()> {
     // -------------------------------------------------------------------------
     // Step 6: Display pool and position state from JSON
     // -------------------------------------------------------------------------
-    println!("\nStep 6: Analyze position data from Snowflake JSON");
+    println!("\nStep 6: Analyze position data from object JSON");
 
     let (active_bin, lower_bin, upper_bin) = extract_position_info(&data)?;
 
@@ -355,15 +355,15 @@ fn main() -> Result<()> {
                     "  ✗ PTB failed (expected - dynamic field access): {}",
                     err_msg
                 );
-                println!("  → Using Snowflake bin data for calculation instead");
+                println!("  → Using bin data for calculation instead");
             }
         }
     }
 
     // -------------------------------------------------------------------------
-    // Step 8: Calculate position amounts from Snowflake bin data
+    // Step 8: Calculate position amounts from bin data
     // -------------------------------------------------------------------------
-    println!("\nStep 8: Calculate position amounts from Snowflake bin data");
+    println!("\nStep 8: Calculate position amounts from bin data");
 
     let extended_data_file = std::env::var("DLMM_EXTENDED_DATA")
         .unwrap_or_else(|_| DEFAULT_EXTENDED_DATA_FILE.to_string());
@@ -383,7 +383,7 @@ fn main() -> Result<()> {
         }
         Err(e) => {
             println!("  Extended data not available: {}", e);
-            print_snowflake_query_help();
+            print_query_help();
         }
     }
 
@@ -485,8 +485,8 @@ fn main() -> Result<()> {
 // Helper Functions
 // =============================================================================
 
-/// Extract position info from Snowflake data.
-fn extract_position_info(data: &common::SnowflakeData) -> Result<(i32, i32, i32)> {
+/// Extract position info from object JSON data.
+fn extract_position_info(data: &common::ObjectJsonData) -> Result<(i32, i32, i32)> {
     let pool_data = data
         .objects
         .iter()
@@ -526,7 +526,7 @@ fn extract_position_info(data: &common::SnowflakeData) -> Result<(i32, i32, i32)
 /// Create a sample data file for new users.
 fn create_sample_data_file(path: &str) -> Result<()> {
     let sample = serde_json::json!({
-        "description": "DLMM USDC/SUI position - POPULATE FROM SNOWFLAKE",
+        "description": "DLMM USDC/SUI position - POPULATE WITH OBJECT_JSON",
         "checkpoint": 241670271,
         "objects": [
             {
@@ -535,7 +535,7 @@ fn create_sample_data_file(path: &str) -> Result<()> {
                 "type": "0x5664f9d3fd82c84023870cfbda8ea84e14c8dd56ce557ad2116e0668581a682b::pool::Pool<0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC, 0x2::sui::SUI>",
                 "owner_type": "Shared",
                 "initial_shared_version": 643563051,
-                "object_json": { "_comment": "PASTE OBJECT_JSON FROM SNOWFLAKE" }
+                "object_json": { "_comment": "PASTE OBJECT_JSON HERE" }
             },
             {
                 "object_id": "0x33f5514521220478d3b3e141c7a67f766fd6b4150e25148a13171b4b68089417",
@@ -543,7 +543,7 @@ fn create_sample_data_file(path: &str) -> Result<()> {
                 "type": "0x5664f9d3fd82c84023870cfbda8ea84e14c8dd56ce557ad2116e0668581a682b::position::Position",
                 "owner_type": "AddressOwner",
                 "initial_shared_version": null,
-                "object_json": { "_comment": "PASTE OBJECT_JSON FROM SNOWFLAKE" }
+                "object_json": { "_comment": "PASTE OBJECT_JSON HERE" }
             }
         ]
     });
@@ -556,17 +556,15 @@ fn create_sample_data_file(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Print help for Snowflake queries to get bin data.
-fn print_snowflake_query_help() {
-    println!("  To calculate exact position amounts, query Snowflake for:");
+/// Print help for queries to get bin data.
+fn print_query_help() {
+    println!("  To calculate exact position amounts, query for:");
     println!();
     println!("  1. Bin groups (contains reserves):");
-    println!("     SELECT OBJECT_JSON FROM OBJECT");
-    println!("     WHERE OWNER_ADDRESS = '<bin_manager.bins.id>'");
-    println!("     AND OBJECT_JSON:value:value:group:idx::INT IN (27810, 27811)");
+    println!("     Query objects owned by <bin_manager.bins.id>");
+    println!("     Filter by group index (e.g., 27810, 27811)");
     println!();
     println!("  2. PositionInfo (contains per-bin liquidity shares):");
-    println!("     SELECT OBJECT_JSON FROM OBJECT");
-    println!("     WHERE OWNER_ADDRESS = '<position_manager.positions.id>'");
-    println!("     AND OBJECT_JSON:name::STRING = '<position_index>'");
+    println!("     Query objects owned by <position_manager.positions.id>");
+    println!("     Filter by position index");
 }

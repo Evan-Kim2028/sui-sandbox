@@ -42,6 +42,17 @@ EXAMPLES_IMPROVEMENT_PLAN.md
 /framework_bytecode/
 /examples/out/
 
+# On-chain data files (contain on-chain state, must not be committed)
+# Version metadata files (checkpoint->version mappings) are OK to keep
+examples/cetus_historical_position_fees/data/cetus_packages.json
+examples/cetus_historical_position_fees/data/dlmm_extended_data.json
+examples/cetus_historical_position_fees/data/dlmm_historical_snapshots.json
+examples/cetus_historical_position_fees/data/dlmm_objects.json
+examples/cetus_historical_position_fees/data/usdc_sui_dlmm_position_history.json
+examples/cetus_historical_position_fees/data/position_daily_history.json
+examples/deepbook_margin_state/data/dynamic_field_test_objects.json
+examples/deepbook_margin_state/data/object_json.json
+
 # Transaction cache and experiment data
 .tx-cache/
 deepbook_cache/

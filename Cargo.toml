@@ -204,8 +204,8 @@ name = "deepbook_timeseries"
 path = "examples/deepbook_margin_state/timeseries.rs"
 
 [[example]]
-name = "deepbook_snowflake_only"
-path = "examples/deepbook_margin_state/snowflake_only.rs"
+name = "deepbook_json_bcs_only"
+path = "examples/deepbook_margin_state/json_bcs_only.rs"
 
 [[example]]
 name = "cetus_dlmm_position"

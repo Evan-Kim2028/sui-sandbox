@@ -1,6 +1,6 @@
 //! JSON to BCS Reconstruction Utility
 //!
-//! This module converts Snowflake's OBJECT_JSON (decoded Move object data) back to
+//! This module converts decoded OBJECT_JSON (Move object data) back to
 //! BCS bytes using struct layouts extracted from Move bytecode.
 //!
 //! ## How It Works
@@ -28,7 +28,7 @@ use sui_sandbox_core::utilities::generic_patcher::{
     BcsEncoder, DynamicValue, LayoutRegistry, MoveType, StructLayout,
 };
 
-/// Reconstructs BCS bytes from Snowflake's OBJECT_JSON using bytecode layouts.
+/// Reconstructs BCS bytes from decoded OBJECT_JSON using bytecode layouts.
 pub struct JsonToBcsConverter {
     layout_registry: LayoutRegistry,
 }
@@ -61,7 +61,7 @@ impl JsonToBcsConverter {
     ///
     /// # Arguments
     /// * `type_str` - The full Sui type string (e.g., "0x97d...::margin_manager::MarginManager<...>")
-    /// * `object_json` - The decoded object data from Snowflake's OBJECT_JSON column
+    /// * `object_json` - The decoded OBJECT_JSON data
     ///
     /// # Returns
     /// The BCS-encoded bytes that can be loaded into the VM.

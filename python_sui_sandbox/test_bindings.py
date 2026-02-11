@@ -1,6 +1,5 @@
 """Quick smoke test for the sui_sandbox Python bindings."""
 
-import json
 import sui_sandbox
 
 print("=" * 60)

@@ -1,7 +1,7 @@
 //! Cetus DLMM (Discretized Liquidity Market Maker) calculation utilities.
 //!
 //! This module provides data structures and functions for:
-//! - Loading DLMM position data from Snowflake JSON exports
+//! - Loading DLMM position data from JSON exports
 //! - Calculating position token amounts from bin reserves
 //! - Historical snapshot analysis for position tracking
 //!
@@ -27,18 +27,18 @@ use std::collections::HashMap;
 use super::parse_type_tag;
 
 // =============================================================================
-// Snowflake Data Structures
+// Object JSON Data Structures
 // =============================================================================
 
-/// Raw Snowflake export data containing pool and position objects.
+/// Object JSON export data containing pool and position objects.
 #[derive(Debug, Deserialize)]
-pub struct SnowflakeData {
+pub struct ObjectJsonData {
     pub description: String,
     pub checkpoint: u64,
     pub objects: Vec<ObjectData>,
 }
 
-/// Individual object from Snowflake OBJECT table.
+/// Individual object from an OBJECT_JSON export.
 #[derive(Debug, Deserialize)]
 pub struct ObjectData {
     pub object_id: String,
@@ -246,7 +246,7 @@ pub fn display_position_amounts(
     let range_status = get_range_status(active_bin, lower_bin, upper_bin);
 
     println!("\n  ═══════════════════════════════════════════════════════════════");
-    println!("  POSITION TOKEN AMOUNTS (calculated from Snowflake bin data)");
+    println!("  POSITION TOKEN AMOUNTS (calculated from bin data)");
     println!("  ═══════════════════════════════════════════════════════════════");
     println!("  Position: {}", position_id);
     println!("  Pool: {}", pool_id);
@@ -376,8 +376,8 @@ pub fn extract_coin_types_from_pool(pool_type: &str) -> Result<(TypeTag, TypeTag
     ))
 }
 
-/// Load Snowflake data from a JSON file.
-pub fn load_snowflake_data(path: &str) -> Result<SnowflakeData> {
+/// Load object JSON data from a file.
+pub fn load_object_json_data(path: &str) -> Result<ObjectJsonData> {
     let content =
         std::fs::read_to_string(path).map_err(|e| anyhow!("Failed to read {}: {}", path, e))?;
     serde_json::from_str(&content).map_err(|e| anyhow!("Failed to parse {}: {}", path, e))

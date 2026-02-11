@@ -1,16 +1,16 @@
-//! Snowflake-Only BCS Reconstruction Example
+//! JSON-to-BCS Reconstruction Example
 //!
-//! Demonstrates reconstructing BCS bytes from Snowflake's OBJECT_JSON
+//! Demonstrates reconstructing BCS bytes from decoded OBJECT_JSON
 //! using struct layouts from Move bytecode.
 //!
 //! ## Usage
 //!
 //! ```bash
 //! # Default test data
-//! cargo run --example deepbook_snowflake_only
+//! cargo run --example deepbook_json_bcs_only
 //!
 //! # Custom data file
-//! DATA_FILE="./path/to/data.json" cargo run --example deepbook_snowflake_only
+//! DATA_FILE="./path/to/data.json" cargo run --example deepbook_json_bcs_only
 //! ```
 
 mod common;
@@ -25,14 +25,14 @@ use sui_state_fetcher::HistoricalStateProvider;
 // Package addresses to fetch bytecode from
 const MARGIN_PACKAGE: &str = "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b";
 const DEEPBOOK_PACKAGE: &str = "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809";
-const DEFAULT_DATA_FILE: &str = "./examples/deepbook_margin_state/data/snowflake_object_json.json";
+const DEFAULT_DATA_FILE: &str = "./examples/deepbook_margin_state/data/object_json.json";
 
 // =============================================================================
 // Data Structures
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
-struct SnowflakeData {
+struct ObjectJsonData {
     #[allow(dead_code)]
     description: String,
     #[serde(alias = "checkpoint_range")]
@@ -61,12 +61,34 @@ fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
     println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║        Snowflake BCS Reconstruction Demo                     ║");
+    println!("║        JSON-to-BCS Reconstruction Demo                       ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // 1. Load test data
     let data_file = std::env::var("DATA_FILE").unwrap_or_else(|_| DEFAULT_DATA_FILE.to_string());
-    let data = load_snowflake_data(&data_file)?;
+    let data = match load_object_json_data(&data_file) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("Data file not found: {}\n", e);
+            println!("This example requires OBJECT_JSON data.");
+            println!("Provide your own data file:");
+            println!("  DATA_FILE=\"./my_data.json\" cargo run --example deepbook_json_bcs_only\n");
+            println!("Expected JSON format:");
+            println!("  {{");
+            println!("    \"description\": \"...\",");
+            println!("    \"checkpoint\": 240733000,");
+            println!("    \"objects\": [");
+            println!("      {{");
+            println!("        \"object_id\": \"0x...\",");
+            println!("        \"version\": 123456,");
+            println!("        \"type\": \"0xpkg::module::Type\",");
+            println!("        \"object_json\": {{ ... }}");
+            println!("      }}");
+            println!("    ]");
+            println!("  }}");
+            return Ok(());
+        }
+    };
     let checkpoint = data
         .checkpoint
         .as_ref()
@@ -174,7 +196,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_snowflake_data(path: &str) -> Result<SnowflakeData> {
+fn load_object_json_data(path: &str) -> Result<ObjectJsonData> {
     let content =
         std::fs::read_to_string(path).map_err(|e| anyhow!("Failed to read {}: {}", path, e))?;
     serde_json::from_str(&content).map_err(|e| anyhow!("Failed to parse {}: {}", path, e))

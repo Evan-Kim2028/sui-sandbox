@@ -46,9 +46,9 @@ pub use sui_sandbox_core::utilities::{
 // Backwards compatibility alias
 pub use parse_type_tag as parse_type_tag_simple;
 
-// Snowflake BCS reconstruction utilities
-pub mod snowflake_bcs;
-pub use snowflake_bcs::JsonToBcsConverter;
+// JSON to BCS reconstruction utilities
+pub mod json_bcs;
+pub use json_bcs::JsonToBcsConverter;
 
 // Cetus DLMM calculation utilities
 pub mod dlmm;
@@ -62,7 +62,7 @@ pub use dlmm::{
     get_range_status,
     load_extended_position_data,
     load_historical_data,
-    load_snowflake_data,
+    load_object_json_data,
     // Data structures
     BinAmount,
     BinData,
@@ -73,7 +73,7 @@ pub use dlmm::{
     ObjectData,
     PositionAmounts,
     PositionBinStat,
-    SnowflakeData,
+    ObjectJsonData,
 };
 
 // =============================================================================

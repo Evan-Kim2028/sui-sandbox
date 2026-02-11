@@ -566,6 +566,7 @@ def execute_view_function_call(
         result["success"] = call_result.get("success", False)
         result["error"] = call_result.get("error")
         result["return_values"] = call_result.get("return_values", [])
+        result["return_type_tags"] = call_result.get("return_type_tags", [])
         result["gas_used"] = call_result.get("gas_used", 0)
 
     except Exception as e:
@@ -820,10 +821,15 @@ def main():
         status = "OK" if result["success"] else "FAIL"
         elapsed = result["elapsed_ms"]
         rv = result.get("return_values", [])
+        rt = result.get("return_type_tags", [])
         rv_summary = f"[{len(rv)} values]" if rv else "[]"
 
         print(f"  [{i + 1}/{len(matches)}] {target} ({short_obj}) "
               f"{elapsed:.0f}ms {status} {rv_summary}")
+
+        if result["success"] and rt:
+            types_str = ", ".join(t if t else "?" for t in rt)
+            print(f"           types: {types_str}")
 
         if not result["success"] and result.get("error"):
             err = str(result["error"])[:120]

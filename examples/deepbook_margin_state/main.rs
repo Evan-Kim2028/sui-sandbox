@@ -14,7 +14,7 @@
 //!
 //! ## Key Features
 //!
-//! - **Pre-computed versions**: Use Snowflake to efficiently find object versions
+//! - **Pre-computed versions**: Use a versions JSON file to efficiently find object versions
 //!   at a target checkpoint, then use gRPC to fetch the actual BCS data
 //! - **On-demand fetching**: Dynamic fields (used by `sui::versioned`) are
 //!   fetched automatically during VM execution via the `child_fetcher` callback
@@ -23,7 +23,7 @@
 //! ## Quick Start (Recommended)
 //!
 //! ```bash
-//! # Run with pre-computed versions from Snowflake (fast!)
+//! # Run with pre-computed versions (fast!)
 //! VERSIONS_FILE=./data/deepbook_versions_240733000.json cargo run --example deepbook_margin_state
 //! ```
 //!
@@ -41,13 +41,13 @@
 //! ## All Run Modes
 //!
 //! ```bash
-//! # Mode 1a: Snowflake + gRPC (default) - earlier historical state
+//! # Mode 1a: Versions file + gRPC (default) - earlier historical state
 //! VERSIONS_FILE=./data/deepbook_versions_240732600.json cargo run --example deepbook_margin_state
 //!
-//! # Mode 1b: Snowflake + gRPC - later historical state
+//! # Mode 1b: Versions file + gRPC - later historical state
 //! VERSIONS_FILE=./data/deepbook_versions_240733000.json cargo run --example deepbook_margin_state
 //!
-//! # Mode 2: Snowflake + Walrus (NO gRPC!) - fully decentralized
+//! # Mode 2: Versions file + Walrus (NO gRPC!) - fully decentralized
 //! VERSIONS_FILE=./data/deepbook_versions_240732600.json WALRUS_MODE=1 cargo run --example deepbook_margin_state
 //!
 //! # Mode 3: Current/latest state (no versions file)
@@ -65,7 +65,7 @@
 //!
 //! ```
 //! ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-//! │   Snowflake     │────▶│  versions.json  │────▶│  Walrus HTTP    │
+//! │  Version Lookup │────▶│  versions.json  │────▶│  Walrus HTTP    │
 //! │  (object_id →   │     │  (checkpoint +  │     │  (fetch specific│
 //! │   version +     │     │   checkpoint_   │     │   checkpoints)  │
 //! │   checkpoint)   │     │   found)        │     │                 │
@@ -96,24 +96,12 @@
 //! SUI_GRPC_API_KEY=your-api-key-here  # optional but recommended
 //! ```
 //!
-//! ## Generating New Versions Files (requires Snowflake access)
+//! ## Generating New Versions Files
 //!
-//! To create a versions file for a different checkpoint, use this Snowflake query pattern:
+//! To create a versions file for a different checkpoint, query an object indexer
+//! to find each object's version at or before the target checkpoint.
 //!
-//! ```sql
-//! -- For each object, find its version at or before the target checkpoint
-//! SELECT 'ObjectName' as name, object_id, version, checkpoint FROM (
-//!     SELECT object_id, version, checkpoint
-//!     FROM ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT
-//!     WHERE object_id = '0x...'
-//!       AND checkpoint <= TARGET_CHECKPOINT
-//!     ORDER BY checkpoint DESC LIMIT 1
-//! )
-//! UNION ALL
-//! -- repeat for each object...
-//! ```
-//!
-//! Then save results to `data/deepbook_versions_CHECKPOINT.json` in the format:
+//! Save results to `data/deepbook_versions_CHECKPOINT.json` in the format:
 //! ```json
 //! {
 //!   "checkpoint": 240733000,
@@ -127,7 +115,7 @@
 //!
 //! ```
 //! ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-//! │   Snowflake     │────▶│  versions.json  │────▶│  Rust Example   │
+//! │  Version Lookup │────▶│  versions.json  │────▶│  Rust Example   │
 //! │  (version       │     │  (checkpoint +  │     │  (load versions │
 //! │   lookup)       │     │   object→ver)   │     │   from JSON)    │
 //! └─────────────────┘     └─────────────────┘     └────────┬────────┘
@@ -185,7 +173,7 @@ const CLOCK: &str = "0x6";
 
 // ============================================================================
 // Target Margin Position (SUI/USDC pool with active loan)
-// From Snowflake query: most recent position with loan
+// Target margin position with active loan
 // ============================================================================
 
 // Margin manager we want to query
@@ -221,7 +209,7 @@ fn main() -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
 
-    // Check for historical mode via VERSIONS_FILE (Snowflake-generated) or CHECKPOINT (Walrus scan)
+    // Check for historical mode via VERSIONS_FILE or CHECKPOINT (Walrus scan)
     let versions_file = std::env::var("VERSIONS_FILE").ok();
     let walrus_mode = std::env::var("WALRUS_MODE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
@@ -241,7 +229,7 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(100); // Default to scanning 100 checkpoints
 
-    // Load historical versions either from Snowflake JSON file or Walrus checkpoint scanning
+    // Load historical versions either from JSON file or Walrus checkpoint scanning
     // Also track full version info (including checkpoint_found) for Walrus mode
     let (historical_versions, version_info, effective_checkpoint): (
         HashMap<String, u64>,
@@ -249,9 +237,9 @@ fn main() -> Result<()> {
         Option<u64>,
     ) = if let Some(ref path) = versions_file {
         let mode_str = if walrus_mode {
-            "SNOWFLAKE + WALRUS (no gRPC)"
+            "VERSIONS FILE + WALRUS (no gRPC)"
         } else {
-            "SNOWFLAKE + gRPC"
+            "VERSIONS FILE + gRPC"
         };
         println!("  📂 {} MODE: Loading versions from {}", mode_str, path);
 
@@ -985,7 +973,7 @@ struct ObjectVersionInfo {
     checkpoint_found: Option<u64>,
 }
 
-/// Load object versions from a JSON file generated by Snowflake queries.
+/// Load object versions from a JSON file.
 ///
 /// Expected format:
 /// ```json
@@ -1112,7 +1100,7 @@ fn print_header() {
     println!("║        DeepBook Margin Manager State Query Example                   ║");
     println!("╠══════════════════════════════════════════════════════════════════════╣");
     println!("║  Demonstrates historical state reconstruction using:                 ║");
-    println!("║    1. Snowflake → object versions at a checkpoint (pre-computed)     ║");
+    println!("║    1. Pre-computed object versions at a checkpoint (JSON file)       ║");
     println!("║    2. gRPC → fetch BCS data at historical versions                   ║");
     println!("║    3. Local Move VM → execute manager_state function                 ║");
     println!("║                                                                      ║");
