@@ -71,7 +71,16 @@ impl JsonToBcsConverter {
         let (layout, type_args) = self
             .layout_registry
             .get_layout_with_type_args(type_str)
-            .ok_or_else(|| anyhow!("Could not find layout for type: {}", type_str))?;
+            .ok_or_else(|| {
+                // Extract the package address from the type string to give a helpful hint
+                let pkg_hint = type_str
+                    .split("::")
+                    .next()
+                    .filter(|s| s.starts_with("0x"))
+                    .map(|addr| format!(" Ensure bytecode for package {} has been loaded via add_modules_from_bytes().", addr))
+                    .unwrap_or_default();
+                anyhow!("Could not find layout for type: {}.{}", type_str, pkg_hint)
+            })?;
 
         // Convert JSON to DynamicValue following the layout
         let value = self.json_to_dynamic_value_with_type_args(object_json, &layout, &type_args)?;

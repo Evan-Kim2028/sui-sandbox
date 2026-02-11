@@ -22,7 +22,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import sui_move_extractor
+import sui_sandbox
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -166,7 +166,7 @@ def get_package_bytecodes(package_id: str, resolve_deps: bool = True) -> dict[st
     if package_id in _pkg_cache:
         return _pkg_cache[package_id]
 
-    result = sui_move_extractor.fetch_package_bytecodes(
+    result = sui_sandbox.fetch_package_bytecodes(
         package_id, resolve_deps=resolve_deps
     )
     decoded: dict[str, list[bytes]] = {}
@@ -193,13 +193,13 @@ def call_coin_value(
         all_modules.extend(modules)
 
     try:
-        bcs_bytes = sui_move_extractor.json_to_bcs(coin_type, object_json, all_modules)
+        bcs_bytes = sui_sandbox.json_to_bcs(coin_type, object_json, all_modules)
     except Exception as e:
         print(f"    json_to_bcs error for {object_id[:16]}...: {e}", file=sys.stderr)
         return None
 
     try:
-        result = sui_move_extractor.call_view_function(
+        result = sui_sandbox.call_view_function(
             "0x2", "coin", "value",
             type_args=[inner_type],
             object_inputs=[{
@@ -239,7 +239,7 @@ def call_suilend_view(
         all_modules.extend(modules)
 
     try:
-        bcs_bytes = sui_move_extractor.json_to_bcs(
+        bcs_bytes = sui_sandbox.json_to_bcs(
             obligation_type, obligation_json, all_modules
         )
     except Exception as e:
@@ -247,7 +247,7 @@ def call_suilend_view(
         return None
 
     try:
-        result = sui_move_extractor.call_view_function(
+        result = sui_sandbox.call_view_function(
             SUILEND_PKG, "obligation", fn_name,
             type_args=[pool_type_arg],
             object_inputs=[{
@@ -628,7 +628,7 @@ def parse_alphalend_market_position(
     # --- Call is_healthy via local Move VM ---
     is_healthy = None
     try:
-        result = sui_move_extractor.call_view_function(
+        result = sui_sandbox.call_view_function(
             ALPHALEND_MARKET_PKG, "position", "is_healthy",
             type_args=[],
             object_inputs=[{

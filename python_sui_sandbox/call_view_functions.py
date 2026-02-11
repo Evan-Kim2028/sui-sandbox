@@ -5,8 +5,8 @@ End-to-end PoC that:
   1. Queries Snowflake for wallet's owned objects (and their OBJECT_JSON)
   2. Loads view function signatures from scan results
   3. Matches objects to view functions
-  4. Converts OBJECT_JSON → BCS via sui_move_extractor.json_to_bcs()
-  5. Executes view functions via sui_move_extractor.call_view_function()
+  4. Converts OBJECT_JSON → BCS via sui_sandbox.json_to_bcs()
+  5. Executes view functions via sui_sandbox.call_view_function()
   6. Outputs structured results
 
 Usage:
@@ -29,7 +29,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import sui_move_extractor
+import sui_sandbox
 
 # ---------------------------------------------------------------------------
 # Snowflake connection
@@ -394,7 +394,7 @@ def collect_package_bytecodes(
         print(f"  Fetching {len(to_fetch)} packages via GraphQL (with deps)...")
         for pkg_id in to_fetch:
             try:
-                pkg_data = sui_move_extractor.fetch_package_bytecodes(
+                pkg_data = sui_sandbox.fetch_package_bytecodes(
                     package_id=pkg_id, resolve_deps=True
                 )
                 packages = pkg_data.get("packages", {})
@@ -535,7 +535,7 @@ def execute_view_function_call(
             return result
 
         obj_json_str = json.dumps(obj_json) if isinstance(obj_json, dict) else str(obj_json)
-        bcs_bytes = sui_move_extractor.json_to_bcs(
+        bcs_bytes = sui_sandbox.json_to_bcs(
             type_str=obj_type,
             object_json=obj_json_str,
             package_bytecodes=all_bytecodes,
@@ -547,7 +547,7 @@ def execute_view_function_call(
             pkg_bytes_dict[pid] = modules
 
         # Step 4: Call the view function
-        call_result = sui_move_extractor.call_view_function(
+        call_result = sui_sandbox.call_view_function(
             package_id=normalize_address(pkg_id),
             module=module,
             function=function,

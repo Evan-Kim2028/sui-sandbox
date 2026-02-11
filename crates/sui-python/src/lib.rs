@@ -887,7 +887,7 @@ fn call_view_function_inner(
     module: &str,
     function: &str,
     type_args: Vec<String>,
-    object_inputs: Vec<(String, Vec<u8>, String, bool)>, // (object_id, bcs_bytes, type_tag_str, is_shared)
+    object_inputs: Vec<(String, Vec<u8>, String, bool, bool)>, // (object_id, bcs_bytes, type_tag_str, is_shared, mutable)
     pure_inputs: Vec<Vec<u8>>,
     child_objects: HashMap<String, Vec<(String, Vec<u8>, String)>>, // parent_id -> [(child_id, bcs, type_tag)]
     package_bytecodes: HashMap<String, Vec<Vec<u8>>>, // package_id -> [module_bytecodes]
@@ -955,7 +955,7 @@ fn call_view_function_inner(
                 }
             }
         }
-        for (_, _, type_tag_str, _) in &object_inputs {
+        for (_, _, type_tag_str, _, _) in &object_inputs {
             for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_tag_str) {
                 if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
                     if !loaded_packages.contains(&addr) && !is_framework_addr(&addr) {
@@ -979,11 +979,22 @@ fn call_view_function_inner(
             }
         }
 
-        // BFS fetch dependencies
+        // BFS fetch dependencies (max 8 rounds to prevent runaway resolution)
+        const MAX_DEP_ROUNDS: usize = 8;
         let mut visited = loaded_packages.clone();
+        let mut rounds = 0;
         while let Some(addr) = to_fetch.pop_front() {
             if visited.contains(&addr) || is_framework_addr(&addr) {
                 continue;
+            }
+            rounds += 1;
+            if rounds > MAX_DEP_ROUNDS {
+                eprintln!(
+                    "Warning: dependency resolution hit max depth ({} packages fetched), \
+                     stopping. Some transitive deps may be missing.",
+                    MAX_DEP_ROUNDS
+                );
+                break;
             }
             visited.insert(addr);
 
@@ -1039,7 +1050,7 @@ fn call_view_function_inner(
 
     // Add object inputs
     let mut input_indices = Vec::new();
-    for (obj_id_str, bcs_bytes, type_tag_str, is_shared) in &object_inputs {
+    for (obj_id_str, bcs_bytes, type_tag_str, is_shared, mutable) in &object_inputs {
         let id = AccountAddress::from_hex_literal(obj_id_str)
             .with_context(|| format!("invalid object_id: {}", obj_id_str))?;
         let type_tag = sui_sandbox_core::types::parse_type_tag(type_tag_str)
@@ -1051,7 +1062,7 @@ fn call_view_function_inner(
                 bytes: bcs_bytes.clone(),
                 type_tag: Some(type_tag),
                 version: None,
-                mutable: false,
+                mutable: *mutable,
             }
         } else {
             ObjectInput::ImmRef {
@@ -1105,11 +1116,16 @@ fn call_view_function_inner(
 
     // 8. Build result
     let mut return_values_b64 = Vec::new();
-    let return_type_tags: Vec<String> = Vec::new();
+    let mut return_type_tags: Vec<Option<String>> = Vec::new();
 
     if let Some(cmd_returns) = effects.return_values.first() {
         for rv_bytes in cmd_returns {
             return_values_b64.push(base64::engine::general_purpose::STANDARD.encode(rv_bytes));
+        }
+    }
+    if let Some(cmd_types) = effects.return_type_tags.first() {
+        for type_tag in cmd_types {
+            return_type_tags.push(type_tag.as_ref().map(|t| t.to_canonical_string(true)));
         }
     }
 
@@ -1446,7 +1462,11 @@ fn call_view_function(
             .get_item("is_shared")?
             .map(|v| v.extract().unwrap_or(false))
             .unwrap_or(false);
-        parsed_obj_inputs.push((obj_id, bcs_bytes, type_tag, is_shared));
+        let mutable: bool = dict
+            .get_item("mutable")?
+            .map(|v| v.extract().unwrap_or(false))
+            .unwrap_or(false);
+        parsed_obj_inputs.push((obj_id, bcs_bytes, type_tag, is_shared, mutable));
     }
 
     // Parse child_objects from Python dict

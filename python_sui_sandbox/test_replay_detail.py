@@ -1,9 +1,9 @@
 """Deeper replay analysis — pick a transaction with MoveCall commands."""
 
-import sui_move_extractor
+import sui_sandbox
 
-latest = sui_move_extractor.get_latest_checkpoint()
-cp = sui_move_extractor.get_checkpoint(latest)
+latest = sui_sandbox.get_latest_checkpoint()
+cp = sui_sandbox.get_checkpoint(latest)
 
 # Find a transaction with commands > 0
 target_tx = None
@@ -14,7 +14,7 @@ for tx in cp["transactions"]:
 
 if not target_tx:
     print("No programmable transactions in this checkpoint, trying checkpoint - 1")
-    cp = sui_move_extractor.get_checkpoint(latest - 1)
+    cp = sui_sandbox.get_checkpoint(latest - 1)
     for tx in cp["transactions"]:
         if tx["commands"] > 0:
             target_tx = tx
@@ -33,7 +33,7 @@ print(f"Commands:   {target_tx['commands']}")
 print()
 
 # Verbose replay
-info = sui_move_extractor.walrus_analyze_replay(digest, checkpoint, verbose=True)
+info = sui_sandbox.walrus_analyze_replay(digest, checkpoint, verbose=True)
 
 print(f"Objects hydrated:  {info['objects']}")
 print(f"Packages loaded:   {info['packages']} ({info['modules']} modules)")

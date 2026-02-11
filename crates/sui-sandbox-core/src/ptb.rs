@@ -1712,6 +1712,11 @@ pub struct TransactionEffects {
     /// Commands that return nothing have an empty Vec.
     pub return_values: Vec<Vec<Vec<u8>>>,
 
+    /// Return type tags for each command's return values.
+    /// Parallel structure to `return_values`: one Vec<Option<TypeTag>> per command.
+    /// None entries indicate the type could not be resolved.
+    pub return_type_tags: Vec<Vec<Option<TypeTag>>>,
+
     /// Index of the command that failed (0-based), if execution failed.
     pub failed_command_index: Option<usize>,
 
@@ -5284,24 +5289,27 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         // Collect events emitted during execution
         effects.events = self.vm.get_events();
 
-        // Capture return values from each command
-        effects.return_values = self
-            .results
-            .iter()
-            .map(|result| {
-                match result {
-                    CommandResult::Empty => vec![],
-                    CommandResult::Values(values) => {
-                        // Extract just the bytes from TypedValue
-                        values.iter().map(|v| v.bytes.clone()).collect()
-                    }
-                    CommandResult::Created(ids) => {
-                        // For created objects, return their IDs as BCS-encoded bytes
-                        ids.iter().map(|id| id.to_vec()).collect()
-                    }
+        // Capture return values and type tags from each command
+        let mut return_values = Vec::new();
+        let mut return_type_tags = Vec::new();
+        for result in &self.results {
+            match result {
+                CommandResult::Empty => {
+                    return_values.push(vec![]);
+                    return_type_tags.push(vec![]);
                 }
-            })
-            .collect();
+                CommandResult::Values(values) => {
+                    return_values.push(values.iter().map(|v| v.bytes.clone()).collect());
+                    return_type_tags.push(values.iter().map(|v| v.type_tag.clone()).collect());
+                }
+                CommandResult::Created(ids) => {
+                    return_values.push(ids.iter().map(|id| id.to_vec()).collect());
+                    return_type_tags.push(ids.iter().map(|_| None).collect());
+                }
+            }
+        }
+        effects.return_values = return_values;
+        effects.return_type_tags = return_type_tags;
 
         // Populate mutated object bytes for syncing back to environment
         effects.mutated_object_bytes = self

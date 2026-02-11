@@ -373,13 +373,13 @@ def scan_single_package(
     """Scan one package and return its results dict.
 
     This function is designed to run in a subprocess via ProcessPoolExecutor.
-    It imports sui_move_extractor locally so it works across process boundaries.
+    It imports sui_sandbox locally so it works across process boundaries.
     """
-    import sui_move_extractor
+    import sui_sandbox
 
     t0 = time.monotonic()
     try:
-        interface = sui_move_extractor.extract_interface(
+        interface = sui_sandbox.extract_interface(
             package_id=package_id,
             rpc_url=rpc_url,
         )

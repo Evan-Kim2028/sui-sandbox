@@ -1,20 +1,20 @@
-"""Quick smoke test for the sui_move_extractor Python bindings."""
+"""Quick smoke test for the sui_sandbox Python bindings."""
 
 import json
-import sui_move_extractor
+import sui_sandbox
 
 print("=" * 60)
-print("sui_move_extractor Python Bindings Test")
+print("sui_sandbox Python Bindings Test")
 print("=" * 60)
 
 # 1. Get latest checkpoint from Walrus (no auth needed)
 print("\n[1] Fetching latest Walrus checkpoint...")
-latest = sui_move_extractor.get_latest_checkpoint()
+latest = sui_sandbox.get_latest_checkpoint()
 print(f"    Latest checkpoint: {latest:,}")
 
 # 2. Fetch that checkpoint summary
 print(f"\n[2] Fetching checkpoint {latest:,} from Walrus...")
-cp_data = sui_move_extractor.get_checkpoint(latest)
+cp_data = sui_sandbox.get_checkpoint(latest)
 print(f"    Epoch:             {cp_data['epoch']}")
 print(f"    Timestamp (ms):    {cp_data['timestamp_ms']}")
 print(f"    Transactions:      {cp_data['transaction_count']}")
@@ -31,7 +31,7 @@ if cp_data["transactions"]:
     first_tx = cp_data["transactions"][0]
     digest = first_tx["digest"]
     print(f"\n[4] Walrus analyze_replay for {digest[:24]}...")
-    replay_info = sui_move_extractor.walrus_analyze_replay(digest, latest, verbose=False)
+    replay_info = sui_sandbox.walrus_analyze_replay(digest, latest, verbose=False)
     print(f"    Sender:    {replay_info['sender']}")
     print(f"    Commands:  {replay_info['commands']}")
     print(f"    Inputs:    {replay_info['inputs']}")
@@ -62,7 +62,7 @@ else:
 
 # 5. Analyze the Sui framework package (0x2) via GraphQL
 print(f"\n[5] Analyzing package 0x2 (Sui framework)...")
-pkg = sui_move_extractor.analyze_package(package_id="0x2", list_modules=True)
+pkg = sui_sandbox.analyze_package(package_id="0x2", list_modules=True)
 print(f"    Source:     {pkg['source']}")
 print(f"    Modules:    {pkg['modules']}")
 print(f"    Structs:    {pkg['structs']}")
