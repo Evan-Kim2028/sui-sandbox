@@ -1341,9 +1341,11 @@ impl LocalModuleResolver {
                 );
                 let is_entry = def.is_entry;
 
+                let params_sig = &module.signatures[handle.parameters.0 as usize];
                 let info = CachedFunctionInfo {
                     signature: FunctionSignature {
                         type_param_count: handle.type_parameters.len(),
+                        parameter_types: params_sig.0.clone(),
                         return_types: return_sig.0.clone(),
                     },
                     is_callable: is_public || is_entry,
@@ -2218,6 +2220,8 @@ pub fn signature_token_to_type_tag(
 pub struct FunctionSignature {
     /// Number of type parameters the function expects
     pub type_param_count: usize,
+    /// Parameter types as SignatureTokens
+    pub parameter_types: Vec<move_binary_format::file_format::SignatureToken>,
     /// Return types as SignatureTokens (need type_args to fully resolve)
     pub return_types: Vec<move_binary_format::file_format::SignatureToken>,
 }

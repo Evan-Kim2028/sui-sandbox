@@ -52,6 +52,7 @@ bincode = "1.3"
 prometheus = "0.13"
 parking_lot = "0.12"
 rayon = "1.10"
+rand = "0.8"
 better_any = "0.1"
 
 # Async runtime - pinned to match MystenLabs Sui crate requirements
