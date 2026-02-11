@@ -13,6 +13,7 @@
 //! DATA_FILE="./path/to/data.json" cargo run --example deepbook_json_bcs_only
 //! ```
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use anyhow::{anyhow, Result};

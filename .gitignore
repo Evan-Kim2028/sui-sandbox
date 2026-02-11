@@ -44,7 +44,6 @@ EXAMPLES_IMPROVEMENT_PLAN.md
 
 # On-chain data files (contain on-chain state, must not be committed)
 # Version metadata files (checkpoint->version mappings) are OK to keep
-examples/deepbook_margin_state/data/dynamic_field_test_objects.json
 examples/deepbook_margin_state/data/object_json.json
 
 # Transaction cache and experiment data

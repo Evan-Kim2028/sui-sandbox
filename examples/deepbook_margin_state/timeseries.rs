@@ -50,6 +50,7 @@ use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::grpc::GrpcOwner;
 use sui_transport::walrus::{extract_object_bcs, get_object_from_checkpoint, WalrusClient};
 
+#[path = "../common/mod.rs"]
 mod common;
 
 // ============================================================================
@@ -462,7 +463,7 @@ fn main() -> Result<()> {
         let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
         let grpc_endpoint_clone = grpc_endpoint.clone();
         let historical_versions_clone = historical_versions.clone();
-        let checkpoint_fetcher: sui_sandbox_core::sandbox_runtime::ChildFetcherFn =
+        let checkpoint_fetcher: sui_sandbox_core::object_runtime::ChildFetcherFn =
             Box::new(move |_parent_id, child_id| {
                 let child_id_str = child_id.to_hex_literal();
                 let version = historical_versions_clone.get(&child_id_str).copied();
