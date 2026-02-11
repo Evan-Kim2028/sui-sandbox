@@ -26,6 +26,7 @@ chrono.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 rayon.workspace = true
+rand.workspace = true
 better_any.workspace = true
 parking_lot.workspace = true
 

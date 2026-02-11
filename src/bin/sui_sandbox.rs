@@ -52,6 +52,7 @@ use sandbox_cli::{
     replay::ReplayCli,
     run::RunCmd,
     snapshot::SnapshotCmd,
+    test::TestCli,
     tools::ToolsCmd,
     view::ViewCmd,
     SandboxState,
@@ -123,6 +124,9 @@ enum Commands {
     /// Generate sui client commands for deployment (transition helper)
     Bridge(BridgeCmd),
 
+    /// Test Move functions (fuzz, property-based, coverage)
+    Test(TestCli),
+
     /// Extra utilities (polling, streaming, tx simulation)
     Tools(ToolsCmd),
 
@@ -157,6 +161,7 @@ impl Commands {
             Commands::Analyze(_) => "analyze",
             Commands::View(_) => "view",
             Commands::Bridge(_) => "bridge",
+            Commands::Test(_) => "test",
             Commands::Tools(_) => "tools",
             Commands::Init(_) => "init",
             Commands::RunFlow(_) => "run-flow",
@@ -199,6 +204,7 @@ async fn main() -> Result<()> {
         Commands::Analyze(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::View(cmd) => cmd.execute(&state, json).await,
         Commands::Bridge(cmd) => cmd.execute(json),
+        Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Tools(cmd) => cmd.execute().await,
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,

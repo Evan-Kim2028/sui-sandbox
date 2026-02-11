@@ -6254,6 +6254,7 @@ dependencies = [
  "move-vm-types",
  "parking_lot 0.12.5",
  "prometheus",
+ "rand 0.8.5",
  "rayon",
  "serde",
  "serde_json",

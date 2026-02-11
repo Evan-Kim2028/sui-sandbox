@@ -14,6 +14,7 @@ pub mod replay;
 pub mod run;
 pub mod snapshot;
 pub mod state;
+pub mod test;
 pub mod tools;
 pub mod view;
 

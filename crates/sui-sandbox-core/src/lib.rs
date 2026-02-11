@@ -78,6 +78,9 @@ pub mod package_builder;
 pub mod state_layer;
 pub mod storage_log;
 
+// Move function fuzzing
+pub mod fuzz;
+
 // Utilities for working around infrastructure limitations
 pub mod utilities;
 
