@@ -221,8 +221,8 @@ impl JsonToBcsConverter {
         // Special case: vector<u8> might be stored as hex string or base64
         if matches!(inner_type, MoveType::U8) {
             if let Some(s) = json.as_str() {
-                if s.starts_with("0x") {
-                    let bytes = hex::decode(&s[2..])
+                if let Some(hex_str) = s.strip_prefix("0x") {
+                    let bytes = hex::decode(hex_str)
                         .with_context(|| format!("Invalid hex in field {}", field_name))?;
                     return Ok(DynamicValue::Vector(
                         bytes.into_iter().map(DynamicValue::U8).collect(),
@@ -278,7 +278,7 @@ impl JsonToBcsConverter {
         } else {
             let type_args_str = type_args
                 .iter()
-                .map(|t| format_move_type(t))
+                .map(format_move_type)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}<{}>", base_type, type_args_str)
@@ -611,9 +611,7 @@ impl JsonToBcsConverter {
                             if contents.is_array() {
                                 if let Some(first) = contents.as_array().and_then(|a| a.first()) {
                                     if first.is_object()
-                                        && first
-                                            .as_object()
-                                            .map_or(false, |o| o.contains_key("key"))
+                                        && first.as_object().is_some_and(|o| o.contains_key("key"))
                                     {
                                         return self.convert_vec_map(json, field_name);
                                     }
@@ -691,8 +689,8 @@ pub fn parse_json_number_u128(json: &JsonValue, field_name: &str) -> Result<u128
 /// Parse a JSON value as U256 (32 bytes, little-endian).
 pub fn parse_json_u256(json: &JsonValue, field_name: &str) -> Result<[u8; 32]> {
     if let Some(s) = json.as_str() {
-        if s.starts_with("0x") {
-            let bytes = hex::decode(&s[2..])
+        if let Some(hex_str) = s.strip_prefix("0x") {
+            let bytes = hex::decode(hex_str)
                 .with_context(|| format!("Invalid hex for U256 {}", field_name))?;
             if bytes.len() == 32 {
                 let mut arr = [0u8; 32];
@@ -842,7 +840,8 @@ mod tests {
 
     #[test]
     fn test_parse_json_u128() {
-        let v = parse_json_number_u128(&serde_json::json!("787937890670812057358292"), "test").unwrap();
+        let v =
+            parse_json_number_u128(&serde_json::json!("787937890670812057358292"), "test").unwrap();
         assert_eq!(v, 787937890670812057358292u128);
     }
 

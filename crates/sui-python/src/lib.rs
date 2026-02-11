@@ -4,6 +4,8 @@
 //! - `analyze_package`: Extract Move package interface from bytecode or GraphQL
 //! - `analyze_replay`: Inspect replay state hydration for a transaction digest
 
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -875,7 +877,9 @@ fn is_framework_addr(addr: &AccountAddress) -> bool {
     hex == "0x0000000000000000000000000000000000000000000000000000000000000001"
         || hex == "0x0000000000000000000000000000000000000000000000000000000000000002"
         || hex == "0x0000000000000000000000000000000000000000000000000000000000000003"
-        || hex == "0x1" || hex == "0x2" || hex == "0x3"
+        || hex == "0x1"
+        || hex == "0x2"
+        || hex == "0x3"
 }
 
 fn call_view_function_inner(
@@ -928,8 +932,7 @@ fn call_view_function_inner(
 
     // 3. If fetch_deps, resolve transitive dependencies via GraphQL
     if fetch_deps {
-        let graphql_endpoint =
-            resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+        let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
         let graphql = GraphQLClient::new(&graphql_endpoint);
 
         // Collect all packages we need to resolve
@@ -963,7 +966,7 @@ fn call_view_function_inner(
         }
 
         // Also check packages from provided bytecodes for their dependencies
-        for (_, module_bytecodes) in &package_bytecodes {
+        for module_bytecodes in package_bytecodes.values() {
             let modules: Vec<(String, Vec<u8>)> = module_bytecodes
                 .iter()
                 .enumerate()
@@ -1127,8 +1130,7 @@ fn fetch_package_bytecodes_inner(
     package_id: &str,
     resolve_deps: bool,
 ) -> Result<serde_json::Value> {
-    let graphql_endpoint =
-        resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
     let graphql = GraphQLClient::new(&graphql_endpoint);
 
     let mut all_packages: HashMap<String, Vec<String>> = HashMap::new(); // pkg_id -> [base64 module bytes]
