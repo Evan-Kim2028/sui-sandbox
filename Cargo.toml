@@ -168,32 +168,12 @@ move-vm-types.workspace = true
 
 # Examples
 [[example]]
-name = "cetus_swap"
-path = "examples/cetus_swap.rs"
-
-[[example]]
-name = "deepbook_replay"
-path = "examples/deepbook_replay.rs"
-
-[[example]]
-name = "deepbook_orders"
-path = "examples/deepbook_orders.rs"
-
-[[example]]
-name = "multi_swap_flash_loan"
-path = "examples/multi_swap_flash_loan.rs"
+name = "ptb_basics"
+path = "examples/ptb_basics.rs"
 
 [[example]]
 name = "fork_state"
 path = "examples/fork_state.rs"
-
-[[example]]
-name = "batch_ptb"
-path = "examples/batch_ptb/main.rs"
-
-[[example]]
-name = "ptb_basics"
-path = "examples/ptb_basics.rs"
 
 [[example]]
 name = "deepbook_margin_state"
@@ -206,10 +186,6 @@ path = "examples/deepbook_margin_state/timeseries.rs"
 [[example]]
 name = "deepbook_json_bcs_only"
 path = "examples/deepbook_margin_state/json_bcs_only.rs"
-
-[[example]]
-name = "cetus_dlmm_position"
-path = "examples/cetus_dlmm_position.rs"
 
 [[example]]
 name = "walrus_ptb_universe"

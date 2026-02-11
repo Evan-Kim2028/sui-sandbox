@@ -310,7 +310,6 @@ Your first Rust example. Creates a local simulation environment and executes bas
 | `cli_workflow.sh` | 1 | No | CLI walkthrough |
 | `package_analysis/cli_corpus_objects_analysis.sh` | 1 | No | Corpus-wide `analyze objects` summary + baseline deltas |
 | `package_analysis/cli_mm2_corpus_sweep.sh` | 1 | No | Corpus MM2 regression sweep (`analyze package --mm2`) |
-| `convertible_simulator` | 1 | No | Convertible vs ETH vs stable APY simulator |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 
 ## CLI-First Replacements
@@ -349,24 +348,15 @@ SUI_GRPC_API_KEY=your-api-key-here  # Optional, depending on provider
 | Example | Description |
 |---------|-------------|
 | `fork_state` | Fork mainnet state + deploy custom contracts against real DeFi protocols |
-| `cetus_swap` | Full Cetus AMM swap replay with MM2 predictive prefetch |
-| `cetus_dlmm_position` | Cetus DLMM position inspector with historical data + JSON-to-BCS |
-| `deepbook_replay` | DeepBook flash loan replay (reproduces an on-chain failure) |
-| `deepbook_orders` | BigVector & dynamic field replay (cancel/place limit orders) |
 | `deepbook_margin_state` | DeepBook margin manager state query with historical reconstruction |
 | `deepbook_timeseries` | DeepBook margin state time series across daily snapshots |
 | `deepbook_json_bcs_only` | DeepBook JSON-to-BCS reconstruction demo (no network) |
-| `multi_swap_flash_loan` | Multi-DEX flash loan arbitrage (Kriya, Bluefin, Cetus) |
-| `batch_ptb` | Batch PTB replay pipeline across checkpoint ranges |
-| `walrus_ptb_universe` | Build PTB universe from Walrus checkpoints, generate + execute mock PTBs |
 
 ```bash
 cargo run --example fork_state
-cargo run --example cetus_swap
-cargo run --example deepbook_orders
-cargo run --example batch_ptb
 cargo run --example deepbook_margin_state
-cargo run --example cetus_dlmm_position
+cargo run --example deepbook_timeseries
+cargo run --example deepbook_json_bcs_only
 ```
 
 ---
