@@ -93,7 +93,7 @@ impl VersionInfo {
     /// Format as a user-friendly string.
     pub fn display(&self) -> String {
         format!(
-            "sui-move-extractor v{} (sui: {}, proto: {})",
+            "sui-sandbox v{} (sui: {}, proto: {})",
             self.crate_version, self.sui_version, self.proto_version
         )
     }

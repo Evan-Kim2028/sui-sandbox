@@ -2,6 +2,23 @@
 
 Technical overview of the sui-sandbox system internals.
 
+## System Boundary
+
+`sui-sandbox` is an execution and replay harness around the Sui Move VM.
+
+Included in scope:
+
+- PTB command execution semantics and kernel validation
+- VM harnessing, native/runtime integration, and gas/effects accounting
+- Historical state hydration from Walrus/gRPC/JSON and comparison tooling
+- Local object/package stores and deterministic simulation workflows
+
+Out of scope (fullnode/validator responsibilities):
+
+- Consensus and checkpoint production pipelines
+- Mempool/transaction admission and networking
+- Authority state services and long-running node RPC behavior
+
 ## Core Components
 
 ```
@@ -61,6 +78,41 @@ Technical overview of the sui-sandbox system internals.
 | `LocalModuleResolver` | `crates/sui-sandbox-core/src/resolver.rs` | Package loading and address aliasing |
 | `tx_replay` | `crates/sui-sandbox-core/src/tx_replay.rs` | Transaction replay orchestration |
 
+## PTB Control Flow (Function-Level)
+
+### Direct `ptb` command path
+
+1. CLI dispatch in `src/bin/sui_sandbox.rs`.
+2. `src/bin/sandbox_cli/ptb.rs`:
+   - `PtbCmd::execute_inner`
+   - `read_ptb_spec`
+   - `convert_spec`
+   - `validate_ptb`
+3. Harness + executor setup:
+   - `state.create_harness_with_sender(...)`
+   - `PTBExecutor::new`
+4. Kernel execution:
+   - `PTBExecutor::execute_commands`
+   - command handlers (`MoveCall`, `SplitCoins`, `MergeCoins`, `TransferObjects`, `MakeMoveVec`)
+5. VM invocation:
+   - `VMHarness::execute_function*`
+   - Move VM session with native extensions
+6. Output:
+   - `TransactionEffects` formatting in CLI.
+
+### `replay` command path
+
+1. CLI dispatch in `src/bin/sui_sandbox.rs`.
+2. Replay hydration and resolver setup in `src/bin/sandbox_cli/replay.rs`.
+3. Config creation via `build_simulation_config` and harness creation via `VMHarness::with_config`.
+4. Replay execution via:
+   - `tx_replay::replay_with_version_tracking_with_policy_with_effects`
+5. Core replay execution in `crates/sui-sandbox-core/src/tx_replay.rs`:
+   - PTB conversion
+   - `PTBExecutor::new`
+   - `PTBExecutor::execute_commands`
+6. Optional effects comparison against on-chain effects.
+
 ## Transaction Replay Pipeline
 
 ```
@@ -83,6 +135,15 @@ Technical overview of the sui-sandbox system internals.
 
 **Critical insight**: Objects must be fetched at their *input* versions (before the transaction modified them). The `unchanged_loaded_runtime_objects` field from gRPC provides this.
 
+## Runtime Modes and Parity Tradeoffs
+
+The VM harness supports two runtime/native modes:
+
+- Default mode (`use_sui_natives = false`): custom sandbox runtime/native path (faster iteration, broad compatibility).
+- Sui-native mode (`use_sui_natives = true`): uses Sui native object runtime path for highest parity.
+
+Current CLI replay/PTB flows build from `SimulationConfig::default()` unless explicitly changed in code, so default command behavior uses the sandbox runtime path.
+
 ## CLI Boundary: Replay vs Analyze
 
 `replay` and `analyze replay` intentionally share the same hydration contract so data loading behavior is consistent across execution and introspection flows.
@@ -92,12 +153,9 @@ Technical overview of the sui-sandbox system internals.
 - Execution path: `src/bin/sandbox_cli/replay.rs`
 - Introspection path: `src/bin/sandbox_cli/analyze/replay_cmd.rs`
 
-Feature-specific integrations are isolated into dedicated modules:
-
-- Optional igloo/snowflake path (feature-gated): `src/bin/sandbox_cli/replay/igloo.rs`
-- Core/non-igloo fallback path: `src/bin/sandbox_cli/replay/hybrid.rs`
-
-Design goal: keep default replay/analyze paths dependency-light and deterministic, while allowing optional data-source integrations behind feature flags.
+Design goal: keep default replay/analyze paths dependency-light and deterministic.
+Legacy igloo integration source remains in-repo for internal use and future extraction work:
+`src/bin/sandbox_cli/replay/igloo.rs`.
 
 ## Data Fetching
 

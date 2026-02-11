@@ -31,8 +31,8 @@ Throughput:       ~9 tx/sec
 ## How to run
 
 ```bash
-# Warm local Walrus cache
-cargo run --bin sui-sandbox --features walrus -- tools walrus-warmup --count 10
+# Ingest package index entries for checkpoint range
+cargo run --bin sui-sandbox --features walrus -- fetch checkpoints 238627315 238627324
 
 # Replay using Walrus for checkpoint data
 cargo run --bin sui-sandbox --features walrus -- replay <DIGEST> --source walrus --compare

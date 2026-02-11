@@ -1,7 +1,7 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.14.0-green.svg)](Cargo.toml)
-[![Sui](https://img.shields.io/badge/sui-mainnet--v1.63.4-blue.svg)](https://github.com/MystenLabs/sui)
+[![Version](https://img.shields.io/badge/version-0.16.0-green.svg)](Cargo.toml)
+[![Sui](https://img.shields.io/badge/sui-mainnet--v1.64.2-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.
 
@@ -13,6 +13,44 @@ This tool runs the **real Sui Move VM** locally, enabling you to:
 - **Test PTBs offline** - Dry-run transactions before spending gas
 - **Develop against real state** - Deploy your own contracts into a sandbox with forked mainnet protocol state
 - **Explore contracts** - Introspect module interfaces and function signatures
+
+## Scope: What This Is (and Is Not)
+
+This project is a **local execution harness**, not a full Sui node implementation.
+
+What it includes:
+
+- PTB execution kernel (`PTBExecutor`) and command semantics
+- VM harnessing around `move-vm-runtime`
+- Replay hydration from Walrus/gRPC/JSON and effects comparison
+- Local in-memory object/runtime simulation and package resolution
+
+What it does not include:
+
+- Validator/fullnode authority services
+- Consensus pipeline and checkpoint production
+- Mempool/transaction manager and P2P networking
+- Long-running node RPC service surface
+
+## 20-Second Explanation
+
+`sui-sandbox` is a local Sui execution workspace:
+
+- It replays historical transactions from Walrus/gRPC/JSON.
+- It executes PTBs locally with a deterministic session state.
+- It analyzes package/bytecode surfaces for developer workflows.
+
+Use it when you want fast local iteration with replay fidelity, not when you need to run a full node.
+
+## How This Differs from Existing Tooling
+
+| Tooling | Primary use | Where execution happens | Historical replay | Session model |
+|---------|-------------|-------------------------|-------------------|---------------|
+| Generic Move sandbox tooling | Move package/unit test workflows | Local | No | Local, generic Move |
+| Fullnode RPC dry-run / dev-inspect | Preflight on live network state | Remote fullnode | Limited | Stateless request/response |
+| `sui-sandbox` | Sui replay + PTB + package analysis workflows | Local Move VM | Yes (Walrus/gRPC/JSON) | Persistent local sandbox session |
+
+See [docs/START_HERE.md](docs/START_HERE.md) for a short talk-track you can reuse.
 
 ## Quick Start
 
@@ -62,6 +100,9 @@ sui-sandbox replay '*' --source walrus --latest 5 --compare        # Scan latest
 sui-sandbox replay '*' --source walrus --checkpoint 100..110       # Batch replay
 sui-sandbox replay <DIGEST> --state-json state.json                # Offline replay
 sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state out.json
+sui-sandbox replay mutate --demo                                   # Guided replay-mutation demo
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json
+sui-sandbox replay mutate --fixture examples/data/replay_mutation_fixture_v1.json --strategy examples/replay_mutate_strategies/default.yaml
 
 # Development workflow
 sui-sandbox fetch package 0x2                 # Import Sui framework
@@ -107,25 +148,25 @@ Walrus is the recommended starting point. It provides free, unauthenticated acce
 
 ## Start Here: Examples
 
-**The best way to understand the library is through the examples.** Start with replay — no setup needed:
+**The best way to understand the library is through the examples.** Start with Walrus checkpoint stream replay — no setup needed:
 
 | Level | Example | API Key | What You'll Learn |
 |-------|---------|---------|-------------------|
-| 0 | `replay.sh` | **No** | Transaction replay via Walrus (zero setup) |
-| 0.5 | `scan_checkpoints.sh` | **No** | Scan & replay latest N checkpoints with summary |
+| 0 | `scan_checkpoints.sh` | **No** | Core flow: stream replay over recent Walrus checkpoints |
+| 0.5 | `replay.sh` | **No** | Drill into single-transaction replay via Walrus |
 | 1 | `cli_workflow.sh` | No | CLI basics, no compilation needed |
 | 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
 | 3+ | `fork_state`, `cetus_swap`, etc. | Yes | Advanced: mainnet forking, DeFi replay |
 
 ```bash
-# Start here: replay a real transaction (no API key needed)
+# Start here: stream replay from recent checkpoints (no API key needed)
+./examples/scan_checkpoints.sh
+
+# Then drill into a single transaction as needed
 ./examples/replay.sh
 
 # CLI exploration (no setup required)
 ./examples/cli_workflow.sh
-
-# Your first Rust example
-cargo run --example ptb_basics
 ```
 
 See **[examples/README.md](examples/README.md)** for the full learning path.
@@ -142,6 +183,27 @@ See **[examples/README.md](examples/README.md)** for the full learning path.
 
 **Key insight**: Objects must be fetched at their *input* versions, not current versions. Walrus checkpoints contain objects at their exact versions. For gRPC, the `unchanged_loaded_runtime_objects` field provides this.
 
+## PTB Execution Kernel (Control Flow)
+
+The main command paths converge into the same execution kernel:
+
+1. CLI entrypoint dispatches to `ptb`/`replay` command handlers.
+2. Input data is parsed/hydrated into PTB commands + typed inputs.
+3. `SimulationConfig` is built and `VMHarness` is initialized.
+4. `validate_ptb` runs structural/causality checks.
+5. `PTBExecutor::execute_commands` runs command handlers in order.
+6. `VMHarness` executes Move calls inside a VM session with native extensions.
+7. `TransactionEffects` are produced and optionally compared against on-chain effects.
+
+Key files:
+
+- `src/bin/sui_sandbox.rs` (CLI dispatch)
+- `src/bin/sandbox_cli/ptb.rs` (direct PTB execution path)
+- `src/bin/sandbox_cli/replay.rs` (replay hydration + execution path)
+- `crates/sui-sandbox-core/src/ptb.rs` (kernel and command semantics)
+- `crates/sui-sandbox-core/src/vm.rs` (VM session/runtime integration)
+- `crates/sui-sandbox-core/src/tx_replay.rs` (replay orchestration and compare)
+
 ## What's Real vs Simulated
 
 | Component | Implementation |
@@ -150,13 +212,18 @@ See **[examples/README.md](examples/README.md)** for the full learning path.
 | Type checking | **Real** |
 | BCS serialization | **Real** |
 | Cryptography (ed25519, secp256k1, groth16) | **Real** (fastcrypto) |
-| Dynamic fields | **Real** |
+| Dynamic fields | Runtime-mode dependent (see below) |
 | Object storage | Simulated (in-memory) |
 | Clock/timestamps | Configurable |
 | Randomness | Deterministic |
 | Gas metering | **Accurate** (Sui-compatible) |
 
-**Rule of thumb**: If a transaction succeeds here, it will succeed on mainnet (assuming state hasn't changed).
+Runtime modes:
+
+- `use_sui_natives = false` (default): sandbox runtime path, tuned for local development and broad compatibility.
+- `use_sui_natives = true` (opt-in via library API): Sui native object runtime path for maximum parity checks.
+
+**Rule of thumb**: Success here is a strong signal for mainnet success when state/protocol inputs match, but it is not an absolute guarantee. See [Limitations](docs/reference/LIMITATIONS.md).
 
 ## Why This Works
 
@@ -172,7 +239,7 @@ This sandbox uses **the same Move VM** that powers Sui validators, not a reimple
 ├─────────────────────────────────────────────────────────┤
 │  move-vm-runtime                                        │
 │  - Real bytecode interpreter from Sui                   │
-│  - Pinned to mainnet-v1.63.4                            │
+│  - Pinned to mainnet-v1.64.2                            │
 ├─────────────────────────────────────────────────────────┤
 │  fastcrypto                                             │
 │  - Real ed25519, secp256k1, BLS12-381, Groth16          │
@@ -184,10 +251,42 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 **Verify it yourself**: Run `./examples/replay.sh` to replay a real mainnet Cetus swap locally and compare effects against on-chain results. No API key needed.
 
+## Python Bindings
+
+The core analysis and Walrus replay features are available as a Python package via `sui-sandbox`.
+
+```bash
+# Install from source (requires Rust toolchain)
+cd crates/sui-python
+pip install maturin
+maturin develop --release
+```
+
+```python
+import sui_sandbox
+
+# Analyze any on-chain package (no API key needed)
+info = sui_sandbox.analyze_package(package_id="0x2")
+print(f"{info['modules']} modules, {info['functions']} functions")
+
+# Full interface extraction
+interface = sui_sandbox.extract_interface(package_id="0x1")
+
+# Walrus checkpoint replay (no API key needed)
+cp = sui_sandbox.get_latest_checkpoint()
+data = sui_sandbox.get_checkpoint(cp)
+state = sui_sandbox.walrus_analyze_replay(
+    data["transactions"][0]["digest"], cp
+)
+```
+
+See [crates/sui-python/README.md](crates/sui-python/README.md) for the full API reference.
+
 ## Documentation
 
 | What you want | Where to look |
 |---------------|---------------|
+| **Fast orientation + tool positioning** | [Start Here](docs/START_HERE.md) |
 | **Docs index** | [docs/README.md](docs/README.md) |
 | **Get started** | [examples/README.md](examples/README.md) |
 | **Golden flow (CLI)** | [Golden Flow Guide](docs/guides/GOLDEN_FLOW.md) |
@@ -195,6 +294,7 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 | **Understand the system** | [Architecture](docs/ARCHITECTURE.md) |
 | **Debug failures** | [Limitations](docs/reference/LIMITATIONS.md) |
 | **CLI commands** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
+| **Python bindings** | [Python README](crates/sui-python/README.md) |
 | **Testing** | [Contributing](docs/CONTRIBUTING.md) |
 
 ## Testing
@@ -236,7 +336,8 @@ sui-sandbox/
 │   ├── sui-transport/      # Network layer (gRPC, GraphQL, Walrus)
 │   ├── sui-prefetch/       # Strategic data loading, MM2 analysis
 │   ├── sui-resolver/       # Address resolution & normalization
-│   └── sui-state-fetcher/  # State provider abstraction
+│   ├── sui-state-fetcher/  # State provider abstraction
+│   └── sui-python/         # Python bindings (PyO3/maturin)
 └── docs/                   # Guides and reference
 ```
 
@@ -247,7 +348,7 @@ The simulation layer differs from mainnet in these ways:
 - **Randomness is deterministic** - Reproducible locally, different from mainnet VRF
 - **Dynamic fields computed at runtime** - Some DeFi protocols traverse data structures unpredictably
 
-Most limitations only matter for edge cases. For typical DeFi transactions, local execution matches mainnet exactly. See [Limitations](docs/reference/LIMITATIONS.md) for the complete list.
+For many DeFi transactions, local execution is close to mainnet behavior, but parity depends on runtime mode and data completeness. See [Limitations](docs/reference/LIMITATIONS.md) for the complete list.
 
 ## License
 

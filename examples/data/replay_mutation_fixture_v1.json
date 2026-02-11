@@ -1,0 +1,35 @@
+{
+  "name": "replay-mutation-guided-demo-v1",
+  "description": "Deterministic Walrus candidate set for replay mutation guided demo.",
+  "network": "sui-mainnet",
+  "source": "walrus",
+  "captured_on": "2026-02-10",
+  "latest_checkpoint": 239615933,
+  "start_checkpoint": 239615931,
+  "notes": [
+    "First candidate is prioritized because it has repeatedly produced a useful fail->heal path.",
+    "All candidates are pinned to concrete checkpoint IDs for reproducible replay selection."
+  ],
+  "candidates": [
+    {
+      "digest": "5WqivEXirxeLLENpZEhEdGzprwJ6yRbeVJTqJ3KkyGP5",
+      "checkpoint": 239615931,
+      "label": "primary"
+    },
+    {
+      "digest": "4qNnot52N1PodgVbsHM46df5hW1CbtFFP6DAhL4Ja5y7",
+      "checkpoint": 239615931,
+      "label": "backup"
+    },
+    {
+      "digest": "7vkZqT2s3CSqyA8a2D4yKhKbfVSdaoL1yEXyLVYyRLxK",
+      "checkpoint": 239615931,
+      "label": "backup"
+    },
+    {
+      "digest": "DgxoNjxyBjndBoxkch5JMwYHPzYQ8w916yYw9p6NaL4F",
+      "checkpoint": 239615931,
+      "label": "backup"
+    }
+  ]
+}

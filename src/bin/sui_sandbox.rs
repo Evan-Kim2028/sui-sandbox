@@ -49,7 +49,7 @@ use sandbox_cli::{
     flow::{InitCmd, RunFlowCmd},
     ptb::PtbCmd,
     publish::PublishCmd,
-    replay::ReplayCmd,
+    replay::ReplayCli,
     run::RunCmd,
     snapshot::SnapshotCmd,
     tools::ToolsCmd,
@@ -95,6 +95,7 @@ struct Cli {
     verbose: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Compile and publish a Move package locally
@@ -110,7 +111,7 @@ enum Commands {
     Fetch(FetchCmd),
 
     /// Replay a historical transaction locally
-    Replay(ReplayCmd),
+    Replay(ReplayCli),
 
     /// Analyze packages or replay state
     #[cfg(feature = "analysis")]
@@ -122,7 +123,7 @@ enum Commands {
     /// Generate sui client commands for deployment (transition helper)
     Bridge(BridgeCmd),
 
-    /// Extra utilities (polling, streaming, tx simulation, walrus tools)
+    /// Extra utilities (polling, streaming, tx simulation)
     Tools(ToolsCmd),
 
     /// Scaffold a task-oriented project/workflow template

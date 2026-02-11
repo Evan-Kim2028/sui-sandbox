@@ -53,3 +53,7 @@ Target command surface:
 - Baseline script exists and runs locally.
 - CLI tests include coverage for run-flow summary and enhanced status JSON fields.
 
+## Next Phase
+
+- Phase 1 concrete remediation + validation gates: `docs/ux/PHASE1_ACTIONS.md`
+- Phase 1 executable validation script: `scripts/phase1_validation.sh`

@@ -83,14 +83,6 @@ Requires `SUI_GRPC_ENDPOINT` in `.env` or environment.
 | **JSON** | None | Exported state file | Offline replay, CI/CD, custom data |
 | **gRPC** | API key | `.env` configuration | Latest state, streaming |
 
-If built with `--features igloo`, you can also enable the optional igloo loader:
-
-```bash
-sui-sandbox replay <DIGEST> --source hybrid --igloo-hybrid-loader
-```
-
-This is separate from `--source hybrid` itself. The source selects hydration mode; the igloo flag selects the loader implementation.
-
 ## Using HistoricalStateProvider (Rust API)
 
 For programmatic replay in Rust, use `sui_state_fetcher::HistoricalStateProvider`:

@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
-use clap::{Args, Parser, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use move_binary_format::CompiledModule;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -44,23 +44,54 @@ use sui_types::effects::TransactionEffectsAPI;
 
 mod batch;
 mod deps;
-mod hybrid;
 pub(crate) mod hydration;
-#[cfg(feature = "igloo")]
-mod igloo;
+mod mutate;
 mod presentation;
+#[cfg(feature = "walrus")]
 mod walrus_batch;
+#[cfg(feature = "walrus")]
 mod walrus_helpers;
 
 use self::deps::{
     fetch_dependency_closure, fetch_dependency_closure_walrus, fetch_package_via_walrus,
 };
+use self::mutate::ReplayMutateCmd;
+#[cfg(feature = "walrus")]
 use self::walrus_helpers::{fetch_via_prev_tx, parse_checkpoint_spec};
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
+pub struct ReplayCli {
+    #[command(subcommand)]
+    pub command: Option<ReplaySubcommand>,
+
+    #[command(flatten)]
+    pub replay: ReplayCmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReplaySubcommand {
+    /// Mutate replay inputs/state and re-run with automatic hydration
+    Mutate(ReplayMutateCmd),
+}
+
+impl ReplayCli {
+    pub async fn execute(
+        &self,
+        state: &mut SandboxState,
+        json_output: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        match &self.command {
+            Some(ReplaySubcommand::Mutate(cmd)) => cmd.execute(state, json_output, verbose).await,
+            None => self.replay.execute(state, json_output, verbose).await,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
 pub struct ReplayCmd {
     /// Transaction digest
-    pub digest: String,
+    pub digest: Option<String>,
 
     /// Shared replay hydration controls (source/fallback/prefetch/system-object injection).
     #[command(flatten)]
@@ -97,11 +128,6 @@ pub struct ReplayCmd {
     /// Allow dynamic-field reads to synthesize placeholder values when data is missing
     #[arg(long, default_value_t = false)]
     pub self_heal_dynamic_fields: bool,
-
-    /// Igloo/Snowflake hybrid replay controls (only available with `igloo` feature).
-    #[cfg(feature = "igloo")]
-    #[command(flatten)]
-    pub igloo: ReplayIglooArgs,
 
     /// Timeout in seconds for gRPC object fetches (default: 30)
     #[arg(long, default_value_t = 30)]
@@ -268,66 +294,17 @@ pub struct ReplayHydrationArgs {
     pub auto_system_objects: bool,
 }
 
-#[cfg(feature = "igloo")]
-#[derive(Args, Debug, Clone)]
-pub struct ReplayIglooArgs {
-    /// Use igloo hybrid loader (Snowflake for tx/effects/packages, gRPC for objects).
-    /// Backward-compatible alias: --hybrid
-    #[arg(long = "igloo-hybrid-loader", alias = "hybrid", help_heading = "Igloo")]
-    pub hybrid_loader: bool,
-
-    /// Path to mcp_service_config.json for igloo-mcp (defaults to nearest ancestor)
-    #[arg(long, help_heading = "Igloo")]
-    pub config: Option<PathBuf>,
-
-    /// Override igloo-mcp command path (defaults to config or igloo_mcp in PATH)
-    #[arg(long, help_heading = "Igloo")]
-    pub command: Option<String>,
-
-    /// Groot database name (default: PIPELINE_V2_GROOT_DB)
-    #[arg(long, default_value = "PIPELINE_V2_GROOT_DB", help_heading = "Igloo")]
-    pub groot_db: String,
-
-    /// Groot schema name (default: PIPELINE_V2_GROOT_SCHEMA)
-    #[arg(
-        long,
-        default_value = "PIPELINE_V2_GROOT_SCHEMA",
-        help_heading = "Igloo"
-    )]
-    pub groot_schema: String,
-
-    /// Analytics database name (default: ANALYTICS_DB_V2)
-    #[arg(long, default_value = "ANALYTICS_DB_V2", help_heading = "Igloo")]
-    pub analytics_db: String,
-
-    /// Analytics schema name (default: CHAINDATA_MAINNET)
-    #[arg(long, default_value = "CHAINDATA_MAINNET", help_heading = "Igloo")]
-    pub analytics_schema: String,
-
-    /// Fetch packages from Snowflake when available (fallback to gRPC if missing)
-    #[arg(
-        long,
-        default_value_t = true,
-        action = clap::ArgAction::Set,
-        help_heading = "Igloo"
-    )]
-    pub snowflake_packages: bool,
-
-    /// Require packages to be loaded from Snowflake (no gRPC fallback)
-    #[arg(long, default_value_t = false, help_heading = "Igloo")]
-    pub require_snowflake_packages: bool,
-}
-
 impl ReplayCmd {
-    fn igloo_hybrid_loader_enabled(&self) -> bool {
-        #[cfg(feature = "igloo")]
-        {
-            self.igloo.hybrid_loader
-        }
-        #[cfg(not(feature = "igloo"))]
-        {
-            false
-        }
+    fn digest_display(&self) -> &str {
+        self.digest.as_deref().unwrap_or("*")
+    }
+
+    fn digest_required(&self) -> Result<&str> {
+        self.digest.as_deref().ok_or_else(|| {
+            anyhow!(
+                "missing transaction digest: provide <DIGEST> (or use --checkpoint with '*' / digest list, --latest, or --state-json)"
+            )
+        })
     }
 
     pub async fn execute(
@@ -411,7 +388,7 @@ impl ReplayCmd {
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
         if verbose {
-            eprintln!("Fetching transaction {}...", self.digest);
+            eprintln!("Fetching transaction {}...", self.digest_display());
         }
 
         // JSON state path: --state-json provided, load from file (no network)
@@ -456,7 +433,8 @@ impl ReplayCmd {
         #[cfg(feature = "walrus")]
         if let Some(ref checkpoint_str) = self.checkpoint {
             let checkpoints = parse_checkpoint_spec(checkpoint_str)?;
-            if checkpoints.len() == 1 && self.digest != "*" && !self.digest.contains(',') {
+            let digest_filter = self.digest_display();
+            if checkpoints.len() == 1 && digest_filter != "*" && !digest_filter.contains(',') {
                 return self
                     .execute_walrus_first(state, verbose, checkpoints[0], replay_progress)
                     .await;
@@ -471,30 +449,24 @@ impl ReplayCmd {
             build_historical_state_provider(state, self.hydration.source, allow_fallback, verbose)
                 .await?;
 
-        let enable_dynamic_fields = !self.hydration.no_prefetch
-            && (self.igloo_hybrid_loader_enabled() || self.fetch_strategy == FetchStrategy::Full);
-        let strict_df_checkpoint =
-            env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.igloo_hybrid_loader_enabled());
+        let enable_dynamic_fields =
+            !self.hydration.no_prefetch && self.fetch_strategy == FetchStrategy::Full;
+        let strict_df_checkpoint = env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(false);
         if strict_df_checkpoint {
             std::env::set_var("SUI_DF_STRICT_CHECKPOINT", "1");
         }
-        let replay_state = if self.igloo_hybrid_loader_enabled() {
-            self.build_replay_state_hybrid(provider.as_ref(), verbose)
-                .await
-                .context("Failed to fetch replay state (igloo hybrid loader)")?
-        } else {
-            build_replay_state(
-                provider.as_ref(),
-                &self.digest,
-                ReplayHydrationConfig {
-                    prefetch_dynamic_fields: enable_dynamic_fields,
-                    prefetch_depth: self.hydration.prefetch_depth,
-                    prefetch_limit: self.hydration.prefetch_limit,
-                    auto_system_objects: self.hydration.auto_system_objects,
-                },
-            )
-            .await?
-        };
+        let digest = self.digest_required()?;
+        let replay_state = build_replay_state(
+            provider.as_ref(),
+            digest,
+            ReplayHydrationConfig {
+                prefetch_dynamic_fields: enable_dynamic_fields,
+                prefetch_depth: self.hydration.prefetch_depth,
+                prefetch_limit: self.hydration.prefetch_limit,
+                auto_system_objects: self.hydration.auto_system_objects,
+            },
+        )
+        .await?;
         if replay_progress {
             eprintln!("[replay] state built");
         }
@@ -527,122 +499,33 @@ impl ReplayCmd {
             eprintln!("[replay] resolver hydrated");
         }
 
-        let allow_graphql_deps = std::env::var("SUI_ALLOW_GRAPHQL_DEPS")
-            .ok()
-            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
-        let fetched_deps = if self.igloo_hybrid_loader_enabled() && !allow_graphql_deps {
-            if verbose {
-                eprintln!("[deps] skipping GraphQL dependency fetch in hybrid mode");
-            }
-            0
-        } else {
-            if verbose {
-                eprintln!("[deps] resolving dependency closure (GraphQL)");
-            }
-            let deps = fetch_dependency_closure(
-                &mut resolver,
-                provider.graphql(),
-                replay_state.checkpoint,
-                verbose,
-            )
-            .unwrap_or(0);
-            if verbose {
-                eprintln!("[deps] dependency closure complete (fetched {})", deps);
-            }
-            deps
-        };
+        if verbose {
+            eprintln!("[deps] resolving dependency closure (GraphQL)");
+        }
+        let fetched_deps = fetch_dependency_closure(
+            &mut resolver,
+            provider.graphql(),
+            replay_state.checkpoint,
+            verbose,
+        )
+        .unwrap_or(0);
+        if verbose {
+            eprintln!(
+                "[deps] dependency closure complete (fetched {})",
+                fetched_deps
+            );
+        }
         if replay_progress {
             eprintln!("[replay] dependency closure done");
         }
-        let dependency_fetch_mode = if self.igloo_hybrid_loader_enabled() && !allow_graphql_deps {
-            "igloo_hybrid_skip_graphql_deps".to_string()
-        } else {
-            "graphql_dependency_closure".to_string()
-        };
+        let dependency_fetch_mode = "graphql_dependency_closure".to_string();
         if verbose && fetched_deps > 0 {
             eprintln!(
                 "[deps] fetched {} missing dependency packages",
                 fetched_deps
             );
         }
-        if let Ok(addrs) = std::env::var("SUI_DUMP_PACKAGE_MODULES") {
-            for addr_str in addrs.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                if let Ok(addr) = AccountAddress::from_hex_literal(addr_str) {
-                    let modules = resolver.get_package_modules(&addr);
-                    eprintln!(
-                        "[linkage] package_modules addr={} count={} [{}]",
-                        addr.to_hex_literal(),
-                        modules.len(),
-                        modules.join(", ")
-                    );
-                }
-            }
-        }
-        if let Ok(addr_str) = std::env::var("SUI_CHECK_ALIAS") {
-            if let Ok(addr) = AccountAddress::from_hex_literal(addr_str.trim()) {
-                match pkg_aliases.aliases.get(&addr) {
-                    Some(alias) => eprintln!(
-                        "[linkage] alias_check {} -> {}",
-                        addr.to_hex_literal(),
-                        alias.to_hex_literal()
-                    ),
-                    None => eprintln!("[linkage] alias_check {} not found", addr.to_hex_literal()),
-                }
-            }
-        }
-        if let Ok(spec) = std::env::var("SUI_DUMP_MODULE_FUNCTIONS") {
-            if let Some((addr_str, module_name)) = spec.split_once("::") {
-                if let (Ok(addr), Ok(ident)) = (
-                    AccountAddress::from_hex_literal(addr_str),
-                    Identifier::new(module_name.to_string()),
-                ) {
-                    let id = ModuleId::new(addr, ident);
-                    if let Some(module) = resolver.get_module_struct(&id) {
-                        let mut names = Vec::new();
-                        for def in &module.function_defs {
-                            let handle = &module.function_handles[def.function.0 as usize];
-                            let name = module.identifier_at(handle.name).to_string();
-                            names.push(name);
-                        }
-                        names.sort();
-                        eprintln!(
-                            "[linkage] module_functions {}::{} count={} [{}]",
-                            addr.to_hex_literal(),
-                            module_name,
-                            names.len(),
-                            names.join(", ")
-                        );
-                    } else {
-                        eprintln!(
-                            "[linkage] module_functions {}::{} not found",
-                            addr.to_hex_literal(),
-                            module_name
-                        );
-                    }
-                }
-            }
-        }
-        if std::env::var("SUI_DEBUG_LINKAGE")
-            .ok()
-            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false)
-        {
-            let missing = resolver.get_missing_dependencies();
-            if !missing.is_empty() {
-                let list = missing
-                    .iter()
-                    .map(|addr| addr.to_hex_literal())
-                    .collect::<Vec<_>>();
-                eprintln!(
-                    "[linkage] resolver_missing_dependencies={} [{}]",
-                    list.len(),
-                    list.join(", ")
-                );
-            } else {
-                eprintln!("[linkage] resolver_missing_dependencies=0");
-            }
-        }
+        emit_linkage_debug_info(&resolver, &pkg_aliases.aliases);
 
         if verbose {
             eprintln!("Executing locally...");
@@ -976,7 +859,7 @@ impl ReplayCmd {
                 }
 
                 Ok(ReplayOutput {
-                    digest: self.digest.clone(),
+                    digest: self.digest_display().to_string(),
                     local_success: result.local_success,
                     local_error: result.local_error,
                     execution_path: ReplayExecutionPath {
@@ -985,14 +868,11 @@ impl ReplayCmd {
                             .source
                             .to_possible_value()
                             .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
-                        effective_source: if self.igloo_hybrid_loader_enabled() {
-                            "igloo_hybrid_loader".to_string()
-                        } else {
-                            self.hydration
-                                .source
-                                .to_possible_value()
-                                .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string())
-                        },
+                        effective_source: self
+                            .hydration
+                            .source
+                            .to_possible_value()
+                            .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string()),
                         vm_only: self.vm_only,
                         allow_fallback,
                         auto_system_objects: self.hydration.auto_system_objects,
@@ -1013,7 +893,7 @@ impl ReplayCmd {
                 })
             }
             Err(e) => Ok(ReplayOutput {
-                digest: self.digest.clone(),
+                digest: self.digest_display().to_string(),
                 local_success: false,
                 local_error: Some(e.to_string()),
                 execution_path: ReplayExecutionPath {
@@ -1022,14 +902,11 @@ impl ReplayCmd {
                         .source
                         .to_possible_value()
                         .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
-                    effective_source: if self.igloo_hybrid_loader_enabled() {
-                        "igloo_hybrid_loader".to_string()
-                    } else {
-                        self.hydration
-                            .source
-                            .to_possible_value()
-                            .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string())
-                    },
+                    effective_source: self
+                        .hydration
+                        .source
+                        .to_possible_value()
+                        .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string()),
                     vm_only: self.vm_only,
                     allow_fallback,
                     auto_system_objects: self.hydration.auto_system_objects,
@@ -1087,6 +964,8 @@ impl ReplayCmd {
         data: WalrusReplayData<'_>,
     ) -> Result<ReplayOutput> {
         use sui_transport::walrus::WalrusClient;
+        let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
+        let digest = self.digest_required()?;
 
         // Fetch checkpoint if not pre-loaded
         let owned_checkpoint;
@@ -1096,7 +975,7 @@ impl ReplayCmd {
             if verbose {
                 eprintln!(
                     "[walrus] fetching checkpoint {} for digest {}",
-                    checkpoint_num, self.digest
+                    checkpoint_num, digest
                 );
             }
             owned_checkpoint = tokio::task::spawn_blocking(move || {
@@ -1117,7 +996,7 @@ impl ReplayCmd {
         let shared_obj_cache = data.shared_obj_cache.clone();
         let shared_pkg_cache = data.shared_pkg_cache.clone();
 
-        let mut replay_state = checkpoint_to_replay_state(checkpoint_data, &self.digest)
+        let mut replay_state = checkpoint_to_replay_state(checkpoint_data, digest)
             .context("Failed to convert checkpoint to replay state")?;
 
         // Build a map of shared object versions from effects' input_consensus_objects.
@@ -1125,7 +1004,7 @@ impl ReplayCmd {
         // so we need their exact versions from effects to fetch them correctly.
         let shared_obj_versions: HashMap<AccountAddress, u64> = {
             let mut map = HashMap::new();
-            if let Some(tx_idx) = find_tx_in_checkpoint(checkpoint_data, &self.digest) {
+            if let Some(tx_idx) = find_tx_in_checkpoint(checkpoint_data, digest) {
                 let effects = &checkpoint_data.transactions[tx_idx].effects;
                 for ico in effects.input_consensus_objects() {
                     let (obj_id, seq) = ico.id_and_version();
@@ -1204,6 +1083,7 @@ impl ReplayCmd {
             };
 
         // Extract required package IDs from PTB commands
+        let mut direct_fetched = 0usize;
         {
             let mut required_pkgs: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
@@ -1236,7 +1116,6 @@ impl ReplayCmd {
             }
 
             // Fetch any that aren't already in the resolver
-            let mut direct_fetched = 0usize;
             for pkg_hex in &required_pkgs {
                 if let Ok(addr) = AccountAddress::from_hex_literal(pkg_hex) {
                     if !replay_state.packages.contains_key(&addr) && !resolver.has_package(&addr) {
@@ -1350,6 +1229,7 @@ impl ReplayCmd {
         if replay_progress {
             eprintln!("[walrus] dependency closure done");
         }
+        let dependency_packages_fetched = direct_fetched + fetched_deps;
 
         // Rebuild aliases now that all packages are loaded
         pkg_aliases = build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
@@ -1360,6 +1240,7 @@ impl ReplayCmd {
         for (storage, runtime) in &pkg_aliases.aliases {
             resolver.add_address_alias(*storage, *runtime);
         }
+        emit_linkage_debug_info(&resolver, &pkg_aliases.aliases);
 
         // Inject system objects (Clock, Random)
         if self.hydration.auto_system_objects {
@@ -1570,7 +1451,7 @@ impl ReplayCmd {
                     .unwrap_or_else(|_| "https://archive.mainnet.sui.io:443".to_string());
                 match GrpcClient::new(&grpc_endpoint).await {
                     Ok(grpc) => {
-                        match grpc.get_transaction(&self.digest).await {
+                        match grpc.get_transaction(digest).await {
                             Ok(Some(tx)) => {
                                 let runtime_objs = &tx.unchanged_loaded_runtime_objects;
                                 if !runtime_objs.is_empty() {
@@ -1712,7 +1593,7 @@ impl ReplayCmd {
                 let tx_index = checkpoint_data
                     .transactions
                     .iter()
-                    .position(|tx| tx.transaction.digest().to_string() == self.digest);
+                    .position(|tx| tx.transaction.digest().to_string() == digest);
                 if let Some(idx) = tx_index {
                     let target_tx = &checkpoint_data.transactions[idx];
                     for obj in &target_tx.input_objects {
@@ -2033,14 +1914,18 @@ impl ReplayCmd {
                 };
 
                 Ok(ReplayOutput {
-                    digest: self.digest.clone(),
+                    digest: digest.to_string(),
                     local_success: result.local_success,
                     local_error: result.local_error,
                     execution_path: ReplayExecutionPath {
-                        requested_source: "walrus".to_string(),
+                        requested_source: self
+                            .hydration
+                            .source
+                            .to_possible_value()
+                            .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
                         effective_source: "walrus_checkpoint".to_string(),
-                        vm_only: true,
-                        allow_fallback: false,
+                        vm_only: self.vm_only,
+                        allow_fallback,
                         auto_system_objects: self.hydration.auto_system_objects,
                         fallback_used: false,
                         fallback_reasons: Vec::new(),
@@ -2048,7 +1933,7 @@ impl ReplayCmd {
                         prefetch_depth: 0,
                         prefetch_limit: 0,
                         dependency_fetch_mode: "walrus_checkpoint".to_string(),
-                        dependency_packages_fetched: 0,
+                        dependency_packages_fetched,
                         synthetic_inputs: 0,
                     },
                     comparison,
@@ -2059,14 +1944,18 @@ impl ReplayCmd {
                 })
             }
             Err(e) => Ok(ReplayOutput {
-                digest: self.digest.clone(),
+                digest: digest.to_string(),
                 local_success: false,
                 local_error: Some(e.to_string()),
                 execution_path: ReplayExecutionPath {
-                    requested_source: "walrus".to_string(),
+                    requested_source: self
+                        .hydration
+                        .source
+                        .to_possible_value()
+                        .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
                     effective_source: "walrus_checkpoint".to_string(),
-                    vm_only: true,
-                    allow_fallback: false,
+                    vm_only: self.vm_only,
+                    allow_fallback,
                     auto_system_objects: self.hydration.auto_system_objects,
                     fallback_used: false,
                     fallback_reasons: Vec::new(),
@@ -2074,7 +1963,7 @@ impl ReplayCmd {
                     prefetch_depth: 0,
                     prefetch_limit: 0,
                     dependency_fetch_mode: "walrus_checkpoint".to_string(),
-                    dependency_packages_fetched: 0,
+                    dependency_packages_fetched,
                     synthetic_inputs: 0,
                 },
                 comparison: None,
@@ -2094,6 +1983,7 @@ impl ReplayCmd {
         json_path: &Path,
         _replay_progress: bool,
     ) -> Result<ReplayOutput> {
+        let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
         let contents = std::fs::read_to_string(json_path)
             .with_context(|| format!("Failed to read state from {}", json_path.display()))?;
         let replay_state: ReplayState = serde_json::from_str(&contents)
@@ -2116,6 +2006,7 @@ impl ReplayCmd {
             &pkg_aliases.linkage_upgrades,
             &pkg_aliases.aliases,
         );
+        emit_linkage_debug_info(&resolver, &pkg_aliases.aliases);
         let mut maps = build_replay_object_maps(&replay_state, &pkg_aliases.versions);
         maybe_patch_replay_objects(
             &resolver,
@@ -2180,14 +2071,14 @@ impl ReplayCmd {
                 };
 
                 Ok(ReplayOutput {
-                    digest: self.digest.clone(),
+                    digest: replay_state.transaction.digest.0.clone(),
                     local_success: result.local_success,
                     local_error: result.local_error,
                     execution_path: ReplayExecutionPath {
                         requested_source: "json".to_string(),
                         effective_source: "state_json".to_string(),
-                        vm_only: true,
-                        allow_fallback: false,
+                        vm_only: self.vm_only,
+                        allow_fallback,
                         auto_system_objects: self.hydration.auto_system_objects,
                         fallback_used: false,
                         fallback_reasons: Vec::new(),
@@ -2206,14 +2097,14 @@ impl ReplayCmd {
                 })
             }
             Err(e) => Ok(ReplayOutput {
-                digest: self.digest.clone(),
+                digest: replay_state.transaction.digest.0.clone(),
                 local_success: false,
                 local_error: Some(e.to_string()),
                 execution_path: ReplayExecutionPath {
                     requested_source: "json".to_string(),
                     effective_source: "state_json".to_string(),
-                    vm_only: true,
-                    allow_fallback: false,
+                    vm_only: self.vm_only,
+                    allow_fallback,
                     auto_system_objects: self.hydration.auto_system_objects,
                     fallback_used: false,
                     fallback_reasons: Vec::new(),
@@ -2394,6 +2285,112 @@ fn build_simulation_config(replay_state: &ReplayState) -> SimulationConfig {
         config = config.with_tx_hash(digest.into_inner());
     }
     config
+}
+
+fn emit_linkage_debug_info(
+    resolver: &LocalModuleResolver,
+    aliases: &HashMap<AccountAddress, AccountAddress>,
+) {
+    if let Ok(addrs) = std::env::var("SUI_DUMP_PACKAGE_MODULES") {
+        for addr_str in addrs.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if let Ok(addr) = AccountAddress::from_hex_literal(addr_str) {
+                let mut modules = resolver.get_package_modules(&addr);
+                let alias = resolver
+                    .get_alias(&addr)
+                    .or_else(|| aliases.get(&addr).copied());
+                if modules.is_empty() {
+                    if let Some(alias_addr) = alias {
+                        modules = resolver.get_package_modules(&alias_addr);
+                    }
+                }
+                match alias {
+                    Some(alias_addr) if alias_addr != addr => eprintln!(
+                        "[linkage] package_modules addr={} alias={} count={} [{}]",
+                        addr.to_hex_literal(),
+                        alias_addr.to_hex_literal(),
+                        modules.len(),
+                        modules.join(", ")
+                    ),
+                    _ => eprintln!(
+                        "[linkage] package_modules addr={} count={} [{}]",
+                        addr.to_hex_literal(),
+                        modules.len(),
+                        modules.join(", ")
+                    ),
+                }
+            }
+        }
+    }
+
+    if let Ok(addr_str) = std::env::var("SUI_CHECK_ALIAS") {
+        if let Ok(addr) = AccountAddress::from_hex_literal(addr_str.trim()) {
+            match resolver
+                .get_alias(&addr)
+                .or_else(|| aliases.get(&addr).copied())
+            {
+                Some(alias) => eprintln!(
+                    "[linkage] alias_check {} -> {}",
+                    addr.to_hex_literal(),
+                    alias.to_hex_literal()
+                ),
+                None => eprintln!("[linkage] alias_check {} not found", addr.to_hex_literal()),
+            }
+        }
+    }
+
+    if let Ok(spec) = std::env::var("SUI_DUMP_MODULE_FUNCTIONS") {
+        if let Some((addr_str, module_name)) = spec.split_once("::") {
+            if let (Ok(addr), Ok(ident)) = (
+                AccountAddress::from_hex_literal(addr_str),
+                Identifier::new(module_name.to_string()),
+            ) {
+                let id = ModuleId::new(addr, ident);
+                if let Some(module) = resolver.get_module_struct(&id) {
+                    let mut names = Vec::new();
+                    for def in &module.function_defs {
+                        let handle = &module.function_handles[def.function.0 as usize];
+                        let name = module.identifier_at(handle.name).to_string();
+                        names.push(name);
+                    }
+                    names.sort();
+                    eprintln!(
+                        "[linkage] module_functions {}::{} count={} [{}]",
+                        addr.to_hex_literal(),
+                        module_name,
+                        names.len(),
+                        names.join(", ")
+                    );
+                } else {
+                    eprintln!(
+                        "[linkage] module_functions {}::{} not found",
+                        addr.to_hex_literal(),
+                        module_name
+                    );
+                }
+            }
+        }
+    }
+
+    if std::env::var("SUI_DEBUG_LINKAGE")
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+    {
+        let missing = resolver.get_missing_dependencies();
+        if !missing.is_empty() {
+            let list = missing
+                .iter()
+                .map(|addr| addr.to_hex_literal())
+                .collect::<Vec<_>>();
+            eprintln!(
+                "[linkage] resolver_missing_dependencies={} [{}]",
+                list.len(),
+                list.join(", ")
+            );
+        } else {
+            eprintln!("[linkage] resolver_missing_dependencies=0");
+        }
+    }
 }
 
 /// Split the first type parameter from a comma-separated type list,
@@ -3641,7 +3638,13 @@ fn synthesize_missing_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::FromArgMatches;
+
+    fn parse_replay_cmd(args: &[&str]) -> ReplayCmd {
+        let cmd = <ReplayCmd as clap::Args>::augment_args(clap::Command::new("replay"));
+        let matches = cmd.try_get_matches_from(args).expect("parse");
+        ReplayCmd::from_arg_matches(&matches).expect("from arg matches")
+    }
 
     #[test]
     fn test_replay_output_serialization() {
@@ -3672,45 +3675,30 @@ mod tests {
 
     #[test]
     fn test_replay_cmd_explicit_bool_flags_parse() {
-        let defaults =
-            ReplayCmd::try_parse_from(["replay", "dummy-digest"]).expect("defaults parse");
+        let defaults = parse_replay_cmd(&["replay", "dummy-digest"]);
         assert!(defaults.hydration.allow_fallback);
         assert!(defaults.hydration.auto_system_objects);
 
-        let disabled = ReplayCmd::try_parse_from([
+        let disabled = parse_replay_cmd(&[
             "replay",
             "dummy-digest",
             "--allow-fallback",
             "false",
             "--auto-system-objects",
             "false",
-        ])
-        .expect("disabled parse");
+        ]);
         assert!(!disabled.hydration.allow_fallback);
         assert!(!disabled.hydration.auto_system_objects);
 
-        let enabled = ReplayCmd::try_parse_from([
+        let enabled = parse_replay_cmd(&[
             "replay",
             "dummy-digest",
             "--allow-fallback",
             "true",
             "--auto-system-objects",
             "true",
-        ])
-        .expect("enabled parse");
+        ]);
         assert!(enabled.hydration.allow_fallback);
         assert!(enabled.hydration.auto_system_objects);
-    }
-
-    #[cfg(feature = "igloo")]
-    #[test]
-    fn test_replay_cmd_igloo_hybrid_alias_parse() {
-        let modern = ReplayCmd::try_parse_from(["replay", "dummy-digest", "--igloo-hybrid-loader"])
-            .expect("modern igloo flag parse");
-        assert!(modern.igloo.hybrid_loader);
-
-        let compat =
-            ReplayCmd::try_parse_from(["replay", "dummy-digest", "--hybrid"]).expect("alias parse");
-        assert!(compat.igloo.hybrid_loader);
     }
 }

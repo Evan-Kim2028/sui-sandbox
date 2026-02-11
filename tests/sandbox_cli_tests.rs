@@ -107,6 +107,20 @@ fn test_view_help() {
         .stdout(predicate::str::contains("packages"));
 }
 
+#[test]
+fn test_tools_help_excludes_internal_harness_commands() {
+    sandbox_cmd()
+        .arg("tools")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("poll-transactions"))
+        .stdout(predicate::str::contains("stream-transactions"))
+        .stdout(predicate::str::contains("tx-sim"))
+        .stdout(predicate::str::contains("ptb-replay-harness").not())
+        .stdout(predicate::str::contains("walrus-warmup").not());
+}
+
 // ============================================================================
 // State Management Tests
 // ============================================================================
@@ -599,6 +613,166 @@ fn test_replay_help_hides_igloo_flags_without_feature() {
         .stdout(predicate::str::contains("--igloo-hybrid-loader").not())
         .stdout(predicate::str::contains("--igloo-config").not())
         .stdout(predicate::str::contains("--igloo-command").not());
+}
+
+#[test]
+fn test_replay_mutate_help_includes_target_and_mode_flags() {
+    sandbox_cmd()
+        .arg("replay")
+        .arg("mutate")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--fixture"))
+        .stdout(predicate::str::contains("--targets-file"))
+        .stdout(predicate::str::contains("--no-op"))
+        .stdout(predicate::str::contains("--demo"))
+        .stdout(predicate::str::contains("--strategy"))
+        .stdout(predicate::str::contains("--mutator"))
+        .stdout(predicate::str::contains("--oracle"))
+        .stdout(predicate::str::contains("--invariant"))
+        .stdout(predicate::str::contains("--minimize"))
+        .stdout(predicate::str::contains("--replay-source"))
+        .stdout(predicate::str::contains("--jobs"))
+        .stdout(predicate::str::contains("--retries"))
+        .stdout(predicate::str::contains("--keep-going"))
+        .stdout(predicate::str::contains("--differential-source"))
+        .stdout(predicate::str::contains("--corpus-in"))
+        .stdout(predicate::str::contains("--corpus-out"));
+}
+
+#[test]
+fn test_replay_mutate_noop_fixture_json_output() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/replay_mutation_fixture_v1.json");
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("mutate")
+        .arg("--fixture")
+        .arg(&fixture)
+        .arg("--no-op")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid replay mutate JSON");
+    assert_eq!(json["status"].as_str(), Some("no_op"));
+    assert!(
+        json["targets"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "replay mutate no-op should resolve at least one fixture target"
+    );
+    assert_eq!(json["strategy"]["name"].as_str(), Some("default"));
+}
+
+#[test]
+fn test_replay_mutate_noop_strategy_override() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/replay_mutation_fixture_v1.json");
+    let strategy = temp_dir.path().join("strategy.yaml");
+    fs::write(
+        &strategy,
+        r#"
+name: test-strategy
+mutators:
+  - baseline_vs_heal
+oracles:
+  - fail_to_heal
+invariants:
+  - commands_executed_gt_zero
+scoring: balanced
+minimization:
+  enabled: false
+  mode: none
+"#,
+    )
+    .unwrap();
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("mutate")
+        .arg("--fixture")
+        .arg(&fixture)
+        .arg("--strategy")
+        .arg(&strategy)
+        .arg("--no-op")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid replay mutate JSON");
+    assert_eq!(json["strategy"]["name"].as_str(), Some("test-strategy"));
+    assert_eq!(
+        json["mutation_plan"]["mutators"][0].as_str(),
+        Some("baseline_vs_heal")
+    );
+    assert_eq!(json["oracle_plan"]["scoring"].as_str(), Some("balanced"));
+    assert_eq!(json["oracle_plan"]["minimization"].as_bool(), Some(false));
+}
+
+#[test]
+fn test_replay_mutate_latest_requires_walrus_source() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("replay")
+        .arg("mutate")
+        .arg("--latest")
+        .arg("2")
+        .arg("--replay-source")
+        .arg("grpc")
+        .arg("--no-op")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--latest discovery currently requires --replay-source walrus",
+        ));
+}
+
+#[test]
+fn test_replay_mutate_differential_source_must_differ() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/replay_mutation_fixture_v1.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("replay")
+        .arg("mutate")
+        .arg("--fixture")
+        .arg(&fixture)
+        .arg("--replay-source")
+        .arg("walrus")
+        .arg("--differential-source")
+        .arg("walrus")
+        .arg("--no-op")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--differential-source must differ from --replay-source",
+        ));
 }
 
 #[test]

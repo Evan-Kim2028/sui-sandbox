@@ -1,6 +1,6 @@
 [package]
 name = "sui-sandbox"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2021"
 
 [workspace]
@@ -24,7 +24,7 @@ debug-natives = ["sui-sandbox-core/debug-natives"]
 network-tests = []
 
 # CLI capability flags
-analysis = []
+analysis = ["mm2"]
 mm2 = []
 walrus = []
 igloo = []
@@ -134,6 +134,7 @@ parking_lot.workspace = true
 
 # Async runtime
 tokio.workspace = true
+futures.workspace = true
 
 # Move bytecode parsing - versions centralized in [workspace.dependencies]
 move-binary-format.workspace = true
@@ -208,6 +209,10 @@ path = "examples/deepbook_margin_state/snowflake_only.rs"
 [[example]]
 name = "cetus_dlmm_position"
 path = "examples/cetus_dlmm_position.rs"
+
+[[example]]
+name = "walrus_ptb_universe"
+path = "examples/walrus_ptb_universe.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

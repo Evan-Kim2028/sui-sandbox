@@ -5,7 +5,7 @@ edition = "2021"
 description = "Python bindings for Sui Move package analysis and transaction replay"
 
 [lib]
-name = "sui_move_extractor"
+name = "sui_sandbox"
 crate-type = ["cdylib"]
 
 [features]

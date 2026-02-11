@@ -4,6 +4,29 @@ All notable changes to the Sui Move Interface Extractor project will be document
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-02-10
+
+### Added
+
+- **Replay mutate engine**: new native `replay mutate` command for fail->heal replay mutation workflows.
+- **Concrete mutation operators**: object-drop, input-rewire, version-skew, shared substitution, and pure-input mutators.
+- **Differential replay mode**: optional secondary source comparison via `--differential-source`.
+- **Corpus workflow**: `--corpus-in` and `--corpus-out` for target set reuse across runs.
+- **Guided replay examples**: fixture-backed `replay_mutation_lab.sh` and `replay_mutation_guided_demo.sh`.
+- **Python publishing workflow**: added GitHub Action to build/publish wheels and sdist.
+
+### Changed
+
+- **Minimization**: added `operator-specific` minimization mode with operator-aware delta selection.
+- **Replay mutate scoring/oracles**: fail->heal detection now uses baseline/heal outcomes directly (no status substring heuristics).
+- **CLI/docs organization**: expanded Start Here, architecture, replay guides, and CLI reference for main developer flows.
+- **Feature defaults**: `analysis` now enables `mm2` by default.
+
+### Fixed
+
+- **Release lint parity**: resolved strict clippy warnings in replay core, state fetcher, Python bindings, and CLI command enum shape.
+- **Replay mutate findings quality**: fixed false positives where `no_fail_then_heal_found` could be misclassified as success.
+
 ## [0.15.0] - 2026-02-09
 
 ### Added

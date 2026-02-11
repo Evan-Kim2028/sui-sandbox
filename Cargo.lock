@@ -6155,7 +6155,7 @@ dependencies = [
 
 [[package]]
 name = "sui-sandbox"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6167,6 +6167,7 @@ dependencies = [
  "dirs",
  "dotenv",
  "fastcrypto",
+ "futures",
  "hex",
  "move-binary-format",
  "move-core-types",

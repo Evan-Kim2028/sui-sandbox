@@ -182,6 +182,44 @@ pub(super) fn fetch_dependency_closure_walrus(
         }
     }
 
+    // Proactively fetch upgraded package versions from linkage tables.
+    // When package A's linkage says dep 0x91bf -> 0xa5a0, we need the V2 bytecode
+    // at 0xa5a0 even though V1 at 0x91bf may already be loaded. The V2 package has
+    // new structs/functions that V1 doesn't, causing LOOKUP_FAILED in the verifier.
+    {
+        let loaded = resolver.loaded_packages();
+        let targets_to_fetch: Vec<AccountAddress> = all_linkage_targets
+            .values()
+            .flat_map(|targets| targets.iter())
+            .copied()
+            .filter(|addr| !loaded.contains(addr) && !fetched_storage.contains(addr))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for storage_addr in targets_to_fetch {
+            let storage_hex = storage_addr.to_hex_literal();
+            if verbose {
+                eprintln!("[deps] proactive upgrade fetch: {}", storage_hex);
+            }
+            let pkg_data =
+                fetch_single_package_from_walrus(graphql, pkg_cache, &storage_hex, verbose);
+            if let Some(pkg_data) = pkg_data {
+                register_dep_package(
+                    &pkg_data,
+                    resolver,
+                    replay_state,
+                    &mut all_linkage_targets,
+                    &mut seen,
+                    &mut fetched_storage,
+                    verbose,
+                );
+                fetched += 1;
+            } else if verbose {
+                eprintln!("[deps] failed to proactively fetch {}", storage_hex);
+            }
+        }
+    }
+
     for _ in 0..MAX_ROUNDS {
         let missing = resolver.get_missing_dependencies();
         let pending: Vec<AccountAddress> = missing
