@@ -752,6 +752,9 @@ fn to_ptb_commands_internal(
         PtbCommand::TransferObjects { objects, .. } => {
             objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
         }
+        PtbCommand::MoveCall { arguments, .. } => {
+            arguments.iter().any(|a| matches!(a, PtbArgument::GasCoin))
+        }
         _ => false,
     });
 
@@ -987,6 +990,9 @@ fn to_ptb_commands_internal_with_versions(
         PtbCommand::TransferObjects { objects, .. } => {
             objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
         }
+        PtbCommand::MoveCall { arguments, .. } => {
+            arguments.iter().any(|a| matches!(a, PtbArgument::GasCoin))
+        }
         _ => false,
     });
 
@@ -1219,6 +1225,9 @@ fn to_ptb_commands_internal_with_aliases(
         }
         PtbCommand::TransferObjects { objects, .. } => {
             objects.iter().any(|o| matches!(o, PtbArgument::GasCoin))
+        }
+        PtbCommand::MoveCall { arguments, .. } => {
+            arguments.iter().any(|a| matches!(a, PtbArgument::GasCoin))
         }
         _ => false,
     });
