@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_binary_format::CompiledModule;
 
-use super::mm2_common::{build_mm2_summary, expand_local_modules_for_mm2};
+use super::mm2_common::{build_mm2_summary, expand_graphql_modules_for_mm2, expand_local_modules_for_mm2};
 use super::{AnalyzePackageCmd, AnalyzePackageOutput};
 use crate::sandbox_cli::network::resolve_graphql_endpoint;
 use crate::sandbox_cli::SandboxState;
@@ -84,7 +84,12 @@ impl AnalyzePackageCmd {
             return Err(anyhow!("--package-id or --bytecode-dir is required"));
         };
 
-        let (mm2_ok, mm2_err) = build_mm2_summary(self.mm2, modules.clone(), verbose);
+        let mm2_modules = if self.mm2 {
+            expand_graphql_modules_for_mm2(state, &package_id, &modules, verbose)?
+        } else {
+            modules.clone()
+        };
+        let (mm2_ok, mm2_err) = build_mm2_summary(self.mm2, mm2_modules, verbose);
         let counts = {
             let (_, interface_value) =
                 build_bytecode_interface_value_from_compiled_modules(&package_id, &modules)?;

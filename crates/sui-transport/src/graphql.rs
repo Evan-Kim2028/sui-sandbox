@@ -567,6 +567,11 @@ impl GraphQLClient {
             .ok_or_else(|| anyhow!("No data in GraphQL response"))
     }
 
+    /// Execute a raw GraphQL query and return the `data` field.
+    pub fn raw_query(&self, query: &str) -> Result<Value> {
+        self.query(query, None)
+    }
+
     /// Fetch an object by address.
     pub fn fetch_object(&self, address: &str) -> Result<GraphQLObject> {
         let query = r#"

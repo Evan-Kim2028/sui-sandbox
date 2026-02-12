@@ -189,6 +189,140 @@ pub(super) fn expand_local_modules_for_mm2(
     Ok(modules)
 }
 
+/// Fetch the linkage table for a package via GraphQL, returning a map of
+/// original_id -> upgraded_id. Upgraded packages have different storage addresses
+/// than their original IDs, and bytecode `immediate_dependencies()` returns the
+/// *original* addresses, so we need this mapping to fetch the correct version.
+fn fetch_linkage_table(
+    graphql: &GraphQLClient,
+    package_id: &str,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let query = format!(
+        r#"{{ package(address: "{}") {{ linkage {{ originalId upgradedId }} }} }}"#,
+        package_id
+    );
+    let body = graphql
+        .raw_query(&query)
+        .context("graphql linkage request")?;
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(entries) = body
+        .pointer("/package/linkage")
+        .and_then(serde_json::Value::as_array)
+    {
+        for entry in entries {
+            if let (Some(orig), Some(upgraded)) = (
+                entry.get("originalId").and_then(|v| v.as_str()),
+                entry.get("upgradedId").and_then(|v| v.as_str()),
+            ) {
+                if orig != upgraded {
+                    if let (Some(o), Some(u)) =
+                        (normalize_package_id(orig), normalize_package_id(upgraded))
+                    {
+                        map.insert(o, u);
+                    }
+                }
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Expand modules fetched from GraphQL by resolving transitive dependencies.
+///
+/// Uses the package linkage table to map original dependency addresses to their
+/// upgraded storage addresses, then fetches all transitive deps via GraphQL.
+pub(super) fn expand_graphql_modules_for_mm2(
+    state: &SandboxState,
+    package_id: &str,
+    target_modules: &[CompiledModule],
+    verbose: bool,
+) -> Result<Vec<CompiledModule>> {
+    use move_core_types::account_address::AccountAddress;
+
+    let graphql_endpoint = resolve_graphql_endpoint(&state.rpc_url);
+    let graphql = GraphQLClient::new(&graphql_endpoint);
+
+    // Build linkage map: original_id -> upgraded_id
+    let linkage = fetch_linkage_table(&graphql, package_id)
+        .unwrap_or_default();
+    if verbose && !linkage.is_empty() {
+        eprintln!("[mm2] linkage table: {} remapped packages", linkage.len());
+    }
+
+    let mut modules = target_modules.to_vec();
+    let mut seen = BTreeSet::new();
+    for module in &modules {
+        let module_id = module.self_id();
+        seen.insert(format!("{}::{}", module_id.address(), module_id.name()));
+    }
+
+    // Collect dependency package addresses from bytecode
+    let mut processed_packages = BTreeSet::new();
+    let self_addr = if let Some(m) = target_modules.first() {
+        *m.self_id().address()
+    } else {
+        AccountAddress::ZERO
+    };
+    processed_packages.insert(self_addr);
+
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for module in target_modules {
+        for dep in module.immediate_dependencies() {
+            let addr = *dep.address();
+            if !processed_packages.contains(&addr) {
+                processed_packages.insert(addr);
+                let original_id = format!("0x{:0>64}", addr.to_hex());
+                // Use upgraded address if available in linkage table
+                let fetch_id = linkage.get(&original_id).cloned().unwrap_or(original_id);
+                queue.push_back(fetch_id);
+            }
+        }
+    }
+
+    // BFS: fetch deps and discover transitive deps
+    // Track fetched storage IDs separately from processed original addresses
+    let mut fetched_ids = BTreeSet::new();
+    while let Some(fetch_id) = queue.pop_front() {
+        if !fetched_ids.insert(fetch_id.clone()) {
+            continue;
+        }
+
+        match fetch_graphql_package_modules(&graphql, &fetch_id) {
+            Ok(dep_modules) => {
+                if verbose {
+                    eprintln!(
+                        "[mm2] graphql dependency {} => {} modules",
+                        fetch_id,
+                        dep_modules.len()
+                    );
+                }
+                // Discover transitive deps
+                for module in &dep_modules {
+                    for transitive_dep in module.immediate_dependencies() {
+                        let addr = *transitive_dep.address();
+                        if !processed_packages.contains(&addr) {
+                            processed_packages.insert(addr);
+                            let original_id = format!("0x{:0>64}", addr.to_hex());
+                            let next_id = linkage.get(&original_id).cloned().unwrap_or(original_id);
+                            if !fetched_ids.contains(&next_id) {
+                                queue.push_back(next_id);
+                            }
+                        }
+                    }
+                }
+                insert_compiled_modules_dedup(&mut modules, &mut seen, dep_modules);
+            }
+            Err(err) => {
+                if verbose {
+                    eprintln!("[mm2] dependency {} unavailable: {}", fetch_id, err);
+                }
+            }
+        }
+    }
+
+    Ok(modules)
+}
+
 pub(super) fn build_mm2_summary(
     enabled: bool,
     modules: Vec<CompiledModule>,
