@@ -155,6 +155,7 @@ Walrus is the recommended starting point. It provides free, unauthenticated acce
 | 0 | `scan_checkpoints.sh` | **No** | Core flow: stream replay over recent Walrus checkpoints |
 | 0.5 | `replay.sh` | **No** | Drill into single-transaction replay via Walrus |
 | 1 | `cli_workflow.sh` | No | CLI basics, no compilation needed |
+| 1.5 | `obfuscated_package_analysis` | Yes | Reverse-engineer obfuscated package via bytecode + replay |
 | 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
 | 3+ | `fork_state`, `cetus_swap`, etc. | Yes | Advanced: mainnet forking, DeFi replay |
 

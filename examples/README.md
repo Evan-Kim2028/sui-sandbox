@@ -279,6 +279,26 @@ Includes:
 ./examples/package_analysis/README.md
 ```
 
+### Obfuscated Package Analysis (gRPC)
+
+Reverse-engineer an obfuscated package with no source code by combining bytecode
+inspection with transaction replay:
+
+```bash
+./examples/obfuscated_package_analysis/cli_obfuscated_analysis.sh
+```
+
+Uses the [Stonker](https://github.com/RandyPen/Stonker) market-making bot as a case study — 14 modules with
+obfuscated names, integrations across 6 DEX protocols, and PTBs with up to 22 arguments.
+
+- **Static analysis**: Fetch bytecode, extract typed function signatures and struct layouts despite name obfuscation
+- **Transaction replay**: Re-execute historical PTBs locally and verify effects match on-chain
+- **Argument mapping**: Map concrete objects to specific function parameter slots — not available from any block explorer
+
+See `examples/obfuscated_package_analysis/README.md` for the full walkthrough.
+
+**Prerequisites**: gRPC endpoint with historical data for replay. Static analysis works without it.
+
 ---
 
 ### Level 2: Basic PTB Operations
@@ -310,6 +330,7 @@ Your first Rust example. Creates a local simulation environment and executes bas
 | `cli_workflow.sh` | 1 | No | CLI walkthrough |
 | `package_analysis/cli_corpus_objects_analysis.sh` | 1 | No | Corpus-wide `analyze objects` summary + baseline deltas |
 | `package_analysis/cli_mm2_corpus_sweep.sh` | 1 | No | Corpus MM2 regression sweep (`analyze package --mm2`) |
+| `obfuscated_package_analysis/cli_obfuscated_analysis.sh` | 1.5 | Yes | Reverse-engineer obfuscated package via bytecode + replay |
 | `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
 
 ## CLI-First Replacements
