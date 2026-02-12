@@ -70,3 +70,6 @@ Move.lock
 walrus-store/
 logs_local/
 sui-official/
+
+# gRPC object cache (generated at runtime)
+grpc_object_cache.json

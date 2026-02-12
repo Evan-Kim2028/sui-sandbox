@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Sui Move Interface Extractor project will be documented in this file.
+All notable changes to the sui-sandbox project will be documented in this file.
 
 ## [Unreleased]
 

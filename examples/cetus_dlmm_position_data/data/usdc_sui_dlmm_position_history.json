@@ -1,0 +1,126 @@
+{
+  "description": "Daily historical snapshots for Cetus DLMM USDC/SUI position",
+  "position_id": "0x33f5514521220478d3b3e141c7a67f766fd6b4150e25148a13171b4b68089417",
+  "pool_id": "0x64e590b0e4d4f7dfc7ae9fae8e9983cd80ad83b658d8499bf550a9d4f6667076",
+  "coin_a": "USDC (0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC)",
+  "coin_b": "SUI (0x2::sui::SUI)",
+  "coin_a_decimals": 6,
+  "coin_b_decimals": 9,
+  "position_type": "DLMM (Discretized Liquidity Market Maker)",
+  "position_created": "2026-01-30",
+  "bin_range": {
+    "lower_bin": 1325,
+    "upper_bin": 1349,
+    "num_bins": 25,
+    "bin_step": 50
+  },
+  "data_source": "Snowflake ANALYTICS_DB_V2.CHAINDATA_MAINNET.OBJECT",
+  "generated_at": "2026-02-04",
+  "range_logic": {
+    "above_range": "active_bin > upper_bin → position is 100% SUI (coin_b)",
+    "below_range": "active_bin < lower_bin → position is 100% USDC (coin_a)",
+    "in_range": "lower_bin <= active_bin <= upper_bin → position is mixed USDC + SUI"
+  },
+  "notes": [
+    "Position was created Jan 30, 2026 - only 5 days old",
+    "Was IN_RANGE only on day 1 (Jan 30)",
+    "Currently ABOVE_RANGE - all liquidity converted to SUI",
+    "Higher bin ID = USDC is more expensive in SUI terms",
+    "When price moves above range, LP has sold all USDC → 100% SUI",
+    "Position is NOT earning swap fees while out of range",
+    "May still earn farming rewards (CETUS + SUI) if pool distributes to out-of-range positions"
+  ],
+  "daily_snapshots": [
+    {
+      "date": "2026-01-30",
+      "checkpoint": 240060178,
+      "active_bin": 1337,
+      "range_status": "IN_RANGE",
+      "pool_usdc": 44129.47,
+      "pool_sui": 128182.68,
+      "position_composition": "mixed USDC + SUI"
+    },
+    {
+      "date": "2026-01-31",
+      "checkpoint": 240388641,
+      "active_bin": 1357,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 38800.18,
+      "pool_sui": 128291.25,
+      "position_composition": "100% SUI"
+    },
+    {
+      "date": "2026-02-01",
+      "checkpoint": 240719382,
+      "active_bin": 1365,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 48663.69,
+      "pool_sui": 199103.25,
+      "position_composition": "100% SUI"
+    },
+    {
+      "date": "2026-02-02",
+      "checkpoint": 241056077,
+      "active_bin": 1358,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 157087.12,
+      "pool_sui": 171506.42,
+      "position_composition": "100% SUI"
+    },
+    {
+      "date": "2026-02-03",
+      "checkpoint": 241388715,
+      "active_bin": 1365,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 130506.09,
+      "pool_sui": 196204.75,
+      "position_composition": "100% SUI"
+    },
+    {
+      "date": "2026-02-04",
+      "checkpoint": 241670271,
+      "active_bin": 1366,
+      "range_status": "ABOVE_RANGE",
+      "pool_usdc": 107049.95,
+      "pool_sui": 222394.32,
+      "position_composition": "100% SUI"
+    }
+  ],
+  "position_liquidity_shares": [
+    "46177627550776771595505096759",
+    "42021483202007678022227906473",
+    "37865364324575733314307817829",
+    "33709259401299293608946974017",
+    "29553161992387312765765657816",
+    "25395637402432933512770820150",
+    "21240079362169320778666005670",
+    "17084400265709140399378297503",
+    "12928733436914822917308658831",
+    "8773108344984607109473309297",
+    "4617447812488315227571090118",
+    "7572605928733902740448220148",
+    "10527766176578274164690023170",
+    "13482932211392136217020530470",
+    "16432999551753986904956378599",
+    "19387340965356111580680127985",
+    "22341695062615743604749742821",
+    "25295965865060711075142026961",
+    "28250362133758889082360868589",
+    "31205377118284606736798811659",
+    "34160525791541710950729214303",
+    "37115041551469381295757831808",
+    "40070000126712705397573040327",
+    "43025426195843862326244890545",
+    "45980120694464063577244286154"
+  ],
+  "pool_rewards": {
+    "cetus": {
+      "type": "0x6864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS",
+      "emission_rate": "854015929338405167407407407"
+    },
+    "sui": {
+      "type": "0x2::sui::SUI",
+      "emission_rate": "133012980994456604823703703"
+    }
+  }
+}
