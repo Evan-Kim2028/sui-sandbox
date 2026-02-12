@@ -96,7 +96,6 @@ sui-move-build = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.
 sui-transaction-builder = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.64.2", package = "sui-transaction-builder" }
 sui-move-natives = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.64.2", package = "sui-move-natives-latest" }
 sui-protocol-config = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.64.2", package = "sui-protocol-config" }
-sui-storage = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.64.2", package = "sui-storage" }
 
 # Cryptographic primitives
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "4db0e90c732bbf7420ca20de808b698883148d9c" }
