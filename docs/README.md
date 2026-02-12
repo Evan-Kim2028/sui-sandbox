@@ -20,7 +20,7 @@ Use this as the docs entrypoint. Pick the depth you need.
 
 - Transaction replay guide:
   - [guides/TRANSACTION_REPLAY.md](guides/TRANSACTION_REPLAY.md)
-- Replay troubleshooting loop:
+- **Replay troubleshooting loop** (start here if replay fails):
   - [guides/REPLAY_TRIAGE.md](guides/REPLAY_TRIAGE.md)
 - Data fetching patterns:
   - [guides/DATA_FETCHING.md](guides/DATA_FETCHING.md)

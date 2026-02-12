@@ -146,18 +146,20 @@ Walrus is the recommended starting point. It provides free, unauthenticated acce
   - Use `sui-sandbox reset` to clear in-memory session state.
   - Use `sui-sandbox clean` to remove persisted state file.
 
+For a systematic diagnostic workflow, see the [Replay Triage Guide](docs/guides/REPLAY_TRIAGE.md).
+
 ## Start Here: Examples
 
 **The best way to understand the library is through the examples.** Start with Walrus checkpoint stream replay — no setup needed:
 
-| Level | Example | API Key | What You'll Learn |
-|-------|---------|---------|-------------------|
-| 0 | `scan_checkpoints.sh` | **No** | Core flow: stream replay over recent Walrus checkpoints |
-| 0.5 | `replay.sh` | **No** | Drill into single-transaction replay via Walrus |
-| 1 | `cli_workflow.sh` | No | CLI basics, no compilation needed |
-| 1.5 | `obfuscated_package_analysis` | Yes | Reverse-engineer obfuscated package via bytecode + replay |
-| 2 | `ptb_basics` | No | Basic PTB operations (split, transfer) |
-| 3+ | `fork_state`, `cetus_swap`, etc. | Yes | Advanced: mainnet forking, DeFi replay |
+| Tier | Example | API Key | What You'll Learn |
+|------|---------|---------|-------------------|
+| Zero Setup | `scan_checkpoints.sh` | **No** | Core flow: stream replay over recent Walrus checkpoints |
+| Zero Setup | `replay.sh` | **No** | Drill into single-transaction replay via Walrus |
+| Zero Setup | `cli_workflow.sh` | No | CLI basics, no compilation needed |
+| gRPC | `obfuscated_package_analysis` | Yes | Reverse-engineer obfuscated package via bytecode + replay |
+| Rust | `ptb_basics` | No | Basic PTB operations (split, transfer) |
+| Rust + gRPC | `fork_state`, `cetus_swap`, etc. | Yes | Advanced: mainnet forking, DeFi replay |
 
 ```bash
 # Start here: stream replay from recent checkpoints (no API key needed)
@@ -285,18 +287,18 @@ See [crates/sui-python/README.md](crates/sui-python/README.md) for the full API 
 
 ## Documentation
 
-| What you want | Where to look |
-|---------------|---------------|
-| **Fast orientation + tool positioning** | [Start Here](docs/START_HERE.md) |
-| **Docs index** | [docs/README.md](docs/README.md) |
-| **Get started** | [examples/README.md](examples/README.md) |
-| **Golden flow (CLI)** | [Golden Flow Guide](docs/guides/GOLDEN_FLOW.md) |
-| **Replay transactions** | [Transaction Replay Guide](docs/guides/TRANSACTION_REPLAY.md) |
-| **Understand the system** | [Architecture](docs/ARCHITECTURE.md) |
-| **Debug failures** | [Limitations](docs/reference/LIMITATIONS.md) |
-| **CLI commands** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
-| **Python bindings** | [Python README](crates/sui-python/README.md) |
-| **Testing** | [Contributing](docs/CONTRIBUTING.md) |
+| I want to... | Where to look |
+|--------------|---------------|
+| **Understand what this is** | [Start Here](docs/START_HERE.md) |
+| **Get started quickly** | [examples/README.md](examples/README.md) |
+| **Replay a mainnet transaction** | [Transaction Replay Guide](docs/guides/TRANSACTION_REPLAY.md) |
+| **Test my Move code locally** | [Golden Flow Guide](docs/guides/GOLDEN_FLOW.md) |
+| **Debug a replay failure** | [Replay Triage](docs/guides/REPLAY_TRIAGE.md) |
+| **Reverse-engineer a contract** | [Obfuscated Package Analysis](examples/obfuscated_package_analysis/README.md) |
+| **Look up a CLI command** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
+| **Understand replay caveats** | [Limitations](docs/reference/LIMITATIONS.md) |
+| **Use Python bindings** | [Python README](crates/sui-python/README.md) |
+| **Understand the system internals** | [Architecture](docs/ARCHITECTURE.md) |
 
 ## Testing
 
@@ -346,8 +348,11 @@ sui-sandbox/
 
 The simulation layer differs from mainnet in these ways:
 
-- **Randomness is deterministic** - Reproducible locally, different from mainnet VRF
-- **Dynamic fields computed at runtime** - Some DeFi protocols traverse data structures unpredictably
+- **Randomness is deterministic** — Reproducible locally, different from mainnet VRF
+- **Dynamic fields computed at runtime** — Some DeFi protocols traverse data structures unpredictably
+- **Storage rebates approximated** — Gas refunds for deleted objects may differ by small amounts
+- **Shared object initial versions** — Edge cases in initial version tracking for shared objects
+- **Package upgrade linkage** — Replaying upgraded packages requires correct historical linkage table versions
 
 For many DeFi transactions, local execution is close to mainnet behavior, but parity depends on runtime mode and data completeness. See [Limitations](docs/reference/LIMITATIONS.md) for the complete list.
 

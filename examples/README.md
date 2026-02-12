@@ -4,7 +4,7 @@ This is the best way to learn the sui-sandbox library. Work through these exampl
 
 ## Learning Path
 
-### Level 0: Walrus Checkpoint Stream (Core External Flow)
+### Zero Setup: Walrus Checkpoint Stream (Core External Flow)
 
 ```bash
 ./examples/scan_checkpoints.sh
@@ -43,7 +43,7 @@ Why this is the core example:
 
 ---
 
-### Level 0.25: Walrus PTB Universe (Mock PTB Generation)
+### Zero Setup: Walrus PTB Universe (Mock PTB Generation)
 
 ```bash
 ./examples/walrus_ptb_universe.sh
@@ -69,7 +69,7 @@ Artifacts written to `examples/out/walrus_ptb_universe/`:
 
 ---
 
-### Level 0.5: Single-Transaction Replay
+### Zero Setup: Single-Transaction Replay
 
 ```bash
 ./examples/replay.sh
@@ -107,7 +107,7 @@ sui-sandbox replay <DIGEST> --source grpc --compare
 
 ---
 
-### Level 0.75: Replay Mutation Lab (Fail -> Heal)
+### Zero Setup: Replay Mutation Lab (Fail -> Heal)
 
 ```bash
 ./target/debug/sui-sandbox replay mutate --demo
@@ -172,7 +172,7 @@ Guided demo artifacts are written under `examples/out/replay_mutation_guided_dem
 
 ---
 
-### Level 0.9: Entry Function Practical Fuzzer
+### Zero Setup: Entry Function Practical Fuzzer
 
 ```bash
 ./examples/entry_function_practical_fuzzer.sh
@@ -241,7 +241,7 @@ Artifacts are written under `examples/out/entry_function_practical_fuzzer/run_<t
 
 ---
 
-### Level 1: CLI Exploration (Minimal Setup)
+### Zero Setup: CLI Exploration
 
 ```bash
 # Run the CLI workflow (recommended)
@@ -279,7 +279,7 @@ Includes:
 ./examples/package_analysis/README.md
 ```
 
-### Obfuscated Package Analysis (gRPC)
+### gRPC Required: Obfuscated Package Analysis
 
 Reverse-engineer an obfuscated package with no source code by combining bytecode
 inspection with transaction replay:
@@ -301,7 +301,7 @@ See `examples/obfuscated_package_analysis/README.md` for the full walkthrough.
 
 ---
 
-### Level 2: Basic PTB Operations
+### Rust: Basic PTB Operations
 
 ```bash
 cargo run --example ptb_basics
@@ -319,19 +319,19 @@ Your first Rust example. Creates a local simulation environment and executes bas
 
 ## All Examples
 
-| Example | Level | API Key | Description |
-|---------|-------|---------|-------------|
-| `scan_checkpoints.sh` | 0 | **No** | Core flow: stream replay over Walrus checkpoints |
-| `walrus_ptb_universe.sh` | 0.25 | **No** | Build observed Walrus PTB universe, generate mock PTBs, execute locally |
-| `replay.sh` | 0.5 | **No** | Single-transaction replay (walrus/grpc/json) |
-| `replay_mutation_lab.sh` | 0.75 | **No** | Discover fail->heal replay cases with synthetic hydration passes |
-| `replay_mutation_guided_demo.sh` | 0.75 | **No** | One-command deterministic replay mutation walkthrough |
-| `entry_function_practical_fuzzer.sh` | 0.9 | **No** | Replay-backed practical fuzzer over observed Walrus function targets |
-| `cli_workflow.sh` | 1 | No | CLI walkthrough |
-| `package_analysis/cli_corpus_objects_analysis.sh` | 1 | No | Corpus-wide `analyze objects` summary + baseline deltas |
-| `package_analysis/cli_mm2_corpus_sweep.sh` | 1 | No | Corpus MM2 regression sweep (`analyze package --mm2`) |
-| `obfuscated_package_analysis/cli_obfuscated_analysis.sh` | 1.5 | Yes | Reverse-engineer obfuscated package via bytecode + replay |
-| `ptb_basics` | 2 | No | Basic PTB operations (SplitCoins, TransferObjects) |
+| Example | Tier | API Key | Description |
+|---------|------|---------|-------------|
+| `scan_checkpoints.sh` | Zero Setup | **No** | Core flow: stream replay over Walrus checkpoints |
+| `walrus_ptb_universe.sh` | Zero Setup | **No** | Build observed Walrus PTB universe, generate mock PTBs, execute locally |
+| `replay.sh` | Zero Setup | **No** | Single-transaction replay (walrus/grpc/json) |
+| `replay_mutation_lab.sh` | Zero Setup | **No** | Discover fail->heal replay cases with synthetic hydration passes |
+| `replay_mutation_guided_demo.sh` | Zero Setup | **No** | One-command deterministic replay mutation walkthrough |
+| `entry_function_practical_fuzzer.sh` | Zero Setup | **No** | Replay-backed practical fuzzer over observed Walrus function targets |
+| `cli_workflow.sh` | Zero Setup | No | CLI walkthrough |
+| `package_analysis/cli_corpus_objects_analysis.sh` | Zero Setup | No | Corpus-wide `analyze objects` summary + baseline deltas |
+| `package_analysis/cli_mm2_corpus_sweep.sh` | Zero Setup | No | Corpus MM2 regression sweep (`analyze package --mm2`) |
+| `obfuscated_package_analysis/cli_obfuscated_analysis.sh` | gRPC | Yes | Reverse-engineer obfuscated package via bytecode + replay |
+| `ptb_basics` | Rust | No | Basic PTB operations (SplitCoins, TransferObjects) |
 
 ## CLI-First Replacements
 
@@ -344,7 +344,7 @@ Several older or experimental examples were consolidated into CLI flows:
 
 ---
 
-## Advanced Examples (Require gRPC API Key)
+## Rust + gRPC: Advanced Examples
 
 The following Rust examples demonstrate advanced replay internals. They require a gRPC
 archive endpoint and API key. Most users will not need these — the Walrus-based CLI
