@@ -13,6 +13,7 @@ use super::SandboxState;
 use std::collections::HashMap;
 use sui_state_fetcher::types::{PackageData, VersionedObject};
 use sui_state_fetcher::{HistoricalStateProvider, VersionedCache};
+use sui_transport::decode_graphql_modules;
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::graphql::ObjectOwner;
 use sui_transport::walrus::WalrusClient;
@@ -34,6 +35,10 @@ pub enum FetchTarget {
         /// Also fetch transitive dependencies
         #[arg(long)]
         with_deps: bool,
+
+        /// Include base64-encoded module bytecodes in JSON output
+        #[arg(long)]
+        bytecodes: bool,
     },
     /// Fetch an object at latest or specific version
     Object {
@@ -59,6 +64,14 @@ pub enum FetchTarget {
         #[arg(long, default_value = "4")]
         concurrency: usize,
     },
+    /// Fetch a single checkpoint from Walrus and display its summary
+    Checkpoint {
+        /// Checkpoint sequence number
+        #[arg(value_name = "SEQ")]
+        seq: u64,
+    },
+    /// Show the latest checkpoint sequence number available on Walrus
+    LatestCheckpoint,
 }
 
 impl FetchCmd {
@@ -68,16 +81,24 @@ impl FetchCmd {
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
-        // Handle checkpoints separately since it's async and doesn't use sandbox state
-        if let FetchTarget::Checkpoints {
-            start,
-            end,
-            concurrency,
-        } = &self.target
-        {
-            return self
-                .execute_checkpoints(*start, *end, *concurrency, json_output, verbose)
-                .await;
+        // Handle commands that don't use sandbox state separately
+        match &self.target {
+            FetchTarget::Checkpoints {
+                start,
+                end,
+                concurrency,
+            } => {
+                return self
+                    .execute_checkpoints(*start, *end, *concurrency, json_output, verbose)
+                    .await;
+            }
+            FetchTarget::Checkpoint { seq } => {
+                return execute_walrus_checkpoint(*seq, json_output);
+            }
+            FetchTarget::LatestCheckpoint => {
+                return execute_walrus_latest_checkpoint(json_output);
+            }
+            _ => {}
         }
 
         let result = self.execute_inner(state, verbose);
@@ -149,12 +170,15 @@ impl FetchCmd {
             FetchTarget::Package {
                 package_id,
                 with_deps,
-            } => fetch_package(state, package_id, *with_deps, verbose),
+                bytecodes,
+            } => fetch_package(state, package_id, *with_deps, *bytecodes, verbose),
             FetchTarget::Object { object_id, version } => {
                 fetch_object(state, object_id, *version, verbose)
             }
-            FetchTarget::Checkpoints { .. } => {
-                unreachable!("Checkpoints handled in execute()")
+            FetchTarget::Checkpoints { .. }
+            | FetchTarget::Checkpoint { .. }
+            | FetchTarget::LatestCheckpoint => {
+                unreachable!("handled in execute()")
             }
         }
     }
@@ -173,6 +197,8 @@ pub struct FetchResult {
 pub struct PackageInfo {
     pub address: String,
     pub modules: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytecodes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,10 +218,112 @@ pub struct IngestResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct CheckpointResult {
+    checkpoint: u64,
+    epoch: u64,
+    timestamp_ms: u64,
+    transaction_count: usize,
+    transactions: Vec<CheckpointTxSummary>,
+    object_versions_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckpointTxSummary {
+    digest: String,
+    sender: String,
+    commands: usize,
+    input_objects: usize,
+    output_objects: usize,
+}
+
+fn execute_walrus_latest_checkpoint(json_output: bool) -> Result<()> {
+    let client = WalrusClient::mainnet();
+    let checkpoint = client.get_latest_checkpoint()?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "checkpoint": checkpoint }))?
+        );
+    } else {
+        println!("{}", checkpoint);
+    }
+    Ok(())
+}
+
+fn execute_walrus_checkpoint(seq: u64, json_output: bool) -> Result<()> {
+    use sui_transport::walrus;
+    use sui_types::transaction::TransactionDataAPI;
+
+    let client = WalrusClient::mainnet();
+    let checkpoint_data = client.get_checkpoint(seq)?;
+
+    let epoch = checkpoint_data.checkpoint_summary.epoch;
+    let timestamp_ms = checkpoint_data.checkpoint_summary.timestamp_ms;
+
+    let mut transactions = Vec::new();
+    for tx in &checkpoint_data.transactions {
+        let digest = tx.transaction.digest().to_string();
+        let tx_data = tx.transaction.data().transaction_data();
+        let sender = format!("{}", tx_data.sender());
+
+        let command_count = match tx_data.kind() {
+            sui_types::transaction::TransactionKind::ProgrammableTransaction(ptb) => {
+                ptb.commands.len()
+            }
+            _ => 0,
+        };
+
+        transactions.push(CheckpointTxSummary {
+            digest,
+            sender,
+            commands: command_count,
+            input_objects: tx.input_objects.len(),
+            output_objects: tx.output_objects.len(),
+        });
+    }
+
+    let versions = walrus::extract_object_versions_from_checkpoint(&checkpoint_data);
+
+    let result = CheckpointResult {
+        checkpoint: seq,
+        epoch,
+        timestamp_ms,
+        transaction_count: checkpoint_data.transactions.len(),
+        transactions,
+        object_versions_count: versions.len(),
+    };
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Checkpoint: {}", result.checkpoint);
+        println!("Epoch:      {}", result.epoch);
+        println!("Timestamp:  {} ms", result.timestamp_ms);
+        println!("Transactions: {}", result.transaction_count);
+        for tx in &result.transactions {
+            println!(
+                "  {} sender={} commands={} in={} out={}",
+                tx.digest, tx.sender, tx.commands, tx.input_objects, tx.output_objects
+            );
+        }
+        println!("Object versions: {}", result.object_versions_count);
+    }
+    Ok(())
+}
+
+fn encode_module_bytecodes(modules: &[(String, Vec<u8>)]) -> Vec<String> {
+    modules
+        .iter()
+        .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
+        .collect()
+}
+
 fn fetch_package(
     state: &mut SandboxState,
     package_id: &str,
     with_deps: bool,
+    include_bytecodes: bool,
     verbose: bool,
 ) -> Result<FetchResult> {
     let addr = AccountAddress::from_hex_literal(package_id).context("Invalid package ID")?;
@@ -216,18 +344,10 @@ fn fetch_package(
 
     let mut packages_fetched = Vec::new();
 
-    // Extract modules from package data
-    let modules: Vec<(String, Vec<u8>)> = package_data
-        .modules
-        .iter()
-        .filter_map(|m| {
-            m.bytecode_base64.as_ref().and_then(|b64| {
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-                    .ok()
-                    .map(|bytes| (m.name.clone(), bytes))
-            })
-        })
-        .collect();
+    let modules = decode_graphql_modules(package_id, &package_data.modules)?;
+    if modules.is_empty() {
+        return Err(anyhow::anyhow!("no modules for package {}", package_id));
+    }
 
     let module_names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
 
@@ -237,6 +357,11 @@ fn fetch_package(
     packages_fetched.push(PackageInfo {
         address: package_id.to_string(),
         modules: module_names,
+        bytecodes: if include_bytecodes {
+            Some(encode_module_bytecodes(&modules))
+        } else {
+            None
+        },
     });
 
     // Populate the shared versioned cache for replay/bridge parity.
@@ -255,8 +380,14 @@ fn fetch_package(
         if verbose {
             eprintln!("Fetching dependencies (closure)...");
         }
-        let fetched =
-            fetch_dependency_closure(state, &client, &cache, verbose, &mut packages_fetched)?;
+        let fetched = fetch_dependency_closure(
+            state,
+            &client,
+            &cache,
+            include_bytecodes,
+            verbose,
+            &mut packages_fetched,
+        )?;
         if verbose && fetched > 0 {
             eprintln!("  ✓ fetched {} dependency packages", fetched);
         }
@@ -274,6 +405,7 @@ fn fetch_dependency_closure(
     state: &mut SandboxState,
     client: &GraphQLClient,
     cache: &VersionedCache,
+    include_bytecodes: bool,
     verbose: bool,
     packages_fetched: &mut Vec<PackageInfo>,
 ) -> Result<usize> {
@@ -307,28 +439,24 @@ fn fetch_dependency_closure(
                     continue;
                 }
             };
-
-            let mut modules: Vec<(String, Vec<u8>)> = Vec::new();
-            let mut module_names = Vec::new();
-            for module in pkg.modules {
-                if let Some(b64) = module.bytecode_base64 {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                        module_names.push(module.name.clone());
-                        modules.push((module.name, bytes));
-                    }
-                }
-            }
+            let modules = decode_graphql_modules(&addr_hex, &pkg.modules)?;
             if modules.is_empty() {
                 if verbose {
                     eprintln!("  no modules for {}", addr_hex);
                 }
                 continue;
             }
+            let module_names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
 
             state.add_package(addr, modules.clone());
             packages_fetched.push(PackageInfo {
                 address: addr_hex.clone(),
                 modules: module_names,
+                bytecodes: if include_bytecodes {
+                    Some(encode_module_bytecodes(&modules))
+                } else {
+                    None
+                },
             });
             let pkg_data = PackageData {
                 address: addr,
@@ -489,6 +617,7 @@ mod tests {
             packages_fetched: vec![PackageInfo {
                 address: "0x123".to_string(),
                 modules: vec!["test".to_string()],
+                bytecodes: None,
             }],
             objects_fetched: vec![],
             error: None,

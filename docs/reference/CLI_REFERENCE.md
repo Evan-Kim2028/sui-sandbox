@@ -64,6 +64,12 @@ sui-sandbox tools stream-transactions --endpoint https://your-provider:9000
 
 # Simulate a PTB via gRPC
 sui-sandbox tools tx-sim --ptb-spec tx.json --sender 0x...
+
+# Convert JSON object to BCS bytes using local bytecode layouts
+sui-sandbox tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-file obj.json --bytecode-dir ./pkg
+
+# Same with JSON output (includes type and size metadata)
+sui-sandbox --json tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-file obj.json --bytecode-dir ./pkg
 ```
 
 ## Developer CLI (`sui-sandbox`)
@@ -139,6 +145,9 @@ Execute a single Move function call.
 # Call a function with arguments
 sui-sandbox run 0x2::coin::value --arg 0x123
 
+# Call a function with cached object inputs
+sui-sandbox run 0x2::counter::value --arg obj-ref:0x123 --arg obj-owned:0x456
+
 # With type arguments
 sui-sandbox run 0x2::coin::zero --type-arg 0x2::sui::SUI
 
@@ -148,7 +157,7 @@ sui-sandbox run 0x100::counter::increment --sender 0xABC --gas-budget 10000000
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--arg <VALUE>` | Arguments (auto-parsed: `42`, `true`, `0xABC`, `"string"`) | - |
+| `--arg <VALUE>` | Arguments (auto-parsed: `42`, `true`, `0xABC`, `"string"`). Object inputs also support `obj-ref:<id>`, `obj-owned:<id>`, `obj-mut:<id>`, `obj-shared:<id>`, `obj-shared-mut:<id>` | - |
 | `--type-arg <TYPE>` | Type arguments (e.g., `0x2::sui::SUI`) | - |
 | `--sender <ADDR>` | Sender address | `0x0` |
 | `--gas-budget <N>` | Gas budget (0 = default metered budget) | `0` |
@@ -162,6 +171,31 @@ Arguments are auto-detected by format:
 - Addresses: `0xABC...`
 - Strings: `"hello"`
 - Bytes: `b"data"`
+
+Object inputs are optional and must be present in the current sandbox session (`sui-sandbox fetch object <ID>`), since `run` uses the local object's BCS bytes and type tag as input.
+
+`--json` output now includes return payloads:
+
+```json
+{
+  "success": true,
+  "gas_used": 1500,
+  "created": ["..."],
+  "mutated": ["..."],
+  "deleted": ["..."],
+  "events_count": 0,
+  "return_values": [
+    [
+      "9f4a..."
+    ]
+  ],
+  "return_type_tags": [
+    [
+      "0x2::coin::Coin<0x2::sui::SUI>"
+    ]
+  ]
+}
+```
 
 #### `ptb` - Execute PTBs
 
@@ -229,6 +263,24 @@ sui-sandbox fetch package 0x2 --verbose
 | `package <ID>` | Fetch and load a package with all modules |
 | `object <ID>` | Fetch an object's current state |
 | `checkpoints <START> <END>` | Ingest package index entries from a checkpoint range |
+| `checkpoint <SEQ>` | Fetch a single Walrus checkpoint and display its summary |
+| `latest-checkpoint` | Show the latest checkpoint sequence number on Walrus |
+
+Behavior notes:
+- `fetch package <ID>` fails if any module in the package GraphQL payload is missing `bytecode_base64`, so you do not get partial package fetches.
+- `fetch package <ID> --bytecodes` includes base64-encoded module bytecodes in JSON output (useful for programmatic consumers).
+
+**Walrus checkpoint queries:**
+
+```bash
+# Show latest checkpoint number
+sui-sandbox fetch latest-checkpoint
+
+# Fetch checkpoint summary with transaction details
+sui-sandbox --json fetch checkpoint 12345
+```
+
+`fetch checkpoint` output includes transaction digests, senders, command counts, and object version counts.
 
 #### `replay` - Transaction Replay
 
@@ -351,7 +403,11 @@ sui-sandbox analyze package --package-id 0x2 --list-modules --mm2
 
 # Package structure + MM2 model (local bytecode dir)
 sui-sandbox analyze package --bytecode-dir /path/to/pkg_dir --mm2
+```
+`--bytecode-dir` resolves the package ID from `metadata.json` (`id`) when present,
+or falls back to the directory name if metadata is unavailable.
 
+```bash
 # Replay readiness: inputs, packages, and suggestions
 sui-sandbox analyze replay 9V3xKMnFpXyz...
 
@@ -366,6 +422,7 @@ sui-sandbox analyze objects --corpus-dir /path/to/corpus --profile strict
 
 # Use a custom profile file
 sui-sandbox analyze objects --corpus-dir /path/to/corpus --profile-file ./profiles/team.yaml
+
 ```
 
 Replay analysis outputs:
@@ -430,6 +487,9 @@ Quick workflow:
 2. `analyze objects` on corpus for baseline and trend diffs.
 3. Use `party_transfer_eligible` vs `party_transfer_observed_in_bytecode` to spot latent capabilities not exercised in package code.
 4. Run MM2 corpus sweep (`examples/package_analysis/cli_mm2_corpus_sweep.sh`) as a reliability check.
+
+Behavior notes:
+- `analyze package --package-id` fails if any module in the fetched package is missing `bytecode_base64` in GraphQL data, so you do not get partial interface output.
 
 #### `view` - Inspect State
 

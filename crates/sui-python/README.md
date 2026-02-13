@@ -45,7 +45,12 @@ Analyze a Sui Move package and return summary counts.
 
 Provide either `package_id` (fetched via GraphQL from an RPC node) or `bytecode_dir` (local directory containing `bytecode_modules/*.mv` files), but not both.
 
+For local package analysis, `bytecode_dir` package id comes from `metadata.json` when present (`metadata.id`),
+with fallback to the directory name if metadata is unavailable.
+
 **Returns:** `dict` with `source`, `package_id`, `modules`, `structs`, `functions`, `key_structs`, and optionally `module_names`.
+
+Raises an exception if any module in the GraphQL package response is missing bytecode, so partial results are not returned silently.
 
 ```python
 # Remote package
@@ -64,6 +69,9 @@ print(info["module_names"])  # ["module_a", "module_b", ...]
 Extract the complete interface JSON for a Move package — all modules, structs, functions, type parameters, abilities, and fields.
 
 **Returns:** `dict` with full interface tree.
+
+For local package extraction, package id resolution follows the same `metadata.json` precedence as
+`analyze_package`.
 
 ```python
 interface = sui_sandbox.extract_interface(package_id="0x1")
@@ -112,6 +120,23 @@ state = sui_sandbox.walrus_analyze_replay(
 )
 print(f"Commands: {state['commands']}, Objects: {state['objects']}, Packages: {state['packages']}")
 ```
+
+### Move Function Execution (View/Read-only)
+
+#### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, package_bytecodes=None, fetch_deps=True)`
+
+Execute a Move function in the local VM with full control over object and pure inputs.
+
+This API is maintained for programmatic call paths that need explicit object/BCS payload control.
+For CLI workflows, `sui-sandbox run` now supports object argument prefixes under `--arg` and JSON output with
+`return_values` + `return_type_tags`.
+
+**Returns:** `dict` with:
+- `success` (bool)
+- `error` (string or null)
+- `return_values` (per-command list of base64-encoded BCS values, e.g. `[[...]]`)
+- `return_type_tags` (parallel per-command list of canonical Move type tags where known)
+- `gas_used` (u64)
 
 ### gRPC/Hybrid Replay
 

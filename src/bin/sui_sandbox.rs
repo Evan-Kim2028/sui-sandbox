@@ -205,7 +205,7 @@ async fn main() -> Result<()> {
         Commands::View(cmd) => cmd.execute(&state, json).await,
         Commands::Bridge(cmd) => cmd.execute(json),
         Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
-        Commands::Tools(cmd) => cmd.execute().await,
+        Commands::Tools(cmd) => cmd.execute(json).await,
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,

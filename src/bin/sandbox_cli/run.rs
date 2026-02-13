@@ -8,7 +8,7 @@ use move_core_types::language_storage::TypeTag;
 
 use super::output::{format_effects, format_effects_json, format_error};
 use super::SandboxState;
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, PTBExecutor};
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, PTBExecutor};
 use sui_sandbox_core::shared::parsing::{parse_pure_value, parse_type_tag_string};
 use sui_sandbox_core::vm::SimulationConfig;
 
@@ -17,7 +17,10 @@ pub struct RunCmd {
     /// Target function: "0xPKG::module::function" or "module::function" (uses last published)
     pub target: String,
 
-    /// Arguments (auto-parsed: 42, true, 0xABC, "string", b"bytes")
+    /// Arguments (auto-parsed: 42, true, 0xABC, "string", b"bytes").
+    /// Object args can be passed with explicit prefixes:
+    /// `obj-ref:<id>`, `obj-owned:<id>`, `obj-mut:<id>`,
+    /// `obj-shared:<id>`, or `obj-shared-mut:<id>`.
     #[arg(long = "arg", num_args(1..))]
     pub args: Vec<String>,
 
@@ -86,7 +89,7 @@ impl RunCmd {
             .collect::<Result<Vec<_>>>()?;
 
         // Parse arguments and build inputs
-        let (inputs, args) = parse_arguments(&self.args)?;
+        let (inputs, args) = parse_arguments(&self.args, state)?;
 
         // Create harness with sender and gas budget
         let gas_budget = if self.gas_budget > 0 {
@@ -150,12 +153,15 @@ fn parse_type_tag(s: &str) -> Result<TypeTag> {
 }
 
 /// Parse command line arguments into PTB inputs and argument references
-fn parse_arguments(args: &[String]) -> Result<(Vec<InputValue>, Vec<Argument>)> {
+fn parse_arguments(
+    args: &[String],
+    state: &SandboxState,
+) -> Result<(Vec<InputValue>, Vec<Argument>)> {
     let mut inputs = Vec::new();
     let mut arguments = Vec::new();
 
     for (i, arg) in args.iter().enumerate() {
-        let input = parse_single_arg(arg)?;
+        let input = parse_single_arg_with_state(arg, state)?;
         inputs.push(input);
         arguments.push(Argument::Input(i as u16));
     }
@@ -167,6 +173,98 @@ fn parse_arguments(args: &[String]) -> Result<(Vec<InputValue>, Vec<Argument>)> 
 fn parse_single_arg(arg: &str) -> Result<InputValue> {
     let bytes = parse_pure_value(arg)?;
     Ok(InputValue::Pure(bytes))
+}
+
+#[derive(Clone, Copy)]
+enum ObjectArgKind {
+    Owned,
+    MutRef,
+    ImmRef,
+    SharedImmutable,
+    SharedMutable,
+}
+
+fn parse_single_arg_with_state(arg: &str, state: &SandboxState) -> Result<InputValue> {
+    if let Some(rest) = arg.strip_prefix("obj-shared-mut:") {
+        return parse_object_arg(rest, state, ObjectArgKind::SharedMutable)
+            .context("Invalid --arg object syntax `obj-shared-mut:<object-id>`");
+    }
+
+    if let Some(rest) = arg.strip_prefix("obj-shared:") {
+        return parse_object_arg(rest, state, ObjectArgKind::SharedImmutable)
+            .context("Invalid --arg object syntax `obj-shared:<object-id>`");
+    }
+
+    if let Some(rest) = arg.strip_prefix("obj-mut:") {
+        return parse_object_arg(rest, state, ObjectArgKind::MutRef)
+            .context("Invalid --arg object syntax `obj-mut:<object-id>`");
+    }
+
+    if let Some(rest) = arg.strip_prefix("obj-owned:") {
+        return parse_object_arg(rest, state, ObjectArgKind::Owned)
+            .context("Invalid --arg object syntax `obj-owned:<object-id>`");
+    }
+
+    if let Some(rest) = arg.strip_prefix("obj-ref:") {
+        return parse_object_arg(rest, state, ObjectArgKind::ImmRef)
+            .context("Invalid --arg object syntax `obj-ref:<object-id>`");
+    }
+
+    if let Some(rest) = arg.strip_prefix("obj:") {
+        return parse_object_arg(rest, state, ObjectArgKind::ImmRef)
+            .context("Invalid --arg object syntax `obj-ref:<object-id>`");
+    }
+
+    parse_single_arg(arg)
+}
+
+fn parse_object_arg(arg: &str, state: &SandboxState, kind: ObjectArgKind) -> Result<InputValue> {
+    let object_id = arg.trim();
+    let object_addr = AccountAddress::from_hex_literal(object_id)
+        .with_context(|| format!("invalid object id '{}'", object_id))?;
+    let (bytes, type_tag) = state
+        .get_object_input(object_id)
+        .with_context(|| format!(
+            "object {} not loaded in session. Use `sui-sandbox fetch object {}` first",
+            object_id, object_id
+        ))?;
+
+    let input = match kind {
+        ObjectArgKind::Owned => InputValue::Object(ObjectInput::Owned {
+            id: object_addr,
+            bytes,
+            type_tag,
+            version: None,
+        }),
+        ObjectArgKind::MutRef => InputValue::Object(ObjectInput::MutRef {
+            id: object_addr,
+            bytes,
+            type_tag,
+            version: None,
+        }),
+        ObjectArgKind::ImmRef => InputValue::Object(ObjectInput::ImmRef {
+            id: object_addr,
+            bytes,
+            type_tag,
+            version: None,
+        }),
+        ObjectArgKind::SharedImmutable => InputValue::Object(ObjectInput::Shared {
+            id: object_addr,
+            bytes,
+            type_tag,
+            version: None,
+            mutable: false,
+        }),
+        ObjectArgKind::SharedMutable => InputValue::Object(ObjectInput::Shared {
+            id: object_addr,
+            bytes,
+            type_tag,
+            version: None,
+            mutable: true,
+        }),
+    };
+
+    Ok(input)
 }
 
 #[cfg(test)]

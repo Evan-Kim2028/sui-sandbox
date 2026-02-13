@@ -2,6 +2,7 @@
 //!
 //! Provides human-readable and JSON output formatting for all commands.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use serde::Serialize;
@@ -74,13 +75,23 @@ pub fn format_effects(effects: &TransactionEffects, verbose: bool) -> String {
         out.push_str("\x1b[1mReturn Values:\x1b[0m\n");
         for (i, cmd_returns) in effects.return_values.iter().enumerate() {
             if !cmd_returns.is_empty() {
-                out.push_str(&format!(
-                    "  Command [{}]: {} return value(s)\n",
-                    i,
-                    cmd_returns.len()
-                ));
+                out.push_str(&format!("  Command [{}]:\n", i));
+                for (j, rv_bytes) in cmd_returns.iter().enumerate() {
+                    let mut line = format!("    [{}] {}", j, STANDARD.encode(rv_bytes));
+                    if let Some(type_tag) = effects
+                        .return_type_tags
+                        .get(i)
+                        .and_then(|tags| tags.get(j))
+                        .and_then(|tag| tag.as_ref())
+                    {
+                        line.push_str(&format!(" (type: {})", type_tag.to_canonical_string(true)));
+                    }
+                    out.push_str(&line);
+                    out.push('\n');
+                }
             }
         }
+        out.push('\n');
     }
 
     out
@@ -97,7 +108,33 @@ pub fn format_effects_json(effects: &TransactionEffects) -> String {
         mutated: Vec<String>,
         deleted: Vec<String>,
         events_count: usize,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        return_values: Vec<Vec<String>>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        return_type_tags: Vec<Vec<Option<String>>>,
     }
+
+    let return_values: Vec<Vec<String>> = effects
+        .return_values
+        .iter()
+        .map(|cmd_returns| {
+            cmd_returns
+                .iter()
+                .map(|bytes| STANDARD.encode(bytes))
+                .collect()
+        })
+        .collect();
+
+    let return_type_tags: Vec<Vec<Option<String>>> = effects
+        .return_type_tags
+        .iter()
+        .map(|cmd_tags| {
+            cmd_tags
+                .iter()
+                .map(|tag| tag.as_ref().map(|t| t.to_canonical_string(true)))
+                .collect()
+        })
+        .collect();
 
     let json = EffectsJson {
         success: effects.success,
@@ -107,6 +144,8 @@ pub fn format_effects_json(effects: &TransactionEffects) -> String {
         mutated: effects.mutated.iter().map(format_address).collect(),
         deleted: effects.deleted.iter().map(format_address).collect(),
         events_count: effects.events.len(),
+        return_values,
+        return_type_tags,
     };
 
     serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string())
