@@ -492,7 +492,9 @@ impl HistoricalStateProvider {
     }
 
     /// Build replay state using a configurable builder.
-    pub fn replay_state_builder(&self) -> crate::replay_builder::ReplayStateBuilder<'_> {
+    pub fn replay_state_builder(
+        &self,
+    ) -> crate::replay_builder::ReplayStateBuilder<'_, HistoricalStateProvider> {
         crate::replay_builder::ReplayStateBuilder::new(self)
     }
 
