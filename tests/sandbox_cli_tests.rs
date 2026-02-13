@@ -105,6 +105,7 @@ fn test_help_output() {
         .stdout(predicate::str::contains("import"))
         .stdout(predicate::str::contains("replay"))
         .stdout(predicate::str::contains("view"))
+        .stdout(predicate::str::contains("doctor"))
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("run-flow"))
         .stdout(predicate::str::contains("snapshot"))
@@ -166,6 +167,17 @@ fn test_tools_help_excludes_internal_harness_commands() {
         .stdout(predicate::str::contains("tx-sim"))
         .stdout(predicate::str::contains("ptb-replay-harness").not())
         .stdout(predicate::str::contains("walrus-warmup").not());
+}
+
+#[test]
+fn test_doctor_help() {
+    sandbox_cmd()
+        .arg("doctor")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Validate local environment"))
+        .stdout(predicate::str::contains("--timeout-secs"));
 }
 
 // ============================================================================

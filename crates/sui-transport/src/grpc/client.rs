@@ -33,14 +33,69 @@ pub struct GrpcClient {
     api_key: Option<String>,
 }
 
+const MAINNET_ENDPOINT: &str = "https://fullnode.mainnet.sui.io:443";
+const TESTNET_ENDPOINT: &str = "https://fullnode.testnet.sui.io:443";
+const MYSTEN_ARCHIVE_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
+const SURFLUX_ARCHIVE_ENDPOINT: &str = "https://grpc.surflux.dev:443";
+
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn resolve_api_key_for_endpoint(endpoint: &str) -> Option<String> {
+    if let Some(key) = env_nonempty("SUI_GRPC_API_KEY") {
+        return Some(key);
+    }
+    if endpoint.to_ascii_lowercase().contains("surflux.dev") {
+        return env_nonempty("SURFLUX_API_KEY");
+    }
+    None
+}
+
+/// Resolve the best historical gRPC endpoint and API key from environment.
+///
+/// Priority:
+/// 1. `SUI_GRPC_HISTORICAL_ENDPOINT`
+/// 2. `SUI_GRPC_ARCHIVE_ENDPOINT`
+/// 3. Surflux auto-selection when `SURFLUX_API_KEY` is set
+/// 4. `SUI_GRPC_ENDPOINT`
+/// 5. Mysten archive default (`archive.mainnet.sui.io`)
+pub fn historical_endpoint_and_api_key_from_env() -> (String, Option<String>) {
+    if let Some(endpoint) = env_nonempty("SUI_GRPC_HISTORICAL_ENDPOINT") {
+        let api_key = resolve_api_key_for_endpoint(&endpoint);
+        return (endpoint, api_key);
+    }
+
+    if let Some(endpoint) = env_nonempty("SUI_GRPC_ARCHIVE_ENDPOINT") {
+        let api_key = resolve_api_key_for_endpoint(&endpoint);
+        return (endpoint, api_key);
+    }
+
+    if let Some(key) = env_nonempty("SURFLUX_API_KEY") {
+        return (SURFLUX_ARCHIVE_ENDPOINT.to_string(), Some(key));
+    }
+
+    if let Some(endpoint) = env_nonempty("SUI_GRPC_ENDPOINT") {
+        let api_key = resolve_api_key_for_endpoint(&endpoint);
+        return (endpoint, api_key);
+    }
+
+    let endpoint = MYSTEN_ARCHIVE_ENDPOINT.to_string();
+    let api_key = resolve_api_key_for_endpoint(&endpoint);
+    (endpoint, api_key)
+}
+
 impl GrpcClient {
     /// Create a client for Sui mainnet.
     ///
     /// Reads the `SUI_GRPC_ENDPOINT` environment variable, or defaults to
     /// `https://fullnode.mainnet.sui.io:443`.
     pub async fn mainnet() -> Result<Self> {
-        let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-            .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
+        let endpoint =
+            std::env::var("SUI_GRPC_ENDPOINT").unwrap_or_else(|_| MAINNET_ENDPOINT.to_string());
         Self::new(&endpoint).await
     }
 
@@ -50,7 +105,7 @@ impl GrpcClient {
     /// `https://fullnode.testnet.sui.io:443`.
     pub async fn testnet() -> Result<Self> {
         let endpoint = std::env::var("SUI_GRPC_TESTNET_ENDPOINT")
-            .unwrap_or_else(|_| "https://fullnode.testnet.sui.io:443".to_string());
+            .unwrap_or_else(|_| TESTNET_ENDPOINT.to_string());
         Self::new(&endpoint).await
     }
 
@@ -59,9 +114,8 @@ impl GrpcClient {
     /// The archive has full history from checkpoint 0 but doesn't support streaming.
     /// Use for historical queries only.
     pub async fn archive() -> Result<Self> {
-        let endpoint = std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT")
-            .unwrap_or_else(|_| "https://archive.mainnet.sui.io:443".to_string());
-        Self::new(&endpoint).await
+        let (endpoint, api_key) = historical_endpoint_and_api_key_from_env();
+        Self::with_api_key(&endpoint, api_key).await
     }
 
     /// Create a client with a custom endpoint.

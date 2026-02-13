@@ -41,7 +41,7 @@ use sui_state_fetcher::{
     parse_replay_states_file, HistoricalStateProvider, PackageData, ReplayState, VersionedObject,
 };
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::GrpcClient;
+use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient};
 use sui_types::effects::TransactionEffectsAPI;
 
 mod batch;
@@ -1396,9 +1396,8 @@ impl ReplayCmd {
             // For each, use previous_transaction → checkpoint → Walrus to get BCS.
             {
                 // Try archive endpoint first (has full history), fall back to live fullnode
-                let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-                    .unwrap_or_else(|_| "https://archive.mainnet.sui.io:443".to_string());
-                match GrpcClient::new(&grpc_endpoint).await {
+                let (grpc_endpoint, api_key) = historical_endpoint_and_api_key_from_env();
+                match GrpcClient::with_api_key(&grpc_endpoint, api_key).await {
                     Ok(grpc) => {
                         match grpc.get_transaction(digest).await {
                             Ok(Some(tx)) => {

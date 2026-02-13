@@ -67,13 +67,60 @@ pub struct BytecodeFunctionJson {
     pub params: Vec<Value>,
     pub returns: Vec<Value>,
     pub acquires: Vec<BytecodeStructRefJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<BytecodeFunctionBodyJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeConstantJson {
+    pub r#type: Value,
+    pub data_hex: String,
+    pub data_len: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeEnumVariantJson {
+    pub tag: u16,
+    pub name: String,
+    pub fields: Vec<BytecodeFieldJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeEnumJson {
+    pub abilities: Vec<String>,
+    pub type_params: Vec<BytecodeStructTypeParamJson>,
+    pub variants: Vec<BytecodeEnumVariantJson>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeInstructionJson {
+    pub offset: u16,
+    pub opcode: String,
+    pub operands: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeJumpTableJson {
+    pub head_enum: String,
+    pub offsets: Vec<u16>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeFunctionBodyJson {
+    pub locals: Vec<Value>,
+    pub instructions: Vec<BytecodeInstructionJson>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub jump_tables: Vec<BytecodeJumpTableJson>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct BytecodeModuleJson {
     pub address: String,
     pub structs: BTreeMap<String, BytecodeStructJson>,
+    pub enums: BTreeMap<String, BytecodeEnumJson>,
     pub functions: BTreeMap<String, BytecodeFunctionJson>,
+    pub constants: Vec<BytecodeConstantJson>,
+    pub friends: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Copy, Clone)]
@@ -129,6 +176,10 @@ pub struct BytecodeModuleCheck {
 pub struct LocalBytecodeCounts {
     pub modules: usize,
     pub structs: usize,
+    pub structs_has_copy: usize,
+    pub structs_has_drop: usize,
+    pub structs_has_store: usize,
+    pub structs_has_key: usize,
     pub functions_total: usize,
     pub functions_public: usize,
     pub functions_friend: usize,

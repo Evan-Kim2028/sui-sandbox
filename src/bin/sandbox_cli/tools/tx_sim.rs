@@ -656,11 +656,54 @@ pub async fn run(cmd: &TxSimCmd) -> Result<()> {
                 })
                 .unwrap_or((false, None));
 
+            let gas_summary = response
+                .transaction
+                .as_ref()
+                .and_then(|tx| tx.effects.as_ref())
+                .and_then(|effects| effects.gas_used.as_ref());
+
+            let gas_used_computation = gas_summary.and_then(|g| g.computation_cost);
+            let gas_used_storage = gas_summary.and_then(|g| g.storage_cost);
+            let gas_used_rebate = gas_summary.and_then(|g| g.storage_rebate);
+            let gas_used_total = match (gas_used_computation, gas_used_storage, gas_used_rebate) {
+                (Some(comp), Some(storage), Some(rebate)) => {
+                    Some(comp.saturating_add(storage).saturating_sub(rebate))
+                }
+                _ => None,
+            };
+
+            let gas_price = response
+                .transaction
+                .as_ref()
+                .and_then(|tx| tx.transaction.as_ref())
+                .and_then(|tx| tx.gas_payment.as_ref())
+                .and_then(|gp| gp.price);
+
+            let reference_gas_price = if let Some(epoch) = response
+                .transaction
+                .as_ref()
+                .and_then(|tx| tx.effects.as_ref())
+                .and_then(|effects| effects.epoch)
+            {
+                match client.get_epoch(Some(epoch)).await {
+                    Ok(Some(epoch_meta)) => epoch_meta.reference_gas_price,
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
             // Serialize simulation result to JSON
             simulation_json = Some(serde_json::json!({
                 "success": success,
                 "error": error,
                 "command_outputs_count": response.command_outputs.len(),
+                "gas_used_computation": gas_used_computation,
+                "gas_used_storage": gas_used_storage,
+                "gas_used_rebate": gas_used_rebate,
+                "gas_used_total": gas_used_total,
+                "gas_price": gas_price,
+                "reference_gas_price": reference_gas_price,
             }));
         }
     }

@@ -49,6 +49,7 @@ mod sandbox_cli;
 use sandbox_cli::analyze::AnalyzeCmd;
 use sandbox_cli::{
     bridge::BridgeCmd,
+    doctor::DoctorCmd,
     fetch::FetchCmd,
     flow::{InitCmd, RunFlowCmd},
     import::ImportCmd,
@@ -138,6 +139,9 @@ enum Commands {
     /// Extra utilities (polling, streaming, tx simulation)
     Tools(ToolsCmd),
 
+    /// Validate local environment and endpoint connectivity
+    Doctor(DoctorCmd),
+
     /// Scaffold a task-oriented project/workflow template
     Init(InitCmd),
 
@@ -172,6 +176,7 @@ impl Commands {
             Commands::Bridge(_) => "bridge",
             Commands::Test(_) => "test",
             Commands::Tools(_) => "tools",
+            Commands::Doctor(_) => "doctor",
             Commands::Init(_) => "init",
             Commands::RunFlow(_) => "run-flow",
             Commands::Snapshot(_) => "snapshot",
@@ -200,6 +205,24 @@ async fn main() -> Result<()> {
         std::env::set_var("SUI_SANDBOX_DEBUG_JSON", "1");
     }
 
+    if let Commands::Doctor(cmd) = &command {
+        let result = cmd.execute(&state_file, &rpc_url, json, verbose).await;
+        if debug_json {
+            if let Err(err) = &result {
+                eprintln!(
+                    "{}",
+                    sandbox_cli::output::format_debug_diagnostic_json(
+                        &command_name,
+                        err,
+                        None,
+                        sandbox_cli::output::default_diagnostic_hints(&command_name, err),
+                    )
+                );
+            }
+        }
+        return result;
+    }
+
     // Load or create session state
     let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
 
@@ -216,6 +239,7 @@ async fn main() -> Result<()> {
         Commands::Bridge(cmd) => cmd.execute(json),
         Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Tools(cmd) => cmd.execute(json).await,
+        Commands::Doctor(_) => unreachable!(),
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,

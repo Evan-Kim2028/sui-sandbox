@@ -12,7 +12,7 @@ use sui_state_fetcher::{
     ReplayStateProvider, VersionedCache,
 };
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::GrpcClient;
+use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient};
 
 use super::ReplaySource;
 
@@ -35,31 +35,47 @@ pub(crate) async fn build_historical_state_provider(
     let cache = Arc::new(VersionedCache::with_storage(cache_dir(&network))?);
 
     let dotenv = load_dotenv_vars();
-    let api_key = std::env::var("SUI_GRPC_API_KEY")
+    let explicit_endpoint = std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT")
         .ok()
-        .or_else(|| dotenv.get("SUI_GRPC_API_KEY").cloned());
-    let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
-        .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
-        .or_else(|_| {
-            dotenv
-                .get("SUI_GRPC_ENDPOINT")
-                .cloned()
-                .ok_or(std::env::VarError::NotPresent)
-        })
-        .or_else(|_| {
-            dotenv
-                .get("SUI_GRPC_ARCHIVE_ENDPOINT")
-                .cloned()
-                .ok_or(std::env::VarError::NotPresent)
-        })
-        .or_else(|_| {
-            dotenv
-                .get("SUI_GRPC_HISTORICAL_ENDPOINT")
-                .cloned()
-                .ok_or(std::env::VarError::NotPresent)
-        })
-        .unwrap_or_else(|_| state.rpc_url.clone());
+        .or_else(|| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT").ok())
+        .or_else(|| std::env::var("SUI_GRPC_ENDPOINT").ok())
+        .or_else(|| dotenv.get("SUI_GRPC_HISTORICAL_ENDPOINT").cloned())
+        .or_else(|| dotenv.get("SUI_GRPC_ARCHIVE_ENDPOINT").cloned())
+        .or_else(|| dotenv.get("SUI_GRPC_ENDPOINT").cloned())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let explicit_api_key = std::env::var("SUI_GRPC_API_KEY")
+        .ok()
+        .or_else(|| dotenv.get("SUI_GRPC_API_KEY").cloned())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let surflux_api_key = std::env::var("SURFLUX_API_KEY")
+        .ok()
+        .or_else(|| dotenv.get("SURFLUX_API_KEY").cloned())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let (grpc_endpoint, api_key) = if let Some(endpoint) = explicit_endpoint {
+        let key = explicit_api_key.or_else(|| {
+            if endpoint.to_ascii_lowercase().contains("surflux.dev") {
+                surflux_api_key.clone()
+            } else {
+                None
+            }
+        });
+        (endpoint, key)
+    } else {
+        let (endpoint, key_from_env) = historical_endpoint_and_api_key_from_env();
+        let key = key_from_env.or_else(|| {
+            if endpoint.to_ascii_lowercase().contains("surflux.dev") {
+                surflux_api_key
+            } else {
+                explicit_api_key
+            }
+        });
+        (endpoint, key)
+    };
 
     if verbose && grpc_endpoint != state.rpc_url {
         eprintln!("[grpc] using endpoint override {}", grpc_endpoint);

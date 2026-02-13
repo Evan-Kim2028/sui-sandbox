@@ -3,6 +3,7 @@
 #[cfg(feature = "analysis")]
 pub mod analyze;
 pub mod bridge;
+pub mod doctor;
 pub mod fetch;
 pub mod flow;
 pub mod import;

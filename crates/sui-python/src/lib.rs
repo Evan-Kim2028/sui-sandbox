@@ -259,11 +259,8 @@ fn replay_inner(
         let gql_endpoint = resolve_graphql_endpoint(rpc_url);
         graphql_client = GraphQLClient::new(&gql_endpoint);
 
-        let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-            .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
-            .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
-            .unwrap_or_else(|_| rpc_url.to_string());
-        let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+        let (grpc_endpoint, api_key) =
+            sui_transport::grpc::historical_endpoint_and_api_key_from_env();
 
         let provider = rt.block_on(async {
             let grpc = sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key)
