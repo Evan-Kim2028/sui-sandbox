@@ -99,7 +99,6 @@ jobs:
     name: Publish to PyPI
     needs: [build, sdist]
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       id-token: write  # Required for trusted publishing
     steps:
@@ -112,3 +111,5 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
