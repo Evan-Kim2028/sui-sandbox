@@ -171,7 +171,7 @@ Pre-built wheels are available for:
 - macOS x86_64 (10.12+)
 - macOS aarch64 (11.0+)
 
-Building from source requires Rust 1.75+ and Python 3.9+.
+Building from source requires Rust 1.80+ and Python 3.9+.
 
 ## License
 
