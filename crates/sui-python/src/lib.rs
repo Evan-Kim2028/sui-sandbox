@@ -6,9 +6,8 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -21,14 +20,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use sui_package_extractor::bytecode::{
-    build_bytecode_interface_value_from_compiled_modules, extract_sanity_counts,
-    read_local_compiled_modules,
+    build_bytecode_interface_value_from_compiled_modules, read_local_compiled_modules,
+    resolve_local_package_id,
 };
-use sui_state_fetcher::checkpoint_to_replay_state;
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::network::{infer_network, resolve_graphql_endpoint};
-use sui_transport::walrus::{self, WalrusClient};
-use sui_types::transaction::TransactionDataAPI;
+use sui_transport::network::resolve_graphql_endpoint;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,113 +43,86 @@ fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObj
     Ok(result.into())
 }
 
-// ---------------------------------------------------------------------------
-// Tokio runtime
-// ---------------------------------------------------------------------------
+/// Run a `sui-sandbox --json` CLI command and return parsed JSON output.
+fn run_cli(args: &[&str]) -> Result<serde_json::Value> {
+    let mut cmd = std::process::Command::new("sui-sandbox");
+    cmd.arg("--json");
+    for arg in args {
+        cmd.arg(arg);
+    }
 
-fn runtime() -> Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("Failed to create tokio runtime")
+    let output = cmd
+        .output()
+        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            return Ok(v);
+        }
+        return Err(anyhow!(
+            "sui-sandbox failed (exit {}): {}",
+            output.status,
+            stderr
+        ));
+    }
+
+    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
 }
 
 // ---------------------------------------------------------------------------
-// analyze_package
+// analyze_package (subprocess wrapper)
 // ---------------------------------------------------------------------------
 
-/// Result of analyzing a Move package.
 fn analyze_package_inner(
     package_id: Option<&str>,
     bytecode_dir: Option<&str>,
     rpc_url: &str,
     list_modules: bool,
 ) -> Result<serde_json::Value> {
-    if package_id.is_none() && bytecode_dir.is_none() {
-        return Err(anyhow!(
-            "Either package_id or bytecode_dir must be provided"
-        ));
+    let mut args: Vec<&str> = vec!["analyze", "package"];
+    if let Some(pkg) = package_id {
+        args.push("--package-id");
+        args.push(pkg);
     }
-    if package_id.is_some() && bytecode_dir.is_some() {
-        return Err(anyhow!(
-            "Provide either package_id or bytecode_dir, not both"
-        ));
-    }
-
     if let Some(dir) = bytecode_dir {
-        let dir_path = PathBuf::from(dir);
-        let compiled = read_local_compiled_modules(&dir_path)?;
-        let pkg_id = dir_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("local")
-            .to_string();
-        let (module_names, interface_value) =
-            build_bytecode_interface_value_from_compiled_modules(&pkg_id, &compiled)?;
-        let counts = extract_sanity_counts(
-            interface_value
-                .get("modules")
-                .unwrap_or(&serde_json::Value::Null),
-        );
-
-        let mut result = serde_json::json!({
-            "source": "local-bytecode",
-            "package_id": pkg_id,
-            "modules": counts.modules,
-            "structs": counts.structs,
-            "functions": counts.functions,
-            "key_structs": counts.key_structs,
-        });
-        if list_modules {
-            result["module_names"] = serde_json::json!(module_names);
-        }
-        return Ok(result);
+        args.push("--bytecode-dir");
+        args.push(dir);
     }
-
-    // Remote package via GraphQL
-    let pkg_id_str = package_id.unwrap();
-    let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-    let graphql = GraphQLClient::new(&graphql_endpoint);
-    let pkg = graphql
-        .fetch_package(pkg_id_str)
-        .with_context(|| format!("fetch package {}", pkg_id_str))?;
-
-    let mut compiled_modules = Vec::with_capacity(pkg.modules.len());
-    let mut names = Vec::with_capacity(pkg.modules.len());
-    for module in pkg.modules {
-        names.push(module.name.clone());
-        let Some(b64) = module.bytecode_base64 else {
-            continue;
-        };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("decode module bytecode")?;
-        let compiled =
-            CompiledModule::deserialize_with_defaults(&bytes).context("deserialize module")?;
-        compiled_modules.push(compiled);
-    }
-    names.sort();
-
-    let (_, interface_value) =
-        build_bytecode_interface_value_from_compiled_modules(&pkg.address, &compiled_modules)?;
-    let counts = extract_sanity_counts(
-        interface_value
-            .get("modules")
-            .unwrap_or(&serde_json::Value::Null),
-    );
-
-    let mut result = serde_json::json!({
-        "source": "graphql",
-        "package_id": pkg.address,
-        "modules": counts.modules,
-        "structs": counts.structs,
-        "functions": counts.functions,
-        "key_structs": counts.key_structs,
-    });
     if list_modules {
-        result["module_names"] = serde_json::json!(names);
+        args.push("--list-modules");
     }
-    Ok(result)
+
+    let mut cmd = std::process::Command::new("sui-sandbox");
+    cmd.arg("--json");
+    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
+        cmd.arg("--rpc-url").arg(rpc_url);
+    }
+    for arg in &args {
+        cmd.arg(arg);
+    }
+
+    let output = cmd
+        .output()
+        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            return Ok(v);
+        }
+        return Err(anyhow!(
+            "sui-sandbox analyze package failed (exit {}): {}",
+            output.status,
+            stderr
+        ));
+    }
+
+    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
 }
 
 /// Extract the full interface JSON (all structs, functions, type params, etc.)
@@ -176,11 +145,7 @@ fn extract_interface_inner(
     if let Some(dir) = bytecode_dir {
         let dir_path = PathBuf::from(dir);
         let compiled = read_local_compiled_modules(&dir_path)?;
-        let pkg_id = dir_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("local")
-            .to_string();
+        let pkg_id = resolve_local_package_id(&dir_path)?;
         let (_, interface_value) =
             build_bytecode_interface_value_from_compiled_modules(&pkg_id, &compiled)?;
         return Ok(interface_value);
@@ -193,18 +158,14 @@ fn extract_interface_inner(
         .fetch_package(pkg_id_str)
         .with_context(|| format!("fetch package {}", pkg_id_str))?;
 
-    let mut compiled_modules = Vec::with_capacity(pkg.modules.len());
-    for module in pkg.modules {
-        let Some(b64) = module.bytecode_base64 else {
-            continue;
-        };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("decode module bytecode")?;
-        let compiled =
-            CompiledModule::deserialize_with_defaults(&bytes).context("deserialize module")?;
-        compiled_modules.push(compiled);
-    }
+    let raw_modules = sui_transport::decode_graphql_modules(pkg_id_str, &pkg.modules)?;
+    let compiled_modules: Vec<CompiledModule> = raw_modules
+        .into_iter()
+        .map(|(name, bytes)| {
+            CompiledModule::deserialize_with_defaults(&bytes)
+                .map_err(|e| anyhow!("deserialize {}::{}: {:?}", pkg_id_str, name, e))
+        })
+        .collect::<Result<_>>()?;
 
     let (_, interface_value) =
         build_bytecode_interface_value_from_compiled_modules(pkg_id_str, &compiled_modules)?;
@@ -227,320 +188,52 @@ fn analyze_replay_inner(
     no_prefetch: bool,
     verbose: bool,
 ) -> Result<serde_json::Value> {
-    let rt = runtime()?;
-    rt.block_on(async {
-        let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-        let network = infer_network(rpc_url, &graphql_endpoint);
+    let depth_str = prefetch_depth.to_string();
+    let limit_str = prefetch_limit.to_string();
 
-        // Build cache directory
-        let cache_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".sui-sandbox")
-            .join("cache")
-            .join(&network);
-        let cache = Arc::new(
-            sui_state_fetcher::VersionedCache::with_storage(cache_dir)
-                .context("Failed to create cache")?,
-        );
-
-        // Read gRPC config from env (same as CLI)
-        let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-            .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
-            .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
-            .unwrap_or_else(|_| rpc_url.to_string());
-        let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
-
-        let grpc_client =
-            sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key).await?;
-        let graphql_client = GraphQLClient::new(&graphql_endpoint);
-
-        let mut provider =
-            sui_state_fetcher::HistoricalStateProvider::with_clients(grpc_client, graphql_client)
-                .with_cache(cache);
-
-        if source == "walrus" || source == "hybrid" {
-            provider = provider
-                .with_walrus_from_env()
-                .with_local_object_store_from_env();
-        }
-
-        let provider = Arc::new(provider);
-
-        let replay_config = sui_state_fetcher::ReplayStateConfig {
-            prefetch_dynamic_fields: !no_prefetch,
-            df_depth: prefetch_depth,
-            df_limit: prefetch_limit,
-            auto_system_objects,
-        };
-
-        let replay_state = provider
-            .replay_state_builder()
-            .with_config(replay_config)
-            .build(digest)
-            .await
-            .context("Failed to fetch replay state")?;
-
-        // Summarize inputs
-        let mut input_summary = serde_json::json!({
-            "total": replay_state.transaction.inputs.len(),
-            "pure": 0,
-            "owned": 0,
-            "shared_mutable": 0,
-            "shared_immutable": 0,
-            "immutable": 0,
-            "receiving": 0,
-        });
-        let mut input_objects: Vec<serde_json::Value> = Vec::new();
-
-        for input in &replay_state.transaction.inputs {
-            match input {
-                sui_sandbox_types::TransactionInput::Pure { .. } => {
-                    input_summary["pure"] =
-                        serde_json::json!(input_summary["pure"].as_u64().unwrap_or(0) + 1);
-                }
-                sui_sandbox_types::TransactionInput::Object { object_id, .. } => {
-                    input_summary["owned"] =
-                        serde_json::json!(input_summary["owned"].as_u64().unwrap_or(0) + 1);
-                    if verbose {
-                        input_objects.push(serde_json::json!({
-                            "id": object_id,
-                            "kind": "owned",
-                        }));
-                    }
-                }
-                sui_sandbox_types::TransactionInput::SharedObject {
-                    object_id, mutable, ..
-                } => {
-                    if *mutable {
-                        input_summary["shared_mutable"] = serde_json::json!(
-                            input_summary["shared_mutable"].as_u64().unwrap_or(0) + 1
-                        );
-                    } else {
-                        input_summary["shared_immutable"] = serde_json::json!(
-                            input_summary["shared_immutable"].as_u64().unwrap_or(0) + 1
-                        );
-                    }
-                    if verbose {
-                        input_objects.push(serde_json::json!({
-                            "id": object_id,
-                            "kind": "shared",
-                            "mutable": mutable,
-                        }));
-                    }
-                }
-                sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
-                    input_summary["immutable"] =
-                        serde_json::json!(input_summary["immutable"].as_u64().unwrap_or(0) + 1);
-                    if verbose {
-                        input_objects.push(serde_json::json!({
-                            "id": object_id,
-                            "kind": "immutable",
-                        }));
-                    }
-                }
-                sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => {
-                    input_summary["receiving"] =
-                        serde_json::json!(input_summary["receiving"].as_u64().unwrap_or(0) + 1);
-                    if verbose {
-                        input_objects.push(serde_json::json!({
-                            "id": object_id,
-                            "kind": "receiving",
-                        }));
-                    }
-                }
-            }
-        }
-
-        // Summarize commands
-        let mut command_summaries: Vec<serde_json::Value> = Vec::new();
-        for cmd in &replay_state.transaction.commands {
-            let summary = match cmd {
-                sui_sandbox_types::PtbCommand::MoveCall {
-                    package,
-                    module,
-                    function,
-                    type_arguments,
-                    arguments,
-                } => serde_json::json!({
-                    "kind": "MoveCall",
-                    "target": format!("{}::{}::{}", package, module, function),
-                    "type_args": type_arguments.len(),
-                    "args": arguments.len(),
-                }),
-                sui_sandbox_types::PtbCommand::SplitCoins { amounts, .. } => serde_json::json!({
-                    "kind": "SplitCoins",
-                    "type_args": 0,
-                    "args": 1 + amounts.len(),
-                }),
-                sui_sandbox_types::PtbCommand::MergeCoins { sources, .. } => serde_json::json!({
-                    "kind": "MergeCoins",
-                    "type_args": 0,
-                    "args": 1 + sources.len(),
-                }),
-                sui_sandbox_types::PtbCommand::TransferObjects { objects, .. } => {
-                    serde_json::json!({
-                        "kind": "TransferObjects",
-                        "type_args": 0,
-                        "args": 1 + objects.len(),
-                    })
-                }
-                sui_sandbox_types::PtbCommand::MakeMoveVec { elements, type_arg } => {
-                    serde_json::json!({
-                        "kind": "MakeMoveVec",
-                        "type_args": usize::from(type_arg.is_some()),
-                        "args": elements.len(),
-                    })
-                }
-                sui_sandbox_types::PtbCommand::Publish { dependencies, .. } => {
-                    serde_json::json!({
-                        "kind": "Publish",
-                        "type_args": 0,
-                        "args": dependencies.len(),
-                    })
-                }
-                sui_sandbox_types::PtbCommand::Upgrade { package, .. } => serde_json::json!({
-                    "kind": "Upgrade",
-                    "target": package,
-                    "type_args": 0,
-                    "args": 1,
-                }),
-            };
-            command_summaries.push(summary);
-        }
-
-        // Count modules
-        let mut modules_total = 0usize;
-        for pkg in replay_state.packages.values() {
-            modules_total += pkg.modules.len();
-        }
-
-        // Check missing inputs / packages
-        let mut missing_inputs = Vec::new();
-        for input in &replay_state.transaction.inputs {
-            let id = match input {
-                sui_sandbox_types::TransactionInput::Object { object_id, .. } => Some(object_id),
-                sui_sandbox_types::TransactionInput::SharedObject { object_id, .. } => {
-                    Some(object_id)
-                }
-                sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
-                    Some(object_id)
-                }
-                sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => Some(object_id),
-                sui_sandbox_types::TransactionInput::Pure { .. } => None,
-            };
-            if let Some(id) = id {
-                if let Ok(addr) = AccountAddress::from_hex_literal(id) {
-                    if !replay_state.objects.contains_key(&addr) {
-                        missing_inputs.push(addr.to_hex_literal());
-                    }
-                }
-            }
-        }
-
-        let mut required_packages: BTreeSet<AccountAddress> = BTreeSet::new();
-        for cmd in &replay_state.transaction.commands {
-            if let sui_sandbox_types::PtbCommand::MoveCall {
-                package,
-                type_arguments,
-                ..
-            } = cmd
-            {
-                if let Ok(addr) = AccountAddress::from_hex_literal(package) {
-                    required_packages.insert(addr);
-                }
-                for ty in type_arguments {
-                    for pkg in sui_sandbox_core::utilities::extract_package_ids_from_type(ty) {
-                        if let Ok(addr) = AccountAddress::from_hex_literal(&pkg) {
-                            required_packages.insert(addr);
-                        }
-                    }
-                }
-            }
-        }
-        let mut missing_packages = Vec::new();
-        for addr in &required_packages {
-            if !replay_state.packages.contains_key(addr) {
-                missing_packages.push(addr.to_hex_literal());
-            }
-        }
-
-        // Object types (verbose)
-        let object_types: Option<Vec<serde_json::Value>> = if verbose {
-            Some(
-                replay_state
-                    .objects
-                    .values()
-                    .map(|obj| {
-                        serde_json::json!({
-                            "id": obj.id.to_hex_literal(),
-                            "type_tag": obj.type_tag,
-                            "version": obj.version,
-                            "shared": obj.is_shared,
-                            "immutable": obj.is_immutable,
-                        })
-                    })
-                    .collect(),
-            )
+    let mut cmd = std::process::Command::new("sui-sandbox");
+    cmd.arg("--json");
+    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
+        cmd.arg("--rpc-url").arg(rpc_url);
+    }
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    cmd.arg("analyze").arg("replay").arg(digest);
+    cmd.arg("--source").arg(source);
+    cmd.arg("--allow-fallback")
+        .arg(if allow_fallback { "true" } else { "false" });
+    cmd.arg("--prefetch-depth").arg(&depth_str);
+    cmd.arg("--prefetch-limit").arg(&limit_str);
+    cmd.arg("--auto-system-objects")
+        .arg(if auto_system_objects {
+            "true"
         } else {
-            None
-        };
-
-        let package_ids: Option<Vec<String>> = if verbose {
-            Some(
-                replay_state
-                    .packages
-                    .keys()
-                    .map(|id| id.to_hex_literal())
-                    .collect(),
-            )
-        } else {
-            None
-        };
-
-        let mut result = serde_json::json!({
-            "digest": replay_state.transaction.digest.0,
-            "sender": replay_state.transaction.sender.to_hex_literal(),
-            "commands": replay_state.transaction.commands.len(),
-            "inputs": replay_state.transaction.inputs.len(),
-            "objects": replay_state.objects.len(),
-            "packages": replay_state.packages.len(),
-            "modules": modules_total,
-            "input_summary": input_summary,
-            "command_summaries": command_summaries,
-            "hydration": {
-                "source": source,
-                "allow_fallback": allow_fallback,
-                "auto_system_objects": auto_system_objects,
-                "dynamic_field_prefetch": !no_prefetch,
-                "prefetch_depth": prefetch_depth,
-                "prefetch_limit": prefetch_limit,
-            },
-            "missing_inputs": missing_inputs,
-            "missing_packages": missing_packages,
-            "epoch": replay_state.epoch,
-            "protocol_version": replay_state.protocol_version,
+            "false"
         });
+    if no_prefetch {
+        cmd.arg("--no-prefetch");
+    }
 
-        if let Some(cp) = replay_state.checkpoint {
-            result["checkpoint"] = serde_json::json!(cp);
-        }
-        if let Some(rgp) = replay_state.reference_gas_price {
-            result["reference_gas_price"] = serde_json::json!(rgp);
-        }
-        if verbose {
-            if let Some(objs) = input_objects.into() {
-                result["input_objects"] = serde_json::json!(objs);
-            }
-            if let Some(types) = object_types {
-                result["object_types"] = serde_json::json!(types);
-            }
-            if let Some(ids) = package_ids {
-                result["package_ids"] = serde_json::json!(ids);
-            }
-        }
+    let output = cmd
+        .output()
+        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
 
-        Ok(result)
-    })
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            return Ok(v);
+        }
+        return Err(anyhow!(
+            "sui-sandbox analyze replay failed (exit {}): {}",
+            output.status,
+            stderr
+        ));
+    }
+
+    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
 }
 
 // ---------------------------------------------------------------------------
@@ -553,20 +246,17 @@ fn replay_inner(
     compare: bool,
     verbose: bool,
 ) -> Result<serde_json::Value> {
-    // Use the CLI binary as a subprocess — the VM harness setup is too tightly
-    // coupled to the binary's internal modules to replicate here cleanly.
-    // This gives us the exact same behavior as `sui-sandbox replay --json`.
     let mut cmd = std::process::Command::new("sui-sandbox");
-    cmd.arg("replay")
-        .arg(digest)
-        .arg("--json")
-        .arg("--rpc-url")
-        .arg(rpc_url);
-    if compare {
-        cmd.arg("--compare");
+    cmd.arg("--json");
+    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
+        cmd.arg("--rpc-url").arg(rpc_url);
     }
     if verbose {
         cmd.arg("--verbose");
+    }
+    cmd.arg("replay").arg(digest);
+    if compare {
+        cmd.arg("--compare");
     }
 
     let output = cmd
@@ -577,7 +267,6 @@ fn replay_inner(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        // Try to extract JSON from stderr or stdout
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
             return Ok(v);
         }
@@ -592,227 +281,40 @@ fn replay_inner(
 }
 
 // ---------------------------------------------------------------------------
-// Walrus functions
+// Walrus functions (subprocess wrappers)
 // ---------------------------------------------------------------------------
 
-/// Get the latest checkpoint number from Walrus.
 fn get_latest_checkpoint_inner() -> Result<u64> {
-    let client = WalrusClient::mainnet();
-    client.get_latest_checkpoint()
+    let value = run_cli(&["fetch", "latest-checkpoint"])?;
+    value["checkpoint"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("missing 'checkpoint' in CLI output"))
 }
 
-/// Fetch a checkpoint from Walrus and return a summary.
 fn get_checkpoint_inner(checkpoint_num: u64) -> Result<serde_json::Value> {
-    let client = WalrusClient::mainnet();
-    let checkpoint_data = client.get_checkpoint(checkpoint_num)?;
-
-    let seq = checkpoint_data.checkpoint_summary.sequence_number;
-    let epoch = checkpoint_data.checkpoint_summary.epoch;
-    let timestamp_ms = checkpoint_data.checkpoint_summary.timestamp_ms;
-
-    // Extract transaction digests and summaries
-    let mut transactions = Vec::new();
-    for tx in &checkpoint_data.transactions {
-        let digest = tx.transaction.digest().to_string();
-        let tx_data = tx.transaction.data().transaction_data();
-        let sender = format!("{}", tx_data.sender());
-
-        // Count commands
-        let command_count = match tx_data.kind() {
-            sui_types::transaction::TransactionKind::ProgrammableTransaction(ptb) => {
-                ptb.commands.len()
-            }
-            _ => 0,
-        };
-
-        // Count input/output objects
-        let input_objects = tx.input_objects.len();
-        let output_objects = tx.output_objects.len();
-
-        transactions.push(serde_json::json!({
-            "digest": digest,
-            "sender": sender,
-            "commands": command_count,
-            "input_objects": input_objects,
-            "output_objects": output_objects,
-        }));
-    }
-
-    // Extract object versions
-    let versions = walrus::extract_object_versions_from_checkpoint(&checkpoint_data);
-
-    Ok(serde_json::json!({
-        "checkpoint": seq,
-        "epoch": epoch,
-        "timestamp_ms": timestamp_ms,
-        "transaction_count": checkpoint_data.transactions.len(),
-        "transactions": transactions,
-        "object_versions_count": versions.len(),
-    }))
+    let seq_str = checkpoint_num.to_string();
+    run_cli(&["fetch", "checkpoint", &seq_str])
 }
 
-/// Walrus-first analyze replay: fetch checkpoint, convert to replay state, summarize.
-/// No gRPC or API keys needed.
 fn analyze_replay_walrus_inner(
     digest: &str,
     checkpoint_num: u64,
     verbose: bool,
 ) -> Result<serde_json::Value> {
-    let client = WalrusClient::mainnet();
-    let checkpoint_data = client.get_checkpoint(checkpoint_num)?;
-
-    let replay_state = checkpoint_to_replay_state(&checkpoint_data, digest)?;
-
-    // Build the same summary structure as analyze_replay_inner
-    let mut input_summary = serde_json::json!({
-        "total": replay_state.transaction.inputs.len(),
-        "pure": 0, "owned": 0, "shared_mutable": 0,
-        "shared_immutable": 0, "immutable": 0, "receiving": 0,
-    });
-    let mut input_objects: Vec<serde_json::Value> = Vec::new();
-
-    for input in &replay_state.transaction.inputs {
-        match input {
-            sui_sandbox_types::TransactionInput::Pure { .. } => {
-                input_summary["pure"] =
-                    serde_json::json!(input_summary["pure"].as_u64().unwrap_or(0) + 1);
-            }
-            sui_sandbox_types::TransactionInput::Object { object_id, .. } => {
-                input_summary["owned"] =
-                    serde_json::json!(input_summary["owned"].as_u64().unwrap_or(0) + 1);
-                if verbose {
-                    input_objects.push(serde_json::json!({"id": object_id, "kind": "owned"}));
-                }
-            }
-            sui_sandbox_types::TransactionInput::SharedObject {
-                object_id, mutable, ..
-            } => {
-                if *mutable {
-                    input_summary["shared_mutable"] = serde_json::json!(
-                        input_summary["shared_mutable"].as_u64().unwrap_or(0) + 1
-                    );
-                } else {
-                    input_summary["shared_immutable"] = serde_json::json!(
-                        input_summary["shared_immutable"].as_u64().unwrap_or(0) + 1
-                    );
-                }
-                if verbose {
-                    input_objects.push(
-                        serde_json::json!({"id": object_id, "kind": "shared", "mutable": mutable}),
-                    );
-                }
-            }
-            sui_sandbox_types::TransactionInput::ImmutableObject { object_id, .. } => {
-                input_summary["immutable"] =
-                    serde_json::json!(input_summary["immutable"].as_u64().unwrap_or(0) + 1);
-                if verbose {
-                    input_objects.push(serde_json::json!({"id": object_id, "kind": "immutable"}));
-                }
-            }
-            sui_sandbox_types::TransactionInput::Receiving { object_id, .. } => {
-                input_summary["receiving"] =
-                    serde_json::json!(input_summary["receiving"].as_u64().unwrap_or(0) + 1);
-                if verbose {
-                    input_objects.push(serde_json::json!({"id": object_id, "kind": "receiving"}));
-                }
-            }
-        }
-    }
-
-    // Summarize commands
-    let mut command_summaries: Vec<serde_json::Value> = Vec::new();
-    for cmd in &replay_state.transaction.commands {
-        let summary = match cmd {
-            sui_sandbox_types::PtbCommand::MoveCall {
-                package,
-                module,
-                function,
-                type_arguments,
-                arguments,
-            } => serde_json::json!({
-                "kind": "MoveCall",
-                "target": format!("{}::{}::{}", package, module, function),
-                "type_args": type_arguments.len(),
-                "args": arguments.len(),
-            }),
-            sui_sandbox_types::PtbCommand::SplitCoins { amounts, .. } => serde_json::json!({
-                "kind": "SplitCoins", "type_args": 0, "args": 1 + amounts.len(),
-            }),
-            sui_sandbox_types::PtbCommand::MergeCoins { sources, .. } => serde_json::json!({
-                "kind": "MergeCoins", "type_args": 0, "args": 1 + sources.len(),
-            }),
-            sui_sandbox_types::PtbCommand::TransferObjects { objects, .. } => serde_json::json!({
-                "kind": "TransferObjects", "type_args": 0, "args": 1 + objects.len(),
-            }),
-            sui_sandbox_types::PtbCommand::MakeMoveVec { elements, type_arg } => {
-                serde_json::json!({
-                    "kind": "MakeMoveVec",
-                    "type_args": usize::from(type_arg.is_some()),
-                    "args": elements.len(),
-                })
-            }
-            sui_sandbox_types::PtbCommand::Publish { dependencies, .. } => serde_json::json!({
-                "kind": "Publish", "type_args": 0, "args": dependencies.len(),
-            }),
-            sui_sandbox_types::PtbCommand::Upgrade { package, .. } => serde_json::json!({
-                "kind": "Upgrade", "target": package, "type_args": 0, "args": 1,
-            }),
-        };
-        command_summaries.push(summary);
-    }
-
-    let mut modules_total = 0usize;
-    for pkg in replay_state.packages.values() {
-        modules_total += pkg.modules.len();
-    }
-
-    let mut result = serde_json::json!({
-        "digest": replay_state.transaction.digest.0,
-        "sender": replay_state.transaction.sender.to_hex_literal(),
-        "commands": replay_state.transaction.commands.len(),
-        "inputs": replay_state.transaction.inputs.len(),
-        "objects": replay_state.objects.len(),
-        "packages": replay_state.packages.len(),
-        "modules": modules_total,
-        "input_summary": input_summary,
-        "command_summaries": command_summaries,
-        "hydration": {
-            "source": "walrus",
-            "checkpoint": checkpoint_num,
-        },
-        "epoch": replay_state.epoch,
-        "protocol_version": replay_state.protocol_version,
-        "checkpoint": checkpoint_num,
-    });
-
+    let cp_str = checkpoint_num.to_string();
+    let mut args = vec![
+        "analyze",
+        "replay",
+        digest,
+        "--source",
+        "walrus",
+        "--checkpoint",
+        &cp_str,
+    ];
     if verbose {
-        if !input_objects.is_empty() {
-            result["input_objects"] = serde_json::json!(input_objects);
-        }
-        let package_ids: Vec<String> = replay_state
-            .packages
-            .keys()
-            .map(|id| id.to_hex_literal())
-            .collect();
-        result["package_ids"] = serde_json::json!(package_ids);
-
-        let object_types: Vec<serde_json::Value> = replay_state
-            .objects
-            .values()
-            .map(|obj| {
-                serde_json::json!({
-                    "id": obj.id.to_hex_literal(),
-                    "type_tag": obj.type_tag,
-                    "version": obj.version,
-                    "shared": obj.is_shared,
-                    "immutable": obj.is_immutable,
-                })
-            })
-            .collect();
-        result["object_types"] = serde_json::json!(object_types);
+        args.insert(0, "--verbose");
     }
-
-    Ok(result)
+    run_cli(&args)
 }
 
 // ---------------------------------------------------------------------------
@@ -836,18 +338,7 @@ fn json_to_bcs_inner(
 // call_view_function: Execute a view function via local Move VM
 // ---------------------------------------------------------------------------
 
-/// Extract dependency package addresses from compiled module bytecodes.
-fn extract_dependency_addrs(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {
-    let mut deps = HashSet::new();
-    for (_, bytes) in modules {
-        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
-            for dep_module_id in module.immediate_dependencies() {
-                deps.insert(*dep_module_id.address());
-            }
-        }
-    }
-    deps.into_iter().collect()
-}
+use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
 
 /// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
 fn fetch_package_modules(
@@ -857,18 +348,7 @@ fn fetch_package_modules(
     let pkg = graphql
         .fetch_package(package_id)
         .with_context(|| format!("fetch package {}", package_id))?;
-
-    let mut modules = Vec::with_capacity(pkg.modules.len());
-    for module in pkg.modules {
-        let Some(b64) = module.bytecode_base64 else {
-            continue;
-        };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("decode module bytecode")?;
-        modules.push((module.name.clone(), bytes));
-    }
-    Ok(modules)
+    sui_transport::decode_graphql_modules(package_id, &pkg.modules)
 }
 
 /// Framework package addresses that are bundled into LocalModuleResolver::with_sui_framework().
@@ -1115,24 +595,34 @@ fn call_view_function_inner(
     let effects = executor.execute_commands(&commands)?;
 
     // 8. Build result
-    let mut return_values_b64 = Vec::new();
-    let mut return_type_tags: Vec<Option<String>> = Vec::new();
+    let return_values: Vec<Vec<String>> = effects
+        .return_values
+        .iter()
+        .map(|cmd_returns| {
+            cmd_returns
+                .iter()
+                .map(|rv_bytes| {
+                    base64::engine::general_purpose::STANDARD.encode(rv_bytes)
+                })
+                .collect()
+        })
+        .collect();
 
-    if let Some(cmd_returns) = effects.return_values.first() {
-        for rv_bytes in cmd_returns {
-            return_values_b64.push(base64::engine::general_purpose::STANDARD.encode(rv_bytes));
-        }
-    }
-    if let Some(cmd_types) = effects.return_type_tags.first() {
-        for type_tag in cmd_types {
-            return_type_tags.push(type_tag.as_ref().map(|t| t.to_canonical_string(true)));
-        }
-    }
+    let return_type_tags: Vec<Vec<Option<String>>> = effects
+        .return_type_tags
+        .iter()
+        .map(|cmd_types| {
+            cmd_types
+                .iter()
+                .map(|type_tag| type_tag.as_ref().map(|t| t.to_canonical_string(true)))
+                .collect()
+        })
+        .collect();
 
     Ok(serde_json::json!({
         "success": effects.success,
         "error": effects.error,
-        "return_values": return_values_b64,
+        "return_values": return_values,
         "return_type_tags": return_type_tags,
         "gas_used": effects.gas_used,
     }))
@@ -1146,60 +636,34 @@ fn fetch_package_bytecodes_inner(
     package_id: &str,
     resolve_deps: bool,
 ) -> Result<serde_json::Value> {
-    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
-    let graphql = GraphQLClient::new(&graphql_endpoint);
-
-    let mut all_packages: HashMap<String, Vec<String>> = HashMap::new(); // pkg_id -> [base64 module bytes]
-    let mut visited = HashSet::new();
-
-    let target_addr = AccountAddress::from_hex_literal(package_id)
-        .with_context(|| format!("invalid package address: {}", package_id))?;
-
-    // Mark framework as visited for dependency resolution (but not if target IS framework)
-    let fw1 = AccountAddress::from_hex_literal("0x1").unwrap();
-    let fw2 = AccountAddress::from_hex_literal("0x2").unwrap();
-    let fw3 = AccountAddress::from_hex_literal("0x3").unwrap();
-    for fw in [fw1, fw2, fw3] {
-        if fw != target_addr {
-            visited.insert(fw);
-        }
+    let mut args = vec!["fetch", "package", package_id, "--bytecodes"];
+    if resolve_deps {
+        args.push("--with-deps");
     }
+    let result = run_cli(&args)?;
 
-    let mut to_fetch = VecDeque::new();
-    to_fetch.push_back(target_addr);
+    // Transform CLI output shape to match the Python API's expected shape.
+    // CLI returns { packages_fetched: [{ address, bytecodes: [...] }] }
+    // Python callers expect { packages: { pkg_id: [base64...] }, count: N }
+    let packages_fetched = result["packages_fetched"]
+        .as_array()
+        .ok_or_else(|| anyhow!("missing 'packages_fetched' in CLI output"))?;
 
-    while let Some(addr) = to_fetch.pop_front() {
-        if visited.contains(&addr) {
-            continue;
-        }
-        visited.insert(addr);
-
-        let hex = addr.to_hex_literal();
-        match fetch_package_modules(&graphql, &hex) {
-            Ok(modules) => {
-                if resolve_deps {
-                    for dep_addr in extract_dependency_addrs(&modules) {
-                        if !visited.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
-                            to_fetch.push_back(dep_addr);
-                        }
-                    }
-                }
-
-                let b64_modules: Vec<String> = modules
-                    .iter()
-                    .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
-                    .collect();
-                all_packages.insert(hex, b64_modules);
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
-            }
-        }
+    let mut packages = serde_json::Map::new();
+    for pkg in packages_fetched {
+        let address = pkg["address"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing 'address' in package"))?;
+        let bytecodes = pkg
+            .get("bytecodes")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
+        packages.insert(address.to_string(), bytecodes);
     }
 
     Ok(serde_json::json!({
-        "packages": all_packages,
-        "count": all_packages.len(),
+        "packages": packages,
+        "count": packages.len(),
     }))
 }
 
@@ -1417,7 +881,8 @@ fn json_to_bcs<'py>(
 ///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
 ///     fetch_deps: If True, automatically resolve transitive deps via GraphQL
 ///
-/// Returns: Dict with success, error, return_values (base64), gas_used
+/// Returns: Dict with success, error, return_values (per-command base64), return_type_tags (per-command),
+/// gas_used
 #[pyfunction]
 #[pyo3(signature = (
     package_id,
@@ -1444,7 +909,7 @@ fn call_view_function(
     fetch_deps: bool,
 ) -> PyResult<PyObject> {
     // Parse object_inputs from Python dicts
-    let mut parsed_obj_inputs: Vec<(String, Vec<u8>, String, bool)> = Vec::new();
+    let mut parsed_obj_inputs: Vec<(String, Vec<u8>, String, bool, bool)> = Vec::new();
     for dict in &object_inputs {
         let obj_id: String = dict
             .get_item("object_id")?
