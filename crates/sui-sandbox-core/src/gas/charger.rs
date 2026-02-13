@@ -336,47 +336,44 @@ pub trait StorageCallback: Send + Sync {
 pub struct StorageTrackerCallback {
     /// The storage tracker to forward events to.
     /// Uses interior mutability since callbacks may be called from immutable context.
-    tracker: std::sync::Mutex<StorageTracker>,
+    tracker: parking_lot::Mutex<StorageTracker>,
 }
 
 impl StorageTrackerCallback {
     /// Create a new callback wrapping a storage tracker.
     pub fn new(tracker: StorageTracker) -> Self {
         Self {
-            tracker: std::sync::Mutex::new(tracker),
+            tracker: parking_lot::Mutex::new(tracker),
         }
     }
 
     /// Get the accumulated storage summary.
     pub fn summary(&self) -> super::StorageSummary {
-        self.tracker.lock().unwrap().summary()
+        self.tracker.lock().summary()
     }
 
     /// Reset the tracker.
     pub fn reset(&self) {
-        self.tracker.lock().unwrap().reset();
+        self.tracker.lock().reset();
     }
 
     /// Get total storage cost accumulated.
     pub fn total_storage_cost(&self) -> u64 {
-        self.tracker.lock().unwrap().total_storage_cost()
+        self.tracker.lock().total_storage_cost()
     }
 }
 
 impl StorageCallback for StorageTrackerCallback {
     fn on_object_read(&self, _object_id: &[u8; 32], bytes: usize) {
-        self.tracker.lock().unwrap().charge_read(bytes);
+        self.tracker.lock().charge_read(bytes);
     }
 
     fn on_object_created(&self, _object_id: &[u8; 32], bytes: usize) {
-        self.tracker.lock().unwrap().charge_create(bytes);
+        self.tracker.lock().charge_create(bytes);
     }
 
     fn on_object_mutated(&self, _object_id: &[u8; 32], old_bytes: usize, new_bytes: usize) {
-        self.tracker
-            .lock()
-            .unwrap()
-            .charge_mutate(old_bytes, new_bytes);
+        self.tracker.lock().charge_mutate(old_bytes, new_bytes);
     }
 
     fn on_object_deleted(
@@ -387,7 +384,6 @@ impl StorageCallback for StorageTrackerCallback {
     ) {
         self.tracker
             .lock()
-            .unwrap()
             .charge_delete(bytes, previous_storage_cost);
     }
 }

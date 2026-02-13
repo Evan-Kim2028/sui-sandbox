@@ -532,10 +532,6 @@ pub struct ModuleAccessTrace {
     pub modules_accessed: BTreeSet<ModuleId>,
 }
 
-/// Type alias for backward compatibility.
-#[deprecated(since = "0.11.0", note = "Use ModuleAccessTrace instead")]
-pub type ExecutionTrace = ModuleAccessTrace;
-
 impl ModuleAccessTrace {
     pub fn new() -> Self {
         Self::default()

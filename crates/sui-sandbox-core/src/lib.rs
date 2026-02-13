@@ -53,9 +53,6 @@ pub mod natives;
 pub mod phases;
 pub mod sandbox_runtime;
 
-// Backward compatibility alias for renamed module
-#[deprecated(since = "0.11.0", note = "Use sandbox_runtime instead")]
-pub use sandbox_runtime as object_runtime;
 pub mod predictive_prefetch;
 pub mod ptb;
 pub mod resolver;

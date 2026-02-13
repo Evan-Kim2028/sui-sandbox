@@ -113,7 +113,7 @@ fn is_otw_struct(struct_layout: &MoveStructLayout, type_tag: &TypeTag) -> bool {
     matches!(
         type_tag,
         TypeTag::Struct(struct_tag)
-            if struct_tag.name.to_string() == struct_tag.module.to_string().to_ascii_uppercase()
+            if struct_tag.name.as_str() == struct_tag.module.as_str().to_ascii_uppercase()
     )
 }
 

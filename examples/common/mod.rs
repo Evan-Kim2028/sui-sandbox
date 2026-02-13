@@ -61,8 +61,8 @@ use tokio::runtime::Runtime;
 use anyhow::Result;
 use base64::Engine;
 use std::str::FromStr;
-use sui_sandbox_core::object_runtime::ChildFetcherFn;
 use sui_sandbox_core::resolver::LocalModuleResolver;
+use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
@@ -214,7 +214,7 @@ pub fn create_child_fetcher(
 ) -> ChildFetcherFn {
     let grpc_arc = Arc::new(grpc);
     let historical_arc = Arc::new(historical_versions);
-    let patcher_arc = Arc::new(std::sync::Mutex::new(patcher));
+    let patcher_arc = Arc::new(parking_lot::Mutex::new(patcher));
 
     Box::new(
         move |_parent_id: AccountAddress, child_id: AccountAddress| {
@@ -228,14 +228,13 @@ pub fn create_child_fetcher(
             if let Ok(Some(obj)) = result {
                 if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
                     // Apply patching if patcher is available
-                    let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                    let final_bcs = {
+                        let mut guard = patcher_arc.lock();
                         if let Some(ref mut p) = *guard {
                             p.patch_object(type_str, bcs)
                         } else {
                             bcs.clone()
                         }
-                    } else {
-                        bcs.clone()
                     };
 
                     if let Some(type_tag) = parse_type_tag(type_str) {
@@ -457,7 +456,7 @@ pub use sui_transport::graphql::GraphQLClient;
 
 use move_core_types::language_storage::TypeTag;
 use sui_prefetch::{DynamicFieldKey, PrefetchedChild};
-use sui_sandbox_core::object_runtime::KeyBasedChildFetcherFn;
+use sui_sandbox_core::sandbox_runtime::KeyBasedChildFetcherFn;
 
 type CachedObjectIndex = Arc<HashMap<String, (String, Vec<u8>)>>;
 /// Dynamic discovery cache for child objects discovered during execution.
@@ -469,11 +468,13 @@ pub struct DynamicDiscoveryCacheState {
     pub by_key: HashMap<DynamicFieldKey, PrefetchedChild>,
 }
 
-pub type DynamicDiscoveryCache = Arc<std::sync::Mutex<DynamicDiscoveryCacheState>>;
+pub type DynamicDiscoveryCache = Arc<parking_lot::Mutex<DynamicDiscoveryCacheState>>;
 
 /// Create a dynamic discovery cache for child fetching.
 pub fn create_dynamic_discovery_cache() -> DynamicDiscoveryCache {
-    Arc::new(std::sync::Mutex::new(DynamicDiscoveryCacheState::default()))
+    Arc::new(parking_lot::Mutex::new(
+        DynamicDiscoveryCacheState::default(),
+    ))
 }
 
 /// Create an enhanced child fetcher with GraphQL fallback and prefetch cache.
@@ -531,7 +532,7 @@ pub fn create_enhanced_child_fetcher_with_cache(
     let graphql_arc = Arc::new(graphql);
     let historical_arc = Arc::new(historical_versions);
     let prefetched_arc = Arc::new(prefetched.children.clone());
-    let patcher_arc = Arc::new(std::sync::Mutex::new(patcher));
+    let patcher_arc = Arc::new(parking_lot::Mutex::new(patcher));
     let discovery_cache = discovery_cache.unwrap_or_else(create_dynamic_discovery_cache);
 
     Box::new(move |parent_id: AccountAddress, child_id: AccountAddress| {
@@ -549,14 +550,13 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
             if version_ok {
                 // Apply patching if available
-                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                let final_bcs = {
+                    let mut guard = patcher_arc.lock();
                     if let Some(ref mut p) = *guard {
                         p.patch_object(type_str, bcs)
                     } else {
                         bcs.clone()
                     }
-                } else {
-                    bcs.clone()
                 };
                 if let Some(type_tag) = parse_type_tag(type_str) {
                     return Some((type_tag, final_bcs));
@@ -565,18 +565,18 @@ pub fn create_enhanced_child_fetcher_with_cache(
         }
 
         // Strategy 0.5: Check dynamic discovery cache
-        if let Ok(cache) = discovery_cache.lock() {
+        {
+            let cache = discovery_cache.lock();
             if let Some((type_str, bcs)) = cache.by_id.get(&child_id_str) {
                 if known_version.is_none() {
                     // Apply patching if available
-                    let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                    let final_bcs = {
+                        let mut guard = patcher_arc.lock();
                         if let Some(ref mut p) = *guard {
                             p.patch_object(type_str, bcs)
                         } else {
                             bcs.clone()
                         }
-                    } else {
-                        bcs.clone()
                     };
                     if let Some(type_tag) = parse_type_tag(type_str) {
                         return Some((type_tag, final_bcs));
@@ -604,14 +604,13 @@ pub fn create_enhanced_child_fetcher_with_cache(
             } else if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
                 // Version is valid (either known historical or current <= max_lamport)
                 // Apply patching if available
-                let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                let final_bcs = {
+                    let mut guard = patcher_arc.lock();
                     if let Some(ref mut p) = *guard {
                         p.patch_object(type_str, bcs)
                     } else {
                         bcs.clone()
                     }
-                } else {
-                    bcs.clone()
                 };
                 match parse_type_tag(type_str) {
                     Some(type_tag) => {
@@ -654,14 +653,13 @@ pub fn create_enhanced_child_fetcher_with_cache(
                     if let Some(type_str) = &obj.type_string {
                         if let Ok(bcs) = base64::engine::general_purpose::STANDARD.decode(bcs_b64) {
                             // Apply patching if available
-                            let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                            let final_bcs = {
+                                let mut guard = patcher_arc.lock();
                                 if let Some(ref mut p) = *guard {
                                     p.patch_object(type_str, &bcs)
                                 } else {
                                     bcs.clone()
                                 }
-                            } else {
-                                bcs.clone()
                             };
                             if let Some(type_tag) = parse_type_tag(type_str) {
                                 return Some((type_tag, final_bcs));
@@ -694,14 +692,13 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
                 if let Ok(Some(obj)) = &result {
                     if let (Some(type_str), Some(bcs)) = (&obj.type_string, &obj.bcs) {
-                        let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                        let final_bcs = {
+                            let mut guard = patcher_arc.lock();
                             if let Some(ref mut p) = *guard {
                                 p.patch_object(type_str, bcs)
                             } else {
                                 bcs.clone()
                             }
-                        } else {
-                            bcs.clone()
                         };
                         if let Some(type_tag) = parse_type_tag(type_str) {
                             return Some((type_tag, final_bcs));
@@ -807,7 +804,8 @@ pub fn create_enhanced_child_fetcher_with_cache(
 
                     if let Some((type_str, bcs)) = child_data {
                         // Cache this child for future lookups
-                        if let Ok(mut cache) = discovery_cache.lock() {
+                        {
+                            let mut cache = discovery_cache.lock();
                             cache
                                 .by_id
                                 .insert(child_obj_id.clone(), (type_str.clone(), bcs.clone()));
@@ -838,14 +836,13 @@ pub fn create_enhanced_child_fetcher_with_cache(
                         // Is this the child we're looking for?
                         if normalize_address(obj_id) == normalize_address(&child_id_str) {
                             // Apply patching if available
-                            let final_bcs = if let Ok(mut guard) = patcher_arc.lock() {
+                            let final_bcs = {
+                                let mut guard = patcher_arc.lock();
                                 if let Some(ref mut p) = *guard {
                                     p.patch_object(&type_str, &bcs)
                                 } else {
                                     bcs.clone()
                                 }
-                            } else {
-                                bcs.clone()
                             };
                             if let Some(type_tag) = parse_type_tag(&type_str) {
                                 found_result = Some((type_tag, final_bcs));
@@ -910,7 +907,8 @@ pub fn create_key_based_child_fetcher(
                 }
             }
 
-            if let Some(cache) = discovery_cache.as_ref().and_then(|c| c.lock().ok()) {
+            if let Some(ref dc) = discovery_cache {
+                let cache = dc.lock();
                 let normalized_parent = {
                     let hex = parent_str.strip_prefix("0x").unwrap_or(&parent_str);
                     format!("0x{}", hex.to_lowercase())

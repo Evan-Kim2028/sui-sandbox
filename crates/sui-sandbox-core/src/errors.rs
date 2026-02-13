@@ -852,10 +852,6 @@ pub struct ExecutionDiagnostics {
     pub duration_ms: Option<u64>,
 }
 
-/// Type alias for backward compatibility.
-#[deprecated(since = "0.11.0", note = "Use ExecutionDiagnostics instead")]
-pub type ExecutionTrace = ExecutionDiagnostics;
-
 /// Information about a function call during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {

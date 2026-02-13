@@ -2,7 +2,7 @@
 //!
 //! Test coverage areas:
 //! - SimulationConfig: default, strict, builder methods, epoch advancement
-//! - ExecutionTrace: module access tracking, package filtering
+//! - ModuleAccessTrace: module access tracking, package filtering
 //! - ExecutionOutput: return values, mutable references, gas estimation
 //! - MeteredGasMeter: budget enforcement, out of gas errors
 //! - VMHarness: creation, execution, error handling, dynamic fields
@@ -15,9 +15,8 @@ mod common;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::{ModuleId, TypeTag};
 
-#[allow(deprecated)]
 use sui_sandbox_core::vm::{
-    gas_costs, ExecutionOutput, ExecutionTrace, GasMeterImpl, MeteredGasMeter, SimulationConfig,
+    gas_costs, ExecutionOutput, GasMeterImpl, MeteredGasMeter, ModuleAccessTrace, SimulationConfig,
     VMHarness,
 };
 
@@ -136,7 +135,7 @@ mod simulation_config_tests {
 }
 
 // =============================================================================
-// ExecutionTrace Tests
+// ModuleAccessTrace Tests
 // =============================================================================
 
 mod execution_trace_tests {
@@ -149,7 +148,7 @@ mod execution_trace_tests {
 
     #[test]
     fn test_trace_accessed_package_found() {
-        let mut trace = ExecutionTrace::new();
+        let mut trace = ModuleAccessTrace::new();
         let module_id = make_module_id("0x2", "coin");
         trace.modules_accessed.insert(module_id);
 
@@ -159,7 +158,7 @@ mod execution_trace_tests {
 
     #[test]
     fn test_trace_accessed_package_not_found() {
-        let mut trace = ExecutionTrace::new();
+        let mut trace = ModuleAccessTrace::new();
         let module_id = make_module_id("0x2", "coin");
         trace.modules_accessed.insert(module_id);
 
@@ -169,7 +168,7 @@ mod execution_trace_tests {
 
     #[test]
     fn test_trace_modules_from_package_empty() {
-        let trace = ExecutionTrace::new();
+        let trace = ModuleAccessTrace::new();
         let addr = AccountAddress::from_hex_literal("0x2").unwrap();
         let modules = trace.modules_from_package(&addr);
         assert!(modules.is_empty());
@@ -177,7 +176,7 @@ mod execution_trace_tests {
 
     #[test]
     fn test_trace_modules_from_package_filtered() {
-        let mut trace = ExecutionTrace::new();
+        let mut trace = ModuleAccessTrace::new();
         trace.modules_accessed.insert(make_module_id("0x2", "coin"));
         trace
             .modules_accessed
@@ -197,7 +196,7 @@ mod execution_trace_tests {
 
     #[test]
     fn test_trace_multiple_modules_same_package() {
-        let mut trace = ExecutionTrace::new();
+        let mut trace = ModuleAccessTrace::new();
         trace.modules_accessed.insert(make_module_id("0x2", "coin"));
         trace
             .modules_accessed

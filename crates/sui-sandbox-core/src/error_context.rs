@@ -396,10 +396,6 @@ pub struct TransactionAbortInfo {
     pub involved_objects: Vec<String>,
 }
 
-/// Type alias for backward compatibility.
-#[deprecated(since = "0.11.0", note = "Use TransactionAbortInfo instead")]
-pub type AbortInfo = TransactionAbortInfo;
-
 impl TransactionAbortInfo {
     /// Create AbortInfo from gRPC MoveAbort data.
     ///
