@@ -114,3 +114,29 @@ jobs:
               )
               assert replay["digest"] == "dummy_digest"
           PY
+
+      - name: Python example compatibility guards
+        run: |
+          python - <<'PY'
+          import py_compile
+          from pathlib import Path
+
+          scripts = [
+              Path("python_sui_sandbox/test_bindings.py"),
+              Path("python_sui_sandbox/test_replay_detail.py"),
+          ]
+
+          # Syntax/parse guard
+          for script in scripts:
+              py_compile.compile(str(script), doraise=True)
+
+          # API regression guard
+          for script in scripts:
+              source = script.read_text(encoding="utf-8")
+              assert "walrus_analyze_replay" not in source, f"{script} uses removed walrus_analyze_replay API"
+              assert "analyze_package(" not in source, f"{script} uses removed analyze_package API"
+              assert "replay(" in source, f"{script} should use replay(...) API"
+              assert "extract_interface(" in source or "test_replay_detail.py" in str(script), (
+                  f"{script} should use extract_interface(...) where package extraction is needed"
+              )
+          PY

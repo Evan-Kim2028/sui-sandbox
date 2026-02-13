@@ -116,6 +116,9 @@ Execute a Move function in the local VM with full control over object and pure i
 }
 ```
 
+Legacy compatibility: `owner` is also accepted as an alias for `is_shared`:
+`"immutable"` / `"address_owned"` => non-shared, `"shared"` => shared.
+
 #### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
 Fuzz a Move function with randomly generated inputs.

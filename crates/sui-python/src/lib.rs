@@ -1565,7 +1565,8 @@ fn json_to_bcs<'py>(
 ///     module: Module name
 ///     function: Function name
 ///     type_args: List of type argument strings (e.g., ["0x2::sui::SUI"])
-///     object_inputs: List of dicts with keys: object_id, bcs_bytes, type_tag, is_shared
+///     object_inputs: List of dicts with keys: object_id, bcs_bytes, type_tag
+///         optional: is_shared/mutable, or legacy owner ("immutable"|"shared"|"address_owned")
 ///     pure_inputs: List of BCS-encoded pure argument bytes
 ///     child_objects: Dict mapping parent_id -> list of {child_id, bcs_bytes, type_tag}
 ///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
@@ -1612,14 +1613,46 @@ fn call_view_function(
             .get_item("type_tag")?
             .ok_or_else(|| PyRuntimeError::new_err("missing 'type_tag' in object_inputs"))?
             .extract()?;
-        let is_shared: bool = dict
-            .get_item("is_shared")?
+
+        let explicit_is_shared = dict.get_item("is_shared")?;
+        let explicit_mutable = dict.get_item("mutable")?;
+        let owner = dict
+            .get_item("owner")?
+            .map(|v| v.extract::<String>())
+            .transpose()?;
+
+        let mut is_shared: bool = explicit_is_shared
+            .as_ref()
             .map(|v| v.extract().unwrap_or(false))
             .unwrap_or(false);
-        let mutable: bool = dict
-            .get_item("mutable")?
+        let mut mutable: bool = explicit_mutable
+            .as_ref()
             .map(|v| v.extract().unwrap_or(false))
             .unwrap_or(false);
+
+        // Backward-compatible alias used in earlier examples:
+        // owner = "immutable" | "shared" | "address_owned"
+        if explicit_is_shared.is_none() {
+            if let Some(owner) = owner {
+                match owner.trim().to_ascii_lowercase().as_str() {
+                    "shared" => {
+                        is_shared = true;
+                        if explicit_mutable.is_none() {
+                            // Shared objects are typically mutable unless explicitly overridden.
+                            mutable = true;
+                        }
+                    }
+                    "immutable" | "address_owned" => {
+                        is_shared = false;
+                    }
+                    other => {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "invalid 'owner' in object_inputs: {other} (expected immutable|shared|address_owned)"
+                        )));
+                    }
+                }
+            }
+        }
         parsed_obj_inputs.push((obj_id, bcs_bytes, type_tag, is_shared, mutable));
     }
 

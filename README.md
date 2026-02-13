@@ -303,9 +303,10 @@ result = sui_sandbox.call_view_function(
     "0x2", "clock", "timestamp_ms",
     object_inputs=[{
         "object_id": "0x0000000000000000000000000000000000000000000000000000000000000006",
-        "owner": "immutable",
         "type_tag": "0x2::clock::Clock",
-        "bcs_bytes": [0, 0, 0, 0],  # example bytes
+        "bcs_bytes": [0, 0, 0, 0],  # placeholder: supply real object BCS bytes
+        "is_shared": False,         # optional (or legacy owner="immutable")
+        "mutable": False,           # optional
     }],
 )
 print(result["return_values"])
