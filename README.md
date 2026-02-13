@@ -366,6 +366,7 @@ sui-sandbox/
 │   ├── replay.sh           # Flagship: replay via Walrus (zero setup)
 │   ├── scan_checkpoints.sh # Scan latest N checkpoints with summary
 │   ├── cli_workflow.sh     # CLI demo (no setup)
+│   ├── walrus/             # Walrus-first replay wrapper scripts
 │   ├── ptb_basics.rs       # Basic PTB operations
 │   ├── fork_state.rs       # Mainnet forking (requires gRPC)
 │   ├── cetus_swap.rs       # DeFi replay (requires gRPC)

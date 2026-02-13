@@ -11,7 +11,7 @@
 # older DEX transactions with heavy dynamic field access.
 #
 # Usage:
-#   bash examples_walrus/cetus_swap.sh
+#   bash examples/walrus/cetus_swap.sh
 
 set -euo pipefail
 

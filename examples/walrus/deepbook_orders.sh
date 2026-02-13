@@ -10,7 +10,7 @@
 # Use the full gRPC archive path for reliable replay of these transactions.
 #
 # Usage:
-#   bash examples_walrus/deepbook_orders.sh
+#   bash examples/walrus/deepbook_orders.sh
 
 set -euo pipefail
 

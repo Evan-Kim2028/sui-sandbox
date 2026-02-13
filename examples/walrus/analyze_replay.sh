@@ -8,7 +8,7 @@
 # - Readiness suggestions
 #
 # Usage:
-#   bash examples_walrus/analyze_replay.sh
+#   bash examples/walrus/analyze_replay.sh
 
 set -euo pipefail
 

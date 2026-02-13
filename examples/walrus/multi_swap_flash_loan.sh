@@ -6,7 +6,7 @@
 #   examples/multi_swap_flash_loan.rs  (~300 lines of Rust, requires gRPC key)
 #
 # Usage:
-#   bash examples_walrus/multi_swap_flash_loan.sh
+#   bash examples/walrus/multi_swap_flash_loan.sh
 
 set -euo pipefail
 

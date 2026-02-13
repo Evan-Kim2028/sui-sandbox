@@ -1,5 +1,8 @@
 # Walrus-First CLI Examples
 
+These wrappers are part of the main examples tree at `examples/walrus/`
+(migrated from the legacy `examples_walrus/` path).
+
 These examples demonstrate the **zero-setup** replay workflow using Walrus checkpoint
 data supplemented by the public Sui GraphQL/JSON-RPC endpoints. No API keys, no gRPC
 archive endpoints, no environment variables — just the CLI binary and a checkpoint number.
@@ -37,7 +40,7 @@ This hybrid approach gives you:
 cargo build --bin sui-sandbox --features walrus
 
 # Run the DeepBook flash loan example (verified: status_match=true)
-bash examples_walrus/walrus_replay.sh
+bash examples/walrus/walrus_replay.sh
 
 # Or directly:
 cargo run --bin sui-sandbox --features walrus -- \

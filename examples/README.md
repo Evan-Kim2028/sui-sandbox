@@ -324,6 +324,7 @@ Your first Rust example. Creates a local simulation environment and executes bas
 | `scan_checkpoints.sh` | Zero Setup | **No** | Core flow: stream replay over Walrus checkpoints |
 | `walrus_ptb_universe.sh` | Zero Setup | **No** | Build observed Walrus PTB universe, generate mock PTBs, execute locally |
 | `replay.sh` | Zero Setup | **No** | Single-transaction replay (walrus/grpc/json) |
+| `walrus/*.sh` | Zero Setup | **No** | Walrus-first replay wrapper scripts (organized under `examples/walrus/`) |
 | `replay_mutation_lab.sh` | Zero Setup | **No** | Discover fail->heal replay cases with synthetic hydration passes |
 | `replay_mutation_guided_demo.sh` | Zero Setup | **No** | One-command deterministic replay mutation walkthrough |
 | `entry_function_practical_fuzzer.sh` | Zero Setup | **No** | Replay-backed practical fuzzer over observed Walrus function targets |
