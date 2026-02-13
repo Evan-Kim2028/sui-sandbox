@@ -1,60 +1,50 @@
 # Start Here
 
-`sui-sandbox` runs the real Sui Move VM locally so you can replay historical transactions, execute PTBs, and analyze packages with deterministic local state.
+Use this page to understand what `sui-sandbox` is for and which doc to open next.
 
-## Short Talk-Track
+## One-Sentence Summary
 
-`sui-sandbox` is a local execution harness for Sui developers. It hydrates real historical transaction state (Walrus/gRPC/JSON), runs PTBs in a local Move VM session, and helps debug/compare effects without running a full node.
+`sui-sandbox` is a local Sui execution harness: hydrate historical state from Walrus/gRPC/JSON, execute in the real Move VM locally, and compare results with on-chain effects.
 
-## How It Works (One Flow)
+## When to Use It
 
-1. Hydrate transaction + objects + packages from a source (Walrus/gRPC/JSON).
-2. Build local resolver/runtime context.
-3. Execute PTB commands in the local Move VM.
-4. Collect effects, events, gas, and diagnostics.
-5. Optionally compare local results with on-chain effects.
+Use `sui-sandbox` when you need:
 
-## How It Differs from Other Tools
+- Deterministic local replay of historical transactions
+- Local PTB execution/debugging with controllable state
+- Package/interface analysis tied to replay workflows
 
-| Tooling | Best at | Execution location | Historical replay | Local deterministic session |
-|---------|---------|--------------------|-------------------|-----------------------------|
-| Generic Move sandbox tooling | Move package/unit test loops | Local | No | Yes (generic Move) |
-| Fullnode RPC dry-run/dev-inspect | Quick preflight checks against live state | Remote fullnode | Limited | No |
-| `sui-sandbox` | Replay + PTB + package analysis workflows | Local Move VM | Yes | Yes |
+Use fullnode dry-run/dev-inspect when you only need a quick remote preflight, not a local reproducible execution session.
 
-## Which Tool Should I Use?
+## Tool Positioning
 
-- Use `sui-sandbox` when you need local reproducibility, replay diagnostics, or PTB iteration with controlled state.
-- Use fullnode dry-run/dev-inspect when you only need a quick remote preflight check.
-- Use generic Move sandbox tooling when working outside Sui-specific replay/runtime concerns.
+| Tooling | Execution location | Historical replay | Deterministic local session |
+|---------|--------------------|-------------------|-----------------------------|
+| Generic Move sandbox tooling | Local | No | Yes (generic Move) |
+| Fullnode RPC dry-run/dev-inspect | Remote fullnode | Limited | No |
+| `sui-sandbox` | Local Move VM | Yes | Yes |
 
-## Fastest Start (No API Key)
+## Fastest Path
 
-```bash
-# Build once
-cargo build --release --bin sui-sandbox
+Start here if you just want to run replay now:
 
-# Core flow: stream replay over recent Walrus checkpoints
-./examples/scan_checkpoints.sh
+1. Root quickstart:
+   - [../README.md](../README.md)
+2. Example-first path:
+   - [../examples/README.md](../examples/README.md)
+3. End-to-end replay guide:
+   - [guides/TRANSACTION_REPLAY.md](guides/TRANSACTION_REPLAY.md)
 
-# Then drill into one transaction if needed
-sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare
-```
+## Pick Your Next Doc
 
-## I Want To...
+| Goal | Doc |
+|------|-----|
+| Replay one or many transactions | [guides/TRANSACTION_REPLAY.md](guides/TRANSACTION_REPLAY.md) |
+| Debug replay failures | [guides/REPLAY_TRIAGE.md](guides/REPLAY_TRIAGE.md) |
+| Publish/run local Move packages | [guides/GOLDEN_FLOW.md](guides/GOLDEN_FLOW.md) |
+| Understand architecture and control flow | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Find all CLI flags and commands | [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md) |
+| Understand known parity caveats | [reference/LIMITATIONS.md](reference/LIMITATIONS.md) |
+| Build Python bindings locally | [guides/PYTHON_BINDINGS.md](guides/PYTHON_BINDINGS.md) |
 
-| Goal | Where to go |
-|------|-------------|
-| Replay a mainnet transaction | `./examples/replay.sh` or [Transaction Replay Guide](guides/TRANSACTION_REPLAY.md) |
-| Analyze a package's modules and functions | `sui-sandbox fetch package <ID> --with-deps` then `sui-sandbox view modules <ID>` |
-| Reverse-engineer an obfuscated contract | [Obfuscated Package Analysis](../examples/obfuscated_package_analysis/README.md) |
-| Test my Move code locally before deploying | [Golden Flow Guide](guides/GOLDEN_FLOW.md) |
-| Debug why a replay failed | [Replay Triage Guide](guides/REPLAY_TRIAGE.md) |
-| Understand known differences from mainnet | [Limitations](reference/LIMITATIONS.md) |
-
-## What to Read Next
-
-- **Just want to run things** (5-15 min): [examples/README.md](../examples/README.md) — shell scripts, no setup required
-- **Need to replay a specific transaction**: [Transaction Replay Guide](guides/TRANSACTION_REPLAY.md) — step-by-step with data source options
-- **Building an integration or debugging internals**: [Architecture](ARCHITECTURE.md) — system components and control flow
-- **Full command reference**: [CLI Reference](reference/CLI_REFERENCE.md) — every command, flag, and environment variable
+Docs index: [README.md](README.md)
