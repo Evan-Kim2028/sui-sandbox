@@ -1,10 +1,16 @@
 # sui-sandbox
 
-Python bindings for Sui Move package analysis and Walrus checkpoint replay.
+Python bindings for Sui Move package analysis, checkpoint replay, view function execution, and Move function fuzzing.
 
 Built on [sui-sandbox](../../README.md) — runs the real Sui Move VM locally via PyO3.
 
 ## Installation
+
+### From PyPI
+
+```bash
+pip install sui-sandbox
+```
 
 ### From source (requires Rust toolchain)
 
@@ -14,74 +20,45 @@ pip install maturin
 maturin develop --release
 ```
 
-### From PyPI
-
-```bash
-pip install sui-sandbox
-```
-
 ## Quick Start
 
 ```python
 import sui_sandbox
 
-# Analyze the Sui framework package
-info = sui_sandbox.analyze_package(package_id="0x2")
-print(f"{info['modules']} modules, {info['structs']} structs, {info['functions']} functions")
+# Extract the full interface of the Sui framework
+interface = sui_sandbox.extract_interface(package_id="0x2")
+for mod_name, mod_data in interface["modules"].items():
+    print(f"{mod_name}: {len(mod_data.get('functions', {}))} functions")
 
 # Get the latest Walrus checkpoint and inspect it
 cp = sui_sandbox.get_latest_checkpoint()
 data = sui_sandbox.get_checkpoint(cp)
 print(f"Checkpoint {cp}: {data['transaction_count']} transactions")
+
+# Fuzz a Move function
+report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50)
+print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
 ```
 
 ## API Reference
 
-### Package Analysis
+### Standalone Functions
 
-#### `analyze_package(*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443", list_modules=False)`
-
-Analyze a Sui Move package and return summary counts.
-
-Provide either `package_id` (fetched via GraphQL from an RPC node) or `bytecode_dir` (local directory containing `bytecode_modules/*.mv` files), but not both.
-
-For local package analysis, `bytecode_dir` package id comes from `metadata.json` when present (`metadata.id`),
-with fallback to the directory name if metadata is unavailable.
-
-**Returns:** `dict` with `source`, `package_id`, `modules`, `structs`, `functions`, `key_structs`, and optionally `module_names`.
-
-Raises an exception if any module in the GraphQL package response is missing bytecode, so partial results are not returned silently.
-
-```python
-# Remote package
-info = sui_sandbox.analyze_package(package_id="0x2")
-
-# Local bytecode
-info = sui_sandbox.analyze_package(
-    bytecode_dir="./build/my_package/bytecode_modules",
-    list_modules=True,
-)
-print(info["module_names"])  # ["module_a", "module_b", ...]
-```
+These functions work with just `pip install sui-sandbox` — no CLI binary needed.
 
 #### `extract_interface(*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443")`
 
 Extract the complete interface JSON for a Move package — all modules, structs, functions, type parameters, abilities, and fields.
 
-**Returns:** `dict` with full interface tree.
+Provide either `package_id` (fetched via GraphQL) or `bytecode_dir` (local directory containing `bytecode_modules/*.mv` files), but not both.
 
-For local package extraction, package id resolution follows the same `metadata.json` precedence as
-`analyze_package`.
+**Returns:** `dict` with full interface tree.
 
 ```python
 interface = sui_sandbox.extract_interface(package_id="0x1")
 for mod_name, mod_data in interface["modules"].items():
     print(f"{mod_name}: {len(mod_data.get('functions', {}))} functions")
 ```
-
-### Walrus Checkpoint Replay
-
-These functions use [Walrus](https://docs.walrus.site/) decentralized storage to fetch Sui checkpoint data. **No API keys or authentication required.**
 
 #### `get_latest_checkpoint()`
 
@@ -96,7 +73,7 @@ print(f"Latest checkpoint: {cp}")
 
 #### `get_checkpoint(checkpoint)`
 
-Fetch a checkpoint and return a summary.
+Fetch a checkpoint from Walrus and return a summary.
 
 **Returns:** `dict` with `checkpoint`, `epoch`, `timestamp_ms`, `transaction_count`, `transactions` (list), and `object_versions_count`.
 
@@ -106,47 +83,93 @@ for tx in data["transactions"]:
     print(f"  {tx['digest']}: {tx['commands']} commands, {tx['input_objects']} inputs")
 ```
 
-#### `walrus_analyze_replay(digest, checkpoint, *, verbose=False)`
+#### `fetch_package_bytecodes(package_id, *, resolve_deps=True)`
 
-Analyze replay state for a transaction using Walrus only. Fetches the checkpoint, extracts the transaction, and builds a complete replay state summary.
+Fetch package bytecodes via GraphQL, optionally resolving transitive dependencies.
 
-**Returns:** `dict` with `digest`, `sender`, `commands`, `inputs`, `objects`, `packages`, `modules`, `input_summary`, `command_summaries`, etc.
+**Returns:** `dict` with `packages` (map of package ID to list of base64-encoded module bytecodes) and `count`.
 
 ```python
-state = sui_sandbox.walrus_analyze_replay(
-    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
-    239615926,
-    verbose=True,
-)
-print(f"Commands: {state['commands']}, Objects: {state['objects']}, Packages: {state['packages']}")
+pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)
+print(f"Fetched {pkgs['count']} packages")
 ```
 
-### Move Function Execution (View/Read-only)
+#### `json_to_bcs(type_str, object_json, package_bytecodes)`
+
+Convert a Sui object JSON representation to BCS bytes using Move type layout.
+
+**Returns:** `bytes`
+
+```python
+pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)
+bcs_bytes = sui_sandbox.json_to_bcs(type_str, object_json, pkgs["packages"])
+```
 
 #### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, package_bytecodes=None, fetch_deps=True)`
 
 Execute a Move function in the local VM with full control over object and pure inputs.
 
-This API is maintained for programmatic call paths that need explicit object/BCS payload control.
-For CLI workflows, `sui-sandbox run` now supports object argument prefixes under `--arg` and JSON output with
-`return_values` + `return_type_tags`.
-
 **Returns:** `dict` with:
 - `success` (bool)
 - `error` (string or null)
-- `return_values` (per-command list of base64-encoded BCS values, e.g. `[[...]]`)
-- `return_type_tags` (parallel per-command list of canonical Move type tags where known)
+- `return_values` (per-command list of base64-encoded BCS values)
+- `return_type_tags` (parallel per-command list of canonical Move type tags)
 - `gas_used` (u64)
 
-### gRPC/Hybrid Replay
+```python
+result = sui_sandbox.call_view_function(
+    "0x2", "clock", "timestamp_ms",
+    object_inputs=[{"Clock": "0x6"}],
+)
+print(result["return_values"])
+```
 
-#### `analyze_replay(digest, *, rpc_url=..., source="hybrid", allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, verbose=False)`
+#### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
-Analyze replay state hydration using gRPC/hybrid sources. Requires `SUI_GRPC_API_KEY` env var for gRPC access.
+Fuzz a Move function with randomly generated inputs.
 
-**Returns:** Same structure as `walrus_analyze_replay`.
+Use `dry_run=True` to check parameter classification without executing (returns whether the function is fully fuzzable and parameter details).
+
+**Returns:** `dict` with:
+- `verdict` — `FULLY_FUZZABLE`, `NOT_FUZZABLE`, `PASS`, `FAIL`, or `MIXED`
+- `iterations`, `successes`, `errors` — execution counts
+- `error_categories` — grouped error summaries (when errors occur)
+- `params` — parameter classification (in dry-run mode)
 
 ```python
+# Dry run — check if function is fuzzable
+info = sui_sandbox.fuzz_function("0x1", "u64", "max", dry_run=True)
+print(f"Verdict: {info['verdict']}")
+
+# Full fuzz run
+report = sui_sandbox.fuzz_function(
+    "0x1", "u64", "max",
+    iterations=50, seed=42,
+)
+print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
+```
+
+### CLI-Dependent Functions
+
+These functions shell out to the `sui-sandbox` CLI binary, which must be built and available in `PATH`.
+
+#### `analyze_replay(digest, *, rpc_url=..., source="hybrid", checkpoint=None, allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, verbose=False)`
+
+Analyze replay state hydration for a transaction.
+
+When `checkpoint` is provided, automatically uses Walrus as the data source (no API key needed). Otherwise uses the gRPC/hybrid source (requires `SUI_GRPC_API_KEY` env var).
+
+**Returns:** `dict` with `digest`, `sender`, `commands`, `inputs`, `objects`, `packages`, `modules`, `input_summary`, `command_summaries`, etc.
+
+```python
+# Via Walrus (no API key needed)
+state = sui_sandbox.analyze_replay(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+)
+print(f"Commands: {state['commands']}, Objects: {state['objects']}")
+
+# Via gRPC (requires API key)
 import os
 os.environ["SUI_GRPC_API_KEY"] = "your-key"
 state = sui_sandbox.analyze_replay("DigestHere...")
@@ -154,7 +177,7 @@ state = sui_sandbox.analyze_replay("DigestHere...")
 
 #### `replay(digest, *, rpc_url=..., compare=False, verbose=False)`
 
-Execute a full VM replay of a historical transaction. Shells out to the `sui-sandbox` CLI binary (must be in `PATH`).
+Execute a full VM replay of a historical transaction.
 
 **Returns:** `dict` with full replay results including effects comparison when `compare=True`.
 

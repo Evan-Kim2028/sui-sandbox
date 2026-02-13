@@ -256,7 +256,7 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 ## Python Bindings
 
-Python package exposing package analysis, replay, and Move VM execution via PyO3.
+Python package exposing package analysis, checkpoint replay, Move VM execution, and function fuzzing via PyO3. 7 of 9 functions are fully standalone — no CLI binary needed.
 
 ### Install
 
@@ -275,18 +275,12 @@ cd crates/sui-python && pip install maturin && maturin develop --release
 ```python
 import sui_sandbox
 
-# --- Package analysis (no API key needed) ---
-info = sui_sandbox.analyze_package(package_id="0x2")
-print(f"{info['modules']} modules, {info['functions']} functions")
-
+# --- Package introspection (no API key needed) ---
 interface = sui_sandbox.extract_interface(package_id="0x1")
 
-# --- Walrus checkpoint replay (no API key needed) ---
+# --- Walrus checkpoint data (no API key needed) ---
 cp = sui_sandbox.get_latest_checkpoint()
 data = sui_sandbox.get_checkpoint(cp)
-state = sui_sandbox.walrus_analyze_replay(
-    data["transactions"][0]["digest"], cp
-)
 
 # --- Move view function execution ---
 result = sui_sandbox.call_view_function(
@@ -294,6 +288,10 @@ result = sui_sandbox.call_view_function(
     object_inputs=[{"Clock": "0x6"}],
 )
 print(result["return_values"])
+
+# --- Move function fuzzing ---
+report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50)
+print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
 
 # --- Bytecode utilities ---
 pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)

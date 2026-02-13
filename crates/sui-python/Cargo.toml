@@ -26,6 +26,9 @@ base64.workspace = true
 move-binary-format.workspace = true
 move-core-types.workspace = true
 
+# Sui types (for CheckpointData, TransactionDataAPI)
+sui-types.workspace = true
+
 # Workspace crates
 sui-package-extractor.workspace = true
 sui-transport.workspace = true

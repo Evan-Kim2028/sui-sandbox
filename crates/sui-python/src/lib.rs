@@ -1,8 +1,18 @@
-//! Python bindings for Sui Move package analysis and transaction replay.
+//! Python bindings for Sui Move package analysis, checkpoint replay, view function
+//! execution, and Move function fuzzing.
 //!
-//! Exposes two main capabilities:
-//! - `analyze_package`: Extract Move package interface from bytecode or GraphQL
-//! - `analyze_replay`: Inspect replay state hydration for a transaction digest
+//! **Standalone functions** (work with just `pip install sui-sandbox`):
+//! - `extract_interface`: Extract full Move package interface from bytecode or GraphQL
+//! - `get_latest_checkpoint`: Get latest Walrus checkpoint number
+//! - `get_checkpoint`: Fetch and summarize a Walrus checkpoint
+//! - `fetch_package_bytecodes`: Fetch package bytecodes via GraphQL
+//! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
+//! - `call_view_function`: Execute a Move view function in the local VM
+//! - `fuzz_function`: Fuzz a Move function with random inputs
+//!
+//! **CLI-dependent functions** (require `sui-sandbox` binary in PATH):
+//! - `analyze_replay`: Inspect replay state hydration for a transaction
+//! - `replay`: Full VM replay of a historical transaction
 
 #![allow(clippy::too_many_arguments)]
 
@@ -23,8 +33,12 @@ use sui_package_extractor::bytecode::{
     build_bytecode_interface_value_from_compiled_modules, read_local_compiled_modules,
     resolve_local_package_id,
 };
+use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
+use sui_package_extractor::utils::is_framework_address;
+use sui_sandbox_core::resolver::ModuleProvider;
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::network::resolve_graphql_endpoint;
+use sui_transport::walrus::WalrusClient;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,89 +57,98 @@ fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObj
     Ok(result.into())
 }
 
-/// Run a `sui-sandbox --json` CLI command and return parsed JSON output.
-fn run_cli(args: &[&str]) -> Result<serde_json::Value> {
-    let mut cmd = std::process::Command::new("sui-sandbox");
-    cmd.arg("--json");
-    for arg in args {
-        cmd.arg(arg);
+/// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
+fn fetch_package_modules(
+    graphql: &GraphQLClient,
+    package_id: &str,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let pkg = graphql
+        .fetch_package(package_id)
+        .with_context(|| format!("fetch package {}", package_id))?;
+    sui_transport::decode_graphql_modules(package_id, &pkg.modules)
+}
+
+/// Build a LocalModuleResolver with the Sui framework loaded, then fetch a target
+/// package and its transitive dependencies via GraphQL.
+fn build_resolver_with_deps(
+    package_id: &str,
+    extra_type_refs: &[String],
+) -> Result<(
+    sui_sandbox_core::resolver::LocalModuleResolver,
+    HashSet<AccountAddress>,
+)> {
+    let mut resolver = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
+    let mut loaded_packages = HashSet::new();
+    for fw in ["0x1", "0x2", "0x3"] {
+        loaded_packages.insert(AccountAddress::from_hex_literal(fw).unwrap());
     }
 
-    let output = cmd
-        .output()
-        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
+    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+    let graphql = GraphQLClient::new(&graphql_endpoint);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
+    let target_addr = AccountAddress::from_hex_literal(package_id)
+        .with_context(|| format!("invalid target package: {}", package_id))?;
+    if !loaded_packages.contains(&target_addr) {
+        to_fetch.push_back(target_addr);
+    }
 
-    if !output.status.success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            return Ok(v);
+    // Also fetch packages referenced in type strings
+    for type_str in extra_type_refs {
+        for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_str) {
+            if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
+                if !loaded_packages.contains(&addr) && !is_framework_address(&addr) {
+                    to_fetch.push_back(addr);
+                }
+            }
         }
-        return Err(anyhow!(
-            "sui-sandbox failed (exit {}): {}",
-            output.status,
-            stderr
-        ));
     }
 
-    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
+    // BFS fetch dependencies
+    const MAX_DEP_ROUNDS: usize = 8;
+    let mut visited = loaded_packages.clone();
+    let mut rounds = 0;
+    while let Some(addr) = to_fetch.pop_front() {
+        if visited.contains(&addr) || is_framework_address(&addr) {
+            continue;
+        }
+        rounds += 1;
+        if rounds > MAX_DEP_ROUNDS {
+            eprintln!(
+                "Warning: dependency resolution hit max depth ({} packages fetched), \
+                 stopping. Some transitive deps may be missing.",
+                MAX_DEP_ROUNDS
+            );
+            break;
+        }
+        visited.insert(addr);
+
+        let hex = addr.to_hex_literal();
+        match fetch_package_modules(&graphql, &hex) {
+            Ok(modules) => {
+                let dep_addrs = extract_dependency_addrs(&modules);
+                resolver.load_package_at(modules, addr)?;
+                loaded_packages.insert(addr);
+
+                for dep_addr in dep_addrs {
+                    if !visited.contains(&dep_addr) && !is_framework_address(&dep_addr) {
+                        to_fetch.push_back(dep_addr);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
+            }
+        }
+    }
+
+    Ok((resolver, loaded_packages))
 }
 
 // ---------------------------------------------------------------------------
-// analyze_package (subprocess wrapper)
+// extract_interface (native)
 // ---------------------------------------------------------------------------
 
-fn analyze_package_inner(
-    package_id: Option<&str>,
-    bytecode_dir: Option<&str>,
-    rpc_url: &str,
-    list_modules: bool,
-) -> Result<serde_json::Value> {
-    let mut args: Vec<&str> = vec!["analyze", "package"];
-    if let Some(pkg) = package_id {
-        args.push("--package-id");
-        args.push(pkg);
-    }
-    if let Some(dir) = bytecode_dir {
-        args.push("--bytecode-dir");
-        args.push(dir);
-    }
-    if list_modules {
-        args.push("--list-modules");
-    }
-
-    let mut cmd = std::process::Command::new("sui-sandbox");
-    cmd.arg("--json");
-    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
-        cmd.arg("--rpc-url").arg(rpc_url);
-    }
-    for arg in &args {
-        cmd.arg(arg);
-    }
-
-    let output = cmd
-        .output()
-        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            return Ok(v);
-        }
-        return Err(anyhow!(
-            "sui-sandbox analyze package failed (exit {}): {}",
-            output.status,
-            stderr
-        ));
-    }
-
-    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
-}
-
-/// Extract the full interface JSON (all structs, functions, type params, etc.)
 fn extract_interface_inner(
     package_id: Option<&str>,
     bytecode_dir: Option<&str>,
@@ -173,14 +196,14 @@ fn extract_interface_inner(
 }
 
 // ---------------------------------------------------------------------------
-// analyze_replay
+// analyze_replay (subprocess — requires CLI binary)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn analyze_replay_inner(
     digest: &str,
     rpc_url: &str,
     source: &str,
+    checkpoint: Option<u64>,
     allow_fallback: bool,
     prefetch_depth: usize,
     prefetch_limit: usize,
@@ -200,7 +223,15 @@ fn analyze_replay_inner(
         cmd.arg("--verbose");
     }
     cmd.arg("analyze").arg("replay").arg(digest);
-    cmd.arg("--source").arg(source);
+
+    // When checkpoint is provided, use walrus source
+    if let Some(cp) = checkpoint {
+        cmd.arg("--source").arg("walrus");
+        cmd.arg("--checkpoint").arg(cp.to_string());
+    } else {
+        cmd.arg("--source").arg(source);
+    }
+
     cmd.arg("--allow-fallback")
         .arg(if allow_fallback { "true" } else { "false" });
     cmd.arg("--prefetch-depth").arg(&depth_str);
@@ -233,7 +264,7 @@ fn analyze_replay_inner(
 }
 
 // ---------------------------------------------------------------------------
-// replay (full VM execution)
+// replay (subprocess — requires CLI binary)
 // ---------------------------------------------------------------------------
 
 fn replay_inner(
@@ -277,44 +308,63 @@ fn replay_inner(
 }
 
 // ---------------------------------------------------------------------------
-// Walrus functions (subprocess wrappers)
+// get_latest_checkpoint (native — Walrus)
 // ---------------------------------------------------------------------------
 
 fn get_latest_checkpoint_inner() -> Result<u64> {
-    let value = run_cli(&["fetch", "latest-checkpoint"])?;
-    value["checkpoint"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("missing 'checkpoint' in CLI output"))
-}
-
-fn get_checkpoint_inner(checkpoint_num: u64) -> Result<serde_json::Value> {
-    let seq_str = checkpoint_num.to_string();
-    run_cli(&["fetch", "checkpoint", &seq_str])
-}
-
-fn analyze_replay_walrus_inner(
-    digest: &str,
-    checkpoint_num: u64,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    let cp_str = checkpoint_num.to_string();
-    let mut args = vec![
-        "analyze",
-        "replay",
-        digest,
-        "--source",
-        "walrus",
-        "--checkpoint",
-        &cp_str,
-    ];
-    if verbose {
-        args.insert(0, "--verbose");
-    }
-    run_cli(&args)
+    WalrusClient::mainnet().get_latest_checkpoint()
 }
 
 // ---------------------------------------------------------------------------
-// json_to_bcs: Convert Sui object JSON to BCS bytes
+// get_checkpoint (native — Walrus)
+// ---------------------------------------------------------------------------
+
+fn get_checkpoint_inner(checkpoint_num: u64) -> Result<serde_json::Value> {
+    use sui_transport::walrus;
+    use sui_types::transaction::TransactionDataAPI;
+
+    let client = WalrusClient::mainnet();
+    let checkpoint_data = client.get_checkpoint(checkpoint_num)?;
+
+    let epoch = checkpoint_data.checkpoint_summary.epoch;
+    let timestamp_ms = checkpoint_data.checkpoint_summary.timestamp_ms;
+
+    let mut transactions = Vec::new();
+    for tx in &checkpoint_data.transactions {
+        let digest = tx.transaction.digest().to_string();
+        let tx_data = tx.transaction.data().transaction_data();
+        let sender = format!("{}", tx_data.sender());
+
+        let command_count = match tx_data.kind() {
+            sui_types::transaction::TransactionKind::ProgrammableTransaction(ptb) => {
+                ptb.commands.len()
+            }
+            _ => 0,
+        };
+
+        transactions.push(serde_json::json!({
+            "digest": digest,
+            "sender": sender,
+            "commands": command_count,
+            "input_objects": tx.input_objects.len(),
+            "output_objects": tx.output_objects.len(),
+        }));
+    }
+
+    let versions = walrus::extract_object_versions_from_checkpoint(&checkpoint_data);
+
+    Ok(serde_json::json!({
+        "checkpoint": checkpoint_num,
+        "epoch": epoch,
+        "timestamp_ms": timestamp_ms,
+        "transaction_count": checkpoint_data.transactions.len(),
+        "transactions": transactions,
+        "object_versions_count": versions.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// json_to_bcs (native)
 // ---------------------------------------------------------------------------
 
 fn json_to_bcs_inner(
@@ -331,36 +381,21 @@ fn json_to_bcs_inner(
 }
 
 // ---------------------------------------------------------------------------
-// call_view_function: Execute a view function via local Move VM
+// call_view_function (native)
 // ---------------------------------------------------------------------------
-
-use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
-use sui_package_extractor::utils::is_framework_address;
-
-/// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
-fn fetch_package_modules(
-    graphql: &GraphQLClient,
-    package_id: &str,
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let pkg = graphql
-        .fetch_package(package_id)
-        .with_context(|| format!("fetch package {}", package_id))?;
-    sui_transport::decode_graphql_modules(package_id, &pkg.modules)
-}
 
 fn call_view_function_inner(
     package_id: &str,
     module: &str,
     function: &str,
     type_args: Vec<String>,
-    object_inputs: Vec<(String, Vec<u8>, String, bool, bool)>, // (object_id, bcs_bytes, type_tag_str, is_shared, mutable)
+    object_inputs: Vec<(String, Vec<u8>, String, bool, bool)>,
     pure_inputs: Vec<Vec<u8>>,
-    child_objects: HashMap<String, Vec<(String, Vec<u8>, String)>>, // parent_id -> [(child_id, bcs, type_tag)]
-    package_bytecodes: HashMap<String, Vec<Vec<u8>>>, // package_id -> [module_bytecodes]
+    child_objects: HashMap<String, Vec<(String, Vec<u8>, String)>>,
+    package_bytecodes: HashMap<String, Vec<Vec<u8>>>,
     fetch_deps: bool,
 ) -> Result<serde_json::Value> {
     use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
-    use sui_sandbox_core::resolver::ModuleProvider;
     use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 
     // 1. Build LocalModuleResolver with sui framework
@@ -368,7 +403,6 @@ fn call_view_function_inner(
 
     // 2. Load provided package bytecodes
     let mut loaded_packages = HashSet::new();
-    // Mark framework as loaded
     loaded_packages.insert(AccountAddress::from_hex_literal("0x1").unwrap());
     loaded_packages.insert(AccountAddress::from_hex_literal("0x2").unwrap());
     loaded_packages.insert(AccountAddress::from_hex_literal("0x3").unwrap());
@@ -383,7 +417,6 @@ fn call_view_function_inner(
             .iter()
             .enumerate()
             .map(|(i, bytes)| {
-                // Try to extract module name from bytecode
                 if let Ok(compiled) = CompiledModule::deserialize_with_defaults(bytes) {
                     let name = compiled.self_id().name().to_string();
                     (name, bytes.clone())
@@ -401,17 +434,14 @@ fn call_view_function_inner(
         let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
         let graphql = GraphQLClient::new(&graphql_endpoint);
 
-        // Collect all packages we need to resolve
         let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
 
-        // Start with the target package if not already loaded
         let target_addr = AccountAddress::from_hex_literal(package_id)
             .with_context(|| format!("invalid target package: {}", package_id))?;
         if !loaded_packages.contains(&target_addr) {
             to_fetch.push_back(target_addr);
         }
 
-        // Also fetch packages referenced in type_args and object type_tags
         for ta_str in &type_args {
             for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(ta_str) {
                 if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
@@ -431,7 +461,6 @@ fn call_view_function_inner(
             }
         }
 
-        // Also check packages from provided bytecodes for their dependencies
         for module_bytecodes in package_bytecodes.values() {
             let modules: Vec<(String, Vec<u8>)> = module_bytecodes
                 .iter()
@@ -445,7 +474,6 @@ fn call_view_function_inner(
             }
         }
 
-        // BFS fetch dependencies (max 8 rounds to prevent runaway resolution)
         const MAX_DEP_ROUNDS: usize = 8;
         let mut visited = loaded_packages.clone();
         let mut rounds = 0;
@@ -467,7 +495,6 @@ fn call_view_function_inner(
             let hex = addr.to_hex_literal();
             match fetch_package_modules(&graphql, &hex) {
                 Ok(modules) => {
-                    // Extract deps before loading
                     let dep_addrs = extract_dependency_addrs(&modules);
                     resolver.load_package_at(modules, addr)?;
                     loaded_packages.insert(addr);
@@ -479,7 +506,6 @@ fn call_view_function_inner(
                     }
                 }
                 Err(e) => {
-                    // Log warning but continue — some deps may be optional
                     eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
                 }
             }
@@ -514,7 +540,6 @@ fn call_view_function_inner(
     // 6. Build PTB and execute
     let mut executor = PTBExecutor::new(&mut vm);
 
-    // Add object inputs
     let mut input_indices = Vec::new();
     for (obj_id_str, bcs_bytes, type_tag_str, is_shared, mutable) in &object_inputs {
         let id = AccountAddress::from_hex_literal(obj_id_str)
@@ -545,7 +570,6 @@ fn call_view_function_inner(
         input_indices.push(idx);
     }
 
-    // Add pure inputs
     for pure_bytes in &pure_inputs {
         let idx = executor
             .add_pure_input(pure_bytes.clone())
@@ -553,7 +577,6 @@ fn call_view_function_inner(
         input_indices.push(idx);
     }
 
-    // Parse type arguments
     let mut parsed_type_args = Vec::new();
     for ta_str in &type_args {
         let tt = sui_sandbox_core::types::parse_type_tag(ta_str)
@@ -561,12 +584,10 @@ fn call_view_function_inner(
         parsed_type_args.push(tt);
     }
 
-    // Build args list: all inputs as Argument::Input
     let args: Vec<Argument> = (0..input_indices.len() as u16)
         .map(Argument::Input)
         .collect();
 
-    // Build move call command
     let target_addr = AccountAddress::from_hex_literal(package_id)
         .with_context(|| format!("invalid package address: {}", package_id))?;
     let commands = vec![Command::MoveCall {
@@ -613,36 +634,67 @@ fn call_view_function_inner(
 }
 
 // ---------------------------------------------------------------------------
-// fetch_package_bytecodes: Fetch package bytecode via GraphQL
+// fetch_package_bytecodes (native — GraphQL)
 // ---------------------------------------------------------------------------
 
 fn fetch_package_bytecodes_inner(
     package_id: &str,
     resolve_deps: bool,
 ) -> Result<serde_json::Value> {
-    let mut args = vec!["fetch", "package", package_id, "--bytecodes"];
-    if resolve_deps {
-        args.push("--with-deps");
-    }
-    let result = run_cli(&args)?;
-
-    // Transform CLI output shape to match the Python API's expected shape.
-    // CLI returns { packages_fetched: [{ address, bytecodes: [...] }] }
-    // Python callers expect { packages: { pkg_id: [base64...] }, count: N }
-    let packages_fetched = result["packages_fetched"]
-        .as_array()
-        .ok_or_else(|| anyhow!("missing 'packages_fetched' in CLI output"))?;
+    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+    let graphql = GraphQLClient::new(&graphql_endpoint);
 
     let mut packages = serde_json::Map::new();
-    for pkg in packages_fetched {
-        let address = pkg["address"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing 'address' in package"))?;
-        let bytecodes = pkg
-            .get("bytecodes")
-            .cloned()
-            .unwrap_or(serde_json::json!([]));
-        packages.insert(address.to_string(), bytecodes);
+
+    if resolve_deps {
+        let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
+        let mut visited = HashSet::new();
+        for fw in ["0x1", "0x2", "0x3"] {
+            visited.insert(AccountAddress::from_hex_literal(fw).unwrap());
+        }
+        to_fetch.push_back(
+            AccountAddress::from_hex_literal(package_id)
+                .with_context(|| format!("invalid package address: {}", package_id))?,
+        );
+
+        const MAX_DEP_ROUNDS: usize = 20;
+        let mut rounds = 0;
+        while let Some(addr) = to_fetch.pop_front() {
+            if visited.contains(&addr) || is_framework_address(&addr) {
+                continue;
+            }
+            rounds += 1;
+            if rounds > MAX_DEP_ROUNDS {
+                eprintln!(
+                    "Warning: dependency resolution hit max depth ({} packages fetched), stopping.",
+                    MAX_DEP_ROUNDS
+                );
+                break;
+            }
+            visited.insert(addr);
+
+            let hex = addr.to_hex_literal();
+            let modules = fetch_package_modules(&graphql, &hex)?;
+            let bytecodes: Vec<String> = modules
+                .iter()
+                .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
+                .collect();
+            let dep_addrs = extract_dependency_addrs(&modules);
+            packages.insert(hex, serde_json::json!(bytecodes));
+
+            for dep_addr in dep_addrs {
+                if !visited.contains(&dep_addr) && !is_framework_address(&dep_addr) {
+                    to_fetch.push_back(dep_addr);
+                }
+            }
+        }
+    } else {
+        let modules = fetch_package_modules(&graphql, package_id)?;
+        let bytecodes: Vec<String> = modules
+            .iter()
+            .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .collect();
+        packages.insert(package_id.to_string(), serde_json::json!(bytecodes));
     }
 
     Ok(serde_json::json!({
@@ -652,12 +704,115 @@ fn fetch_package_bytecodes_inner(
 }
 
 // ---------------------------------------------------------------------------
-// Python module
+// fuzz_function (native)
+// ---------------------------------------------------------------------------
+
+fn fuzz_function_inner(
+    package_id: &str,
+    module: &str,
+    function: &str,
+    iterations: u64,
+    seed: u64,
+    sender: &str,
+    gas_budget: u64,
+    type_args: Vec<String>,
+    fail_fast: bool,
+    max_vector_len: usize,
+    dry_run: bool,
+    fetch_deps: bool,
+) -> Result<serde_json::Value> {
+    use sui_sandbox_core::fuzz::{classify_params, FuzzConfig, FuzzRunner};
+
+    // 1. Build resolver and fetch deps
+    let (resolver, _loaded) = if fetch_deps {
+        build_resolver_with_deps(package_id, &type_args)?
+    } else {
+        let r = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
+        let mut loaded = HashSet::new();
+        for fw in ["0x1", "0x2", "0x3"] {
+            loaded.insert(AccountAddress::from_hex_literal(fw).unwrap());
+        }
+        (r, loaded)
+    };
+
+    let target_addr = AccountAddress::from_hex_literal(package_id)
+        .with_context(|| format!("invalid package address: {}", package_id))?;
+
+    // 2. Get compiled module and function signature
+    let compiled_module = resolver
+        .get_module_by_addr_name(&target_addr, module)
+        .ok_or_else(|| anyhow!("Module '{}::{}' not found", package_id, module))?;
+
+    let sig = resolver
+        .get_function_signature(&target_addr, module, function)
+        .ok_or_else(|| {
+            anyhow!(
+                "Function '{}::{}::{}' not found",
+                package_id,
+                module,
+                function
+            )
+        })?;
+
+    // 3. Classify parameters
+    let classification = classify_params(compiled_module, &sig.parameter_types);
+
+    let target = format!("{}::{}::{}", package_id, module, function);
+
+    // 4. If dry_run, return classification only
+    if dry_run {
+        return Ok(serde_json::json!({
+            "target": target,
+            "classification": classification,
+            "verdict": if classification.is_fully_fuzzable { "FULLY_FUZZABLE" } else { "NOT_FUZZABLE" },
+        }));
+    }
+
+    // 5. Check fuzzability
+    if !classification.is_fully_fuzzable {
+        return Ok(serde_json::json!({
+            "target": target,
+            "classification": classification,
+            "verdict": "NOT_FUZZABLE",
+            "reason": format!(
+                "Function has {} object and {} unfuzzable parameter(s)",
+                classification.object_count, classification.unfuzzable_count
+            ),
+        }));
+    }
+
+    // 6. Parse type args and build config
+    let sender_addr =
+        AccountAddress::from_hex_literal(sender).context("Invalid sender address")?;
+    let parsed_type_args = type_args
+        .iter()
+        .map(|s| sui_sandbox_core::types::parse_type_tag(s))
+        .collect::<Result<Vec<_>>>()?;
+
+    let config = FuzzConfig {
+        iterations,
+        seed,
+        sender: sender_addr,
+        gas_budget,
+        type_args: parsed_type_args,
+        fail_fast,
+        max_vector_len,
+    };
+
+    // 7. Run fuzzer
+    let runner = FuzzRunner::new(&resolver);
+    let report = runner.run(target_addr, module, function, &classification, &config)?;
+
+    serde_json::to_value(&report).map_err(|e| anyhow!("Failed to serialize fuzz report: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Python module functions
 // ---------------------------------------------------------------------------
 
 /// Get the latest archived checkpoint number from Walrus.
 ///
-/// No API keys or authentication required.
+/// No API keys or authentication required. Standalone — no CLI binary needed.
 #[pyfunction]
 fn get_latest_checkpoint() -> PyResult<u64> {
     get_latest_checkpoint_inner().map_err(to_py_err)
@@ -669,51 +824,12 @@ fn get_latest_checkpoint() -> PyResult<u64> {
 /// transactions (list of {digest, sender, commands, input_objects, output_objects}),
 /// and object_versions_count.
 ///
-/// No API keys or authentication required.
+/// No API keys or authentication required. Standalone — no CLI binary needed.
 #[pyfunction]
 fn get_checkpoint(py: Python<'_>, checkpoint: u64) -> PyResult<PyObject> {
-    let value = get_checkpoint_inner(checkpoint).map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Analyze replay state for a transaction using Walrus only.
-///
-/// Fetches the checkpoint from Walrus, extracts the transaction,
-/// and builds a replay state summary. No gRPC or API keys needed.
-///
-/// Args:
-///     digest: Transaction digest
-///     checkpoint: Checkpoint number containing the transaction
-///     verbose: Include detailed object/package info
-#[pyfunction]
-#[pyo3(signature = (digest, checkpoint, *, verbose=false))]
-fn walrus_analyze_replay(
-    py: Python<'_>,
-    digest: &str,
-    checkpoint: u64,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let value = analyze_replay_walrus_inner(digest, checkpoint, verbose).map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Analyze a Sui Move package interface.
-///
-/// Provide either `package_id` (fetched via GraphQL) or `bytecode_dir`
-/// (local directory with `bytecode_modules/*.mv`), but not both.
-///
-/// Returns a dict with: source, package_id, modules, structs, functions,
-/// key_structs, and optionally module_names.
-#[pyfunction]
-#[pyo3(signature = (*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443", list_modules=false))]
-fn analyze_package(
-    py: Python<'_>,
-    package_id: Option<&str>,
-    bytecode_dir: Option<&str>,
-    rpc_url: &str,
-    list_modules: bool,
-) -> PyResult<PyObject> {
-    let value = analyze_package_inner(package_id, bytecode_dir, rpc_url, list_modules)
+    // Release GIL during Walrus fetch
+    let value = py
+        .allow_threads(move || get_checkpoint_inner(checkpoint))
         .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
@@ -725,6 +841,8 @@ fn analyze_package(
 ///
 /// Provide either `package_id` (fetched via GraphQL) or `bytecode_dir`
 /// (local directory with `bytecode_modules/*.mv`), but not both.
+///
+/// Standalone — no CLI binary needed.
 #[pyfunction]
 #[pyo3(signature = (*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443"))]
 fn extract_interface(
@@ -733,7 +851,6 @@ fn extract_interface(
     bytecode_dir: Option<&str>,
     rpc_url: &str,
 ) -> PyResult<PyObject> {
-    // Release GIL during GraphQL fetching so Python threads can run concurrently
     let pkg_id_owned = package_id.map(|s| s.to_string());
     let bytecode_dir_owned = bytecode_dir.map(|s| s.to_string());
     let rpc_url_owned = rpc_url.to_string();
@@ -751,8 +868,10 @@ fn extract_interface(
 
 /// Analyze replay state hydration for a transaction digest.
 ///
-/// Fetches the transaction and all required objects/packages, then
-/// summarizes the hydration state without executing the transaction.
+/// Requires the `sui-sandbox` CLI binary in PATH.
+///
+/// When `checkpoint` is provided, automatically uses Walrus as source.
+/// Otherwise uses the specified `source` (default: hybrid, requires gRPC).
 ///
 /// Set `SUI_GRPC_API_KEY` and optionally `SUI_GRPC_ENDPOINT` in env
 /// for gRPC access to historical data.
@@ -762,6 +881,7 @@ fn extract_interface(
     *,
     rpc_url="https://fullnode.mainnet.sui.io:443",
     source="hybrid",
+    checkpoint=None,
     allow_fallback=true,
     prefetch_depth=3,
     prefetch_limit=200,
@@ -769,12 +889,12 @@ fn extract_interface(
     no_prefetch=false,
     verbose=false,
 ))]
-#[allow(clippy::too_many_arguments)]
 fn analyze_replay(
     py: Python<'_>,
     digest: &str,
     rpc_url: &str,
     source: &str,
+    checkpoint: Option<u64>,
     allow_fallback: bool,
     prefetch_depth: usize,
     prefetch_limit: usize,
@@ -786,6 +906,7 @@ fn analyze_replay(
         digest,
         rpc_url,
         source,
+        checkpoint,
         allow_fallback,
         prefetch_depth,
         prefetch_limit,
@@ -799,8 +920,7 @@ fn analyze_replay(
 
 /// Replay a historical Sui transaction locally with the Move VM.
 ///
-/// This shells out to the `sui-sandbox` CLI binary (must be in PATH)
-/// with `--json` output and returns the parsed result.
+/// Requires the `sui-sandbox` CLI binary in PATH.
 ///
 /// For full native replay without subprocess, use the Rust library directly.
 #[pyfunction]
@@ -824,8 +944,7 @@ fn replay(
 
 /// Convert Sui object JSON to BCS bytes using struct layouts from bytecode.
 ///
-/// Accepts the standard Sui object JSON format used by the RPC, GraphQL,
-/// Snowflake, and other data providers.
+/// Standalone — no CLI binary needed.
 ///
 /// Args:
 ///     type_str: Full Sui type string (e.g., "0x2::coin::Coin<0x2::sui::SUI>")
@@ -841,7 +960,6 @@ fn json_to_bcs<'py>(
     object_json: &str,
     package_bytecodes: Vec<Vec<u8>>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    // Release GIL during computation so Python threads can run concurrently
     let type_str_owned = type_str.to_string();
     let object_json_owned = object_json.to_string();
     let bcs_bytes = py
@@ -854,6 +972,8 @@ fn json_to_bcs<'py>(
 
 /// Execute a view function via local Move VM.
 ///
+/// Standalone — no CLI binary needed.
+///
 /// Args:
 ///     package_id: Package containing the view function
 ///     module: Module name
@@ -865,8 +985,7 @@ fn json_to_bcs<'py>(
 ///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
 ///     fetch_deps: If True, automatically resolve transitive deps via GraphQL
 ///
-/// Returns: Dict with success, error, return_values (per-command base64), return_type_tags (per-command),
-/// gas_used
+/// Returns: Dict with success, error, return_values, return_type_tags, gas_used
 #[pyfunction]
 #[pyo3(signature = (
     package_id,
@@ -954,7 +1073,7 @@ fn call_view_function(
         }
     }
 
-    // Release GIL during VM execution so Python threads can run concurrently
+    // Release GIL during VM execution
     let pkg_id_owned = package_id.to_string();
     let module_owned = module.to_string();
     let function_owned = function.to_string();
@@ -979,6 +1098,8 @@ fn call_view_function(
 
 /// Fetch package bytecodes via GraphQL, optionally resolving transitive dependencies.
 ///
+/// Standalone — no CLI binary needed.
+///
 /// Args:
 ///     package_id: The package to fetch
 ///     resolve_deps: If True, recursively fetch all dependency packages
@@ -991,7 +1112,6 @@ fn fetch_package_bytecodes(
     package_id: &str,
     resolve_deps: bool,
 ) -> PyResult<PyObject> {
-    // Release GIL during GraphQL fetching so Python threads can run concurrently
     let pkg_id_owned = package_id.to_string();
     let value = py
         .allow_threads(move || fetch_package_bytecodes_inner(&pkg_id_owned, resolve_deps))
@@ -999,20 +1119,112 @@ fn fetch_package_bytecodes(
     json_value_to_py(py, &value)
 }
 
+/// Fuzz a Move function with randomly generated inputs.
+///
+/// Standalone — no CLI binary needed.
+///
+/// Generates random valid inputs for a Move function's pure parameter types
+/// and executes it repeatedly against the local VM. Reports aborts, errors,
+/// gas exhaustion, and gas usage profiles.
+///
+/// Args:
+///     package_id: Package address (e.g., "0x2")
+///     module: Module name
+///     function: Function name
+///     iterations: Number of fuzz iterations (default: 100)
+///     seed: Random seed for reproducibility (default: random)
+///     sender: Sender address (default: "0x0")
+///     gas_budget: Gas budget per execution (default: 50_000_000_000)
+///     type_args: Type argument strings (e.g., ["0x2::sui::SUI"])
+///     fail_fast: Stop on first abort/error (default: False)
+///     max_vector_len: Max length for generated vectors (default: 32)
+///     dry_run: Only analyze signature, don't execute (default: False)
+///     fetch_deps: Auto-resolve transitive deps via GraphQL (default: True)
+///
+/// Returns: Dict with target, total_iterations, seed, outcomes, gas_profile,
+///          interesting_cases, etc. If dry_run=True, returns classification only.
+#[pyfunction]
+#[pyo3(signature = (
+    package_id,
+    module,
+    function,
+    *,
+    iterations=100,
+    seed=None,
+    sender="0x0",
+    gas_budget=50_000_000_000u64,
+    type_args=vec![],
+    fail_fast=false,
+    max_vector_len=32,
+    dry_run=false,
+    fetch_deps=true,
+))]
+fn fuzz_function(
+    py: Python<'_>,
+    package_id: &str,
+    module: &str,
+    function: &str,
+    iterations: u64,
+    seed: Option<u64>,
+    sender: &str,
+    gas_budget: u64,
+    type_args: Vec<String>,
+    fail_fast: bool,
+    max_vector_len: usize,
+    dry_run: bool,
+    fetch_deps: bool,
+) -> PyResult<PyObject> {
+    let actual_seed = seed.unwrap_or_else(|| {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    });
+
+    let pkg_id_owned = package_id.to_string();
+    let module_owned = module.to_string();
+    let function_owned = function.to_string();
+    let sender_owned = sender.to_string();
+    let value = py
+        .allow_threads(move || {
+            fuzz_function_inner(
+                &pkg_id_owned,
+                &module_owned,
+                &function_owned,
+                iterations,
+                actual_seed,
+                &sender_owned,
+                gas_budget,
+                type_args,
+                fail_fast,
+                max_vector_len,
+                dry_run,
+                fetch_deps,
+            )
+        })
+        .map_err(to_py_err)?;
+
+    json_value_to_py(py, &value)
+}
+
+// ---------------------------------------------------------------------------
+// Module registration
+// ---------------------------------------------------------------------------
+
 /// Python module: sui_sandbox
 #[pymodule]
 fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(analyze_package, m)?)?;
+    // Standalone native functions
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
-    m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
-    m.add_function(wrap_pyfunction!(replay, m)?)?;
-    // Walrus functions
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
-    m.add_function(wrap_pyfunction!(walrus_analyze_replay, m)?)?;
-    // View function execution
+    m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
-    m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
+    m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
+    // CLI-dependent functions (require sui-sandbox binary in PATH)
+    m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
+    m.add_function(wrap_pyfunction!(replay, m)?)?;
     Ok(())
 }
