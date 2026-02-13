@@ -19,6 +19,8 @@ def fetch_package_bytecodes(package_id: str, *, resolve_deps: bool = ...) -> Dic
 
 def json_to_bcs(type_str: str, object_json: str, package_bytecodes: List[bytes]) -> bytes: ...
 
+def transaction_json_to_bcs(transaction_json: str) -> bytes: ...
+
 def call_view_function(
     package_id: str,
     module: str,

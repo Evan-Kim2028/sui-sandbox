@@ -10,7 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sui_sandbox_types::{FetchedTransaction, TransactionDigest};
 
-use crate::bcs_codec::{deserialize_package_base64, deserialize_transaction_base64};
+use crate::bcs_codec::{
+    deserialize_package_base64, deserialize_transaction_base64,
+    deserialize_transaction_data_json_str, deserialize_transaction_data_json_value,
+    transaction_data_to_fetched_transaction,
+};
 use crate::replay_builder::ReplayStateConfig;
 use crate::replay_provider::ReplayStateProvider;
 use crate::state_json::parse_replay_states_file;
@@ -353,6 +357,22 @@ fn parse_transaction_row(row: &Value) -> Result<ReplayState> {
     )? {
         deserialize_transaction_base64(&raw_bcs, digest.clone(), None, timestamp_ms, checkpoint)
             .context("Failed to deserialize transaction bcs")?
+    } else if let Some(tx_json_value) = first_value(
+        obj,
+        &["transaction_json", "transaction_data_json", "tx_json"],
+    ) {
+        let tx_data = match tx_json_value {
+            Value::String(s) => deserialize_transaction_data_json_str(s),
+            other => deserialize_transaction_data_json_value(other),
+        }
+        .context("Failed to parse transaction_json")?;
+        transaction_data_to_fetched_transaction(
+            &tx_data,
+            digest.clone(),
+            None,
+            timestamp_ms,
+            checkpoint,
+        )
     } else {
         let sender = string_value(obj, &["sender"], false)?.unwrap_or_else(|| "0x0".to_string());
         let sender = AccountAddress::from_hex_literal(&sender)
@@ -734,6 +754,8 @@ fn first_value<'a>(obj: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sui_types::base_types::SuiAddress;
+    use sui_types::transaction::{ProgrammableTransaction, TransactionData, TransactionKind};
     use tempfile::TempDir;
 
     fn sample_state(digest: &str) -> ReplayState {
@@ -825,5 +847,51 @@ mod tests {
         assert_eq!(summary.states_imported, 1);
         let loaded = provider.get_state("abc").unwrap();
         assert_eq!(loaded.objects.len(), 1);
+    }
+
+    #[test]
+    fn import_transactions_json_rows_with_transaction_json_payload() {
+        let tmp = TempDir::new().unwrap();
+        let provider = FileStateProvider::new(tmp.path()).unwrap();
+
+        let sender = SuiAddress::from(AccountAddress::from_hex_literal("0x1").unwrap());
+        let tx_data = TransactionData::new_with_gas_coins(
+            TransactionKind::ProgrammableTransaction(ProgrammableTransaction {
+                inputs: vec![],
+                commands: vec![],
+            }),
+            sender,
+            vec![],
+            555,
+            12,
+        );
+        let tx_json = serde_json::to_string(&tx_data).unwrap();
+
+        let tx_file = tmp.path().join("transactions.json");
+        fs::write(
+            &tx_file,
+            serde_json::to_string_pretty(&serde_json::json!([{
+                "digest": "abc-json",
+                "checkpoint": 42,
+                "transaction_json": tx_json
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let summary = provider
+            .import(&ImportSpec {
+                state: None,
+                transactions: Some(tx_file),
+                objects: None,
+                packages: None,
+            })
+            .unwrap();
+
+        assert_eq!(summary.states_imported, 1);
+        let loaded = provider.get_state("abc-json").unwrap();
+        assert_eq!(loaded.transaction.gas_budget, 555);
+        assert_eq!(loaded.transaction.gas_price, 12);
+        assert_eq!(loaded.transaction.checkpoint, Some(42));
     }
 }

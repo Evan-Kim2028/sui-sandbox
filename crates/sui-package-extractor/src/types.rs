@@ -79,6 +79,35 @@ pub struct BytecodeConstantJson {
 }
 
 #[derive(Debug, Serialize)]
+pub struct BytecodeStructInstantiationJson {
+    pub name: String,
+    pub type_arguments: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeFunctionInstantiationJson {
+    pub address: String,
+    pub module: String,
+    pub function: String,
+    pub type_arguments: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeMetadataJson {
+    pub key_hex: String,
+    pub key_utf8: Option<String>,
+    pub value_hex: String,
+    pub value_len: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BytecodeBoundsCheckJson {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct BytecodeEnumVariantJson {
     pub tag: u16,
     pub name: String,
@@ -120,6 +149,10 @@ pub struct BytecodeModuleJson {
     pub enums: BTreeMap<String, BytecodeEnumJson>,
     pub functions: BTreeMap<String, BytecodeFunctionJson>,
     pub constants: Vec<BytecodeConstantJson>,
+    pub struct_instantiations: Vec<BytecodeStructInstantiationJson>,
+    pub function_instantiations: Vec<BytecodeFunctionInstantiationJson>,
+    pub metadata: Vec<BytecodeMetadataJson>,
+    pub bounds_check: BytecodeBoundsCheckJson,
     pub friends: Vec<String>,
 }
 

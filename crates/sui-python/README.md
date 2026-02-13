@@ -98,6 +98,15 @@ Convert a Sui object JSON representation to BCS bytes using Move type layout.
 
 **Returns:** `bytes`
 
+#### `transaction_json_to_bcs(transaction_json)`
+
+Convert Snowflake-style `TRANSACTION_JSON` (or canonical Sui `TransactionData` JSON)
+into raw transaction BCS bytes.
+
+This is useful when your pipeline has transaction JSON but not transaction BCS.
+
+**Returns:** `bytes`
+
 #### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, package_bytecodes=None, fetch_deps=True)`
 
 Execute a Move function in the local VM with full control over object and pure inputs.

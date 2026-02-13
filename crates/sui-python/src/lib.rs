@@ -7,6 +7,7 @@
 //! - `get_checkpoint`: Fetch and summarize a Walrus checkpoint
 //! - `fetch_package_bytecodes`: Fetch package bytecodes via GraphQL
 //! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
+//! - `transaction_json_to_bcs`: Convert Snowflake/canonical TransactionData JSON to BCS bytes
 //! - `call_view_function`: Execute a Move view function in the local VM
 //! - `fuzz_function`: Fuzz a Move function with random inputs
 //! - `replay`: Replay historical transactions (with optional analysis-only mode)
@@ -853,6 +854,10 @@ fn json_to_bcs_inner(
     converter.convert(type_str, &json_value)
 }
 
+fn transaction_json_to_bcs_inner(transaction_json: &str) -> Result<Vec<u8>> {
+    bcs_codec::transaction_json_to_bcs(transaction_json)
+}
+
 // ---------------------------------------------------------------------------
 // call_view_function (native)
 // ---------------------------------------------------------------------------
@@ -1556,6 +1561,23 @@ fn json_to_bcs<'py>(
     Ok(PyBytes::new(py, &bcs_bytes))
 }
 
+/// Convert Snowflake TRANSACTION_JSON (Sui TransactionData JSON) into raw transaction BCS bytes.
+///
+/// Accepts canonical Sui `TransactionData` JSON and Snowflake-style variants
+/// (for example StructTag `type_args` and non-`0x` hex addresses).
+#[pyfunction]
+#[pyo3(signature = (transaction_json))]
+fn transaction_json_to_bcs<'py>(
+    py: Python<'py>,
+    transaction_json: &str,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let tx_json_owned = transaction_json.to_string();
+    let bcs_bytes = py
+        .allow_threads(move || transaction_json_to_bcs_inner(&tx_json_owned))
+        .map_err(to_py_err)?;
+    Ok(PyBytes::new(py, &bcs_bytes))
+}
+
 /// Execute a view function via local Move VM.
 ///
 /// Standalone — no CLI binary needed.
@@ -1843,6 +1865,7 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deserialize_package, m)?)?;
     m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
+    m.add_function(wrap_pyfunction!(transaction_json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
     m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
     m.add_function(wrap_pyfunction!(replay, m)?)?;

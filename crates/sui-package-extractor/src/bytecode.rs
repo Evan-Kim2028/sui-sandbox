@@ -6,16 +6,18 @@ use std::path::{Path, PathBuf};
 
 use crate::normalization::signature_token_to_json;
 use crate::types::{
-    BytecodeConstantJson, BytecodeEnumJson, BytecodeEnumVariantJson, BytecodeFieldJson,
-    BytecodeFunctionBodyJson, BytecodeFunctionJson, BytecodeFunctionTypeParamJson,
-    BytecodeInstructionJson, BytecodeJumpTableJson, BytecodeModuleJson,
-    BytecodePackageInterfaceJson, BytecodeStructJson, BytecodeStructRefJson,
+    BytecodeBoundsCheckJson, BytecodeConstantJson, BytecodeEnumJson, BytecodeEnumVariantJson,
+    BytecodeFieldJson, BytecodeFunctionBodyJson, BytecodeFunctionInstantiationJson,
+    BytecodeFunctionJson, BytecodeFunctionTypeParamJson, BytecodeInstructionJson,
+    BytecodeJumpTableJson, BytecodeMetadataJson, BytecodeModuleJson, BytecodePackageInterfaceJson,
+    BytecodeStructInstantiationJson, BytecodeStructJson, BytecodeStructRefJson,
     BytecodeStructTypeParamJson, LocalBytecodeCounts, LocalBytesCheck, ModuleBytesMismatch,
     SanityCounts,
 };
 use crate::utils::{
     bytes_info, bytes_info_sha256_hex, bytes_to_hex_prefixed, canonicalize_json_value, BytesInfo,
 };
+use move_binary_format::check_bounds::BoundsChecker;
 use move_binary_format::file_format::{
     Ability, AbilitySet, Bytecode, CompiledModule, JumpTableInner, StructFieldInformation,
     Visibility,
@@ -330,6 +332,84 @@ pub fn build_bytecode_module_json(module: &CompiledModule) -> Result<BytecodeMod
         })
         .collect();
 
+    let mut struct_instantiations: Vec<BytecodeStructInstantiationJson> = module
+        .struct_instantiations()
+        .iter()
+        .map(|inst| {
+            let struct_def = module.struct_def_at(inst.def);
+            let struct_handle = module.datatype_handle_at(struct_def.struct_handle);
+            let name = module.identifier_at(struct_handle.name).to_string();
+            let type_arguments = module
+                .signature_at(inst.type_parameters)
+                .0
+                .iter()
+                .map(|t| signature_token_to_json(module, t))
+                .collect();
+            BytecodeStructInstantiationJson {
+                name,
+                type_arguments,
+            }
+        })
+        .collect();
+    struct_instantiations.sort_by_key(|inst| {
+        let type_args = serde_json::to_string(&inst.type_arguments).unwrap_or_default();
+        format!("{}::{}", inst.name, type_args)
+    });
+
+    let mut function_instantiations: Vec<BytecodeFunctionInstantiationJson> = module
+        .function_instantiations()
+        .iter()
+        .map(|inst| {
+            let function_handle = module.function_handle_at(inst.handle);
+            let module_handle = module.module_handle_at(function_handle.module);
+            let address =
+                bytes_to_hex_prefixed(module.address_identifier_at(module_handle.address).as_ref());
+            let module_name = module.identifier_at(module_handle.name).to_string();
+            let function = module.identifier_at(function_handle.name).to_string();
+            let type_arguments = module
+                .signature_at(inst.type_parameters)
+                .0
+                .iter()
+                .map(|t| signature_token_to_json(module, t))
+                .collect();
+            BytecodeFunctionInstantiationJson {
+                address,
+                module: module_name,
+                function,
+                type_arguments,
+            }
+        })
+        .collect();
+    function_instantiations.sort_by_key(|inst| {
+        let type_args = serde_json::to_string(&inst.type_arguments).unwrap_or_default();
+        format!(
+            "{}::{}::{}::{}",
+            inst.address, inst.module, inst.function, type_args
+        )
+    });
+
+    let metadata = module
+        .metadata
+        .iter()
+        .map(|entry| BytecodeMetadataJson {
+            key_hex: bytes_to_hex_prefixed(&entry.key),
+            key_utf8: String::from_utf8(entry.key.clone()).ok(),
+            value_hex: bytes_to_hex_prefixed(&entry.value),
+            value_len: entry.value.len(),
+        })
+        .collect();
+
+    let bounds_check = match BoundsChecker::verify_module(module, true) {
+        Ok(()) => BytecodeBoundsCheckJson {
+            ok: true,
+            error: None,
+        },
+        Err(err) => BytecodeBoundsCheckJson {
+            ok: false,
+            error: Some(format!("{err}")),
+        },
+    };
+
     let mut friends: Vec<String> = module
         .immediate_friends()
         .into_iter()
@@ -344,6 +424,10 @@ pub fn build_bytecode_module_json(module: &CompiledModule) -> Result<BytecodeMod
         enums,
         functions,
         constants,
+        struct_instantiations,
+        function_instantiations,
+        metadata,
+        bounds_check,
         friends,
     })
 }
@@ -1071,8 +1155,13 @@ mod tests {
         assert_eq!(json.constants.len(), 1);
         assert_eq!(json.constants[0].data_len, 8);
         assert_eq!(json.constants[0].data_hex, "0x2a00000000000000");
+        assert!(json.bounds_check.ok);
+        assert!(json.bounds_check.error.is_none());
         assert_eq!(json.enums.len(), 1);
         assert!(json.enums.contains_key("enum"));
+        assert!(json.struct_instantiations.is_empty());
+        assert!(json.function_instantiations.is_empty());
+        assert!(json.metadata.is_empty());
 
         let expected_friend = format!(
             "{}::FriendMod",

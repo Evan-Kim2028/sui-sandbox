@@ -1,6 +1,6 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.18.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.19.0-green.svg)](Cargo.toml)
 [![Sui](https://img.shields.io/badge/sui-mainnet--v1.64.2-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.
@@ -256,7 +256,7 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 ## Python Bindings
 
-Python package exposing package analysis, checkpoint replay, Move VM execution, and function fuzzing via PyO3. All 8 functions are fully standalone — no CLI binary needed. Just `pip install sui-sandbox`.
+Python package exposing package analysis, checkpoint replay, Move VM execution, and function fuzzing via PyO3. All Python functions are fully standalone — no CLI binary needed. Just `pip install sui-sandbox`.
 
 ### Install
 

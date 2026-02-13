@@ -13,7 +13,11 @@ use move_core_types::account_address::AccountAddress;
 use serde_json::{Map, Value};
 use sui_sandbox_types::{FetchedTransaction, PtbCommand, TransactionInput};
 
-use crate::bcs_codec::{deserialize_package_base64, deserialize_transaction_base64};
+use crate::bcs_codec::{
+    deserialize_package_base64, deserialize_transaction_base64,
+    deserialize_transaction_data_json_str, deserialize_transaction_data_json_value,
+    transaction_data_to_fetched_transaction,
+};
 use crate::types::{PackageData, ReplayState, VersionedObject};
 
 /// Parse one or many replay states from a JSON string.
@@ -116,6 +120,24 @@ fn parse_transaction(
             tx_checkpoint,
         )
         .context("Failed to parse transaction.raw_bcs");
+    }
+
+    if let Some(tx_json_value) = first_value(
+        obj,
+        &["transaction_json", "transaction_data_json", "tx_json"],
+    ) {
+        let tx_data = match tx_json_value {
+            Value::String(s) => deserialize_transaction_data_json_str(s),
+            other => deserialize_transaction_data_json_value(other),
+        }
+        .context("Failed to parse transaction.transaction_json")?;
+        return Ok(transaction_data_to_fetched_transaction(
+            &tx_data,
+            digest,
+            effects,
+            timestamp_ms,
+            tx_checkpoint,
+        ));
     }
 
     let sender_str = optional_string(obj, &["sender"]).unwrap_or_else(|| "0x0".to_string());
@@ -525,5 +547,40 @@ mod tests {
             .expect("clock object");
         assert!(obj.is_shared);
         assert_eq!(obj.bcs_bytes, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn parses_extended_transaction_json_payload() {
+        let sender = SuiAddress::from(AccountAddress::from_hex_literal("0x1").unwrap());
+        let tx_data = TransactionData::new_with_gas_coins(
+            TransactionKind::ProgrammableTransaction(ProgrammableTransaction {
+                inputs: vec![],
+                commands: vec![],
+            }),
+            sender,
+            vec![],
+            321,
+            11,
+        );
+        let tx_json = serde_json::to_string(&tx_data).expect("tx json");
+
+        let extended = serde_json::json!({
+            "transaction": {
+                "digest": "digest-json-1",
+                "transaction_json": tx_json,
+                "checkpoint": 99
+            },
+            "objects": {},
+            "packages": {},
+            "epoch": 4,
+            "protocol_version": 107,
+            "checkpoint": 99
+        });
+
+        let parsed = parse_replay_state_value(&extended).expect("parse extended transaction_json");
+        assert_eq!(parsed.transaction.digest.0, "digest-json-1");
+        assert_eq!(parsed.transaction.gas_budget, 321);
+        assert_eq!(parsed.transaction.gas_price, 11);
+        assert_eq!(parsed.transaction.checkpoint, Some(99));
     }
 }
