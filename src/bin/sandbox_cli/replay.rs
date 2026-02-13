@@ -2310,6 +2310,7 @@ fn b64_matches_bytes(encoded: &str, expected: &[u8]) -> bool {
     false
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_execution_path(
     cmd: &ReplayCmd,
     allow_fallback: bool,
@@ -2436,6 +2437,7 @@ struct ChildFetchOptions<'a> {
 /// dynamic field and returns its key TypeTag. Results are cached to avoid redundant lookups.
 /// Also detects and records child ID aliases when the computed dynamic field object ID
 /// differs from the on-chain actual ID (due to package upgrades changing type hashes).
+#[allow(clippy::too_many_arguments)]
 fn resolve_key_type_via_graphql(
     gql: &GraphQLClient,
     parent: AccountAddress,
