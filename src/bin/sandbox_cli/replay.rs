@@ -7,7 +7,6 @@ use move_binary_format::CompiledModule;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use self::hydration::{build_historical_state_provider, build_replay_state, ReplayHydrationConfig};
@@ -21,10 +20,10 @@ use move_core_types::language_storage::{ModuleId, TypeTag};
 use sui_prefetch::compute_dynamic_field_id;
 #[cfg(feature = "mm2")]
 use sui_sandbox_core::mm2::{TypeModel, TypeSynthesizer};
+use sui_sandbox_core::replay_support::{self, ReplayObjectMaps};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy, MissingInputObject};
 use sui_sandbox_core::types::{format_type_tag, parse_type_tag};
-use sui_sandbox_core::utilities::historical_state::HistoricalStateReconstructor;
 use sui_sandbox_core::utilities::rewrite_type_tag;
 use sui_sandbox_core::vm::SimulationConfig;
 use sui_sandbox_types::{
@@ -40,7 +39,6 @@ use sui_state_fetcher::{
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
-use sui_types::digests::TransactionDigest;
 use sui_types::effects::TransactionEffectsAPI;
 
 mod batch;
@@ -1978,14 +1976,8 @@ impl ReplayCmd {
     }
 }
 
-struct ReplayObjectMaps {
-    versions_str: HashMap<String, u64>,
-    cached_objects: HashMap<String, String>,
-    version_map: HashMap<String, u64>,
-    object_bytes: HashMap<String, Vec<u8>>,
-    object_types: HashMap<String, String>,
-}
-
+/// CLI-specific wrapper: clones from `SandboxState` resolver and delegates
+/// to the library function for package loading.
 fn hydrate_resolver_from_replay_state(
     state: &SandboxState,
     replay_state: &ReplayState,
@@ -2016,37 +2008,12 @@ fn hydrate_resolver_from_replay_state(
     resolver
 }
 
+// Delegate to library functions for object maps, patching, and simulation config.
 fn build_replay_object_maps(
     replay_state: &ReplayState,
     versions: &HashMap<AccountAddress, u64>,
 ) -> ReplayObjectMaps {
-    let versions_str: HashMap<String, u64> = versions
-        .iter()
-        .map(|(addr, ver)| (addr.to_hex_literal(), *ver))
-        .collect();
-    let mut cached_objects: HashMap<String, String> = HashMap::new();
-    let mut version_map: HashMap<String, u64> = HashMap::new();
-    let mut object_bytes: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut object_types: HashMap<String, String> = HashMap::new();
-    for (id, obj) in &replay_state.objects {
-        let id_hex = id.to_hex_literal();
-        cached_objects.insert(
-            id_hex.clone(),
-            base64::engine::general_purpose::STANDARD.encode(&obj.bcs_bytes),
-        );
-        version_map.insert(id_hex.clone(), obj.version);
-        object_bytes.insert(id_hex.clone(), obj.bcs_bytes.clone());
-        if let Some(type_tag) = &obj.type_tag {
-            object_types.insert(id_hex, type_tag.clone());
-        }
-    }
-    ReplayObjectMaps {
-        versions_str,
-        cached_objects,
-        version_map,
-        object_bytes,
-        object_types,
-    }
+    replay_support::build_replay_object_maps(replay_state, versions)
 }
 
 fn maybe_patch_replay_objects(
@@ -2058,71 +2025,24 @@ fn maybe_patch_replay_objects(
     progress_logging: bool,
     patch_stats_logging: bool,
 ) {
-    let disable_version_patch = std::env::var("SUI_DISABLE_VERSION_PATCH")
-        .ok()
-        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false);
-    if disable_version_patch {
-        return;
-    }
     if progress_logging {
         eprintln!("[replay] version patcher start");
     }
-    let mut reconstructor = HistoricalStateReconstructor::new();
-    reconstructor.configure_from_modules(resolver.iter_modules());
-    if let Some(ts) = replay_state.transaction.timestamp_ms {
-        reconstructor.set_timestamp(ts);
-    }
-    for (storage, ver) in versions {
-        reconstructor.register_version(&storage.to_hex_literal(), *ver);
-    }
-    for (storage, runtime) in aliases {
-        if let Some(ver) = versions.get(storage) {
-            reconstructor.register_version(&runtime.to_hex_literal(), *ver);
-        }
-    }
-    let reconstructed = reconstructor.reconstruct(&maps.object_bytes, &maps.object_types);
-    for (id, bytes) in reconstructed.objects {
-        maps.cached_objects
-            .insert(id, base64::engine::general_purpose::STANDARD.encode(&bytes));
-    }
+    replay_support::maybe_patch_replay_objects(
+        resolver,
+        replay_state,
+        versions,
+        aliases,
+        maps,
+        patch_stats_logging,
+    );
     if progress_logging {
         eprintln!("[replay] version patcher done");
-    }
-    if patch_stats_logging {
-        let stats = reconstructed.stats;
-        if stats.total_patched() > 0 {
-            eprintln!(
-                "[patch] patched_objects={} overrides={} raw={} struct={} skips={}",
-                stats.total_patched(),
-                stats.override_patched,
-                stats.raw_patched,
-                stats.struct_patched,
-                stats.skipped
-            );
-        }
     }
 }
 
 fn build_simulation_config(replay_state: &ReplayState) -> SimulationConfig {
-    let mut config = SimulationConfig::default()
-        .with_sender_address(replay_state.transaction.sender)
-        .with_gas_budget(Some(replay_state.transaction.gas_budget))
-        .with_gas_price(replay_state.transaction.gas_price)
-        .with_epoch(replay_state.epoch);
-    if let Some(rgp) = replay_state.reference_gas_price {
-        config = config.with_reference_gas_price(rgp);
-    }
-    if replay_state.protocol_version > 0 {
-        config = config.with_protocol_version(replay_state.protocol_version);
-    }
-    if let Some(ts) = replay_state.transaction.timestamp_ms {
-        config = config.with_tx_timestamp(ts);
-    }
-    if let Ok(digest) = TransactionDigest::from_str(&replay_state.transaction.digest.0) {
-        config = config.with_tx_hash(digest.into_inner());
-    }
-    config
+    replay_support::build_simulation_config(replay_state)
 }
 
 fn emit_linkage_debug_info(

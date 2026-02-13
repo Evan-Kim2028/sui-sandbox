@@ -1,8 +1,8 @@
 # sui-sandbox
 
-Python bindings for Sui Move package analysis, checkpoint replay, view function execution, and Move function fuzzing.
+Python bindings for Sui Move package analysis, transaction replay, view function execution, and Move function fuzzing.
 
-Built on [sui-sandbox](../../README.md) — runs the real Sui Move VM locally via PyO3.
+Built on [sui-sandbox](../../README.md) — runs the real Sui Move VM locally via PyO3. **All functions are standalone** — `pip install sui-sandbox` is all you need.
 
 ## Installation
 
@@ -30,21 +30,19 @@ interface = sui_sandbox.extract_interface(package_id="0x2")
 for mod_name, mod_data in interface["modules"].items():
     print(f"{mod_name}: {len(mod_data.get('functions', {}))} functions")
 
-# Get the latest Walrus checkpoint and inspect it
-cp = sui_sandbox.get_latest_checkpoint()
-data = sui_sandbox.get_checkpoint(cp)
-print(f"Checkpoint {cp}: {data['transaction_count']} transactions")
+# Replay a historical transaction via Walrus (no API key needed)
+result = sui_sandbox.replay(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+)
+print(f"Success: {result['local_success']}")
 
 # Fuzz a Move function
 report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50)
-print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
+print(f"Successes: {report['outcomes']['successes']}")
 ```
 
 ## API Reference
-
-### Standalone Functions
-
-These functions work with just `pip install sui-sandbox` — no CLI binary needed.
 
 #### `extract_interface(*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443")`
 
@@ -100,90 +98,64 @@ Convert a Sui object JSON representation to BCS bytes using Move type layout.
 
 **Returns:** `bytes`
 
-```python
-pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)
-bcs_bytes = sui_sandbox.json_to_bcs(type_str, object_json, pkgs["packages"])
-```
-
 #### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, package_bytecodes=None, fetch_deps=True)`
 
 Execute a Move function in the local VM with full control over object and pure inputs.
 
-**Returns:** `dict` with:
-- `success` (bool)
-- `error` (string or null)
-- `return_values` (per-command list of base64-encoded BCS values)
-- `return_type_tags` (parallel per-command list of canonical Move type tags)
-- `gas_used` (u64)
-
-```python
-result = sui_sandbox.call_view_function(
-    "0x2", "clock", "timestamp_ms",
-    object_inputs=[{"Clock": "0x6"}],
-)
-print(result["return_values"])
-```
+**Returns:** `dict` with `success`, `error`, `return_values`, `return_type_tags`, `gas_used`.
 
 #### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
 Fuzz a Move function with randomly generated inputs.
 
-Use `dry_run=True` to check parameter classification without executing (returns whether the function is fully fuzzable and parameter details).
+Use `dry_run=True` to check parameter classification without executing.
 
-**Returns:** `dict` with:
-- `verdict` — `FULLY_FUZZABLE`, `NOT_FUZZABLE`, `PASS`, `FAIL`, or `MIXED`
-- `iterations`, `successes`, `errors` — execution counts
-- `error_categories` — grouped error summaries (when errors occur)
-- `params` — parameter classification (in dry-run mode)
+**Returns:** `dict` with `target`, `classification`, `outcomes` (successes/errors), `gas_profile`.
 
 ```python
 # Dry run — check if function is fuzzable
 info = sui_sandbox.fuzz_function("0x1", "u64", "max", dry_run=True)
-print(f"Verdict: {info['verdict']}")
+print(f"Fuzzable: {info['classification']['is_fully_fuzzable']}")
 
 # Full fuzz run
-report = sui_sandbox.fuzz_function(
-    "0x1", "u64", "max",
-    iterations=50, seed=42,
-)
-print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
+report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50, seed=42)
+print(f"Successes: {report['outcomes']['successes']}")
 ```
 
-### CLI-Dependent Functions
+#### `replay(digest, *, rpc_url=..., source="hybrid", checkpoint=None, allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, compare=False, analyze_only=False, verbose=False)`
 
-These functions shell out to the `sui-sandbox` CLI binary, which must be built and available in `PATH`.
+Replay a historical Sui transaction locally with the Move VM.
 
-#### `analyze_replay(digest, *, rpc_url=..., source="hybrid", checkpoint=None, allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, verbose=False)`
+When `checkpoint` is provided, uses Walrus as the data source (no API key needed). Otherwise uses gRPC/hybrid (requires `SUI_GRPC_API_KEY` env var).
 
-Analyze replay state hydration for a transaction.
+Use `analyze_only=True` to inspect state hydration without executing the transaction.
 
-When `checkpoint` is provided, automatically uses Walrus as the data source (no API key needed). Otherwise uses the gRPC/hybrid source (requires `SUI_GRPC_API_KEY` env var).
+Use `compare=True` to compare local execution results with on-chain effects.
 
-**Returns:** `dict` with `digest`, `sender`, `commands`, `inputs`, `objects`, `packages`, `modules`, `input_summary`, `command_summaries`, etc.
+**Returns:** `dict` — replay results (with `local_success`, `effects`, `execution_path`, optionally `comparison`) or analysis summary (with `commands`, `inputs`, `objects`, `packages`, `input_summary`).
 
 ```python
-# Via Walrus (no API key needed)
-state = sui_sandbox.analyze_replay(
+# Analyze state hydration only (no VM execution)
+analysis = sui_sandbox.replay(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+    analyze_only=True,
+)
+print(f"Commands: {analysis['commands']}, Objects: {analysis['objects']}")
+
+# Full replay via Walrus (no API key needed)
+result = sui_sandbox.replay(
     "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
     checkpoint=239615926,
 )
-print(f"Commands: {state['commands']}, Objects: {state['objects']}")
+print(f"Success: {result['local_success']}")
 
-# Via gRPC (requires API key)
+# Full replay via gRPC with comparison
 import os
 os.environ["SUI_GRPC_API_KEY"] = "your-key"
-state = sui_sandbox.analyze_replay("DigestHere...")
-```
-
-#### `replay(digest, *, rpc_url=..., compare=False, verbose=False)`
-
-Execute a full VM replay of a historical transaction.
-
-**Returns:** `dict` with full replay results including effects comparison when `compare=True`.
-
-```python
 result = sui_sandbox.replay("DigestHere...", compare=True)
-print(f"Status: {result['status']}")
+if result.get("comparison"):
+    print(f"Status match: {result['comparison']['status_match']}")
 ```
 
 ## Platform Support

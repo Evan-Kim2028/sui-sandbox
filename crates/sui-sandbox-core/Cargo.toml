@@ -63,6 +63,7 @@ async-trait.workspace = true
 # Workspace crates
 sui-sandbox-types.workspace = true
 sui-transport.workspace = true
+sui-state-fetcher.workspace = true
 sui-resolver.workspace = true
 sui-prefetch.workspace = true
 

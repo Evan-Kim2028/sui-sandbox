@@ -256,7 +256,7 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 ## Python Bindings
 
-Python package exposing package analysis, checkpoint replay, Move VM execution, and function fuzzing via PyO3. 7 of 9 functions are fully standalone — no CLI binary needed.
+Python package exposing package analysis, checkpoint replay, Move VM execution, and function fuzzing via PyO3. All 8 functions are fully standalone — no CLI binary needed. Just `pip install sui-sandbox`.
 
 ### Install
 
@@ -282,6 +282,18 @@ interface = sui_sandbox.extract_interface(package_id="0x1")
 cp = sui_sandbox.get_latest_checkpoint()
 data = sui_sandbox.get_checkpoint(cp)
 
+# --- Transaction replay (no API key needed via Walrus) ---
+result = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926)
+print(result["local_success"])
+
+# Analyze transaction state without executing
+analysis = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926, analyze_only=True)
+print(analysis["commands"], analysis["objects"])
+
+# Compare local vs on-chain effects
+result = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926, compare=True)
+print(result["comparison"])
+
 # --- Move view function execution ---
 result = sui_sandbox.call_view_function(
     "0x2", "clock", "timestamp_ms",
@@ -291,7 +303,7 @@ print(result["return_values"])
 
 # --- Move function fuzzing ---
 report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50)
-print(f"Verdict: {report['verdict']}, successes: {report['successes']}")
+print(f"Verdict: {report['verdict']}, successes: {report['outcomes']['successes']}")
 
 # --- Bytecode utilities ---
 pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)

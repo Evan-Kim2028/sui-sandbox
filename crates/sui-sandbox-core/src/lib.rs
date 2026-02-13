@@ -78,6 +78,9 @@ pub mod storage_log;
 // Move function fuzzing
 pub mod fuzz;
 
+// Replay support (shared between CLI and Python bindings)
+pub mod replay_support;
+
 // Utilities for working around infrastructure limitations
 pub mod utilities;
 

@@ -6147,7 +6147,11 @@ dependencies = [
  "serde_json",
  "sui-package-extractor",
  "sui-sandbox-core",
+ "sui-sandbox-types",
+ "sui-state-fetcher",
  "sui-transport",
+ "sui-types",
+ "tokio",
 ]
 
 [[package]]
@@ -6259,6 +6263,7 @@ dependencies = [
  "sui-protocol-config",
  "sui-resolver",
  "sui-sandbox-types",
+ "sui-state-fetcher",
  "sui-transport",
  "sui-types",
  "tempfile",

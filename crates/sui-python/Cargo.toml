@@ -29,7 +29,12 @@ move-core-types.workspace = true
 # Sui types (for CheckpointData, TransactionDataAPI)
 sui-types.workspace = true
 
+# Async runtime (for replay state fetching)
+tokio.workspace = true
+
 # Workspace crates
 sui-package-extractor.workspace = true
 sui-transport.workspace = true
 sui-sandbox-core.workspace = true
+sui-sandbox-types.workspace = true
+sui-state-fetcher.workspace = true

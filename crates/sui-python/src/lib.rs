@@ -1,7 +1,7 @@
 //! Python bindings for Sui Move package analysis, checkpoint replay, view function
 //! execution, and Move function fuzzing.
 //!
-//! **Standalone functions** (work with just `pip install sui-sandbox`):
+//! **All functions are standalone** — `pip install sui-sandbox` is all you need:
 //! - `extract_interface`: Extract full Move package interface from bytecode or GraphQL
 //! - `get_latest_checkpoint`: Get latest Walrus checkpoint number
 //! - `get_checkpoint`: Fetch and summarize a Walrus checkpoint
@@ -9,10 +9,7 @@
 //! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
 //! - `call_view_function`: Execute a Move view function in the local VM
 //! - `fuzz_function`: Fuzz a Move function with random inputs
-//!
-//! **CLI-dependent functions** (require `sui-sandbox` binary in PATH):
-//! - `analyze_replay`: Inspect replay state hydration for a transaction
-//! - `replay`: Full VM replay of a historical transaction
+//! - `replay`: Replay historical transactions (with optional analysis-only mode)
 
 #![allow(clippy::too_many_arguments)]
 
@@ -196,10 +193,10 @@ fn extract_interface_inner(
 }
 
 // ---------------------------------------------------------------------------
-// analyze_replay (subprocess — requires CLI binary)
+// replay (native — unified analyze + execute)
 // ---------------------------------------------------------------------------
 
-fn analyze_replay_inner(
+fn replay_inner(
     digest: &str,
     rpc_url: &str,
     source: &str,
@@ -209,102 +206,426 @@ fn analyze_replay_inner(
     prefetch_limit: usize,
     auto_system_objects: bool,
     no_prefetch: bool,
+    compare: bool,
+    analyze_only: bool,
     verbose: bool,
 ) -> Result<serde_json::Value> {
-    let depth_str = prefetch_depth.to_string();
-    let limit_str = prefetch_limit.to_string();
+    use sui_sandbox_core::replay_support;
+    use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy};
+    use sui_state_fetcher::{
+        build_aliases, checkpoint_to_replay_state, HistoricalStateProvider, ReplayState,
+    };
+    use sui_transport::network::resolve_graphql_endpoint;
 
-    let mut cmd = std::process::Command::new("sui-sandbox");
-    cmd.arg("--json");
-    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
-        cmd.arg("--rpc-url").arg(rpc_url);
-    }
-    if verbose {
-        cmd.arg("--verbose");
-    }
-    cmd.arg("analyze").arg("replay").arg(digest);
+    // ---------------------------------------------------------------
+    // 1. Fetch ReplayState
+    // ---------------------------------------------------------------
+    let replay_state: ReplayState;
+    let graphql_client: GraphQLClient;
+    let effective_source: String;
 
-    // When checkpoint is provided, use walrus source
     if let Some(cp) = checkpoint {
-        cmd.arg("--source").arg("walrus");
-        cmd.arg("--checkpoint").arg(cp.to_string());
-    } else {
-        cmd.arg("--source").arg(source);
-    }
-
-    cmd.arg("--allow-fallback")
-        .arg(if allow_fallback { "true" } else { "false" });
-    cmd.arg("--prefetch-depth").arg(&depth_str);
-    cmd.arg("--prefetch-limit").arg(&limit_str);
-    cmd.arg("--auto-system-objects")
-        .arg(if auto_system_objects { "true" } else { "false" });
-    if no_prefetch {
-        cmd.arg("--no-prefetch");
-    }
-
-    let output = cmd
-        .output()
-        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            return Ok(v);
+        // Walrus path — no API key needed
+        if verbose {
+            eprintln!("[walrus] fetching checkpoint {} for digest {}", cp, digest);
         }
-        return Err(anyhow!(
-            "sui-sandbox analyze replay failed (exit {}): {}",
-            output.status,
-            stderr
-        ));
+        let checkpoint_data = WalrusClient::mainnet()
+            .get_checkpoint(cp)
+            .context("Failed to fetch checkpoint from Walrus")?;
+        replay_state = checkpoint_to_replay_state(&checkpoint_data, digest)
+            .context("Failed to convert checkpoint to replay state")?;
+        let gql_endpoint = resolve_graphql_endpoint(rpc_url);
+        graphql_client = GraphQLClient::new(&gql_endpoint);
+        effective_source = "walrus".to_string();
+    } else {
+        // gRPC/hybrid path — requires API key
+        let rt = tokio::runtime::Runtime::new()
+            .context("Failed to create tokio runtime")?;
+
+        let gql_endpoint = resolve_graphql_endpoint(rpc_url);
+        graphql_client = GraphQLClient::new(&gql_endpoint);
+
+        let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
+            .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
+            .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
+            .unwrap_or_else(|_| rpc_url.to_string());
+        let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+
+        let provider = rt.block_on(async {
+            let grpc = sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key)
+                .await
+                .context("Failed to create gRPC client")?;
+            let mut provider =
+                HistoricalStateProvider::with_clients(grpc, graphql_client.clone());
+
+            // Enable Walrus for hybrid/walrus sources
+            if source == "walrus" || source == "hybrid" {
+                provider = provider
+                    .with_walrus_from_env()
+                    .with_local_object_store_from_env();
+            }
+
+            Ok::<HistoricalStateProvider, anyhow::Error>(provider)
+        })?;
+
+        let prefetch_dynamic_fields = !no_prefetch;
+        replay_state = rt.block_on(async {
+            provider
+                .replay_state_builder()
+                .with_config(sui_state_fetcher::ReplayStateConfig {
+                    prefetch_dynamic_fields,
+                    df_depth: prefetch_depth,
+                    df_limit: prefetch_limit,
+                    auto_system_objects,
+                })
+                .build(digest)
+                .await
+                .context("Failed to fetch replay state")
+        })?;
+        effective_source = source.to_string();
     }
 
-    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox JSON output")
+    if verbose {
+        eprintln!(
+            "  Sender: {}",
+            replay_state.transaction.sender.to_hex_literal()
+        );
+        eprintln!("  Commands: {}", replay_state.transaction.commands.len());
+        eprintln!("  Inputs: {}", replay_state.transaction.inputs.len());
+        eprintln!(
+            "  Objects: {}, Packages: {}",
+            replay_state.objects.len(),
+            replay_state.packages.len()
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Analyze-only: return state summary without VM execution
+    // ---------------------------------------------------------------
+    if analyze_only {
+        return build_analyze_output(&replay_state, &effective_source, allow_fallback,
+            auto_system_objects, !no_prefetch, prefetch_depth, prefetch_limit, verbose);
+    }
+
+    // ---------------------------------------------------------------
+    // 3. Full replay: build resolver, fetch deps, execute VM
+    // ---------------------------------------------------------------
+    let pkg_aliases = build_aliases(
+        &replay_state.packages,
+        None, // no provider ref needed for PyO3 path
+        replay_state.checkpoint,
+    );
+
+    let mut resolver = replay_support::hydrate_resolver_from_replay_state(
+        &replay_state,
+        &pkg_aliases.linkage_upgrades,
+        &pkg_aliases.aliases,
+    )?;
+
+    let fetched_deps = replay_support::fetch_dependency_closure(
+        &mut resolver,
+        &graphql_client,
+        replay_state.checkpoint,
+        verbose,
+    )
+    .unwrap_or(0);
+    if verbose && fetched_deps > 0 {
+        eprintln!("[deps] fetched {} dependency packages", fetched_deps);
+    }
+
+    let mut maps = replay_support::build_replay_object_maps(
+        &replay_state,
+        &pkg_aliases.versions,
+    );
+    replay_support::maybe_patch_replay_objects(
+        &resolver,
+        &replay_state,
+        &pkg_aliases.versions,
+        &pkg_aliases.aliases,
+        &mut maps,
+        verbose,
+    );
+
+    let config = replay_support::build_simulation_config(&replay_state);
+    let mut harness =
+        sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
+    harness.set_address_aliases_with_versions(
+        pkg_aliases.aliases.clone(),
+        maps.versions_str.clone(),
+    );
+
+    let reconcile_policy = EffectsReconcilePolicy::Strict;
+    let replay_result =
+        tx_replay::replay_with_version_tracking_with_policy_with_effects(
+            &replay_state.transaction,
+            &mut harness,
+            &maps.cached_objects,
+            &pkg_aliases.aliases,
+            Some(&maps.versions_str),
+            reconcile_policy,
+        );
+
+    // ---------------------------------------------------------------
+    // 4. Build output JSON
+    // ---------------------------------------------------------------
+    build_replay_output(
+        &replay_state,
+        replay_result,
+        &effective_source,
+        allow_fallback,
+        auto_system_objects,
+        !no_prefetch,
+        prefetch_depth,
+        prefetch_limit,
+        fetched_deps,
+        compare,
+    )
 }
 
-// ---------------------------------------------------------------------------
-// replay (subprocess — requires CLI binary)
-// ---------------------------------------------------------------------------
-
-fn replay_inner(
-    digest: &str,
-    rpc_url: &str,
-    compare: bool,
+/// Build JSON output for analyze-only mode (no VM execution).
+fn build_analyze_output(
+    replay_state: &sui_state_fetcher::ReplayState,
+    source: &str,
+    allow_fallback: bool,
+    auto_system_objects: bool,
+    dynamic_field_prefetch: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
     verbose: bool,
 ) -> Result<serde_json::Value> {
-    let mut cmd = std::process::Command::new("sui-sandbox");
-    cmd.arg("--json");
-    if rpc_url != "https://fullnode.mainnet.sui.io:443" {
-        cmd.arg("--rpc-url").arg(rpc_url);
+    let mut modules_total = 0usize;
+    for pkg in replay_state.packages.values() {
+        modules_total += pkg.modules.len();
+    }
+
+    let package_ids: Vec<String> = replay_state
+        .packages
+        .keys()
+        .map(|id| id.to_hex_literal())
+        .collect();
+    let object_ids: Vec<String> = replay_state
+        .objects
+        .keys()
+        .map(|id| id.to_hex_literal())
+        .collect();
+
+    // Summarize commands
+    let command_summaries: Vec<serde_json::Value> = replay_state
+        .transaction
+        .commands
+        .iter()
+        .map(|cmd| {
+            use sui_sandbox_types::PtbCommand;
+            match cmd {
+                PtbCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    type_arguments,
+                    arguments,
+                } => serde_json::json!({
+                    "kind": "MoveCall",
+                    "target": format!("{}::{}::{}", package, module, function),
+                    "type_args": type_arguments.len(),
+                    "args": arguments.len(),
+                }),
+                PtbCommand::SplitCoins { amounts, .. } => serde_json::json!({
+                    "kind": "SplitCoins",
+                    "args": 1 + amounts.len(),
+                }),
+                PtbCommand::MergeCoins { sources, .. } => serde_json::json!({
+                    "kind": "MergeCoins",
+                    "args": 1 + sources.len(),
+                }),
+                PtbCommand::TransferObjects { objects, .. } => serde_json::json!({
+                    "kind": "TransferObjects",
+                    "args": 1 + objects.len(),
+                }),
+                PtbCommand::MakeMoveVec { elements, .. } => serde_json::json!({
+                    "kind": "MakeMoveVec",
+                    "args": elements.len(),
+                }),
+                PtbCommand::Publish { dependencies, .. } => serde_json::json!({
+                    "kind": "Publish",
+                    "args": dependencies.len(),
+                }),
+                PtbCommand::Upgrade { package, .. } => serde_json::json!({
+                    "kind": "Upgrade",
+                    "target": package,
+                }),
+            }
+        })
+        .collect();
+
+    // Summarize inputs
+    let mut pure = 0usize;
+    let mut owned = 0usize;
+    let mut shared_mutable = 0usize;
+    let mut shared_immutable = 0usize;
+    let mut immutable = 0usize;
+    let mut receiving = 0usize;
+
+    for input in &replay_state.transaction.inputs {
+        use sui_sandbox_types::TransactionInput;
+        match input {
+            TransactionInput::Pure { .. } => pure += 1,
+            TransactionInput::Object { .. } => owned += 1,
+            TransactionInput::SharedObject { mutable, .. } => {
+                if *mutable {
+                    shared_mutable += 1;
+                } else {
+                    shared_immutable += 1;
+                }
+            }
+            TransactionInput::ImmutableObject { .. } => immutable += 1,
+            TransactionInput::Receiving { .. } => receiving += 1,
+        }
+    }
+
+    let mut result = serde_json::json!({
+        "digest": replay_state.transaction.digest.0,
+        "sender": replay_state.transaction.sender.to_hex_literal(),
+        "commands": replay_state.transaction.commands.len(),
+        "inputs": replay_state.transaction.inputs.len(),
+        "objects": replay_state.objects.len(),
+        "packages": replay_state.packages.len(),
+        "modules": modules_total,
+        "input_summary": {
+            "total": replay_state.transaction.inputs.len(),
+            "pure": pure,
+            "owned": owned,
+            "shared_mutable": shared_mutable,
+            "shared_immutable": shared_immutable,
+            "immutable": immutable,
+            "receiving": receiving,
+        },
+        "command_summaries": command_summaries,
+        "hydration": {
+            "source": source,
+            "allow_fallback": allow_fallback,
+            "auto_system_objects": auto_system_objects,
+            "dynamic_field_prefetch": dynamic_field_prefetch,
+            "prefetch_depth": prefetch_depth,
+            "prefetch_limit": prefetch_limit,
+        },
+        "epoch": replay_state.epoch,
+        "protocol_version": replay_state.protocol_version,
+    });
+
+    if let Some(cp) = replay_state.checkpoint {
+        result["checkpoint"] = serde_json::json!(cp);
+    }
+    if let Some(rgp) = replay_state.reference_gas_price {
+        result["reference_gas_price"] = serde_json::json!(rgp);
     }
     if verbose {
-        cmd.arg("--verbose");
-    }
-    cmd.arg("replay").arg(digest);
-    if compare {
-        cmd.arg("--compare");
+        result["package_ids"] = serde_json::json!(package_ids);
+        result["object_ids"] = serde_json::json!(object_ids);
     }
 
-    let output = cmd
-        .output()
-        .context("Failed to execute sui-sandbox binary. Is it installed and in PATH?")?;
+    Ok(result)
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+/// Build JSON output for full replay (VM execution results).
+fn build_replay_output(
+    replay_state: &sui_state_fetcher::ReplayState,
+    replay_result: Result<sui_sandbox_core::tx_replay::ReplayExecution>,
+    requested_source: &str,
+    allow_fallback: bool,
+    auto_system_objects: bool,
+    dynamic_field_prefetch: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
+    dependency_packages_fetched: usize,
+    compare: bool,
+) -> Result<serde_json::Value> {
+    let execution_path = serde_json::json!({
+        "requested_source": requested_source,
+        "effective_source": requested_source,
+        "vm_only": false,
+        "allow_fallback": allow_fallback,
+        "auto_system_objects": auto_system_objects,
+        "fallback_used": false,
+        "dynamic_field_prefetch": dynamic_field_prefetch,
+        "prefetch_depth": prefetch_depth,
+        "prefetch_limit": prefetch_limit,
+        "dependency_fetch_mode": "graphql_dependency_closure",
+        "dependency_packages_fetched": dependency_packages_fetched,
+        "synthetic_inputs": 0,
+    });
 
-    if !output.status.success() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            return Ok(v);
+    match replay_result {
+        Ok(execution) => {
+            let result = execution.result;
+            let effects = &execution.effects;
+
+            let effects_summary = serde_json::json!({
+                "success": effects.success,
+                "error": effects.error,
+                "gas_used": effects.gas_used,
+                "created": effects.created.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "mutated": effects.mutated.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "deleted": effects.deleted.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "wrapped": effects.wrapped.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "unwrapped": effects.unwrapped.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "transferred": effects.transferred.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "received": effects.received.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
+                "events_count": effects.events.len(),
+                "failed_command_index": effects.failed_command_index,
+                "failed_command_description": effects.failed_command_description,
+                "commands_succeeded": effects.commands_succeeded,
+                "return_values": effects.return_values.iter().map(|v| v.len()).collect::<Vec<_>>(),
+            });
+
+            let comparison = if compare {
+                result.comparison.map(|c| {
+                    serde_json::json!({
+                        "status_match": c.status_match,
+                        "created_match": c.created_count_match,
+                        "mutated_match": c.mutated_count_match,
+                        "deleted_match": c.deleted_count_match,
+                        "on_chain_status": if c.status_match && result.local_success {
+                            "success"
+                        } else if c.status_match && !result.local_success {
+                            "failed"
+                        } else {
+                            "unknown"
+                        },
+                        "local_status": if result.local_success { "success" } else { "failed" },
+                        "notes": c.notes,
+                    })
+                })
+            } else {
+                None
+            };
+
+            let mut output = serde_json::json!({
+                "digest": replay_state.transaction.digest.0,
+                "local_success": result.local_success,
+                "execution_path": execution_path,
+                "effects": effects_summary,
+                "commands_executed": result.commands_executed,
+            });
+
+            if let Some(err) = &result.local_error {
+                output["local_error"] = serde_json::json!(err);
+            }
+            if let Some(cmp) = comparison {
+                output["comparison"] = cmp;
+            }
+
+            Ok(output)
         }
-        return Err(anyhow!(
-            "sui-sandbox replay failed (exit {}): {}",
-            output.status,
-            stderr
-        ));
+        Err(e) => {
+            Ok(serde_json::json!({
+                "digest": replay_state.transaction.digest.0,
+                "local_success": false,
+                "local_error": e.to_string(),
+                "execution_path": execution_path,
+                "commands_executed": 0,
+            }))
+        }
     }
-
-    serde_json::from_str(&stdout).context("Failed to parse sui-sandbox replay JSON output")
 }
 
 // ---------------------------------------------------------------------------
@@ -866,15 +1187,32 @@ fn extract_interface(
     json_value_to_py(py, &value)
 }
 
-/// Analyze replay state hydration for a transaction digest.
+/// Replay a historical Sui transaction locally with the Move VM.
 ///
-/// Requires the `sui-sandbox` CLI binary in PATH.
+/// Standalone — no CLI binary needed. All data is fetched directly.
 ///
-/// When `checkpoint` is provided, automatically uses Walrus as source.
-/// Otherwise uses the specified `source` (default: hybrid, requires gRPC).
+/// By default, executes the transaction in the local Move VM and returns
+/// execution results. Use `analyze_only=True` to inspect state hydration
+/// without executing.
 ///
-/// Set `SUI_GRPC_API_KEY` and optionally `SUI_GRPC_ENDPOINT` in env
-/// for gRPC access to historical data.
+/// When `checkpoint` is provided, uses Walrus as data source (no API key needed).
+/// Otherwise uses gRPC/hybrid (requires `SUI_GRPC_API_KEY` env var).
+///
+/// Args:
+///     digest: Transaction digest to replay
+///     rpc_url: Sui RPC endpoint
+///     source: Data source — "hybrid", "grpc", or "walrus"
+///     checkpoint: Walrus checkpoint number (auto-uses walrus, no API key needed)
+///     allow_fallback: Allow fallback to secondary data sources
+///     prefetch_depth: Dynamic field prefetch depth
+///     prefetch_limit: Dynamic field prefetch limit per parent
+///     auto_system_objects: Auto-inject Clock/Random when missing
+///     no_prefetch: Disable dynamic field prefetch
+///     compare: Compare local execution with on-chain effects
+///     analyze_only: Skip VM execution, just inspect state hydration
+///     verbose: Enable verbose logging to stderr
+///
+/// Returns: dict with replay results (or analysis summary if analyze_only)
 #[pyfunction]
 #[pyo3(signature = (
     digest,
@@ -887,9 +1225,11 @@ fn extract_interface(
     prefetch_limit=200,
     auto_system_objects=true,
     no_prefetch=false,
+    compare=false,
+    analyze_only=false,
     verbose=false,
 ))]
-fn analyze_replay(
+fn replay(
     py: Python<'_>,
     digest: &str,
     rpc_url: &str,
@@ -900,45 +1240,31 @@ fn analyze_replay(
     prefetch_limit: usize,
     auto_system_objects: bool,
     no_prefetch: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let value = analyze_replay_inner(
-        digest,
-        rpc_url,
-        source,
-        checkpoint,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        verbose,
-    )
-    .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Replay a historical Sui transaction locally with the Move VM.
-///
-/// Requires the `sui-sandbox` CLI binary in PATH.
-///
-/// For full native replay without subprocess, use the Rust library directly.
-#[pyfunction]
-#[pyo3(signature = (
-    digest,
-    *,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    compare=false,
-    verbose=false,
-))]
-fn replay(
-    py: Python<'_>,
-    digest: &str,
-    rpc_url: &str,
     compare: bool,
+    analyze_only: bool,
     verbose: bool,
 ) -> PyResult<PyObject> {
-    let value = replay_inner(digest, rpc_url, compare, verbose).map_err(to_py_err)?;
+    let digest_owned = digest.to_string();
+    let rpc_url_owned = rpc_url.to_string();
+    let source_owned = source.to_string();
+    let value = py
+        .allow_threads(move || {
+            replay_inner(
+                &digest_owned,
+                &rpc_url_owned,
+                &source_owned,
+                checkpoint,
+                allow_fallback,
+                prefetch_depth,
+                prefetch_limit,
+                auto_system_objects,
+                no_prefetch,
+                compare,
+                analyze_only,
+                verbose,
+            )
+        })
+        .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
 
@@ -1215,7 +1541,6 @@ fn fuzz_function(
 /// Python module: sui_sandbox
 #[pymodule]
 fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Standalone native functions
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
@@ -1223,8 +1548,6 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
     m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
-    // CLI-dependent functions (require sui-sandbox binary in PATH)
-    m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
     m.add_function(wrap_pyfunction!(replay, m)?)?;
     Ok(())
 }
