@@ -111,18 +111,8 @@ fn read_json(path: &PathBuf) -> Result<Value> {
 }
 
 fn normalize_sui_address(s: &str) -> Result<String> {
-    let s = s.trim().to_lowercase();
-    let h = s.strip_prefix("0x").unwrap_or(&s);
-    if h.is_empty() {
-        return Ok(format!("0x{}", "0".repeat(64)));
-    }
-    if h.len() > 64 {
-        bail!("address too long: {s}");
-    }
-    if !h.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("address is not hex: {s}");
-    }
-    Ok(format!("0x{:0>64}", h))
+    sui_sandbox_types::normalize_address_checked(s)
+        .ok_or_else(|| anyhow!("invalid Sui address: {s}"))
 }
 
 fn parse_identifier(s: &str) -> Result<Identifier> {
@@ -261,27 +251,14 @@ fn static_created_types_for_call(
 }
 
 fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<HashMap<String, CompiledModule>> {
-    let bytecode_dir = bytecode_package_dir.join("bytecode_modules");
-    let mut out = HashMap::new();
-    let rd = std::fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read_dir {}", bytecode_dir.display()))?;
-    for entry in rd {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("invalid module filename: {}", path.display()))?
-            .to_string();
-        let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-        let m = CompiledModule::deserialize_with_defaults(&bytes)
-            .with_context(|| format!("deserialize {}", path.display()))?;
-        out.insert(name, m);
-    }
-    Ok(out)
+    let modules = sui_package_extractor::read_local_compiled_modules(bytecode_package_dir)?;
+    Ok(modules
+        .into_iter()
+        .map(|m| {
+            let name = m.self_id().name().to_string();
+            (name, m)
+        })
+        .collect())
 }
 
 /// Build a gRPC proto Input from a JSON argument spec

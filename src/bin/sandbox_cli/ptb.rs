@@ -274,16 +274,9 @@ fn parse_type_tag(s: &str) -> Result<TypeTag> {
 }
 
 fn normalize_address(s: &str) -> Result<AccountAddress> {
-    let s = s.trim().to_lowercase();
-    let h = s.strip_prefix("0x").unwrap_or(&s);
-    if h.is_empty() {
-        return Ok(AccountAddress::ZERO);
-    }
-    if h.len() > 64 {
-        return Err(anyhow!("Address too long: {}", s));
-    }
-    let padded = format!("0x{:0>64}", h);
-    AccountAddress::from_hex_literal(&padded).context("Invalid address")
+    let normalized = sui_sandbox_types::normalize_address_checked(s)
+        .ok_or_else(|| anyhow!("Invalid address: {}", s))?;
+    AccountAddress::from_hex_literal(&normalized).context("Invalid address")
 }
 
 #[cfg(test)]

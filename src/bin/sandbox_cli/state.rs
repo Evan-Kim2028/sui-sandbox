@@ -550,9 +550,7 @@ fn split_module_id(id: &str) -> Option<(&str, &str)> {
 }
 
 fn normalize_addr(address: &str) -> Option<String> {
-    AccountAddress::from_hex_literal(address)
-        .ok()
-        .map(|addr| addr.to_hex_literal())
+    sui_sandbox_types::normalize_address_checked(address)
 }
 
 fn addresses_equal(a: &str, b: &str) -> bool {

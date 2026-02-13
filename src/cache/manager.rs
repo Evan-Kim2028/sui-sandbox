@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::index::{CachedObjectEntry, CachedPackageEntry};
-use super::normalize::normalize_address;
+use sui_sandbox_types::normalize_address;
 use super::CacheStats;
 
 /// Unified cache manager for packages, objects, and transactions.

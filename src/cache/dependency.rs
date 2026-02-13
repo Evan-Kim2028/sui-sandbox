@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::normalize::normalize_address;
+use sui_sandbox_types::normalize_address;
 
 /// Complete dependency record for a transaction.
 ///

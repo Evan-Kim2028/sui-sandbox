@@ -55,11 +55,9 @@
 
 mod index;
 mod manager;
-mod normalize;
-
 pub use index::{CachedObjectEntry, CachedPackageEntry};
 pub use manager::{CacheManager, CachedObject, CachedPackage};
-pub use normalize::normalize_address;
+pub use sui_sandbox_types::normalize_address;
 
 // Re-export the canonical CachedTransaction from sui-sandbox-types
 pub use sui_sandbox_types::{CachedTransaction, TransactionCache};

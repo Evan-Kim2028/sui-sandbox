@@ -9,19 +9,7 @@ use sui_package_extractor::bytecode::read_local_compiled_modules;
 use sui_transport::graphql::GraphQLClient;
 
 pub(super) fn normalize_package_id(input: &str) -> Option<String> {
-    let trimmed = input.trim();
-    let hex = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-    if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let lower = hex.to_ascii_lowercase();
-    if lower.len() > 64 {
-        return None;
-    }
-    Some(format!("0x{:0>64}", lower))
+    sui_sandbox_types::normalize_address_checked(input)
 }
 
 pub(super) fn parse_bcs_linkage_upgraded_ids(package_dir: &Path) -> Result<Vec<String>> {
