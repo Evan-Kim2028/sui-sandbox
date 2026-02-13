@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use base64::Engine;
 use move_binary_format::CompiledModule;
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -11,7 +10,10 @@ use sui_transport::graphql::GraphQLClient;
 
 pub(super) fn normalize_package_id(input: &str) -> Option<String> {
     let trimmed = input.trim();
-    let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
     if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
@@ -94,19 +96,14 @@ fn fetch_graphql_package_modules(
     let pkg = graphql
         .fetch_package(package_id)
         .with_context(|| format!("fetch package {}", package_id))?;
-    let mut compiled_modules = Vec::with_capacity(pkg.modules.len());
-    for module in pkg.modules {
-        let Some(b64) = module.bytecode_base64 else {
-            continue;
-        };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("decode module bytecode")?;
-        let compiled =
-            CompiledModule::deserialize_with_defaults(&bytes).context("deserialize module")?;
-        compiled_modules.push(compiled);
-    }
-    Ok(compiled_modules)
+    let raw_modules = sui_transport::decode_graphql_modules(package_id, &pkg.modules)?;
+    raw_modules
+        .into_iter()
+        .map(|(name, bytes)| {
+            CompiledModule::deserialize_with_defaults(&bytes)
+                .map_err(|e| anyhow::anyhow!("deserialize {}::{}: {:?}", package_id, name, e))
+        })
+        .collect()
 }
 
 pub(super) fn expand_local_modules_for_mm2(

@@ -160,7 +160,10 @@ pub fn build_bytecode_interface_value_from_compiled_modules(
     let mut module_map: BTreeMap<String, BytecodeModuleJson> = BTreeMap::new();
     for module in compiled_modules {
         let name = compiled_module_name(module);
-        module_map.insert(name, build_bytecode_module_json(module)?);
+        let previous = module_map.insert(name.clone(), build_bytecode_module_json(module)?);
+        if previous.is_some() {
+            return Err(anyhow!("duplicate module name in package input: {}", name));
+        }
     }
 
     let module_names: Vec<String> = module_map.keys().cloned().collect();
@@ -262,6 +265,22 @@ pub fn read_package_id_from_metadata(package_dir: &Path) -> Result<String> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("metadata.json missing 'id'"))?
         .to_string())
+}
+
+pub fn resolve_local_package_id(package_dir: &Path) -> Result<String> {
+    if package_dir.join("metadata.json").exists() {
+        return read_package_id_from_metadata(package_dir);
+    }
+    package_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            anyhow!(
+                "unable to infer local package id from path: {}",
+                package_dir.display()
+            )
+        })
 }
 
 pub fn analyze_local_bytecode_package(
@@ -664,6 +683,25 @@ pub fn get_object<'a>(
     None
 }
 
+/// Extract unique dependency package addresses from raw module bytecodes.
+///
+/// Deserializes each module and collects all `immediate_dependencies()` addresses.
+/// Modules that fail to deserialize are silently skipped.
+pub fn extract_module_dependency_ids(
+    modules: &[(String, Vec<u8>)],
+) -> Vec<move_core_types::account_address::AccountAddress> {
+    use std::collections::HashSet;
+    let mut deps = HashSet::new();
+    for (_, bytes) in modules {
+        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
+            for dep in module.immediate_dependencies() {
+                deps.insert(*dep.address());
+            }
+        }
+    }
+    deps.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,5 +751,65 @@ mod tests {
             "abilities": { "abilities": ["Key"] }
         });
         assert!(struct_has_key(&v3));
+    }
+
+    #[test]
+    fn test_resolve_local_package_id_prefers_metadata() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "sui-package-extractor-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&package_dir).expect("create test dir");
+        let metadata = package_dir.join("metadata.json");
+        std::fs::write(&metadata, r#"{"id":"0x2"}"#).expect("write metadata");
+
+        assert_eq!(resolve_local_package_id(&package_dir).unwrap(), "0x2");
+        std::fs::remove_dir_all(&package_dir).ok();
+    }
+
+    #[test]
+    fn test_resolve_local_package_id_falls_back_to_dir_name_when_metadata_missing() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "fallback-pkg-id-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&package_dir).expect("create test dir");
+
+        assert_eq!(
+            resolve_local_package_id(&package_dir).unwrap(),
+            package_dir
+                .file_name()
+                .expect("dir name")
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        );
+        std::fs::remove_dir_all(&package_dir).ok();
+    }
+
+    #[test]
+    fn test_resolve_local_package_id_error_when_metadata_invalid() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "invalid-metadata-pkg-id-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&package_dir).expect("create test dir");
+        let metadata = package_dir.join("metadata.json");
+        std::fs::write(&metadata, r#"{"id":"0x2""#).expect("write invalid metadata");
+
+        assert!(resolve_local_package_id(&package_dir).is_err());
+        std::fs::remove_dir_all(&package_dir).ok();
     }
 }

@@ -1176,17 +1176,7 @@ impl ReplayCmd {
                             }
                             match graphql_client.fetch_package(pkg_hex) {
                                 Ok(gql_pkg) => {
-                                    let mut modules = Vec::new();
-                                    for module in gql_pkg.modules {
-                                        if let Some(b64) = module.bytecode_base64 {
-                                            if let Ok(bytes) =
-                                                base64::engine::general_purpose::STANDARD
-                                                    .decode(b64)
-                                            {
-                                                modules.push((module.name, bytes));
-                                            }
-                                        }
-                                    }
+                                    let modules = sui_transport::decode_graphql_modules(pkg_hex, &gql_pkg.modules)?;
                                     if !modules.is_empty() {
                                         let _ =
                                             resolver.add_package_modules_at(modules, Some(addr));
@@ -1218,8 +1208,7 @@ impl ReplayCmd {
             &walrus_pkg_cache,
             &mut replay_state,
             verbose,
-        )
-        .unwrap_or(0);
+        )?;
         if fetched_deps > 0 && verbose {
             eprintln!(
                 "[walrus] fetched {} transitive dependency packages",

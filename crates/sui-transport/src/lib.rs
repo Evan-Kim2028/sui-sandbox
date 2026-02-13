@@ -33,7 +33,7 @@ pub mod network;
 pub mod walrus;
 
 // Re-export main types for convenience
-pub use graphql::GraphQLClient;
+pub use graphql::{decode_graphql_modules, GraphQLClient};
 pub use grpc::GrpcClient;
 pub use walrus::WalrusClient;
 

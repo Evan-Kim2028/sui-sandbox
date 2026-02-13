@@ -66,7 +66,7 @@ use move_core_types::resolver::ModuleResolver;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use sui_sandbox_types::encoding::try_base64_decode;
+use sui_transport::decode_graphql_modules;
 use tracing::{debug, info, warn};
 
 // =============================================================================
@@ -264,26 +264,20 @@ impl LocalModuleResolver {
         for pkg_addr in framework_packages {
             match graphql.fetch_package(pkg_addr) {
                 Ok(pkg) => {
-                    for module in &pkg.modules {
-                        if let Some(ref bytecode_b64) = module.bytecode_base64 {
-                            if let Some(bytes) = try_base64_decode(bytecode_b64) {
-                                match CompiledModule::deserialize_with_defaults(&bytes) {
-                                    Ok(compiled) => {
-                                        let id = compiled.self_id();
-                                        self.modules.insert(id.clone(), compiled);
-                                        self.modules_bytes.insert(id, bytes);
-                                        count += 1;
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            module = %module.name,
-                                            error = ?e,
-                                            "failed to deserialize framework module"
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                    let raw_modules = decode_graphql_modules(pkg_addr, &pkg.modules)?;
+                    for (name, bytes) in raw_modules {
+                        let compiled = CompiledModule::deserialize_with_defaults(&bytes).map_err(
+                            |e| {
+                                anyhow!(
+                                    "failed to deserialize framework module {} from package {}: {:?}",
+                                    name, pkg_addr, e
+                                )
+                            },
+                        )?;
+                        let id = compiled.self_id();
+                        self.modules.insert(id.clone(), compiled);
+                        self.modules_bytes.insert(id, bytes);
+                        count += 1;
                     }
                 }
                 Err(e) => {

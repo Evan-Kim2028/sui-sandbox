@@ -29,7 +29,6 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
 use serde_json::Value;
@@ -2295,7 +2294,6 @@ impl HistoricalStateProvider {
         checkpoint: Option<u64>,
         use_cache: bool,
     ) -> Result<HashMap<AccountAddress, PackageData>> {
-        use base64::Engine;
         let timing = timing_enabled();
         let start = std::time::Instant::now();
         let mut result = HashMap::new();
@@ -2846,7 +2844,7 @@ impl HistoricalStateProvider {
                     if strict_checkpoint {
                         if expected_version.is_none() {
                             if let Some(pkg_at_cp) = gql_pkg_override.clone() {
-                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp);
+                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
                                 version_hint = Some(pkg_data.version);
                                 for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
                                     if !processed.contains(&dep_id) {
@@ -2876,7 +2874,7 @@ impl HistoricalStateProvider {
                         }
                         if version_mismatch {
                             if let Some(pkg_at_cp) = gql_pkg_override.clone() {
-                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp);
+                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
                                 version_hint = Some(pkg_data.version);
                                 for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
                                     if !processed.contains(&dep_id) {
@@ -2926,30 +2924,10 @@ impl HistoricalStateProvider {
                             .map(|expected| expected == pkg_at_cp.version)
                             .unwrap_or(true);
                         if version_matches {
-                            let modules: Vec<(String, Vec<u8>)> = pkg_at_cp
-                                .modules
-                                .iter()
-                                .filter_map(|m| {
-                                    m.bytecode_base64.as_ref().and_then(|b64| {
-                                        base64::engine::general_purpose::STANDARD
-                                            .decode(b64)
-                                            .ok()
-                                            .map(|bytes| (m.name.clone(), bytes))
-                                    })
-                                })
-                                .collect();
-                            if !modules.is_empty() {
-                                pkg.modules = modules;
-                                pkg.version = pkg_at_cp.version;
-                                log_package_linkage(
-                                    &pkg,
-                                    "grpc+graphql_checkpoint",
-                                    version_hint,
-                                    false,
-                                );
-                            } else {
-                                log_package_linkage(&pkg, "grpc", version_hint, false);
-                            }
+                            let modules = sui_transport::decode_graphql_modules(&pkg_id_str, &pkg_at_cp.modules)?;
+                            pkg.modules = modules;
+                            pkg.version = pkg_at_cp.version;
+                            log_package_linkage(&pkg, "grpc+graphql_checkpoint", version_hint, false);
                         } else {
                             log_package_linkage(&pkg, "grpc", version_hint, false);
                         }
@@ -2977,7 +2955,7 @@ impl HistoricalStateProvider {
                 Ok(None) => {
                     grpc_fail += 1;
                     if let Some(pkg) = gql_pkg {
-                        let pkg_data = graphql_package_to_data(pkg_id, pkg);
+                        let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
                         for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
                             if !processed.contains(&dep_id) {
                                 to_process.push(dep_id);
@@ -3023,7 +3001,7 @@ impl HistoricalStateProvider {
                 Err(e) => {
                     grpc_fail += 1;
                     if let Some(pkg) = gql_pkg {
-                        let pkg_data = graphql_package_to_data(pkg_id, pkg);
+                        let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
                         for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
                             if !processed.contains(&dep_id) {
                                 to_process.push(dep_id);
@@ -3836,18 +3814,7 @@ fn grpc_object_to_package(
     })
 }
 
-/// Extract dependency package IDs from module bytecode.
-fn extract_module_dependency_ids(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {
-    let mut deps: HashSet<AccountAddress> = HashSet::new();
-    for (_, bytes) in modules {
-        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
-            for dep in module.immediate_dependencies() {
-                deps.insert(*dep.address());
-            }
-        }
-    }
-    deps.into_iter().collect()
-}
+use sui_package_extractor::extract_module_dependency_ids;
 
 pub fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
     let modules = pkg
@@ -3878,25 +3845,15 @@ pub fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
     }
 }
 
-fn graphql_package_to_data(pkg_id: AccountAddress, pkg: GraphQLPackage) -> PackageData {
-    let modules = pkg
-        .modules
-        .iter()
-        .filter_map(|m| {
-            m.bytecode_base64.as_ref().and_then(|b64| {
-                base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .ok()
-                    .map(|bytes| (m.name.clone(), bytes))
-            })
-        })
-        .collect::<Vec<_>>();
+fn graphql_package_to_data(pkg_id: AccountAddress, pkg: GraphQLPackage) -> Result<PackageData> {
+    let modules =
+        sui_transport::decode_graphql_modules(&pkg_id.to_string(), &pkg.modules)?;
 
-    PackageData {
+    Ok(PackageData {
         address: pkg_id,
         version: pkg.version,
         modules,
         linkage: HashMap::new(),
         original_id: None,
-    }
+    })
 }

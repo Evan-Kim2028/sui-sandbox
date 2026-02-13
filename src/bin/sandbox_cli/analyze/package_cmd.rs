@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use base64::Engine;
 use move_binary_format::CompiledModule;
 
 use super::mm2_common::{build_mm2_summary, expand_graphql_modules_for_mm2, expand_local_modules_for_mm2};
@@ -8,7 +7,7 @@ use crate::sandbox_cli::network::resolve_graphql_endpoint;
 use crate::sandbox_cli::SandboxState;
 use sui_package_extractor::bytecode::{
     build_bytecode_interface_value_from_compiled_modules, extract_sanity_counts,
-    read_local_compiled_modules,
+    read_local_compiled_modules, resolve_local_package_id,
 };
 use sui_transport::graphql::GraphQLClient;
 
@@ -20,11 +19,8 @@ impl AnalyzePackageCmd {
     ) -> Result<AnalyzePackageOutput> {
         let (package_id, modules, module_names, source) = if let Some(dir) = &self.bytecode_dir {
             let compiled = read_local_compiled_modules(dir)?;
-            let pkg_id = dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("local")
-                .to_string();
+            let pkg_id = resolve_local_package_id(dir)
+                .with_context(|| format!("resolve local package id from {}", dir.display()))?;
             let (module_names, interface_value) =
                 build_bytecode_interface_value_from_compiled_modules(&pkg_id, &compiled)?;
             let counts = extract_sanity_counts(
@@ -59,21 +55,16 @@ impl AnalyzePackageCmd {
             let pkg = graphql
                 .fetch_package(pkg_id)
                 .with_context(|| format!("fetch package {}", pkg_id))?;
-            let mut compiled_modules = Vec::with_capacity(pkg.modules.len());
-            let mut names = Vec::with_capacity(pkg.modules.len());
-            for module in pkg.modules {
-                names.push(module.name.clone());
-                let Some(b64) = module.bytecode_base64 else {
-                    continue;
-                };
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .context("decode module bytecode")?;
-                let compiled = CompiledModule::deserialize_with_defaults(&bytes)
-                    .context("deserialize module")?;
-                compiled_modules.push(compiled);
-            }
+            let raw_modules = sui_transport::decode_graphql_modules(pkg_id, &pkg.modules)?;
+            let mut names: Vec<String> = raw_modules.iter().map(|(n, _)| n.clone()).collect();
             names.sort();
+            let compiled_modules: Vec<CompiledModule> = raw_modules
+                .into_iter()
+                .map(|(name, bytes)| {
+                    CompiledModule::deserialize_with_defaults(&bytes)
+                        .map_err(|e| anyhow!("deserialize {}::{}: {:?}", pkg_id, name, e))
+                })
+                .collect::<Result<_>>()?;
             (
                 pkg.address,
                 compiled_modules,

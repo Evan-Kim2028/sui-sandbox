@@ -1273,14 +1273,4 @@ fn grpc_object_to_package_data(
     })
 }
 
-fn extract_module_dependency_ids(modules: &[(String, Vec<u8>)]) -> Vec<AccountAddress> {
-    let mut deps: HashSet<AccountAddress> = HashSet::new();
-    for (_, bytes) in modules {
-        if let Ok(module) = CompiledModule::deserialize_with_defaults(bytes) {
-            for dep in module.immediate_dependencies() {
-                deps.insert(*dep.address());
-            }
-        }
-    }
-    deps.into_iter().collect()
-}
+use sui_package_extractor::extract_module_dependency_ids;

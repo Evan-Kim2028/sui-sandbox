@@ -457,6 +457,11 @@ mod tests {
             normalized,
             "0x0000000000000000000000000000000000000000000000000000000000000002"
         );
+        let normalized_upper = mm2_common::normalize_package_id("0X2").unwrap();
+        assert_eq!(
+            normalized_upper,
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+        );
         assert!(mm2_common::normalize_package_id("xyz").is_none());
     }
 

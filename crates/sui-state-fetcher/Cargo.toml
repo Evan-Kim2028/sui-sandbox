@@ -30,6 +30,7 @@ sui-prefetch.workspace = true
 sui-resolver.workspace = true
 sui-sandbox-types.workspace = true
 sui-historical-cache.workspace = true
+sui-package-extractor.workspace = true
 dirs.workspace = true
 
 [dev-dependencies]

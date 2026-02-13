@@ -255,6 +255,45 @@ pub struct GraphQLModule {
     pub bytecode_base64: Option<String>,
 }
 
+/// Decode a slice of [`GraphQLModule`]s into `(name, bytecode)` pairs.
+///
+/// Returns an error if any module is missing `bytecode_base64` or if base64
+/// decoding fails. This ensures callers never receive partial package data
+/// silently.
+pub fn decode_graphql_modules(
+    package_id: &str,
+    modules: &[GraphQLModule],
+) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    use base64::Engine;
+
+    let mut decoded = Vec::with_capacity(modules.len());
+    let mut missing = Vec::new();
+
+    for module in modules {
+        let Some(b64) = module.bytecode_base64.as_ref() else {
+            missing.push(module.name.clone());
+            continue;
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| {
+                anyhow::anyhow!("decode base64 for {}::{}: {}", package_id, module.name, e)
+            })?;
+        decoded.push((module.name.clone(), bytes));
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(anyhow::anyhow!(
+            "package {} missing bytecode for modules: {}",
+            package_id,
+            missing.join(", ")
+        ));
+    }
+
+    Ok(decoded)
+}
+
 /// Dynamic field information returned from GraphQL.
 ///
 /// Dynamic fields store child objects under a parent object using a key.

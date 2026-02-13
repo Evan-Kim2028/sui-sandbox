@@ -6141,19 +6141,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "dirs",
  "move-binary-format",
  "move-core-types",
  "pyo3",
- "serde",
  "serde_json",
  "sui-package-extractor",
  "sui-sandbox-core",
- "sui-sandbox-types",
- "sui-state-fetcher",
  "sui-transport",
- "sui-types",
- "tokio",
 ]
 
 [[package]]
@@ -6337,6 +6331,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sui-historical-cache",
+ "sui-package-extractor",
  "sui-prefetch",
  "sui-resolver",
  "sui-sandbox-types",

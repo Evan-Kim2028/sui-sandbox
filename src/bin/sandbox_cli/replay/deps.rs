@@ -2,11 +2,11 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use anyhow::Result;
-use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_state_fetcher::{package_data_from_move_package, PackageData, ReplayState};
 use sui_transport::graphql::GraphQLClient;
+use sui_transport::decode_graphql_modules;
 
 type CachedObjectMap = Arc<parking_lot::Mutex<HashMap<String, (String, Vec<u8>, u64)>>>;
 type CachedPackageMap = Arc<parking_lot::Mutex<HashMap<AccountAddress, PackageData>>>;
@@ -99,16 +99,7 @@ pub(super) fn fetch_dependency_closure(
                     },
                     None => graphql.fetch_package(&addr_hex)?,
                 };
-                let mut modules = Vec::new();
-                for module in pkg.modules {
-                    if let Some(bytes_b64) = module.bytecode_base64 {
-                        if let Ok(bytes) =
-                            base64::engine::general_purpose::STANDARD.decode(bytes_b64)
-                        {
-                            modules.push((module.name, bytes));
-                        }
-                    }
-                }
+                let modules = decode_graphql_modules(&addr_hex, &pkg.modules)?;
                 if modules.is_empty() {
                     if verbose {
                         eprintln!("[deps] no modules for {}", addr_hex);
@@ -275,7 +266,7 @@ pub(super) fn fetch_dependency_closure_walrus(
                         &addr_hex,
                         &mut fetched,
                         verbose,
-                    );
+                    )?;
                 }
             } else {
                 // Fetch ALL versions specified by different packages' linkage tables
@@ -316,7 +307,7 @@ pub(super) fn fetch_dependency_closure_walrus(
                         &addr_hex,
                         &mut fetched,
                         verbose,
-                    );
+                    )?;
                 }
             }
         }
@@ -550,7 +541,7 @@ fn fallback_graphql_dep_fetch(
     addr_hex: &str,
     fetched: &mut usize,
     verbose: bool,
-) {
+) -> Result<()> {
     if verbose {
         eprintln!(
             "[deps] Walrus resolution failed for {}, trying GraphQL",
@@ -559,27 +550,22 @@ fn fallback_graphql_dep_fetch(
     }
     match graphql.fetch_package(addr_hex) {
         Ok(pkg) => {
-            let mut modules = Vec::new();
-            for module in pkg.modules {
-                if let Some(bytes_b64) = module.bytecode_base64 {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(bytes_b64) {
-                        modules.push((module.name, bytes));
-                    }
-                }
-            }
+            let modules = decode_graphql_modules(addr_hex, &pkg.modules)?;
             if modules.is_empty() {
                 if verbose {
                     eprintln!("[deps] no modules for {}", addr_hex);
                 }
-                return;
+                return Ok(());
             }
             let _ = resolver.add_package_modules_at(modules, Some(*addr));
             *fetched += 1;
+            Ok(())
         }
         Err(e) => {
             if verbose {
                 eprintln!("[deps] failed to fetch {}: {}", addr_hex, e);
             }
+            Ok(())
         }
     }
 }

@@ -598,39 +598,33 @@ fn fetch_and_deploy_package(
     };
 
     let version = Some(package.version);
-    let mut modules = Vec::new();
-    for module in package.modules {
-        if let Some(b64) = module.bytecode_base64 {
-            match base64::engine::general_purpose::STANDARD.decode(b64) {
-                Ok(bytes) => modules.push((module.name, bytes)),
-                Err(err) => {
-                    records.push(PackageFetchRecord {
-                        address: addr_hex.clone(),
-                        source: source.to_string(),
-                        fetch_mode: fetch_mode.clone(),
-                        version,
-                        module_count: modules.len(),
-                        deployed: false,
-                        error: Some(format!("decode module failed: {err}")),
-                    });
-                    return;
-                }
-            }
+    let modules = match sui_transport::decode_graphql_modules(&addr_hex, &package.modules) {
+        Ok(m) if m.is_empty() => {
+            records.push(PackageFetchRecord {
+                address: addr_hex,
+                source: source.to_string(),
+                fetch_mode,
+                version,
+                module_count: 0,
+                deployed: false,
+                error: Some("package has zero decodable modules".to_string()),
+            });
+            return;
         }
-    }
-
-    if modules.is_empty() {
-        records.push(PackageFetchRecord {
-            address: addr_hex,
-            source: source.to_string(),
-            fetch_mode,
-            version,
-            module_count: 0,
-            deployed: false,
-            error: Some("package has zero decodable modules".to_string()),
-        });
-        return;
-    }
+        Ok(m) => m,
+        Err(err) => {
+            records.push(PackageFetchRecord {
+                address: addr_hex,
+                source: source.to_string(),
+                fetch_mode,
+                version,
+                module_count: 0,
+                deployed: false,
+                error: Some(err.to_string()),
+            });
+            return;
+        }
+    };
 
     match env.deploy_package_at_address(&addr_hex, modules.clone()) {
         Ok(_) => {

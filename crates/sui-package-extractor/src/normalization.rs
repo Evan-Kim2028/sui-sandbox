@@ -6,7 +6,7 @@ use serde_json::Value;
 
 pub fn normalize_address_str(addr: &str) -> Result<String> {
     let s = addr.trim();
-    let s = s.strip_prefix("0x").unwrap_or(s);
+    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     if s.is_empty() {
         return Err(anyhow!("empty address"));
     }
@@ -280,6 +280,10 @@ mod tests {
         );
         assert_eq!(
             normalize_address_str("2").unwrap(),
+            "0x0000000000000000000000000000000000000000000000000000000000000002"
+        );
+        assert_eq!(
+            normalize_address_str("0X2").unwrap(),
             "0x0000000000000000000000000000000000000000000000000000000000000002"
         );
     }
