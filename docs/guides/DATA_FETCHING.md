@@ -1,40 +1,72 @@
 # Data Fetching Guide
 
-This guide covers how to fetch on-chain data (objects, packages, transactions) from Sui mainnet/testnet.
+Use this guide to choose the right data source and fetching path for replay, analysis, and monitoring.
 
-## Choosing the Right API
+## Quick Decision Table
 
-| Use Case | Recommended API | Auth Required | Why |
-|----------|-----------------|---------------|-----|
-| **Transaction replay** | **Walrus CLI** (`--source walrus`) | **None** | Free checkpoint data, zero setup |
-| **Offline/custom replay** | **JSON state** (`--state-json`) | **None** | Bring your own data, no network |
-| Programmatic replay (Rust) | `HistoricalStateProvider` | gRPC key | Versioned cache, exact historical versions |
-| Current state queries | `GraphQLClient` | None | Direct GraphQL access |
-| Real-time streaming | `GrpcClient` | gRPC key | Native streaming client |
+| Need | Recommended path | Auth | Why |
+|------|------------------|------|-----|
+| Replay historical transactions quickly | `sui-sandbox replay --source walrus` | None | Zero setup, checkpoint-native data |
+| Deterministic offline replay | `--export-state` + `--state-json` | None | No network dependency |
+| Programmatic replay hydration (Rust) | `HistoricalStateProvider` | Provider gRPC access | Version-aware replay state builder |
+| Fetch latest object/package state | `sui-sandbox fetch` or `GraphQLClient` | None | Simple point queries |
+| Real-time transaction feed | `tools stream-transactions` / `GrpcClient` | gRPC endpoint | Push stream, low latency |
+| No gRPC access but periodic snapshots are enough | `tools poll-transactions` | None | Simple pull model over GraphQL |
 
-## Transaction Replay (CLI)
+## CLI Workflows
 
-**For most users, the CLI with Walrus is the recommended approach.** No API keys or configuration needed:
+### Replay-Oriented Fetching
 
 ```bash
-# Replay a specific transaction
-sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare
+# Inspect hydration readiness before execution
+sui-sandbox analyze replay <DIGEST> --json
 
-# Replay all transactions in a checkpoint range
-sui-sandbox replay '*' --source walrus --checkpoint 100..110
+# Replay from Walrus (recommended)
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CHECKPOINT> --compare
 
-# Export state for offline use
-sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json
+# Export replay state for offline reproduction
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CHECKPOINT> --export-state state.json
 
-# Replay from exported JSON (completely offline)
+# Replay from exported state (no network)
 sui-sandbox replay <DIGEST> --state-json state.json
 ```
 
-See [Transaction Replay Guide](TRANSACTION_REPLAY.md) for details.
+See [TRANSACTION_REPLAY.md](TRANSACTION_REPLAY.md) for replay flow details.
 
-## Historical Transaction Replay (Rust API)
+### Point Queries (Package/Object/Checkpoint)
 
-For programmatic replay in Rust, use `sui_state_fetcher::HistoricalStateProvider`:
+```bash
+# Fetch package bytecode/modules into local session
+sui-sandbox fetch package 0x2
+
+# Fetch package with transitive dependencies
+sui-sandbox fetch package 0x2 --with-deps
+
+# Fetch object state
+sui-sandbox fetch object 0x6
+
+# Walrus checkpoint metadata
+sui-sandbox fetch latest-checkpoint
+sui-sandbox --json fetch checkpoint <CHECKPOINT>
+```
+
+### Monitoring and Collection
+
+```bash
+# GraphQL polling collector
+sui-sandbox tools poll-transactions --duration 600 --interval-ms 1500 --output txs.jsonl
+
+# gRPC streaming collector
+sui-sandbox tools stream-transactions --endpoint <GRPC_ENDPOINT> --duration 60 --output stream.jsonl
+```
+
+Use `--ptb-only` on both commands to focus on user PTB transactions.
+
+## Programmatic APIs (Rust)
+
+### Historical Replay State
+
+Use `sui_state_fetcher::HistoricalStateProvider` when you need replay state with historical object versions.
 
 ```rust
 use sui_state_fetcher::HistoricalStateProvider;
@@ -42,195 +74,36 @@ use sui_state_fetcher::HistoricalStateProvider;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let provider = HistoricalStateProvider::mainnet().await?;
-    let state = provider.fetch_replay_state("8JTTa...").await?;
-
-    // state.transaction - PTB commands and inputs
-    // state.objects - objects at their exact historical versions
-    // state.packages - packages with linkage resolved
-
+    let state = provider.fetch_replay_state("<DIGEST>").await?;
+    println!(
+        "commands={} objects={} packages={}",
+        state.transaction.commands.len(),
+        state.objects.len(),
+        state.packages.len()
+    );
     Ok(())
 }
 ```
 
-The `HistoricalStateProvider`:
+### GraphQL Point Queries
 
-- Uses a **versioned cache** keyed by `(object_id, version)` - essential for historical replay
-- Automatically fetches objects at their **input versions** from `unchanged_loaded_runtime_objects`
-- Resolves package **linkage tables** for upgraded packages
-- Provides an **on-demand fetcher** callback for dynamic field children
-
-See the `sui-state-fetcher` crate documentation for full API details.
-
----
-
-## Current State Queries (GraphQL)
-
-Use `sui_transport::graphql::GraphQLClient` for latest on-chain state:
+Use `sui_transport::graphql::GraphQLClient` for current object/package/transaction queries.
 
 ```rust
 use sui_transport::graphql::GraphQLClient;
 
 fn main() -> anyhow::Result<()> {
     let client = GraphQLClient::mainnet();
-    let obj = client.fetch_object("0x6")?;
     let pkg = client.fetch_package("0x2")?;
-    let txs = client.fetch_recent_ptb_transactions(10)?;
-    println!("object version={} package modules={} txs={}",
-        obj.version, pkg.modules.len(), txs.len());
+    let obj = client.fetch_object("0x6")?;
+    println!("modules={} object_version={}", pkg.modules.len(), obj.version);
     Ok(())
 }
 ```
 
-## Real-Time Streaming (gRPC)
+### gRPC Streaming
 
-Use `sui_transport::grpc::GrpcClient` for checkpoint streaming and gRPC-only queries:
-
-```rust
-use sui_transport::grpc::GrpcClient;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let client = GrpcClient::mainnet();
-    let checkpoint = client.get_latest_checkpoint().await?;
-    println!("latest checkpoint {:?}", checkpoint.map(|c| c.sequence_number));
-    Ok(())
-}
-```
-
-**Command Arguments:**
-
-```rust
-pub enum GraphQLArgument {
-    Input(u16),           // Reference to a transaction input
-    Result(u16),          // Reference to a previous command's result
-    NestedResult(u16, u16), // Reference to a nested result (cmd, idx)
-    GasCoin,              // The gas coin
-}
-```
-
-## Searching Objects by Type
-
-```rust
-use sui_transport::graphql::GraphQLClient;
-
-// Search for all objects of a specific type
-let client = GraphQLClient::mainnet();
-let coins = client.search_objects_by_type(
-    "0x2::coin::Coin<0x2::sui::SUI>",
-    100  // limit
-)?;
-
-// Pagination is handled automatically
-```
-
-## Direct GraphQL Client
-
-For advanced use cases, you can use the GraphQL client directly:
-
-```rust
-use sui_transport::graphql::GraphQLClient;
-
-let client = GraphQLClient::mainnet();
-
-// Fetch individual transaction with full details
-let tx = client.fetch_transaction("8JTTa6k7Expr15zMS2DpTsCsaMC4aV4Lwxvmraew85gY")?;
-
-// Fetch package bytecode
-let pkg = client.fetch_package("0x2")?;
-for module in &pkg.modules {
-    if let Some(bytecode) = &module.bytecode_base64 {
-        // Process bytecode...
-    }
-}
-```
-
-## Custom Pagination
-
-For custom paginated queries, use the `Paginator` helper:
-
-```rust
-use sui_transport::graphql::{Paginator, PaginationDirection, PageInfo};
-
-let paginator = Paginator::new(
-    PaginationDirection::Forward,  // or Backward
-    100,  // total items to fetch
-    |cursor, page_size| {
-        // Your fetch function that returns (items, PageInfo)
-        my_graphql_query(cursor, page_size)
-    },
-);
-
-// Collect all pages
-let all_items = paginator.collect_all()?;
-
-// Or iterate page by page
-let mut paginator = Paginator::new(...);
-while let Some(page) = paginator.next_page()? {
-    process_page(page);
-}
-```
-
-## Pagination Constants
-
-- **MAX_PAGE_SIZE**: 50 (Sui GraphQL server limit)
-- Requests for more items are automatically split into multiple pages
-- Uses cursor-based pagination (Relay connection spec)
-
-## Error Handling
-
-```rust
-use anyhow::Result;
-use sui_transport::graphql::GraphQLClient;
-
-fn fetch_data() -> Result<()> {
-    let client = GraphQLClient::mainnet();
-
-    match client.fetch_object("0x...") {
-        Ok(obj) => println!("Got object: {}", obj.address),
-        Err(e) => {
-            // Common errors:
-            // - "Object not found"
-            // - "GraphQL error: ..."
-            // - Network errors
-            eprintln!("Failed: {}", e);
-        }
-    }
-
-    Ok(())
-}
-```
-
-## GraphQL Features
-
-| Feature | Support |
-|---------|---------|
-| Package bytecode | ✅ Always available |
-| Transaction PTB details | ✅ Full structure |
-| Pagination | ✅ Cursor-based |
-| Object BCS | ✅ Available |
-| Historical data | ✅ Good |
-
-**Recommendation:** Use `sui_transport::graphql::GraphQLClient` for current-state queries.
-
-## Real-Time Streaming with gRPC
-
-For real-time transaction monitoring, gRPC streaming is the recommended approach. Unlike polling, streaming:
-
-- Receives every checkpoint as it's finalized (no gaps)
-- More efficient (single connection vs. repeated requests)
-- Lower latency (push vs. pull)
-
-**Public gRPC Endpoints:**
-
-| Endpoint | Streaming | Queries | Use Case |
-|----------|-----------|---------|----------|
-| `fullnode.mainnet.sui.io:443` | ✅ Yes | ✅ Recent | Real-time monitoring |
-| `archive.mainnet.sui.io:443` | ❌ No | ✅ Full history | Historical lookups |
-| `fullnode.testnet.sui.io:443` | ✅ Yes | ✅ Recent | Testing |
-
-**Note:** The fullnode endpoint only keeps recent data (~last few epochs). For historical checkpoint queries, use the archive endpoint.
-
-### Setting Up gRPC Streaming
+Use `sui_transport::grpc::GrpcClient` for real-time checkpoint streams.
 
 ```rust
 use sui_transport::grpc::GrpcClient;
@@ -238,277 +111,58 @@ use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = GrpcClient::new("https://your-provider:9000").await?;
-
-    // Check connection
-    let info = client.get_service_info().await?;
-    println!("Connected to {} at checkpoint {}", info.chain, info.checkpoint_height);
-
-    // Subscribe to checkpoints
+    let client = GrpcClient::mainnet().await?;
     let mut stream = client.subscribe_checkpoints().await?;
-
-    while let Some(result) = stream.next().await {
-        let checkpoint = result?;
-        println!("Checkpoint {}: {} transactions",
+    while let Some(next) = stream.next().await {
+        let checkpoint = next?;
+        println!(
+            "checkpoint={} txs={}",
             checkpoint.sequence_number,
-            checkpoint.transactions.len());
-
-        for tx in &checkpoint.transactions {
-            if tx.is_ptb() {
-                println!("  {} - {} commands", tx.digest, tx.commands.len());
-            }
-        }
+            checkpoint.transactions.len()
+        );
     }
-
     Ok(())
 }
 ```
 
-### Streaming Data Types
+## Data Source Tradeoffs
 
-gRPC streaming uses slightly different types than GraphQL queries:
+| Dimension | Walrus replay | GraphQL | gRPC streaming |
+|-----------|---------------|---------|----------------|
+| Setup | Lowest | Low | Medium (endpoint/provider) |
+| Historical replay | Strong | Good | Mixed (depends on endpoint/history window) |
+| Real-time feed | No | Polling only | Yes |
+| Effects detail for object changes | Replay output focused | Strong for query responses | Often limited in stream payload |
+| Best use | Replay and offline export | Query-driven analysis | Live monitoring/indexing |
 
-```rust
-use sui_transport::grpc::{GrpcCheckpoint, GrpcCommand, GrpcInput, GrpcTransaction};
+## Recommended Patterns
 
-// GrpcCheckpoint contains:
-// - sequence_number: u64
-// - digest: String
-// - timestamp_ms: Option<u64>
-// - transactions: Vec<GrpcTransaction>
+1. Replay/debug workflow:
+   - Start with Walrus replay.
+   - Export JSON state for deterministic reruns.
+   - Use `analyze replay --json` when hydration fails.
+2. Monitoring workflow:
+   - Use gRPC streaming for low-latency ingest.
+   - Backfill and enrich with GraphQL/Walrus as needed.
+3. Offline/CI workflow:
+   - Store exported replay JSON in fixtures.
+   - Run `--state-json` in tests to avoid network drift.
 
-// GrpcTransaction contains:
-// - digest: String
-// - sender: String
-// - gas_budget: Option<u64>
-// - inputs: Vec<GrpcInput>
-// - commands: Vec<GrpcCommand>
-// - status: Option<String>  // "success" or "failure"
+## Common Failure Modes
 
-// Check if transaction is a user PTB (not system tx)
-if tx.is_ptb() {
-    // Process user transaction
-}
-```
+- Missing replay inputs/packages:
+  - Run `sui-sandbox analyze replay <DIGEST> --json`.
+  - Check `missing_inputs`, `missing_packages`, and `suggestions`.
+- Replay differs from chain:
+  - Re-run with `--compare --json`.
+  - Ensure checkpoint/digest pairing is correct.
+- Stream disconnects:
+  - Add reconnect logic in custom consumers.
+  - For one-off capture jobs, use finite `--duration` and restart.
 
-### When to Use Each Backend
+## Related Docs
 
-| Use Case | Recommended Backend |
-|----------|---------------------|
-| Real-time monitoring | gRPC streaming |
-| Fetching specific package | GraphQL |
-| Fetching specific object | GraphQL |
-| Historical transaction analysis | GraphQL |
-| High-volume batch fetching | gRPC batch methods |
-| One-time script | GraphQL (simpler setup) |
-
-### Polling Tool (GraphQL Alternative)
-
-If you don't have gRPC access, use the GraphQL polling tool:
-
-```bash
-# Poll transactions every 1.5 seconds for 10 minutes
-sui-sandbox tools poll-transactions --duration 600 --interval-ms 1500 --output txs.jsonl
-
-# PTB-only mode (skip system transactions)
-sui-sandbox tools poll-transactions --ptb-only --verbose
-```
-
-### Streaming Tool (gRPC)
-
-With a gRPC endpoint:
-
-```bash
-# Set your endpoint
-export SUI_GRPC_ENDPOINT="https://your-provider:9000"
-
-# Stream for 1 minute
-sui-sandbox tools stream-transactions --duration 60 --output stream.jsonl
-
-# Stream PTB transactions only
-sui-sandbox tools stream-transactions --ptb-only --verbose
-```
-
-## Choosing a Data Source: Tradeoffs
-
-This is the most important section for deciding which backend to use. Each has distinct tradeoffs.
-
-### Quick Decision Guide
-
-| Your Need | Use This |
-|-----------|----------|
-| Real-time monitoring (every transaction) | gRPC streaming |
-| Analyzing specific transactions | GraphQL |
-| Fetching package bytecode | GraphQL |
-| Transaction replay/simulation | GraphQL (more complete effects) |
-| High-throughput collection | gRPC streaming |
-| One-off scripts | GraphQL (simpler) |
-
-### Detailed Comparison
-
-| Feature | gRPC Streaming | GraphQL Polling |
-|---------|----------------|-----------------|
-| **Access** | Public (`fullnode.mainnet.sui.io:443`) | Public |
-| **Real-time** | ✅ Push-based, ~250ms latency | ❌ Pull-based, polling gaps |
-| **Completeness** | ✅ Every checkpoint guaranteed | ⚠️ May miss txs between polls |
-| **Connection** | ⚠️ Drops every ~30s (auto-reconnect) | ✅ Stateless, reliable |
-
-### Data Completeness Comparison
-
-**This is critical for replay/simulation use cases:**
-
-| Data Field | gRPC Streaming | GraphQL Polling |
-|------------|----------------|-----------------|
-| `digest` | ✅ | ✅ |
-| `sender` | ✅ | ✅ |
-| `gas_budget` | ✅ | ✅ |
-| `gas_price` | ✅ | ✅ |
-| `timestamp_ms` | ✅ | ✅ |
-| `checkpoint` | ✅ | ✅ |
-| `inputs[]` (full array) | ✅ | ✅ |
-| `commands[]` (full array) | ✅ | ✅ |
-| `effects.status` | ✅ | ✅ |
-| `effects.created[]` | ❌ Not available | ✅ Object addresses |
-| `effects.mutated[]` | ❌ Not available | ✅ Object addresses |
-| `effects.deleted[]` | ❌ Not available | ✅ Object addresses |
-
-**Key insight:** gRPC streaming provides complete PTB structure (inputs + commands) but limited effects. GraphQL provides full effects including which objects were created/mutated/deleted.
-
-### When Effects Matter
-
-If you need to know **what objects a transaction created or modified**, use GraphQL:
-
-```rust
-// GraphQL gives you this:
-effects: {
-    status: "SUCCESS",
-    created: [
-        { address: "0xabc...", version: 123, digest: "..." }
-    ],
-    mutated: [
-        { address: "0xdef...", version: 124, digest: "..." }
-    ],
-    deleted: ["0x789..."]
-}
-
-// gRPC only gives you this:
-effects: {
-    status: "SUCCESS"
-}
-```
-
-### Performance Comparison
-
-| Metric | gRPC Streaming | GraphQL Polling |
-|--------|----------------|-----------------|
-| Throughput | ~30-40 tx/sec sustained | ~10-20 tx/sec (rate limited) |
-| Latency | ~250ms from finalization | ~1-2s (polling interval) |
-| Bandwidth | Efficient (binary protobuf) | Higher (JSON) |
-| Rate limits | Connection-based | Request-based (~100/min) |
-
-### Cached Data Format
-
-Both tools save to JSONL with compatible formats:
-
-**gRPC streaming** (`sui-sandbox tools stream-transactions`):
-
-```json
-{
-  "received_at_ms": 1768503538953,
-  "checkpoint": 234926415,
-  "digest": "B4NT8zW...",
-  "sender": "0xd265...",
-  "inputs": [{"SharedObject": {...}}, {"Pure": {...}}],
-  "commands": [{"MoveCall": {...}}],
-  "effects": {"status": "SUCCESS"}
-}
-```
-
-**GraphQL polling** (`sui-sandbox tools poll-transactions`):
-
-```json
-{
-  "fetched_at_ms": 1768496400569,
-  "digest": "2EHqmFf...",
-  "sender": "0xd265...",
-  "inputs": [{"SharedObject": {...}}, {"Pure": {...}}],
-  "commands": [{"MoveCall": {...}}],
-  "effects": {"status": "SUCCESS", "created": [...], "mutated": [...], "deleted": []}
-}
-```
-
-### Recommendation Summary
-
-| Scenario | Recommendation | Why |
-|----------|----------------|-----|
-| **Replaying transactions (CLI)** | **Walrus** (`--source walrus`) | Zero auth, complete checkpoint data, free |
-| **Offline/CI replay** | **JSON** (`--state-json`) | No network, deterministic |
-| **Building a transaction indexer** | gRPC streaming | Need every tx, can fetch effects separately if needed |
-| **Replaying transactions (Rust API)** | GraphQL | Need full effects to verify correctness |
-| **Monitoring specific contracts** | gRPC streaming | Real-time, filter by package in commands |
-| **Analyzing transaction patterns** | Either | Both have complete PTB structure |
-| **Fetching historical transactions** | GraphQL | Better for point queries |
-| **Building a block explorer** | Both | gRPC for live feed, GraphQL for details |
-
-## Transaction Simulation via gRPC
-
-For transaction simulation (equivalent to `dry_run` or `dev_inspect`), use the gRPC `SimulateTransaction` API:
-
-```rust
-use sui_sandbox::grpc::{
-    GrpcClient, ProtoTransaction, ProtoTransactionKind,
-    ProtoProgrammableTransaction, ProtoCommand, ProtoMoveCall,
-};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let client = GrpcClient::new("https://fullnode.mainnet.sui.io:443").await?;
-
-    // Build a transaction (example: simple Move call)
-    let transaction = ProtoTransaction {
-        sender: Some("0x...".to_string()),
-        kind: Some(ProtoTransactionKind {
-            kind: Some(/* TransactionKindType::ProgrammableTransaction */),
-            data: Some(/* ProgrammableTransaction */),
-        }),
-        // ... other fields
-        ..Default::default()
-    };
-
-    // Dev-inspect mode (no ownership checks)
-    let result = client.dev_inspect(transaction.clone()).await?;
-    println!("Success: {}, Created types: {:?}", result.success, result.created_object_types);
-
-    // Dry-run mode (full validation)
-    let result = client.dry_run(transaction, true /* do_gas_selection */).await?;
-    if !result.success {
-        println!("Error: {:?}", result.error);
-    }
-
-    Ok(())
-}
-```
-
-### Simulation Modes
-
-| Mode | Ownership Checks | Gas Selection | Use Case |
-|------|------------------|---------------|----------|
-| `dev_inspect` | ❌ No | ❌ No | Testing "what would happen?" |
-| `dry_run` | ✅ Yes | ✅ Optional | Pre-flight validation |
-
-### SimulationResult Fields
-
-```rust
-pub struct SimulationResult {
-    pub success: bool,
-    pub error: Option<String>,
-    pub transaction: Option<GrpcTransaction>,
-    pub command_outputs: Vec<CommandResultOutput>,
-    pub created_object_types: Vec<String>,
-}
-```
-
-## See Also
-
-- [Transaction Replay Guide](TRANSACTION_REPLAY.md) - For replaying transactions in the sandbox
-- [CLI Reference](../reference/CLI_REFERENCE.md) - Command-line tools
+- [TRANSACTION_REPLAY.md](TRANSACTION_REPLAY.md)
+- [REPLAY_TRIAGE.md](REPLAY_TRIAGE.md)
+- [../reference/CLI_REFERENCE.md](../reference/CLI_REFERENCE.md)
+- [../architecture/PREFETCHING.md](../architecture/PREFETCHING.md)
