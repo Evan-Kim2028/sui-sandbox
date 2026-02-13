@@ -47,14 +47,11 @@ use crate::sandbox_runtime::{
 };
 use crate::sui_object_runtime;
 use sui_protocol_config::ProtocolConfig;
+use sui_sandbox_types::DEFAULT_CLOCK_BASE_MS;
 
 // =============================================================================
 // Default Configuration Constants
 // =============================================================================
-
-/// Default clock base timestamp: 2024-01-01 00:00:00 UTC
-/// Used as the starting point for mock clock in simulations.
-const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
 
 /// Default epoch for simulations.
 /// This is an arbitrary value that provides a reasonable starting epoch.

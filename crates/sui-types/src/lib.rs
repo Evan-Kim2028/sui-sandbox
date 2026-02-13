@@ -41,9 +41,10 @@ pub use encoding::{
 
 // Re-export framework constants
 pub use framework::{
-    is_framework_address, is_system_object, CLOCK_OBJECT_ID, CLOCK_OBJECT_ID_STR, DEEPBOOK,
+    is_framework_address, is_system_object, synthesize_clock_bytes, synthesize_random_bytes,
+    CLOCK_OBJECT_ID, CLOCK_OBJECT_ID_STR, CLOCK_TYPE_STR, DEEPBOOK, DEFAULT_CLOCK_BASE_MS,
     DENY_LIST_OBJECT_ID, DENY_LIST_OBJECT_ID_STR, FRAMEWORK_ADDRESSES, MOVE_STDLIB,
-    RANDOM_OBJECT_ID, RANDOM_OBJECT_ID_STR, SUI_BRIDGE, SUI_FRAMEWORK, SUI_SYSTEM,
+    RANDOM_OBJECT_ID, RANDOM_OBJECT_ID_STR, RANDOM_TYPE_STR, SUI_BRIDGE, SUI_FRAMEWORK, SUI_SYSTEM,
     SYSTEM_STATE_OBJECT_ID,
 };
 

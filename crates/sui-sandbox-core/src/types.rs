@@ -196,10 +196,10 @@ pub const SUI_TYPE_STR: &str = "0x2::sui::SUI";
 pub const COIN_SUI_TYPE_STR: &str = "0x2::coin::Coin<0x2::sui::SUI>";
 
 /// The Clock type string.
-pub const CLOCK_TYPE_STR: &str = "0x2::clock::Clock";
+pub use sui_sandbox_types::CLOCK_TYPE_STR;
 
 /// The Random type string.
-pub const RANDOM_TYPE_STR: &str = "0x2::random::Random";
+pub use sui_sandbox_types::RANDOM_TYPE_STR;
 
 // =============================================================================
 // Well-Known Object IDs

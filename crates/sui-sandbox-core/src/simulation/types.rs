@@ -25,8 +25,8 @@ pub use crate::types::{CLOCK_OBJECT_ID, RANDOM_OBJECT_ID, SUI_TYPE_STR as SUI_CO
 // Re-use gas constants from the gas module (single source of truth)
 pub use crate::gas::DEFAULT_GAS_PRICE;
 
-/// Default Clock timestamp base (2024-01-01 00:00:00 UTC)
-pub const DEFAULT_CLOCK_BASE_MS: u64 = 1704067200000;
+// Re-use DEFAULT_CLOCK_BASE_MS from the types crate (single source of truth)
+pub use sui_sandbox_types::DEFAULT_CLOCK_BASE_MS;
 
 // ============================================================================
 // Coin Metadata

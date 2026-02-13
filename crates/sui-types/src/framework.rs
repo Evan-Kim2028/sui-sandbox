@@ -123,6 +123,40 @@ pub const RANDOM_OBJECT_ID_STR: &str = "0x8";
 /// Deny list object ID as hex string
 pub const DENY_LIST_OBJECT_ID_STR: &str = "0x403";
 
+/// Clock type tag string
+pub const CLOCK_TYPE_STR: &str = "0x2::clock::Clock";
+
+/// Random type tag string
+pub const RANDOM_TYPE_STR: &str = "0x2::random::Random";
+
+/// Default Clock timestamp base (2024-01-01 00:00:00 UTC, milliseconds)
+pub const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
+
+// ============================================================================
+// System Object BCS Synthesis
+// ============================================================================
+
+/// Synthesize BCS bytes for a Clock object.
+///
+/// Layout: `{ id: UID (32 bytes), timestamp_ms: u64 (8 bytes) }`
+pub fn synthesize_clock_bytes(clock_id: &AccountAddress, timestamp_ms: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(40);
+    bytes.extend_from_slice(clock_id.as_ref());
+    bytes.extend_from_slice(&timestamp_ms.to_le_bytes());
+    bytes
+}
+
+/// Synthesize BCS bytes for a Random object.
+///
+/// Layout: `{ id: UID (32 bytes), inner: Versioned { id: UID (32 bytes), version: u64 (8 bytes) } }`
+pub fn synthesize_random_bytes(random_id: &AccountAddress, version: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(72);
+    bytes.extend_from_slice(random_id.as_ref());
+    bytes.extend_from_slice(random_id.as_ref());
+    bytes.extend_from_slice(&version.to_le_bytes());
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

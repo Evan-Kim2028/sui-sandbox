@@ -28,8 +28,9 @@ use sui_sandbox_core::utilities::historical_state::HistoricalStateReconstructor;
 use sui_sandbox_core::utilities::rewrite_type_tag;
 use sui_sandbox_core::vm::SimulationConfig;
 use sui_sandbox_types::{
-    normalize_address as normalize_address_shared, PtbCommand, TransactionInput, CLOCK_OBJECT_ID,
-    RANDOM_OBJECT_ID,
+    normalize_address as normalize_address_shared, synthesize_clock_bytes, synthesize_random_bytes,
+    PtbCommand, TransactionInput, CLOCK_OBJECT_ID, CLOCK_TYPE_STR, DEFAULT_CLOCK_BASE_MS,
+    RANDOM_OBJECT_ID, RANDOM_TYPE_STR,
 };
 use sui_state_fetcher::{
     build_aliases as build_aliases_shared, checkpoint_to_replay_state,
@@ -2410,25 +2411,6 @@ fn env_bool_opt(key: &str) -> Option<bool> {
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
-const CLOCK_TYPE: &str = "0x2::clock::Clock";
-const RANDOM_TYPE: &str = "0x2::random::Random";
-const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
-
-fn synthesize_clock_bytes(clock_id: &AccountAddress, timestamp_ms: u64) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(40);
-    bytes.extend_from_slice(clock_id.as_ref());
-    bytes.extend_from_slice(&timestamp_ms.to_le_bytes());
-    bytes
-}
-
-fn synthesize_random_bytes(random_id: &AccountAddress, version: u64) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(72);
-    bytes.extend_from_slice(random_id.as_ref());
-    bytes.extend_from_slice(random_id.as_ref());
-    bytes.extend_from_slice(&version.to_le_bytes());
-    bytes
-}
-
 fn ensure_system_objects(
     objects: &mut HashMap<AccountAddress, VersionedObject>,
     historical_versions: &HashMap<String, u64>,
@@ -2447,7 +2429,7 @@ fn ensure_system_objects(
             id: clock_id,
             version: clock_version,
             digest: None,
-            type_tag: Some(CLOCK_TYPE.to_string()),
+            type_tag: Some(CLOCK_TYPE_STR.to_string()),
             bcs_bytes: synthesize_clock_bytes(&clock_id, clock_ts),
             is_shared: true,
             is_immutable: false,
@@ -2465,7 +2447,7 @@ fn ensure_system_objects(
             id: random_id,
             version: random_version,
             digest: None,
-            type_tag: Some(RANDOM_TYPE.to_string()),
+            type_tag: Some(RANDOM_TYPE_STR.to_string()),
             bcs_bytes: synthesize_random_bytes(&random_id, random_version),
             is_shared: true,
             is_immutable: false,

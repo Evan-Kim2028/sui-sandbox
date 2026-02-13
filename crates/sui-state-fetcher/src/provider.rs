@@ -96,16 +96,14 @@ pub struct HistoricalStateProvider {
 const MAINNET_GRPC: &str = "https://fullnode.mainnet.sui.io:443";
 /// Default testnet gRPC endpoint
 const TESTNET_GRPC: &str = "https://fullnode.testnet.sui.io:443";
-/// Clock object ID (0x6) - well-known system object
+use sui_sandbox_types::{
+    synthesize_clock_bytes, synthesize_random_bytes, CLOCK_TYPE_STR, DEFAULT_CLOCK_BASE_MS,
+    RANDOM_TYPE_STR,
+};
+/// Clock object ID (0x6) — full-form string for HashMap lookups
 const CLOCK_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000006";
-/// Random object ID (0x8) - well-known system object
+/// Random object ID (0x8) — full-form string for HashMap lookups
 const RANDOM_OBJECT_ID: &str = "0x0000000000000000000000000000000000000000000000000000000000000008";
-/// Clock type string
-const CLOCK_TYPE: &str = "0x2::clock::Clock";
-/// Random type string
-const RANDOM_TYPE: &str = "0x2::random::Random";
-/// Default Clock timestamp base (2024-01-01 00:00:00 UTC)
-const DEFAULT_CLOCK_BASE_MS: u64 = 1_704_067_200_000;
 
 const WALRUS_MAINNET_CACHE_URL: &str = "https://walrus-sui-archival.mainnet.walrus.space";
 const WALRUS_MAINNET_AGGREGATOR_URL: &str = "https://aggregator.walrus-mainnet.walrus.space";
@@ -3171,22 +3169,6 @@ fn parse_object_id(id_str: &str) -> Result<ObjectID> {
     Ok(AccountAddress::new(arr))
 }
 
-fn synthesize_clock_bytes(clock_id: &AccountAddress, timestamp_ms: u64) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(40);
-    bytes.extend_from_slice(clock_id.as_ref()); // UID (32 bytes)
-    bytes.extend_from_slice(&timestamp_ms.to_le_bytes()); // timestamp_ms (8 bytes)
-    bytes
-}
-
-fn synthesize_random_bytes(random_id: &AccountAddress, version: u64) -> Vec<u8> {
-    // Random struct: { id: UID, inner: Versioned { id: UID, version: u64 } }
-    let mut bytes = Vec::with_capacity(72);
-    bytes.extend_from_slice(random_id.as_ref()); // UID (32 bytes)
-    bytes.extend_from_slice(random_id.as_ref()); // inner UID (32 bytes)
-    bytes.extend_from_slice(&version.to_le_bytes()); // version (8 bytes)
-    bytes
-}
-
 fn ensure_system_objects(
     objects: &mut HashMap<ObjectID, VersionedObject>,
     historical_versions: &HashMap<String, u64>,
@@ -3208,7 +3190,7 @@ fn ensure_system_objects(
             id: clock_id,
             version: clock_version,
             digest: None,
-            type_tag: Some(CLOCK_TYPE.to_string()),
+            type_tag: Some(CLOCK_TYPE_STR.to_string()),
             bcs_bytes: synthesize_clock_bytes(&clock_id, clock_ts),
             is_shared: true,
             is_immutable: false,
@@ -3229,7 +3211,7 @@ fn ensure_system_objects(
             id: random_id,
             version: random_version,
             digest: None,
-            type_tag: Some(RANDOM_TYPE.to_string()),
+            type_tag: Some(RANDOM_TYPE_STR.to_string()),
             bcs_bytes: synthesize_random_bytes(&random_id, random_version),
             is_shared: true,
             is_immutable: false,
