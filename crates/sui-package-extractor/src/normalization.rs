@@ -3,24 +3,11 @@ use crate::utils::bytes_to_hex_prefixed;
 use anyhow::{anyhow, Result};
 use move_binary_format::file_format::{CompiledModule, SignatureToken};
 use serde_json::Value;
+use sui_resolver;
 
 pub fn normalize_address_str(addr: &str) -> Result<String> {
-    let s = addr.trim();
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-    if s.is_empty() {
-        return Err(anyhow!("empty address"));
-    }
-    let mut hex = s.to_ascii_lowercase();
-    if hex.len() > 64 {
-        return Err(anyhow!("address too long: {}", addr));
-    }
-    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(anyhow!("invalid hex address: {}", addr));
-    }
-    if hex.len() % 2 == 1 {
-        hex = format!("0{}", hex);
-    }
-    Ok(format!("0x{:0>64}", hex))
+    sui_resolver::normalize_address_checked(addr)
+        .ok_or_else(|| anyhow!("invalid address: {}", addr))
 }
 
 pub fn rpc_visibility_to_string(v: &Value) -> Option<String> {

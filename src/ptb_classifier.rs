@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use sui_resolver::is_framework_address;
 
 use sui_transport::graphql::{GraphQLCommand, GraphQLTransaction, GraphQLTransactionInput};
 use sui_types::full_checkpoint_content::CheckpointTransaction;
 use sui_types::transaction::{
     CallArg, Command as SuiCommand, ObjectArg, TransactionDataAPI, TransactionKind,
 };
+use sui_sandbox_types::normalize_address;
 
 /// Internal PTB classification for replay robustness testing.
 ///
@@ -138,18 +140,11 @@ pub fn classify_ptb(tx: &GraphQLTransaction) -> PtbClassification {
 }
 
 fn normalize_package(pkg: &str) -> String {
-    let trimmed = pkg.trim();
-    if trimmed.starts_with("0x") {
-        trimmed.to_lowercase()
-    } else {
-        format!("0x{}", trimmed.to_lowercase())
-    }
+    normalize_address(pkg)
 }
 
 fn is_system_package(pkg: &str) -> bool {
-    // Match both short ("0x2") and full ("0x000...0002") forms
-    let stripped = pkg.trim_start_matches("0x").trim_start_matches('0');
-    matches!(stripped, "1" | "2" | "3")
+    is_framework_address(pkg)
 }
 
 /// Classify a checkpoint transaction directly from BCS-decoded types.

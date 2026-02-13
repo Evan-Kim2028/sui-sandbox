@@ -20,7 +20,7 @@
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::language_storage::TypeTag;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 /// Parse a Sui type string into a Move TypeTag.
 ///
@@ -105,46 +105,7 @@ pub fn split_type_params(s: &str) -> Vec<&str> {
 /// assert!(ids.contains(&"0xdef".to_string()));
 /// ```
 pub fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    let mut package_ids = HashSet::new();
-
-    // Framework packages to skip
-    let framework_prefixes = [
-        "0x1::",
-        "0x2::",
-        "0x3::",
-        "0x0000000000000000000000000000000000000000000000000000000000000001::",
-        "0x0000000000000000000000000000000000000000000000000000000000000002::",
-        "0x0000000000000000000000000000000000000000000000000000000000000003::",
-    ];
-
-    // Find all package addresses in the type string
-    // Pattern: 0x followed by hex chars, then ::
-    let mut i = 0;
-    let chars: Vec<char> = type_str.chars().collect();
-
-    while i < chars.len() {
-        if i + 2 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
-            let start = i;
-            i += 2;
-            // Consume hex chars
-            while i < chars.len() && (chars[i].is_ascii_hexdigit()) {
-                i += 1;
-            }
-            // Check if followed by ::
-            if i + 1 < chars.len() && chars[i] == ':' && chars[i + 1] == ':' {
-                let pkg_id: String = chars[start..i].iter().collect();
-                // Skip framework packages
-                let full_prefix = format!("{}::", pkg_id);
-                if !framework_prefixes.iter().any(|p| full_prefix == *p) {
-                    package_ids.insert(pkg_id);
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    package_ids.into_iter().collect()
+    sui_resolver::extract_package_ids_from_type(type_str)
 }
 
 /// Extract package addresses referenced by a TypeTag.

@@ -3713,48 +3713,8 @@ fn extract_package_ids_from_tx(tx: &sui_transport::grpc::GrpcTransaction) -> Vec
     packages.into_iter().collect()
 }
 
-/// Extract package IDs from a type string.
-///
-/// Parses type strings like "0x2::coin::Coin<0x123::token::TOKEN>"
-/// and extracts all package addresses found.
-fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    let mut result = Vec::new();
-
-    // Find all 0x... addresses in the type string
-    let mut chars = type_str.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '0' && chars.peek() == Some(&'x') {
-            chars.next(); // consume 'x'
-            let mut addr = String::from("0x");
-
-            // Collect hex characters
-            while let Some(&c) = chars.peek() {
-                if c.is_ascii_hexdigit() {
-                    addr.push(chars.next().unwrap());
-                } else {
-                    break;
-                }
-            }
-
-            // Only add if it looks like a valid address and is followed by ::
-            if addr.len() > 2 {
-                let normalized = normalize_address(&addr);
-                // Skip framework packages (0x1, 0x2, 0x3)
-                if normalized
-                    != "0x0000000000000000000000000000000000000000000000000000000000000001"
-                    && normalized
-                        != "0x0000000000000000000000000000000000000000000000000000000000000002"
-                    && normalized
-                        != "0x0000000000000000000000000000000000000000000000000000000000000003"
-                {
-                    result.push(normalized);
-                }
-            }
-        }
-    }
-
-    result
-}
+// extract_package_ids_from_type: delegated to sui_resolver::extract_package_ids_from_type
+use sui_resolver::extract_package_ids_from_type;
 
 /// Convert a gRPC object to VersionedObject.
 fn grpc_object_to_versioned(

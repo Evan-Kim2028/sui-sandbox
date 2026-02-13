@@ -211,9 +211,73 @@ pub fn normalize_id_short(id: &str) -> String {
     normalize_address_short(id)
 }
 
+/// Extract non-framework package IDs from a Move type string.
+///
+/// Parses type strings like `"0x2::coin::Coin<0xabc::token::TOKEN>"` and extracts
+/// all package addresses that appear before `::`, excluding framework packages (0x1-0x3).
+///
+/// # Examples
+///
+/// ```
+/// use sui_resolver::address::extract_package_ids_from_type;
+///
+/// let ids = extract_package_ids_from_type("0xabc::mod::Type<0xdef::m::T>");
+/// assert!(ids.contains(&"0xabc".to_string()));
+/// assert!(ids.contains(&"0xdef".to_string()));
+/// assert_eq!(ids.len(), 2);
+///
+/// // Framework packages are excluded
+/// let ids = extract_package_ids_from_type("0x2::coin::Coin<0xabc::token::T>");
+/// assert_eq!(ids.len(), 1);
+/// assert!(ids.contains(&"0xabc".to_string()));
+/// ```
+pub fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
+    let mut package_ids = std::collections::HashSet::new();
+    let chars: Vec<char> = type_str.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if i + 2 < chars.len() && chars[i] == '0' && chars[i + 1] == 'x' {
+            let start = i;
+            i += 2;
+            while i < chars.len() && chars[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            // Only count as a package ID if followed by ::
+            if i + 1 < chars.len() && chars[i] == ':' && chars[i + 1] == ':' {
+                let pkg_id: String = chars[start..i].iter().collect();
+                if !is_framework_address(&pkg_id) {
+                    package_ids.insert(pkg_id);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    package_ids.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_package_ids_from_type() {
+        let ids = extract_package_ids_from_type("0xabc::mod::Type<0xdef::m::T>");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"0xabc".to_string()));
+        assert!(ids.contains(&"0xdef".to_string()));
+
+        // Framework packages excluded
+        let ids = extract_package_ids_from_type("0x2::coin::Coin<0xabc::token::T>");
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&"0xabc".to_string()));
+
+        // No packages
+        let ids = extract_package_ids_from_type("0x1::sui::SUI");
+        assert!(ids.is_empty());
+    }
 
     #[test]
     fn test_normalize_address() {

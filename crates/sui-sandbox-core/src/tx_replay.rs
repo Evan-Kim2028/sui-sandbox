@@ -233,16 +233,17 @@ mod mutated_filter_tests {
         ];
         let filtered = filter_mutated_to_inputs(mutated, &inputs);
         let expected: std::collections::HashSet<_> =
-            ["0x1".to_string(), "0x2".to_string()].into_iter().collect();
+            [
+                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+                "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+            ].into_iter().collect();
         let actual: std::collections::HashSet<_> = filtered.into_iter().collect();
         assert_eq!(actual, expected);
     }
 }
 
 fn normalize_object_id(id: &str) -> String {
-    AccountAddress::from_hex_literal(id)
-        .map(|addr| addr.to_hex_literal())
-        .unwrap_or_else(|_| id.to_string())
+    sui_resolver::normalize_id(id)
 }
 
 fn filter_mutated_to_inputs(mutated: Vec<String>, inputs: &[TransactionInput]) -> Vec<String> {

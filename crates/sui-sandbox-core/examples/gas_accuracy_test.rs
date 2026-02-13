@@ -718,16 +718,7 @@ fn create_child_fetcher(
 }
 
 fn extract_package_ids_from_type(type_str: &str) -> Vec<String> {
-    let mut packages = Vec::new();
-    for part in type_str.split(|c| ['<', '>', ','].contains(&c)) {
-        let trimmed = part.trim();
-        if let Some(addr) = trimmed.split("::").next() {
-            if addr.starts_with("0x") && addr.len() >= 10 && !packages.contains(&addr.to_string()) {
-                packages.push(addr.to_string());
-            }
-        }
-    }
-    packages
+    sui_resolver::extract_package_ids_from_type(type_str)
 }
 
 fn parse_type_tag_simple(type_str: &str) -> Option<move_core_types::language_storage::TypeTag> {
