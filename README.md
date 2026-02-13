@@ -256,31 +256,48 @@ Move bytecode is deterministic—given the same bytecode, inputs, and object sta
 
 ## Python Bindings
 
-The core analysis and Walrus replay features are available as a Python package via `sui-sandbox`.
+Python package exposing package analysis, replay, and Move VM execution via PyO3.
+
+### Install
 
 ```bash
-# Install from source (requires Rust toolchain)
-cd crates/sui-python
-pip install maturin
-maturin develop --release
+pip install sui-sandbox
 ```
+
+Or build from source (requires Rust toolchain):
+
+```bash
+cd crates/sui-python && pip install maturin && maturin develop --release
+```
+
+### Usage
 
 ```python
 import sui_sandbox
 
-# Analyze any on-chain package (no API key needed)
+# --- Package analysis (no API key needed) ---
 info = sui_sandbox.analyze_package(package_id="0x2")
 print(f"{info['modules']} modules, {info['functions']} functions")
 
-# Full interface extraction
 interface = sui_sandbox.extract_interface(package_id="0x1")
 
-# Walrus checkpoint replay (no API key needed)
+# --- Walrus checkpoint replay (no API key needed) ---
 cp = sui_sandbox.get_latest_checkpoint()
 data = sui_sandbox.get_checkpoint(cp)
 state = sui_sandbox.walrus_analyze_replay(
     data["transactions"][0]["digest"], cp
 )
+
+# --- Move view function execution ---
+result = sui_sandbox.call_view_function(
+    "0x2", "clock", "timestamp_ms",
+    object_inputs=[{"Clock": "0x6"}],
+)
+print(result["return_values"])
+
+# --- Bytecode utilities ---
+pkgs = sui_sandbox.fetch_package_bytecodes("0x2", resolve_deps=True)
+bcs_bytes = sui_sandbox.json_to_bcs(type_str, object_json, pkgs["packages"])
 ```
 
 See [crates/sui-python/README.md](crates/sui-python/README.md) for the full API reference.
