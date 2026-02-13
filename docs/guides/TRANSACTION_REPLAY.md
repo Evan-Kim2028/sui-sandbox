@@ -394,5 +394,5 @@ complete end-to-end example.
 - **[Examples](../../examples/README.md)** - Self-contained replay examples to learn from
 - [Prefetching Architecture](../architecture/PREFETCHING.md) - How data fetching works
 - [Data Fetching Guide](DATA_FETCHING.md) - GraphQL and gRPC client details
-- [DeFi Case Studies](../defi-case-study/README.md) - Protocol-specific replay examples
+- [Protocol Replay Examples](../../examples/README.md) - Protocol-specific replay examples
 - [Limitations](../reference/LIMITATIONS.md) - Known differences from mainnet
