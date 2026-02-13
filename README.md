@@ -1,6 +1,6 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.17.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.18.0-green.svg)](Cargo.toml)
 [![Sui](https://img.shields.io/badge/sui-mainnet--v1.64.2-blue.svg)](https://github.com/MystenLabs/sui)
 
 Local Move VM execution for Sui. Replay mainnet transactions offline with real cryptography.

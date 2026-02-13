@@ -4,6 +4,36 @@ All notable changes to the sui-sandbox project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-02-13
+
+### Added
+
+- **Move function fuzzing**: new `test fuzz` CLI command for automated Move function fuzzing.
+- **Fetch checkpoint commands**: `fetch checkpoint` and `fetch latest-checkpoint` for checkpoint retrieval.
+- **Tools enhancements**: `json-to-bcs` tool, object args support, and return values in tool output.
+- **Obfuscated package analysis**: new example for analyzing obfuscated Move packages.
+
+### Changed
+
+- **DRY consolidation**: deduplicated `normalize_address`, `load_bytecode_modules`, `decode_graphql_modules`, `extract_package_ids_from_type`, and system object constants across crates.
+- **Replay refactor**: extracted `resolve_key_type_via_graphql()` and `build_execution_path()` from 2000+ line `execute_inner()`, eliminating duplicated closure bodies and struct construction.
+- **Consolidated examples**: reduced Rust examples from 12 to 6 with shared common module.
+- **Python bindings**: migrated to subprocess wrappers for improved isolation.
+- **Standardized parking_lot::Mutex**: replaced all `std::sync::Mutex` usage with `parking_lot::Mutex` to eliminate `.lock().unwrap()` patterns.
+- **Deprecated alias removal**: removed `object_runtime`, `ExecutionTrace`, and `AbortInfo` deprecated type aliases.
+- **String-based type checking**: replaced `to_string()` comparisons with `as_str()` in natives.rs.
+
+### Removed
+
+- **Dead code cleanup**: deleted orphan files `ptb_replay_harness.rs` (402 lines) and `walrus_warmup.rs` (546 lines) that were never compiled.
+- **Unused workspace dependencies**: removed `move-compiler`, `move-package`, `sui-move-build`, `sui-transaction-builder`, `sui-storage`.
+
+### Fixed
+
+- **GasCoin input offset**: fixed incorrect input index offset when MoveCall uses GasCoin.
+- **MM2 dependency resolution**: fixed package resolution for GraphQL-fetched packages.
+- **Clippy compliance**: resolved `too_many_arguments`, audit fixes for Python bindings and core types.
+
 ## [0.17.0] - 2026-02-10
 
 ### Added

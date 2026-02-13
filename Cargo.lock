@@ -6183,7 +6183,7 @@ dependencies = [
 
 [[package]]
 name = "sui-sandbox"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6292,6 +6292,7 @@ dependencies = [
  "move-core-types",
  "serde",
  "serde_json",
+ "sui-resolver",
 ]
 
 [[package]]
