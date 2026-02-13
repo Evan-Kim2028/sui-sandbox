@@ -5,8 +5,8 @@ use anyhow::Result;
 use move_core_types::account_address::AccountAddress;
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_state_fetcher::{package_data_from_move_package, PackageData, ReplayState};
-use sui_transport::graphql::GraphQLClient;
 use sui_transport::decode_graphql_modules;
+use sui_transport::graphql::GraphQLClient;
 
 type CachedObjectMap = Arc<parking_lot::Mutex<HashMap<String, (String, Vec<u8>, u64)>>>;
 type CachedPackageMap = Arc<parking_lot::Mutex<HashMap<AccountAddress, PackageData>>>;

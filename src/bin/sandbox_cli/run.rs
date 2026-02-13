@@ -222,12 +222,12 @@ fn parse_object_arg(arg: &str, state: &SandboxState, kind: ObjectArgKind) -> Res
     let object_id = arg.trim();
     let object_addr = AccountAddress::from_hex_literal(object_id)
         .with_context(|| format!("invalid object id '{}'", object_id))?;
-    let (bytes, type_tag) = state
-        .get_object_input(object_id)
-        .with_context(|| format!(
+    let (bytes, type_tag) = state.get_object_input(object_id).with_context(|| {
+        format!(
             "object {} not loaded in session. Use `sui-sandbox fetch object {}` first",
             object_id, object_id
-        ))?;
+        )
+    })?;
 
     let input = match kind {
         ObjectArgKind::Owned => InputValue::Object(ObjectInput::Owned {

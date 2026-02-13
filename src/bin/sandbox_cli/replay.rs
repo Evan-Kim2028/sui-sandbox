@@ -1176,7 +1176,10 @@ impl ReplayCmd {
                             }
                             match graphql_client.fetch_package(pkg_hex) {
                                 Ok(gql_pkg) => {
-                                    let modules = sui_transport::decode_graphql_modules(pkg_hex, &gql_pkg.modules)?;
+                                    let modules = sui_transport::decode_graphql_modules(
+                                        pkg_hex,
+                                        &gql_pkg.modules,
+                                    )?;
                                     if !modules.is_empty() {
                                         let _ =
                                             resolver.add_package_modules_at(modules, Some(addr));

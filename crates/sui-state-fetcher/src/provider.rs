@@ -2924,10 +2924,18 @@ impl HistoricalStateProvider {
                             .map(|expected| expected == pkg_at_cp.version)
                             .unwrap_or(true);
                         if version_matches {
-                            let modules = sui_transport::decode_graphql_modules(&pkg_id_str, &pkg_at_cp.modules)?;
+                            let modules = sui_transport::decode_graphql_modules(
+                                &pkg_id_str,
+                                &pkg_at_cp.modules,
+                            )?;
                             pkg.modules = modules;
                             pkg.version = pkg_at_cp.version;
-                            log_package_linkage(&pkg, "grpc+graphql_checkpoint", version_hint, false);
+                            log_package_linkage(
+                                &pkg,
+                                "grpc+graphql_checkpoint",
+                                version_hint,
+                                false,
+                            );
                         } else {
                             log_package_linkage(&pkg, "grpc", version_hint, false);
                         }
@@ -3806,8 +3814,7 @@ pub fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
 }
 
 fn graphql_package_to_data(pkg_id: AccountAddress, pkg: GraphQLPackage) -> Result<PackageData> {
-    let modules =
-        sui_transport::decode_graphql_modules(&pkg_id.to_string(), &pkg.modules)?;
+    let modules = sui_transport::decode_graphql_modules(&pkg_id.to_string(), &pkg.modules)?;
 
     Ok(PackageData {
         address: pkg_id,

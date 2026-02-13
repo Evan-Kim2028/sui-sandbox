@@ -612,7 +612,8 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// NOTE: For consistent short-form normalization, prefer
 /// [`sui_resolver::normalize_address_short`] which doesn't validate.
 pub fn normalize_address_short(addr: &str) -> Option<String> {
-    sui_resolver::normalize_address_checked(addr).map(|_| sui_resolver::normalize_address_short(addr))
+    sui_resolver::normalize_address_checked(addr)
+        .map(|_| sui_resolver::normalize_address_short(addr))
 }
 
 // =============================================================================

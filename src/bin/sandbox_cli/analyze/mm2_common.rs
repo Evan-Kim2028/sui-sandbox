@@ -228,8 +228,7 @@ pub(super) fn expand_graphql_modules_for_mm2(
     let graphql = GraphQLClient::new(&graphql_endpoint);
 
     // Build linkage map: original_id -> upgraded_id
-    let linkage = fetch_linkage_table(&graphql, package_id)
-        .unwrap_or_default();
+    let linkage = fetch_linkage_table(&graphql, package_id).unwrap_or_default();
     if verbose && !linkage.is_empty() {
         eprintln!("[mm2] linkage table: {} remapped packages", linkage.len());
     }

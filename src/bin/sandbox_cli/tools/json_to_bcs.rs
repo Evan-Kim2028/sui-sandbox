@@ -77,10 +77,7 @@ impl JsonToBcsCmd {
         }
 
         if bytecode_list.is_empty() {
-            anyhow::bail!(
-                "no .mv files found in {}",
-                dir.display()
-            );
+            anyhow::bail!("no .mv files found in {}", dir.display());
         }
 
         // Convert

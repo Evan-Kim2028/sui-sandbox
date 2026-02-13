@@ -232,11 +232,12 @@ mod mutated_filter_tests {
             "0x3".to_string(),
         ];
         let filtered = filter_mutated_to_inputs(mutated, &inputs);
-        let expected: std::collections::HashSet<_> =
-            [
-                "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
-                "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
-            ].into_iter().collect();
+        let expected: std::collections::HashSet<_> = [
+            "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+        ]
+        .into_iter()
+        .collect();
         let actual: std::collections::HashSet<_> = filtered.into_iter().collect();
         assert_eq!(actual, expected);
     }

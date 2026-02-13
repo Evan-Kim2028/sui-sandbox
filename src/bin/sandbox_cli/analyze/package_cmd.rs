@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use move_binary_format::CompiledModule;
 
-use super::mm2_common::{build_mm2_summary, expand_graphql_modules_for_mm2, expand_local_modules_for_mm2};
+use super::mm2_common::{
+    build_mm2_summary, expand_graphql_modules_for_mm2, expand_local_modules_for_mm2,
+};
 use super::{AnalyzePackageCmd, AnalyzePackageOutput};
 use crate::sandbox_cli::network::resolve_graphql_endpoint;
 use crate::sandbox_cli::SandboxState;

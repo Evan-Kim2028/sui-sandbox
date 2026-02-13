@@ -206,11 +206,7 @@ fn analyze_replay_inner(
     cmd.arg("--prefetch-depth").arg(&depth_str);
     cmd.arg("--prefetch-limit").arg(&limit_str);
     cmd.arg("--auto-system-objects")
-        .arg(if auto_system_objects {
-            "true"
-        } else {
-            "false"
-        });
+        .arg(if auto_system_objects { "true" } else { "false" });
     if no_prefetch {
         cmd.arg("--no-prefetch");
     }
@@ -591,9 +587,7 @@ fn call_view_function_inner(
         .map(|cmd_returns| {
             cmd_returns
                 .iter()
-                .map(|rv_bytes| {
-                    base64::engine::general_purpose::STANDARD.encode(rv_bytes)
-                })
+                .map(|rv_bytes| base64::engine::general_purpose::STANDARD.encode(rv_bytes))
                 .collect()
         })
         .collect();

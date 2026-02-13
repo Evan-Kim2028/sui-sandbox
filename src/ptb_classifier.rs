@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use sui_resolver::is_framework_address;
 
+use sui_sandbox_types::normalize_address;
 use sui_transport::graphql::{GraphQLCommand, GraphQLTransaction, GraphQLTransactionInput};
 use sui_types::full_checkpoint_content::CheckpointTransaction;
 use sui_types::transaction::{
     CallArg, Command as SuiCommand, ObjectArg, TransactionDataAPI, TransactionKind,
 };
-use sui_sandbox_types::normalize_address;
 
 /// Internal PTB classification for replay robustness testing.
 ///
