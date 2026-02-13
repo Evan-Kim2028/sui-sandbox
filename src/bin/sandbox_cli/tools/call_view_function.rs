@@ -90,11 +90,8 @@ struct PackageBytecodeMap(HashMap<String, Vec<String>>);
 impl CallViewFunctionCmd {
     pub async fn execute(&self, json_output: bool) -> Result<()> {
         let value = run(self)?;
-        let output = if json_output {
-            serde_json::to_string_pretty(&value)?
-        } else {
-            serde_json::to_string_pretty(&value)?
-        };
+        let _ = json_output;
+        let output = serde_json::to_string_pretty(&value)?;
         println!("{}", output);
         Ok(())
     }
@@ -339,7 +336,7 @@ fn run(cmd: &CallViewFunctionCmd) -> Result<serde_json::Value> {
             }
         }
 
-        if !missing.is_empty() && !std::env::var("SUI_SANDBOX_DEBUG_JSON").is_ok() {
+        if !missing.is_empty() && std::env::var("SUI_SANDBOX_DEBUG_JSON").is_err() {
             eprintln!(
                 "Warning: failed to fetch {} dependency package(s)",
                 missing.len()

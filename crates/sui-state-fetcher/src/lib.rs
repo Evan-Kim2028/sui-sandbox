@@ -16,13 +16,16 @@
 //! // state.packages - packages with linkage resolved
 //! ```
 
+pub mod bcs_codec;
 pub mod cache;
 pub mod fetch_utils;
+pub mod file_provider;
 pub mod provider;
 pub mod replay;
 pub mod replay_builder;
 pub mod replay_provider;
 pub mod sparse_replay;
+pub mod state_json;
 pub mod types;
 pub mod vm_integration;
 pub mod walrus_replay;
@@ -30,6 +33,7 @@ pub mod walrus_replay;
 // Re-export main types
 pub use cache::VersionedCache;
 pub use fetch_utils::{build_aliases, fetch_child_object, fetch_object_via_grpc, PackageAliases};
+pub use file_provider::{import_replay_states, FileStateProvider, ImportSpec, ImportSummary};
 pub use provider::{package_data_from_move_package, HistoricalStateProvider};
 pub use replay::{
     build_address_aliases, get_historical_versions, to_raw_objects, to_replay_data, ReplayData,
@@ -40,6 +44,10 @@ pub use sparse_replay::{
     DynamicFieldFailure, ObjectFetchOutcome, ObjectFetchRecord, OnDemandFetchSummary,
     PackageFetchOutcome, PackageFetchRecord, SparseReplayOutcome, SparseReplayPolicy,
     SparseReplayReport, SparseReplaySummary,
+};
+pub use state_json::{
+    parse_replay_state_value, parse_replay_states_file, parse_replay_states_json,
+    parse_replay_states_value,
 };
 pub use types::{FetchStats, ObjectID, PackageData, ReplayState, VersionedObject};
 pub use walrus_replay::{checkpoint_to_replay_state, find_tx_in_checkpoint};

@@ -3,9 +3,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::sandbox_cli::network::{cache_dir, infer_network, resolve_graphql_endpoint};
+use crate::sandbox_cli::network::{
+    cache_dir, infer_network, resolve_graphql_endpoint, sandbox_home,
+};
 use crate::sandbox_cli::SandboxState;
-use sui_state_fetcher::{HistoricalStateProvider, ReplayState, ReplayStateConfig, VersionedCache};
+use sui_state_fetcher::{
+    FileStateProvider, HistoricalStateProvider, ReplayState, ReplayStateConfig,
+    ReplayStateProvider, VersionedCache,
+};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
 
@@ -79,7 +84,7 @@ pub(crate) async fn build_historical_state_provider(
 }
 
 pub(crate) async fn build_replay_state(
-    provider: &HistoricalStateProvider,
+    provider: &impl ReplayStateProvider,
     digest: &str,
     config: ReplayHydrationConfig,
 ) -> Result<ReplayState> {
@@ -91,11 +96,28 @@ pub(crate) async fn build_replay_state(
     };
 
     provider
-        .replay_state_builder()
-        .with_config(replay_config)
-        .build(digest)
+        .fetch_replay_state_with_config(digest, &replay_config)
         .await
         .context("Failed to fetch replay state")
+}
+
+pub(crate) fn default_local_cache_dir() -> PathBuf {
+    sandbox_home().join("cache").join("local")
+}
+
+pub(crate) fn build_local_state_provider(
+    cache_dir: Option<&Path>,
+) -> Result<Arc<FileStateProvider>> {
+    let cache_dir = cache_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_local_cache_dir);
+    let provider = FileStateProvider::new(&cache_dir).with_context(|| {
+        format!(
+            "Failed to initialize local replay cache {}",
+            cache_dir.display()
+        )
+    })?;
+    Ok(Arc::new(provider))
 }
 
 fn find_dotenv(start: &Path) -> Option<PathBuf> {

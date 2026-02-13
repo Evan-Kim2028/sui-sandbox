@@ -183,6 +183,7 @@ pub(super) async fn execute_walrus_batch_v2(
                 digest: Some(tx_digest.clone()),
                 hydration: ReplayHydrationArgs {
                     source: cmd.hydration.source,
+                    cache_dir: cmd.hydration.cache_dir.clone(),
                     allow_fallback: cmd.hydration.allow_fallback,
                     prefetch_depth: cmd.hydration.prefetch_depth,
                     prefetch_limit: cmd.hydration.prefetch_limit,

@@ -30,7 +30,12 @@ if cp_data["transactions"]:
     first_tx = cp_data["transactions"][0]
     digest = first_tx["digest"]
     print(f"\n[4] Walrus analyze_replay for {digest[:24]}...")
-    replay_info = sui_sandbox.walrus_analyze_replay(digest, latest, verbose=False)
+    replay_info = sui_sandbox.replay(
+        digest=digest,
+        checkpoint=latest,
+        analyze_only=True,
+        verbose=False,
+    )
     print(f"    Sender:    {replay_info['sender']}")
     print(f"    Commands:  {replay_info['commands']}")
     print(f"    Inputs:    {replay_info['inputs']}")
@@ -59,16 +64,18 @@ if cp_data["transactions"]:
 else:
     print("\n    (No transactions in this checkpoint)")
 
-# 5. Analyze the Sui framework package (0x2) via GraphQL
-print(f"\n[5] Analyzing package 0x2 (Sui framework)...")
-pkg = sui_sandbox.analyze_package(package_id="0x2", list_modules=True)
-print(f"    Source:     {pkg['source']}")
-print(f"    Modules:    {pkg['modules']}")
-print(f"    Structs:    {pkg['structs']}")
-print(f"    Functions:  {pkg['functions']}")
-print(f"    Key structs:{pkg['key_structs']}")
-if "module_names" in pkg:
-    print(f"    Module names: {', '.join(pkg['module_names'][:10])}...")
+# 5. Extract the Sui framework package interface (0x2) via GraphQL
+print(f"\n[5] Extracting package 0x2 interface (Sui framework)...")
+iface = sui_sandbox.extract_interface(package_id="0x2")
+modules = iface.get("modules", {})
+module_names = sorted(modules.keys())
+fn_count = sum(len(m.get("functions", {})) for m in modules.values())
+struct_count = sum(len(m.get("structs", {})) for m in modules.values())
+print(f"    Modules:    {len(module_names)}")
+print(f"    Structs:    {struct_count}")
+print(f"    Functions:  {fn_count}")
+if module_names:
+    print(f"    Module names: {', '.join(module_names[:10])}...")
 
 print("\n" + "=" * 60)
 print("All tests passed!")

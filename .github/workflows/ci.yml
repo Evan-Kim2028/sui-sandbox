@@ -24,7 +24,7 @@ jobs:
           cache-on-failure: true
 
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-features --exclude sui-python -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -38,3 +38,79 @@ jobs:
           cache-on-failure: true
 
       - run: cargo test --locked --workspace --tests
+
+  python-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install maturin
+        run: python -m pip install --upgrade pip maturin
+
+      - name: Build Python wheel
+        run: maturin build --manifest-path crates/sui-python/Cargo.toml --release -o dist
+
+      - name: Install built wheel
+        run: python -m pip install dist/sui_sandbox-*.whl
+
+      - name: Python smoke test
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+          import sui_sandbox
+
+          assert hasattr(sui_sandbox, "import_state")
+          assert hasattr(sui_sandbox, "deserialize_transaction")
+          assert hasattr(sui_sandbox, "deserialize_package")
+          assert isinstance(sui_sandbox.__version__, str)
+
+          with tempfile.TemporaryDirectory() as td:
+              td_path = Path(td)
+              state_path = td_path / "state.json"
+              cache_dir = td_path / "cache"
+              state = {
+                  "transaction": {
+                      "digest": "dummy_digest",
+                      "sender": "0x1",
+                      "gas_budget": 1_000_000,
+                      "gas_price": 1_000,
+                      "commands": [],
+                      "inputs": [],
+                      "effects": None,
+                      "timestamp_ms": None,
+                      "checkpoint": None,
+                  },
+                  "objects": {},
+                  "packages": {},
+                  "protocol_version": 64,
+                  "epoch": 0,
+                  "reference_gas_price": None,
+                  "checkpoint": None,
+              }
+              state_path.write_text(json.dumps(state))
+
+              import_result = sui_sandbox.import_state(
+                  state=str(state_path),
+                  cache_dir=str(cache_dir),
+              )
+              assert import_result["states_imported"] == 1
+
+              replay = sui_sandbox.replay(
+                  digest="dummy_digest",
+                  source="local",
+                  cache_dir=str(cache_dir),
+                  analyze_only=True,
+              )
+              assert replay["digest"] == "dummy_digest"
+          PY

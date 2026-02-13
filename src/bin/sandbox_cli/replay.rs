@@ -9,7 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use self::hydration::{build_historical_state_provider, build_replay_state, ReplayHydrationConfig};
+use self::hydration::{
+    build_historical_state_provider, build_local_state_provider, build_replay_state,
+    default_local_cache_dir, ReplayHydrationConfig,
+};
 use self::presentation::{build_replay_debug_json, enforce_strict, print_replay_result};
 use super::network::resolve_graphql_endpoint;
 use super::output::format_error;
@@ -35,7 +38,7 @@ use sui_state_fetcher::{
     build_aliases as build_aliases_shared, checkpoint_to_replay_state,
     fetch_child_object as fetch_child_object_shared,
     fetch_object_via_grpc as fetch_object_via_grpc_shared, find_tx_in_checkpoint,
-    HistoricalStateProvider, PackageData, ReplayState, VersionedObject,
+    parse_replay_states_file, HistoricalStateProvider, PackageData, ReplayState, VersionedObject,
 };
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::GrpcClient;
@@ -253,6 +256,7 @@ pub enum ReplaySource {
     Grpc,
     Walrus,
     Hybrid,
+    Local,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -260,6 +264,10 @@ pub struct ReplayHydrationArgs {
     /// Data source for replay hydration
     #[arg(long, value_enum, default_value = "hybrid", help_heading = "Hydration")]
     pub source: ReplaySource,
+
+    /// Local cache directory used by --source local
+    #[arg(long, help_heading = "Hydration")]
+    pub cache_dir: Option<PathBuf>,
 
     /// Allow fallback to secondary sources when data is missing
     #[arg(
@@ -397,6 +405,14 @@ impl ReplayCmd {
                 .await;
         }
 
+        if matches!(self.hydration.source, ReplaySource::Local)
+            && (self.checkpoint.is_some() || self.latest.is_some())
+        {
+            return Err(anyhow!(
+                "--source local does not support --checkpoint/--latest"
+            ));
+        }
+
         // --latest N: auto-discover tip checkpoint and replay the latest N checkpoints
         #[cfg(feature = "walrus")]
         if let Some(count) = self.latest {
@@ -442,6 +458,49 @@ impl ReplayCmd {
                     .execute_walrus_batch_v2(state, verbose, &checkpoints, replay_progress)
                     .await;
             }
+        }
+
+        if matches!(self.hydration.source, ReplaySource::Local) {
+            let cache_dir = self
+                .hydration
+                .cache_dir
+                .clone()
+                .unwrap_or_else(default_local_cache_dir);
+            let provider = build_local_state_provider(Some(&cache_dir))?;
+            let digest = self.digest_required()?;
+            let replay_state = build_replay_state(
+                provider.as_ref(),
+                digest,
+                ReplayHydrationConfig {
+                    prefetch_dynamic_fields: false,
+                    prefetch_depth: self.hydration.prefetch_depth,
+                    prefetch_limit: self.hydration.prefetch_limit,
+                    auto_system_objects: self.hydration.auto_system_objects,
+                },
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to load digest '{}' from local cache {}",
+                    digest,
+                    cache_dir.display()
+                )
+            })?;
+            if verbose {
+                eprintln!(
+                    "[local] loaded state for {} from {}",
+                    digest,
+                    cache_dir.display()
+                );
+            }
+            return self.execute_replay_state(
+                state,
+                &replay_state,
+                "local",
+                "local_cache",
+                allow_fallback,
+                verbose,
+            );
         }
 
         let provider =
@@ -1820,10 +1879,27 @@ impl ReplayCmd {
         _replay_progress: bool,
     ) -> Result<ReplayOutput> {
         let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
-        let contents = std::fs::read_to_string(json_path)
-            .with_context(|| format!("Failed to read state from {}", json_path.display()))?;
-        let replay_state: ReplayState = serde_json::from_str(&contents)
+        let states = parse_replay_states_file(json_path)
             .with_context(|| format!("Failed to parse state JSON from {}", json_path.display()))?;
+        let replay_state = if states.len() == 1 {
+            states.into_iter().next().expect("single replay state")
+        } else if let Some(digest) = self.digest.as_deref() {
+            states
+                .into_iter()
+                .find(|s| s.transaction.digest.0 == digest)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "State file {} contains multiple states but none for digest {}",
+                        json_path.display(),
+                        digest
+                    )
+                })?
+        } else {
+            return Err(anyhow!(
+                "State file {} contains multiple states; provide digest explicitly",
+                json_path.display()
+            ));
+        };
 
         if verbose {
             eprintln!(
@@ -1834,19 +1910,38 @@ impl ReplayCmd {
             );
         }
 
+        self.execute_replay_state(
+            state,
+            &replay_state,
+            "json",
+            "state_json",
+            allow_fallback,
+            verbose,
+        )
+    }
+
+    fn execute_replay_state(
+        &self,
+        state: &SandboxState,
+        replay_state: &ReplayState,
+        requested_source: &str,
+        effective_source: &str,
+        allow_fallback: bool,
+        _verbose: bool,
+    ) -> Result<ReplayOutput> {
         let pkg_aliases =
             build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
         let resolver = hydrate_resolver_from_replay_state(
             state,
-            &replay_state,
+            replay_state,
             &pkg_aliases.linkage_upgrades,
             &pkg_aliases.aliases,
         );
         emit_linkage_debug_info(&resolver, &pkg_aliases.aliases);
-        let mut maps = build_replay_object_maps(&replay_state, &pkg_aliases.versions);
+        let mut maps = build_replay_object_maps(replay_state, &pkg_aliases.versions);
         maybe_patch_replay_objects(
             &resolver,
-            &replay_state,
+            replay_state,
             &pkg_aliases.versions,
             &pkg_aliases.aliases,
             &mut maps,
@@ -1862,8 +1957,7 @@ impl ReplayCmd {
             EffectsReconcilePolicy::Strict
         };
 
-        // Build VM harness and execute
-        let config = build_simulation_config(&replay_state);
+        let config = build_simulation_config(replay_state);
         let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
         harness
             .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), versions_str.clone());
@@ -1911,8 +2005,8 @@ impl ReplayCmd {
                     local_success: result.local_success,
                     local_error: result.local_error,
                     execution_path: ReplayExecutionPath {
-                        requested_source: "json".to_string(),
-                        effective_source: "state_json".to_string(),
+                        requested_source: requested_source.to_string(),
+                        effective_source: effective_source.to_string(),
                         vm_only: self.vm_only,
                         allow_fallback,
                         auto_system_objects: self.hydration.auto_system_objects,
@@ -1921,7 +2015,7 @@ impl ReplayCmd {
                         dynamic_field_prefetch: false,
                         prefetch_depth: 0,
                         prefetch_limit: 0,
-                        dependency_fetch_mode: "state_json".to_string(),
+                        dependency_fetch_mode: effective_source.to_string(),
                         dependency_packages_fetched: 0,
                         synthetic_inputs: 0,
                     },
@@ -1937,8 +2031,8 @@ impl ReplayCmd {
                 local_success: false,
                 local_error: Some(e.to_string()),
                 execution_path: ReplayExecutionPath {
-                    requested_source: "json".to_string(),
-                    effective_source: "state_json".to_string(),
+                    requested_source: requested_source.to_string(),
+                    effective_source: effective_source.to_string(),
                     vm_only: self.vm_only,
                     allow_fallback,
                     auto_system_objects: self.hydration.auto_system_objects,
@@ -1947,7 +2041,7 @@ impl ReplayCmd {
                     dynamic_field_prefetch: false,
                     prefetch_depth: 0,
                     prefetch_limit: 0,
-                    dependency_fetch_mode: "state_json".to_string(),
+                    dependency_fetch_mode: effective_source.to_string(),
                     dependency_packages_fetched: 0,
                     synthetic_inputs: 0,
                 },

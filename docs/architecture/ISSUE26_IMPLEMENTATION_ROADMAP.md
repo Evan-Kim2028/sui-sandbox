@@ -1,122 +1,89 @@
-# Issue 26 Implementation Plan
+# Issue 26 Single-PR Rollout Plan
 
-This document defines the execution plan for issue `#26`:
+Issue: https://github.com/Evan-Kim2028/sui-sandbox/issues/26
 
-- https://github.com/Evan-Kim2028/sui-sandbox/issues/26
+## Objective
 
-## Goal
+Deliver the full Issue 26 architecture in one PR:
 
-Make replay-state ingestion pluggable and file-oriented without regressing existing replay paths.
+- pluggable replay-state provider interface
+- file-backed local replay backend
+- flexible state ingestion formats (JSON/JSONL/CSV + base64/raw BCS)
+- CLI import + local replay source
+- Python API parity for file-oriented workflows
+- validation coverage to keep regressions low
 
-Core outcome:
+## Single-PR Scope (Implemented)
 
-- callers depend on an abstract replay-state provider interface
-- network-backed hydration remains the default
-- file-backed hydration can be introduced as a first-class backend
-- Python API layers mirror the same backend model
+### 1. Provider Layer
 
-## PR Strategy
+- `ReplayStateProvider` abstraction is now the dependency boundary for replay hydration.
+- Added `FileStateProvider` implementing `ReplayStateProvider` for cache-backed local replay.
+- Existing `HistoricalStateProvider` remains unchanged for gRPC/Walrus/hybrid workflows.
 
-Use small, reviewable PR slices instead of one monolithic rewrite.
+### 2. Flexible Replay-State Ingestion
 
-### PR 26A (this branch)
+- Added reusable parser module that accepts:
+  - strict legacy `ReplayState` JSON schema
+  - extended schema with:
+    - `transaction.raw_bcs` / `raw_bcs_base64`
+    - object `bcs` / `bcs_base64`
+    - package `bcs` / `bcs_base64`
+    - `owner_type` normalization (`Shared`/`Immutable`/`AddressOwner`)
+  - single-object or array-of-states JSON files
+- Added reusable BCS codec utilities for transaction/package decoding.
 
-Scope:
+### 3. CLI: Import + Local Replay
 
-- Introduce `ReplayStateProvider` trait in `sui-state-fetcher`
-- Wire `ReplayStateBuilder` to depend on the trait instead of concrete `HistoricalStateProvider`
-- Provide trait implementation for `HistoricalStateProvider`
+- New `sui-sandbox import` command:
+  - `--state` for strict/extended replay-state JSON
+  - `--transactions`, `--objects`, `--packages` for JSON/JSONL/CSV row imports
+  - `--output` for local cache directory
+- `replay` now supports:
+  - `--source local`
+  - `--cache-dir`
+  - multi-state selection by digest for `--state-json`
 
-Non-goals:
+### 4. Python Parity
 
-- No behavior change to replay hydration
-- No file import path yet
-- No CLI surface changes yet
+- Added Python APIs:
+  - `import_state(...)`
+  - `deserialize_transaction(raw_bcs)`
+  - `deserialize_package(bcs)`
+- Extended `replay(...)` for file-oriented usage:
+  - `state_file=...`
+  - `cache_dir=...` / `source="local"`
+  - optional `digest` when `state_file` contains a single state
+- Added `__version__` on module.
+- Added stubs and typed marker:
+  - `sui_sandbox.pyi`
+  - `py.typed`
 
-Success criteria:
+### 5. CI and Quality Hardening
 
-- `cargo check -p sui-state-fetcher` passes
-- Existing call sites continue to compile with no behavior drift
+- CI now includes Python smoke validation for import + local replay.
+- Clippy lint job excludes `sui-python` to avoid PyO3/Python 3.14 runner incompatibility.
+- Updated Python example scripts to removed API replacements:
+  - `walrus_analyze_replay` -> `replay(..., analyze_only=True)`
+  - `analyze_package` -> `extract_interface(...)`
 
-### PR 26B
+## Validation Matrix
 
-Scope:
+- `cargo check -p sui-state-fetcher`
+- `cargo test -p sui-state-fetcher`
+- `cargo check -p sui-sandbox`
+- `cargo test -p sui-sandbox --test sandbox_cli_tests test_import_state_file_and_replay_from_local_cache`
+- `cargo test -p sui-sandbox --test sandbox_cli_tests test_replay_state_json_multi_state_select_by_digest`
+- `cargo test -p sui-sandbox --test sandbox_cli_tests test_replay_and_analyze_replay_help_share_hydration_flags`
+- `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p sui-python`
+- `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check --workspace`
 
-- Extend state JSON ingestion to accept practical external formats:
-  - base64 BCS object bytes
-  - raw transaction BCS blob
-  - full package BCS blob
-- Preserve compatibility with current strict format
+## Supporting Backlog (Post-PR)
 
-Success criteria:
+These remain useful follow-ups but are not blockers for Issue 26 core delivery:
 
-- old and new state JSON forms are both accepted
-- explicit tests for base64/object/package/transaction decoding
-
-### PR 26C
-
-Scope:
-
-- Add `FileStateProvider` and cache-backed local replay source
-- Add import pipeline (`json`, `jsonl`, `csv`) into local replay cache
-- Add replay source selector for local file/cache-backed execution
-
-Success criteria:
-
-- deterministic replay from imported files without network dependency
-- clear error reporting for malformed input rows
-
-### PR 26D
-
-Scope:
-
-- Layered Python API on top of shared Rust backend surface
-- Add typed stubs, docs, and CI coverage for new Python paths
-
-Success criteria:
-
-- Python can run import + replay against file-backed cache
-- Python quality gates from `#24` are integrated for new API paths
-
-## Supporting Backlog Map
-
-These open issues directly support `#26` rollout quality:
-
-- `#24` Python bindings quality and CI:
-  https://github.com/Evan-Kim2028/sui-sandbox/issues/24
-- `#10` provider compatibility tracking for replay data fidelity:
-  https://github.com/Evan-Kim2028/sui-sandbox/issues/10
-- `#27` CLI doctor command for environment/backend diagnostics:
-  https://github.com/Evan-Kim2028/sui-sandbox/issues/27
-
-Related future enhancements (not blockers for `#26` core):
-
-- `#2` gas benchmarking/reporting alignment
-- `#1` richer corpus metrics
-
-## Risks and Controls
-
-Risk:
-
-- backend abstraction adds indirection and could hide source-specific failures
-
-Control:
-
-- keep source-specific diagnostics attached to provider errors
-- validate parity with current historical provider before enabling new defaults
-
-Risk:
-
-- schema-flexible import paths can introduce silent coercion bugs
-
-Control:
-
-- strict validation and explicit normalization reports for each imported record
-- fixture-based tests for each accepted external format
-
-## Execution Order
-
-1. Merge PR 26A foundation abstraction.
-2. Implement PR 26B extended state JSON compatibility.
-3. Implement PR 26C file provider + import CLI.
-4. Implement PR 26D Python parity and quality hardening.
+- #24 Python DX polish beyond core parity (deeper docs/examples/perf)
+- #10 provider compatibility tracking + parity datasets
+- #27 CLI doctor diagnostics for backend/env configuration
+- #2 gas benchmarking/reporting alignment
+- #1 richer corpus metrics and reporting

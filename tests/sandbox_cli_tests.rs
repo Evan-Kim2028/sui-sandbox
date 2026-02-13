@@ -41,6 +41,52 @@ fn write_minimal_replay_state_json(temp_dir: &TempDir) -> PathBuf {
     path
 }
 
+fn write_multi_replay_state_json(temp_dir: &TempDir) -> PathBuf {
+    let path = temp_dir.path().join("replay_state_multi.json");
+    let state_a = serde_json::json!({
+        "transaction": {
+            "digest": "digest_a",
+            "sender": "0x1",
+            "gas_budget": 1_000_000u64,
+            "gas_price": 1_000u64,
+            "commands": [],
+            "inputs": [],
+            "effects": serde_json::Value::Null,
+            "timestamp_ms": serde_json::Value::Null,
+            "checkpoint": serde_json::Value::Null
+        },
+        "objects": {},
+        "packages": {},
+        "protocol_version": 64u64,
+        "epoch": 0u64,
+        "reference_gas_price": serde_json::Value::Null,
+        "checkpoint": serde_json::Value::Null
+    });
+    let state_b = serde_json::json!({
+        "transaction": {
+            "digest": "digest_b",
+            "sender": "0x2",
+            "gas_budget": 2_000_000u64,
+            "gas_price": 2_000u64,
+            "commands": [],
+            "inputs": [],
+            "effects": serde_json::Value::Null,
+            "timestamp_ms": serde_json::Value::Null,
+            "checkpoint": serde_json::Value::Null
+        },
+        "objects": {},
+        "packages": {},
+        "protocol_version": 64u64,
+        "epoch": 0u64,
+        "reference_gas_price": serde_json::Value::Null,
+        "checkpoint": serde_json::Value::Null
+    });
+    let states = serde_json::json!([state_a, state_b]);
+    fs::write(&path, serde_json::to_string_pretty(&states).unwrap())
+        .expect("write multi replay state");
+    path
+}
+
 // ============================================================================
 // Help and Basic CLI Tests
 // ============================================================================
@@ -56,6 +102,7 @@ fn test_help_output() {
         .stdout(predicate::str::contains("run"))
         .stdout(predicate::str::contains("ptb"))
         .stdout(predicate::str::contains("fetch"))
+        .stdout(predicate::str::contains("import"))
         .stdout(predicate::str::contains("replay"))
         .stdout(predicate::str::contains("view"))
         .stdout(predicate::str::contains("init"))
@@ -572,6 +619,7 @@ fn test_replay_and_analyze_replay_help_share_hydration_flags() {
     let analyze_help = String::from_utf8_lossy(&analyze_help);
     let shared_flags = [
         "--source <SOURCE>",
+        "--cache-dir <CACHE_DIR>",
         "--allow-fallback <ALLOW_FALLBACK>",
         "--auto-system-objects <AUTO_SYSTEM_OBJECTS>",
         "--prefetch-depth <PREFETCH_DEPTH>",
@@ -882,6 +930,71 @@ fn test_replay_auto_system_objects_explicit_bool_true_false() {
     assert_eq!(
         true_json["execution_path"]["auto_system_objects"].as_bool(),
         Some(true)
+    );
+}
+
+#[test]
+fn test_replay_state_json_multi_state_select_by_digest() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state_path = write_multi_replay_state_json(&temp_dir);
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("digest_b")
+        .arg("--state-json")
+        .arg(&replay_state_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid replay JSON");
+    assert_eq!(json["digest"].as_str(), Some("digest_b"));
+}
+
+#[test]
+fn test_import_state_file_and_replay_from_local_cache() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state_path = write_minimal_replay_state_json(&temp_dir);
+    let cache_dir = temp_dir.path().join("replay_cache");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("import")
+        .arg("--state")
+        .arg(&replay_state_path)
+        .arg("--output")
+        .arg(&cache_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported 1 replay state"));
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("dummy_digest")
+        .arg("--source")
+        .arg("local")
+        .arg("--cache-dir")
+        .arg(&cache_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("valid replay JSON");
+    assert_eq!(
+        json["execution_path"]["effective_source"].as_str(),
+        Some("local_cache")
     );
 }
 
