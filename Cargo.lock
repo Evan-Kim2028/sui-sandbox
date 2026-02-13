@@ -6158,7 +6158,7 @@ dependencies = [
 
 [[package]]
 name = "sui-python"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6209,7 +6209,7 @@ dependencies = [
 
 [[package]]
 name = "sui-sandbox"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
