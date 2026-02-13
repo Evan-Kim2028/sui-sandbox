@@ -239,8 +239,7 @@ fn replay_inner(
         effective_source = "walrus".to_string();
     } else {
         // gRPC/hybrid path — requires API key
-        let rt = tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?;
+        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
         let gql_endpoint = resolve_graphql_endpoint(rpc_url);
         graphql_client = GraphQLClient::new(&gql_endpoint);
@@ -255,8 +254,7 @@ fn replay_inner(
             let grpc = sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key)
                 .await
                 .context("Failed to create gRPC client")?;
-            let mut provider =
-                HistoricalStateProvider::with_clients(grpc, graphql_client.clone());
+            let mut provider = HistoricalStateProvider::with_clients(grpc, graphql_client.clone());
 
             // Enable Walrus for hybrid/walrus sources
             if source == "walrus" || source == "hybrid" {
@@ -303,8 +301,16 @@ fn replay_inner(
     // 2. Analyze-only: return state summary without VM execution
     // ---------------------------------------------------------------
     if analyze_only {
-        return build_analyze_output(&replay_state, &effective_source, allow_fallback,
-            auto_system_objects, !no_prefetch, prefetch_depth, prefetch_limit, verbose);
+        return build_analyze_output(
+            &replay_state,
+            &effective_source,
+            allow_fallback,
+            auto_system_objects,
+            !no_prefetch,
+            prefetch_depth,
+            prefetch_limit,
+            verbose,
+        );
     }
 
     // ---------------------------------------------------------------
@@ -333,10 +339,7 @@ fn replay_inner(
         eprintln!("[deps] fetched {} dependency packages", fetched_deps);
     }
 
-    let mut maps = replay_support::build_replay_object_maps(
-        &replay_state,
-        &pkg_aliases.versions,
-    );
+    let mut maps = replay_support::build_replay_object_maps(&replay_state, &pkg_aliases.versions);
     replay_support::maybe_patch_replay_objects(
         &resolver,
         &replay_state,
@@ -347,23 +350,19 @@ fn replay_inner(
     );
 
     let config = replay_support::build_simulation_config(&replay_state);
-    let mut harness =
-        sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
-    harness.set_address_aliases_with_versions(
-        pkg_aliases.aliases.clone(),
-        maps.versions_str.clone(),
-    );
+    let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
+    harness
+        .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), maps.versions_str.clone());
 
     let reconcile_policy = EffectsReconcilePolicy::Strict;
-    let replay_result =
-        tx_replay::replay_with_version_tracking_with_policy_with_effects(
-            &replay_state.transaction,
-            &mut harness,
-            &maps.cached_objects,
-            &pkg_aliases.aliases,
-            Some(&maps.versions_str),
-            reconcile_policy,
-        );
+    let replay_result = tx_replay::replay_with_version_tracking_with_policy_with_effects(
+        &replay_state.transaction,
+        &mut harness,
+        &maps.cached_objects,
+        &pkg_aliases.aliases,
+        Some(&maps.versions_str),
+        reconcile_policy,
+    );
 
     // ---------------------------------------------------------------
     // 4. Build output JSON
@@ -616,15 +615,13 @@ fn build_replay_output(
 
             Ok(output)
         }
-        Err(e) => {
-            Ok(serde_json::json!({
-                "digest": replay_state.transaction.digest.0,
-                "local_success": false,
-                "local_error": e.to_string(),
-                "execution_path": execution_path,
-                "commands_executed": 0,
-            }))
-        }
+        Err(e) => Ok(serde_json::json!({
+            "digest": replay_state.transaction.digest.0,
+            "local_success": false,
+            "local_error": e.to_string(),
+            "execution_path": execution_path,
+            "commands_executed": 0,
+        })),
     }
 }
 
@@ -1103,8 +1100,7 @@ fn fuzz_function_inner(
     }
 
     // 6. Parse type args and build config
-    let sender_addr =
-        AccountAddress::from_hex_literal(sender).context("Invalid sender address")?;
+    let sender_addr = AccountAddress::from_hex_literal(sender).context("Invalid sender address")?;
     let parsed_type_args = type_args
         .iter()
         .map(|s| sui_sandbox_core::types::parse_type_tag(s))

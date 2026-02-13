@@ -128,10 +128,7 @@ pub fn fetch_dependency_closure(
                                     "[deps] failed to fetch {} at checkpoint {}: {}",
                                     addr_hex, cp, err
                                 );
-                                eprintln!(
-                                    "[deps] falling back to latest package for {}",
-                                    addr_hex
-                                );
+                                eprintln!("[deps] falling back to latest package for {}", addr_hex);
                             }
                             graphql.fetch_package(&addr_hex)?
                         }
