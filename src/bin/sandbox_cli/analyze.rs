@@ -66,6 +66,10 @@ pub struct AnalyzePackageCmd {
     #[arg(long, default_value_t = false, help_heading = "Analysis")]
     pub list_modules: bool,
 
+    /// Include full package interface in JSON output
+    #[arg(long, default_value_t = false, help_heading = "Analysis")]
+    pub include_interface: bool,
+
     /// Attempt MM2 model build for the package
     #[arg(long, default_value_t = false, help_heading = "Analysis")]
     pub mm2: bool,
@@ -232,6 +236,8 @@ struct AnalyzePackageOutput {
     pub mm2_model_ok: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mm2_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]

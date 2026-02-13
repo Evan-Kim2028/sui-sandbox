@@ -1,11 +1,13 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod call_view_function;
 mod json_to_bcs;
 mod poll_transactions;
 mod stream_transactions;
 mod tx_sim;
 
+pub use call_view_function::CallViewFunctionCmd;
 pub use json_to_bcs::JsonToBcsCmd;
 pub use poll_transactions::PollTransactionsCmd;
 pub use stream_transactions::StreamTransactionsCmd;
@@ -27,6 +29,8 @@ pub enum ToolsSubcommand {
     TxSim(TxSimCmd),
     /// Convert a JSON object to BCS bytes using Move bytecode struct layouts
     JsonToBcs(JsonToBcsCmd),
+    /// Execute a Move function in a local VM using supplied bytecode
+    CallViewFunction(CallViewFunctionCmd),
 }
 
 impl ToolsCmd {
@@ -36,6 +40,7 @@ impl ToolsCmd {
             ToolsSubcommand::StreamTransactions(cmd) => cmd.execute().await,
             ToolsSubcommand::TxSim(cmd) => cmd.execute().await,
             ToolsSubcommand::JsonToBcs(cmd) => cmd.execute(json_output),
+            ToolsSubcommand::CallViewFunction(cmd) => cmd.execute(json_output).await,
         }
     }
 }

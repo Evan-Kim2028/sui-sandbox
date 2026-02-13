@@ -19,7 +19,9 @@ impl AnalyzePackageCmd {
         state: &SandboxState,
         verbose: bool,
     ) -> Result<AnalyzePackageOutput> {
-        let (package_id, modules, module_names, source) = if let Some(dir) = &self.bytecode_dir {
+        let (package_id, modules, module_names, source, interface_value) = if let Some(dir) =
+            &self.bytecode_dir
+        {
             let compiled = read_local_compiled_modules(dir)?;
             let pkg_id = resolve_local_package_id(dir)
                 .with_context(|| format!("resolve local package id from {}", dir.display()))?;
@@ -48,6 +50,11 @@ impl AnalyzePackageCmd {
                 } else {
                     None
                 },
+                interface: if self.include_interface {
+                    Some(interface_value)
+                } else {
+                    None
+                },
                 mm2_model_ok: mm2_ok,
                 mm2_error: mm2_err,
             });
@@ -67,11 +74,16 @@ impl AnalyzePackageCmd {
                         .map_err(|e| anyhow!("deserialize {}::{}: {:?}", pkg_id, name, e))
                 })
                 .collect::<Result<_>>()?;
+            let (names, interface_value) = build_bytecode_interface_value_from_compiled_modules(
+                &pkg.address,
+                &compiled_modules,
+            )?;
             (
                 pkg.address,
                 compiled_modules,
                 if self.list_modules { Some(names) } else { None },
                 "graphql".to_string(),
+                interface_value,
             )
         } else {
             return Err(anyhow!("--package-id or --bytecode-dir is required"));
@@ -103,6 +115,11 @@ impl AnalyzePackageCmd {
             module_names,
             mm2_model_ok: mm2_ok,
             mm2_error: mm2_err,
+            interface: if self.include_interface {
+                Some(interface_value)
+            } else {
+                None
+            },
         })
     }
 }

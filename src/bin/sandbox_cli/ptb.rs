@@ -6,6 +6,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use std::path::PathBuf;
+use sui_sandbox_types::normalize_address_checked;
 
 use super::output::{format_effects, format_effects_json, format_error};
 use super::ptb_spec::{read_ptb_spec, ArgReference, ArgSpec, InputSpec, PtbSpec, PureValue};
@@ -220,7 +221,7 @@ fn convert_pure_value(value: &PureValue) -> Result<InputValue> {
         PureValue::U128(n) => bcs::to_bytes(n)?,
         PureValue::Bool(b) => bcs::to_bytes(b)?,
         PureValue::Address(s) => {
-            let addr = normalize_address(s)?;
+            let addr = parse_address(s)?;
             bcs::to_bytes(&addr)?
         }
         PureValue::VectorU8Utf8(s) => bcs::to_bytes(&s.as_bytes().to_vec())?,
@@ -231,7 +232,7 @@ fn convert_pure_value(value: &PureValue) -> Result<InputValue> {
         }
         PureValue::VectorAddress(addrs) => {
             let addresses: Result<Vec<AccountAddress>> =
-                addrs.iter().map(|s| normalize_address(s)).collect();
+                addrs.iter().map(|s| parse_address(s)).collect();
             bcs::to_bytes(&addresses?)?
         }
         PureValue::VectorU64(nums) => bcs::to_bytes(nums)?,
@@ -264,7 +265,7 @@ fn parse_target(target: &str) -> Result<(AccountAddress, String, String)> {
         ));
     }
 
-    let package = AccountAddress::from_hex_literal(parts[0]).context("Invalid package address")?;
+    let package = parse_address(parts[0])?;
 
     Ok((package, parts[1].to_string(), parts[2].to_string()))
 }
@@ -273,9 +274,9 @@ fn parse_type_tag(s: &str) -> Result<TypeTag> {
     parse_type_tag_string(s)
 }
 
-fn normalize_address(s: &str) -> Result<AccountAddress> {
-    let normalized = sui_sandbox_types::normalize_address_checked(s)
-        .ok_or_else(|| anyhow!("Invalid address: {}", s))?;
+fn parse_address(s: &str) -> Result<AccountAddress> {
+    let normalized =
+        normalize_address_checked(s).ok_or_else(|| anyhow!("Invalid address: {}", s))?;
     AccountAddress::from_hex_literal(&normalized).context("Invalid address")
 }
 
@@ -322,13 +323,13 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_address() {
+    fn test_parse_address() {
         assert_eq!(
-            normalize_address("0x2").unwrap(),
+            parse_address("0x2").unwrap(),
             AccountAddress::from_hex_literal("0x2").unwrap()
         );
         assert_eq!(
-            normalize_address("2").unwrap(),
+            parse_address("2").unwrap(),
             AccountAddress::from_hex_literal("0x2").unwrap()
         );
     }

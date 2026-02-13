@@ -729,8 +729,8 @@ The `sui-sandbox` maintains session state across commands:
 State is stored in `~/.sui-sandbox/state.json` by default for all commands unless
 overridden with `--state-file`.
 
-Legacy `state.bin` files are not auto-migrated in current releases.
-Export to JSON from your legacy toolchain if you need to preserve old state.
+Legacy `state.bin` files are intentionally not auto-migrated in current releases.
+Export to JSON from your legacy toolchain and import that JSON if you need to preserve older state.
 
 ### Workflow Example
 

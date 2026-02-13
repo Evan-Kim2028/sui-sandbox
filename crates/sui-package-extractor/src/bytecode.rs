@@ -283,10 +283,39 @@ pub fn resolve_local_package_id(package_dir: &Path) -> Result<String> {
         })
 }
 
+pub fn read_local_compiled_module_bytes(bytecode_dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut entries: Vec<_> = fs::read_dir(bytecode_dir)
+        .with_context(|| format!("read {}", bytecode_dir.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("list {}", bytecode_dir.display()))?;
+    entries.sort_by_key(|e| e.path());
+
+    let mut modules = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| anyhow!("bad filename {}", path.display()))?
+            .to_string();
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        modules.push((name, bytes));
+    }
+
+    if modules.is_empty() {
+        return Err(anyhow!("no .mv files found in {}", bytecode_dir.display()));
+    }
+    Ok(modules)
+}
+
 pub fn analyze_local_bytecode_package(
     package_dir: &Path,
 ) -> Result<(Vec<String>, LocalBytecodeCounts)> {
     let bytecode_dir = package_dir.join("bytecode_modules");
+    let raw_modules = read_local_compiled_module_bytes(&bytecode_dir)?;
     let mut module_names: Vec<String> = Vec::new();
     let mut counts = LocalBytecodeCounts {
         modules: 0,
@@ -303,20 +332,9 @@ pub fn analyze_local_bytecode_package(
         key_structs: 0,
     };
 
-    let mut entries: Vec<_> = fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read {}", bytecode_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("list {}", bytecode_dir.display()))?;
-    entries.sort_by_key(|e| e.path());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    for (_name, bytes) in raw_modules {
         let module = CompiledModule::deserialize_with_defaults(&bytes)
-            .map_err(|e| anyhow!("deserialize {}: {}", path.display(), e))?;
+            .map_err(|e| anyhow!("deserialize bytecode module: {}", e))?;
 
         module_names.push(compiled_module_name(&module));
         let module_counts = analyze_compiled_module(&module);
@@ -339,23 +357,8 @@ pub fn analyze_local_bytecode_package(
 
 pub fn list_local_module_names_only(package_dir: &Path) -> Result<Vec<String>> {
     let bytecode_dir = package_dir.join("bytecode_modules");
-    let mut entries: Vec<_> = fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read {}", bytecode_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("list {}", bytecode_dir.display()))?;
-    entries.sort_by_key(|e| e.path());
-
     let mut names: Vec<String> = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("bad filename {}", path.display()))?
-            .to_string();
+    for (name, _) in read_local_compiled_module_bytes(&bytecode_dir)? {
         names.push(name);
     }
     if names.is_empty() {
@@ -366,21 +369,10 @@ pub fn list_local_module_names_only(package_dir: &Path) -> Result<Vec<String>> {
 
 pub fn read_local_compiled_modules(package_dir: &Path) -> Result<Vec<CompiledModule>> {
     let bytecode_dir = package_dir.join("bytecode_modules");
-    let mut entries: Vec<_> = fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read {}", bytecode_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("list {}", bytecode_dir.display()))?;
-    entries.sort_by_key(|e| e.path());
-
     let mut modules: Vec<CompiledModule> = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    for (name, bytes) in read_local_compiled_module_bytes(&bytecode_dir)? {
         let module = CompiledModule::deserialize_with_defaults(&bytes)
-            .with_context(|| format!("deserialize {}", path.display()))?;
+            .with_context(|| format!("deserialize {}", name))?;
         modules.push(module);
     }
     if modules.is_empty() {
@@ -458,24 +450,8 @@ pub fn read_local_bcs_module_map_bytes_info(
 
 pub fn read_local_mv_bytes_info_map(package_dir: &Path) -> Result<BTreeMap<String, BytesInfo>> {
     let bytecode_dir = package_dir.join("bytecode_modules");
-    let mut entries: Vec<_> = fs::read_dir(&bytecode_dir)
-        .with_context(|| format!("read {}", bytecode_dir.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("list {}", bytecode_dir.display()))?;
-    entries.sort_by_key(|e| e.path());
-
     let mut out = BTreeMap::<String, BytesInfo>::new();
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("mv") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("bad filename {}", path.display()))?
-            .to_string();
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    for (name, bytes) in read_local_compiled_module_bytes(&bytecode_dir)? {
         out.insert(name, bytes_info(&bytes));
     }
     if out.is_empty() {

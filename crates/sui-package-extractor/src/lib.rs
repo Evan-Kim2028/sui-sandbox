@@ -34,6 +34,6 @@ pub mod utils;
 // Re-export main types
 pub use bytecode::{
     build_bytecode_interface_value_from_compiled_modules, extract_module_dependency_ids,
-    read_local_compiled_modules,
+    read_local_compiled_module_bytes, read_local_compiled_modules,
 };
 pub use types::{BytecodeModuleJson, BytecodePackageInterfaceJson};

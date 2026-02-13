@@ -6,11 +6,8 @@ use std::path::{Path, PathBuf};
 use super::super::network::resolve_graphql_endpoint;
 use crate::sandbox_cli::SandboxState;
 use sui_package_extractor::bytecode::read_local_compiled_modules;
+pub(super) use sui_sandbox_types::normalize_address_checked as normalize_package_id;
 use sui_transport::graphql::GraphQLClient;
-
-pub(super) fn normalize_package_id(input: &str) -> Option<String> {
-    sui_sandbox_types::normalize_address_checked(input)
-}
 
 pub(super) fn parse_bcs_linkage_upgraded_ids(package_dir: &Path) -> Result<Vec<String>> {
     let bcs_path = package_dir.join("bcs.json");

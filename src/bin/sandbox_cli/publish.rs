@@ -9,6 +9,7 @@ use std::process::Command;
 
 use super::output::{format_error, format_publish_result};
 use super::SandboxState;
+use sui_package_extractor::bytecode::read_local_compiled_module_bytes;
 
 #[derive(Parser, Debug)]
 pub struct PublishCmd {
@@ -98,7 +99,7 @@ impl PublishCmd {
         };
 
         // Load bytecode modules
-        let modules = load_bytecode_modules(&bytecode_dir)?;
+        let modules = read_local_compiled_module_bytes(&bytecode_dir)?;
 
         if modules.is_empty() {
             return Err(anyhow!("No modules found in {}", bytecode_dir.display()));
@@ -169,34 +170,6 @@ fn find_bytecode_dir(build_dir: &PathBuf) -> Result<PathBuf> {
     ))
 }
 
-/// Load all .mv files from a bytecode directory
-fn load_bytecode_modules(bytecode_dir: &PathBuf) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut modules = Vec::new();
-
-    for entry in std::fs::read_dir(bytecode_dir).context("Failed to read bytecode directory")? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.extension().map(|e| e == "mv").unwrap_or(false) {
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("Failed to read {}", path.display()))?;
-
-            modules.push((name, bytes));
-        }
-    }
-
-    // Sort by name for deterministic ordering
-    modules.sort_by(|a, b| a.0.cmp(&b.0));
-
-    Ok(modules)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,26 +188,6 @@ mod tests {
     fn test_parse_address_assignment_invalid() {
         let result = parse_address_assignment("invalid");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_load_bytecode_modules_empty() {
-        let dir = tempdir().unwrap();
-        let modules = load_bytecode_modules(&dir.path().to_path_buf()).unwrap();
-        assert!(modules.is_empty());
-    }
-
-    #[test]
-    fn test_load_bytecode_modules_with_files() {
-        let dir = tempdir().unwrap();
-
-        // Create a mock .mv file
-        std::fs::write(dir.path().join("test_module.mv"), [0x01, 0x02, 0x03]).unwrap();
-
-        let modules = load_bytecode_modules(&dir.path().to_path_buf()).unwrap();
-        assert_eq!(modules.len(), 1);
-        assert_eq!(modules[0].0, "test_module");
-        assert_eq!(modules[0].1, vec![0x01, 0x02, 0x03]);
     }
 
     #[test]

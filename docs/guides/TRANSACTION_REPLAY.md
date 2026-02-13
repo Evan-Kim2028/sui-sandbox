@@ -73,7 +73,8 @@ If you have a gRPC endpoint configured:
 sui-sandbox replay <DIGEST> --source grpc --compare
 ```
 
-Requires `SUI_GRPC_ENDPOINT` in `.env` or environment.
+Uses `SUI_GRPC_ENDPOINT` in `.env` or environment when set.
+If the gRPC endpoint is not configured, the replay service falls back to `--rpc-url`.
 
 ## Data Sources
 

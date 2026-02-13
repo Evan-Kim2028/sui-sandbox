@@ -10,6 +10,7 @@ serde_json.workspace = true
 base64.workspace = true
 hex.workspace = true
 anyhow.workspace = true
+sui-resolver.workspace = true
 
 # Move types for AccountAddress
 move-core-types.workspace = true

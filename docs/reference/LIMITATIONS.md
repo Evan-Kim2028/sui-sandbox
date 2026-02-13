@@ -107,17 +107,21 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 
 **Impact:** Full type tracking now works for all commands including MoveCall returns.
 
-### ~~Object ID Inference Fragile~~ **FULLY MITIGATED**
+### ~~Object ID Inference Fragile~~ **PARTIALLY MITIGATED**
 
-**Status:** ✅ Fully Mitigated | **Verified Against Sui Source:** ✅
+**Status:** ⚠️ Partially Mitigated | **Verified Against Sui Source:** ✅
 
-**Original Issue:** The `get_object_id_and_type_from_arg` function assumed the first 32 bytes of any Result value are the object ID.
+**Original Issue:** `get_object_id_and_type_from_arg` previously assumed the first 32 bytes of any `Result` value are the object ID.
 
 **Solution Implemented:**
 
 - `TypedValue` now carries type information with Result values from function signature lookup
 - MoveCall returns are paired with pre-computed types from `resolve_function_return_types()`
 - `get_object_id_and_type_from_arg` checks TypedValue's `type_tag` for proper type identification
+
+**Remaining Gap:**
+
+- In some `SplitCoins` failure paths (for example unknown coin types with explicit amount inputs), object ID inference remains unsupported and command execution can fail before object reconstruction completes.
 
 **Technical Details:**
 
@@ -131,7 +135,7 @@ The PTB (Programmable Transaction Block) executor has several edge cases where l
 - Sui uses typed values (`ObjectValue` struct in `execution_value.rs`) with explicit type info
 - Our solution achieves similar type tracking via function signature lookup
 
-**Impact:** Types are now known for all command results, including MoveCall returns.
+**Impact:** Most MoveCall and framework command return flows now carry type metadata; edge cases around `SplitCoins` result/object reconstruction are still under active hardening.
 
 ### ~~Version/Digest Not Tracked~~ **FIXED**
 

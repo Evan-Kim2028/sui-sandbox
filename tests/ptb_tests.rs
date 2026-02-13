@@ -19,10 +19,16 @@
 
 mod common;
 
-use common::{create_mock_coin, framework_resolver};
+use common::{create_mock_coin, framework_resolver, get_coin_balance};
 use move_core_types::account_address::AccountAddress;
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput, PTBExecutor};
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::TypeTag;
+use std::collections::HashSet;
+use sui_sandbox_core::ptb::{
+    Argument, Command, InputValue, ObjectInput, PTBExecutor, VersionChangeType,
+};
 use sui_sandbox_core::vm::VMHarness;
+use sui_sandbox_core::well_known;
 
 // =============================================================================
 // EDGE CASES: Known Limitations (Documentation)
@@ -32,97 +38,564 @@ use sui_sandbox_core::vm::VMHarness;
 // from on-chain behavior. They serve as documentation and regression markers.
 
 mod edge_cases {
-    /// Edge Case 1: SplitCoins with Result argument - mutation may not persist
-    ///
-    /// When SplitCoins operates on a Result argument (not Input), the mutation
-    /// to reduce the coin balance may not be persisted back to the Result.
+    use super::*;
+
+    /// Edge Case 1: SplitCoins with nested Result argument
     #[test]
-    fn test_splitcoins_result_mutation_tracking() {
-        // Documents: ptb.rs execute_split_coins behavior
-        // Only Input arguments are guaranteed to be updated
-        println!("EDGE CASE 1: SplitCoins with Result argument");
-        println!("  - Only Input arguments are guaranteed to be updated");
-        println!("  - Result/NestedResult updates depend on implementation");
+    pub(super) fn test_splitcoins_result_mutation_tracking() {
+        assert_splitcoins_result_mutation_tracking();
+    }
+
+    pub(super) fn assert_splitcoins_result_mutation_tracking() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000f1f2",
+        )
+        .unwrap();
+        let initial_coin = create_mock_coin(coin_id, 100);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: initial_coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(30u64.to_le_bytes().to_vec()));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
+
+        let commands = vec![
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::Input(1)],
+            },
+            Command::SplitCoins {
+                coin: Argument::NestedResult(0, 0),
+                amounts: vec![Argument::Input(2)],
+            },
+        ];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            effects.success,
+            "SplitCoins with NestedResult should succeed"
+        );
+
+        assert_eq!(effects.created.len(), 2, "Two split outputs expected");
+        assert!(
+            effects.mutated.contains(&coin_id),
+            "Original coin should be mutated"
+        );
+
+        let first_split_id = effects.created[0];
+        assert!(
+            !effects.mutated.contains(&first_split_id),
+            "Current implementation does not track nested-result split outputs in mutated set"
+        );
+
+        assert_eq!(
+            get_coin_balance(
+                effects
+                    .mutated_object_bytes
+                    .get(&coin_id)
+                    .expect("original object should be tracked in mutated bytes"),
+            ),
+            70,
+            "Remaining original balance should be 70"
+        );
+        if let Some(first_split_bytes) = effects.mutated_object_bytes.get(&first_split_id) {
+            assert_eq!(
+                get_coin_balance(first_split_bytes),
+                20,
+                "Nested result coin should be reduced after second split"
+            );
+        }
     }
 
     /// Edge Case 2: MergeCoins with Result destination
     #[test]
-    fn test_mergecoins_result_destination_tracking() {
-        println!("EDGE CASE 2: MergeCoins with Result destination");
-        println!("  - Destination updates depend on argument type");
+    pub(super) fn test_mergecoins_result_destination_tracking() {
+        assert_mergecoins_result_destination_tracking();
+    }
+
+    pub(super) fn assert_mergecoins_result_destination_tracking() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000000def",
+        )
+        .unwrap();
+        let initial_coin = create_mock_coin(coin_id, 100);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: initial_coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: None,
+        }));
+
+        let commands = vec![
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::Input(1), Argument::Input(2)],
+            },
+            Command::MergeCoins {
+                destination: Argument::NestedResult(0, 0),
+                sources: vec![Argument::NestedResult(0, 1)],
+            },
+        ];
+
+        executor.add_input(InputValue::Pure(30u64.to_le_bytes().to_vec()));
+        executor.add_input(InputValue::Pure(20u64.to_le_bytes().to_vec()));
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            effects.success,
+            "MergeCoins with nested result destination should succeed"
+        );
+
+        let destination_id = effects.created[0];
+        assert!(
+            !effects.mutated.contains(&destination_id),
+            "Current implementation does not track Result destination as mutated"
+        );
+        if let Some(destination_bytes) = effects.mutated_object_bytes.get(&destination_id) {
+            assert!(
+                destination_bytes.len() >= 40,
+                "Destination bytes should be present when returned"
+            );
+        }
+        assert_eq!(
+            get_coin_balance(effects.return_values[0][1].as_ref()),
+            0,
+            "Merged source should be zeroed"
+        );
+        assert!(
+            effects.deleted.is_empty(),
+            "Sources are tracked as consumed, not deleted"
+        );
     }
 
     /// Edge Case 3: MergeCoins source deletion tracking
     #[test]
-    fn test_mergecoins_source_deletion_tracking() {
-        println!("EDGE CASE 3: MergeCoins source deletion");
-        println!("  - Source zeroing behavior depends on argument type");
+    pub(super) fn test_mergecoins_source_deletion_tracking() {
+        assert_mergecoins_source_deletion_tracking();
+    }
+
+    pub(super) fn assert_mergecoins_source_deletion_tracking() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let source_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000ca11",
+        )
+        .unwrap();
+        let destination_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000bead",
+        )
+        .unwrap();
+
+        let source_coin = create_mock_coin(source_id, 100);
+        let destination_coin = create_mock_coin(destination_id, 50);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: source_id,
+            bytes: source_coin,
+            type_tag: None,
+            version: None,
+        }));
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: destination_id,
+            bytes: destination_coin,
+            type_tag: None,
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(30u64.to_le_bytes().to_vec()));
+        executor.add_input(InputValue::Pure(30u64.to_le_bytes().to_vec()));
+
+        let commands = vec![
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::Input(2)],
+            },
+            Command::MergeCoins {
+                destination: Argument::Input(1),
+                sources: vec![Argument::NestedResult(0, 0)],
+            },
+            Command::MergeCoins {
+                destination: Argument::Input(1),
+                sources: vec![Argument::NestedResult(0, 0)],
+            },
+        ];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            !effects.success,
+            "Second merge should fail after source is consumed"
+        );
+        assert_eq!(
+            effects.failed_command_index,
+            Some(2),
+            "Failure should occur on the second merge"
+        );
+
+        assert!(
+            effects.created.is_empty(),
+            "No new objects should be created when merging an already consumed Result source"
+        );
+        assert!(
+            effects.deleted.is_empty(),
+            "Merged source should be consumed, not tracked as deleted"
+        );
+        assert!(
+            effects.error.is_some(),
+            "Expected failure when consuming a source result more than once"
+        );
+        assert!(
+            !effects.mutated.contains(&destination_id),
+            "Destination object is not currently tracked as mutated on failure path"
+        );
     }
 
     /// Edge Case 4: NestedResult bounds checking
     #[test]
     fn test_nestedresult_bounds_checking() {
-        println!("EDGE CASE 4: NestedResult bounds checking");
-        println!("  - Out-of-bounds indices should return errors");
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000a11b",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 100);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
+
+        let commands = vec![
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::Input(1)],
+            },
+            Command::MergeCoins {
+                destination: Argument::Input(0),
+                sources: vec![Argument::NestedResult(0, 9)],
+            },
+        ];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            !effects.success,
+            "Out-of-bounds nested result index should fail"
+        );
+        assert_eq!(
+            effects.failed_command_index,
+            Some(1),
+            "Failure should happen on second command"
+        );
+        assert!(
+            effects
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("NestedResult(0, 9)"),
+            "Error should mention the invalid nested result index"
+        );
     }
 
     /// Edge Case 5: Unknown coin type defaults to SUI
     #[test]
     fn test_unknown_coin_type_defaults() {
-        println!("EDGE CASE 5: Unknown coin type handling");
-        println!("  - When type cannot be determined, defaults to Coin<SUI>");
-        println!("  - May cause type mismatches for non-SUI coins");
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x00000000000000000000000000000000000000000000000000000000000b4d05",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 100);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: None,
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
+
+        let commands = vec![Command::SplitCoins {
+            coin: Argument::Input(0),
+            amounts: vec![Argument::Input(1)],
+        }];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(effects.success, "Unknown coin type should still execute");
+        assert_eq!(
+            effects.return_type_tags[0],
+            vec![Some(well_known::types::sui_coin())],
+            "Unknown coin type should default to Coin<SUI>"
+        );
     }
 
     /// Edge Case 6: Object ID inference from bytes
     #[test]
     fn test_object_id_inference() {
-        println!("EDGE CASE 6: Object ID inference");
-        println!("  - Assumes first 32 bytes are object ID");
-        println!("  - May fail for structs where UID isn't first field");
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let source_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000a51e",
+        )
+        .unwrap();
+        let destination_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000b51e",
+        )
+        .unwrap();
+
+        let source_coin = create_mock_coin(source_id, 90);
+        let destination_coin = create_mock_coin(destination_id, 40);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: source_id,
+            bytes: source_coin,
+            type_tag: None,
+            version: None,
+        }));
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: destination_id,
+            bytes: destination_coin,
+            type_tag: None,
+            version: None,
+        }));
+
+        let commands = vec![
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::Input(2)],
+            },
+            Command::MergeCoins {
+                destination: Argument::Input(1),
+                sources: vec![Argument::NestedResult(0, 0)],
+            },
+        ];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            !effects.success,
+            "SplitCoins using unknown coin type with explicit amount input is currently unsupported"
+        );
+        assert_eq!(effects.failed_command_index, Some(0));
+        assert!(effects.error.is_some());
     }
 
-    /// Edge Case 7: Input state sync after MoveCall mutations
+    /// Edge Case 7: MoveCall and SplitCoins composition
     #[test]
-    fn test_input_sync_after_movecall() {
-        println!("EDGE CASE 7: Input state synchronization");
-        println!("  - MoveCall mutations may not sync back to Input");
+    pub(super) fn test_input_sync_after_movecall() {
+        assert_input_sync_after_movecall();
     }
 
-    /// Edge Case 8: Object version tracking
+    pub(super) fn assert_input_sync_after_movecall() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000cafe",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 75);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: None,
+        }));
+
+        let commands = vec![
+            Command::MoveCall {
+                package: AccountAddress::from_hex_literal("0x2").unwrap(),
+                module: Identifier::new("coin").unwrap(),
+                function: Identifier::new("value").unwrap(),
+                type_args: vec![well_known::types::SUI_TYPE.clone()],
+                args: vec![Argument::Input(0)],
+            },
+            Command::SplitCoins {
+                coin: Argument::Input(0),
+                amounts: vec![Argument::NestedResult(0, 0)],
+            },
+        ];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            effects.success,
+            "MoveCall result should be usable as SplitCoins amount"
+        );
+
+        assert_eq!(effects.created.len(), 1);
+        assert_eq!(
+            effects.return_type_tags[0],
+            vec![Some(TypeTag::U64)],
+            "coin::value should return u64"
+        );
+        assert_eq!(effects.return_values[0][0].len(), 8);
+        let returned_amount =
+            u64::from_le_bytes(effects.return_values[0][0].as_slice().try_into().unwrap());
+        assert_eq!(returned_amount, 75);
+        assert!(effects.mutated.contains(&coin_id));
+        assert_eq!(get_coin_balance(&effects.mutated_object_bytes[&coin_id]), 0);
+    }
+
+    /// Edge Case 8: Return-value uniqueness / object id tracking
+    #[test]
+    fn test_created_object_id_uniqueness() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000face",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 200);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
+        executor.add_input(InputValue::Pure(20u64.to_le_bytes().to_vec()));
+        executor.add_input(InputValue::Pure(30u64.to_le_bytes().to_vec()));
+
+        let commands = vec![Command::SplitCoins {
+            coin: Argument::Input(0),
+            amounts: vec![Argument::Input(1), Argument::Input(2), Argument::Input(3)],
+        }];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(effects.success);
+        assert_eq!(effects.created.len(), 3);
+
+        let unique_created: HashSet<_> = effects.created.iter().copied().collect();
+        assert_eq!(unique_created.len(), effects.created.len());
+    }
+
+    /// Edge Case 9: Object version tracking semantics (compatibility)
     #[test]
     fn test_version_tracking() {
-        println!("EDGE CASE 8: Object version tracking");
-        println!("  - Versions not incremented on local mutations");
-        println!("  - May differ from on-chain version semantics");
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
+        executor.set_track_versions(true);
+        executor.set_lamport_timestamp(100);
+
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x0000000000000000000000000000000000000000000000000000000000001234",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 60);
+
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: Some(well_known::types::sui_coin()),
+            version: Some(42),
+        }));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
+
+        let commands = vec![Command::SplitCoins {
+            coin: Argument::Input(0),
+            amounts: vec![Argument::Input(1)],
+        }];
+
+        let effects = executor.execute(commands).unwrap();
+        assert!(effects.success);
+        assert_eq!(effects.created.len(), 1);
+        assert!(effects.mutated.contains(&coin_id));
+        assert_eq!(effects.lamport_timestamp, Some(100));
+
+        let versions = effects
+            .object_versions
+            .as_ref()
+            .expect("version tracking should populate object_versions");
+        assert_eq!(
+            versions.len(),
+            2,
+            "source and created objects should both be tracked"
+        );
+
+        let source_version = versions
+            .get(&coin_id)
+            .expect("source coin should have version tracking entry");
+        assert_eq!(source_version.input_version, Some(42));
+        assert_eq!(source_version.output_version, 100);
+        assert_eq!(source_version.change_type, VersionChangeType::Mutated);
+        assert_ne!(source_version.output_digest, [0u8; 32]);
+
+        let created_id = effects.created[0];
+        let created_version = versions
+            .get(&created_id)
+            .expect("created coin should have version tracking entry");
+        assert_eq!(created_version.input_version, None);
+        assert_eq!(created_version.output_version, 100);
+        assert_eq!(created_version.change_type, VersionChangeType::Created);
+        assert_ne!(created_version.output_digest, [0u8; 32]);
     }
 
-    /// Edge Case 9: Abort code extraction
+    /// Edge Case 10: Abort code extraction fallback note
     #[test]
-    fn test_abort_code_extraction() {
-        println!("EDGE CASE 9: Abort code extraction");
-        println!("  - Uses string parsing, may miss some formats");
-    }
+    fn test_abort_code_extraction_fallback() {
+        let resolver = framework_resolver();
+        let mut harness = VMHarness::new(&resolver, false).unwrap();
+        let mut executor = PTBExecutor::new(&mut harness);
 
-    /// Summary of all edge cases
-    #[test]
-    fn test_edge_cases_summary() {
-        println!("\n=== PTB EDGE CASES SUMMARY ===\n");
+        let coin_id = AccountAddress::from_hex_literal(
+            "0x000000000000000000000000000000000000000000000000000000000000b4d5",
+        )
+        .unwrap();
+        let coin = create_mock_coin(coin_id, 5);
 
-        println!("HIGH SEVERITY:");
-        println!("  1. SplitCoins Result args mutation tracking");
-        println!("  2. MergeCoins Result destination tracking");
-        println!("  3. MergeCoins Result sources deletion tracking");
-        println!("  7. Input sync after MoveCall mutation");
+        executor.add_input(InputValue::Object(ObjectInput::Owned {
+            id: coin_id,
+            bytes: coin,
+            type_tag: None,
+            version: None,
+        }));
+        executor.add_input(InputValue::Pure(10u64.to_le_bytes().to_vec()));
 
-        println!("\nMEDIUM SEVERITY:");
-        println!("  4. NestedResult bounds checking");
-        println!("  5. Unknown coin type defaults to SUI");
-        println!("  6. Object ID inference from first 32 bytes");
-        println!("  8. Version not tracked on mutations");
+        let commands = vec![Command::SplitCoins {
+            coin: Argument::Input(0),
+            amounts: vec![Argument::Input(1)],
+        }];
 
-        println!("\nLOW SEVERITY:");
-        println!("  9. Abort code extraction is string-based");
+        let effects = executor.execute(commands).unwrap();
+        assert!(
+            !effects.success,
+            "Insufficient balance should fail and populate context"
+        );
+        assert_eq!(effects.failed_command_index, Some(0));
+        assert!(
+            effects.error_context.is_some(),
+            "Failure should include error context"
+        );
+
+        let err = effects.error.as_ref().unwrap();
+        assert!(err.contains("insufficient balance"));
     }
 }
 
@@ -283,13 +756,10 @@ mod fix_verification {
     /// Summary of implemented fixes
     #[test]
     fn test_fix_summary() {
-        println!("\n=== PTB FIX VERIFICATION SUMMARY ===\n");
-
-        println!("FIXES IMPLEMENTED:");
-        println!("  1. SplitCoins: Updates Result/NestedResult argument balances");
-        println!("  2. MergeCoins: Updates Result/NestedResult destination balances");
-        println!("  3. MergeCoins: Zeros Result/NestedResult source bytes");
-        println!("  4. update_arg_bytes: Handles all argument types uniformly");
+        super::edge_cases::assert_splitcoins_result_mutation_tracking();
+        super::edge_cases::assert_mergecoins_result_destination_tracking();
+        super::edge_cases::assert_mergecoins_source_deletion_tracking();
+        super::edge_cases::assert_input_sync_after_movecall();
     }
 }
 
@@ -680,18 +1150,11 @@ mod visibility_validation {
     /// Summary of visibility validation
     #[test]
     fn test_visibility_summary() {
-        println!("\n=== VISIBILITY VALIDATION SUMMARY ===\n");
-
-        println!("FUNCTION VISIBILITY RULES:");
-        println!("  - public: Always callable from PTBs");
-        println!("  - entry: Callable from PTBs (designed for this purpose)");
-        println!("  - friend: NOT callable from PTBs (only from friend modules)");
-        println!("  - private: NOT callable from PTBs (only from same module)");
-
-        println!("\nIMPLEMENTATION:");
-        println!("  - check_function_callable() added to LocalModuleResolver");
-        println!("  - Called at start of execute_move_call() in PTB executor");
-        println!("  - Provides clear error message before VM execution");
+        test_public_function_callable();
+        test_entry_function_callable();
+        test_nonexistent_function_error();
+        test_nonexistent_module_error();
+        test_movecall_public_function_succeeds();
     }
 }
 
@@ -841,20 +1304,11 @@ mod type_arg_validation {
     /// Summary of type argument validation
     #[test]
     fn test_type_arg_validation_summary() {
-        println!("\n=== TYPE ARGUMENT VALIDATION SUMMARY ===\n");
-
-        println!("VALIDATION CHECKS:");
-        println!("  - Type argument count matches function's type parameter count");
-        println!("  - Each type argument satisfies required ability constraints");
-        println!("    - Primitives: have copy, drop, store (NOT key)");
-        println!("    - Vector: inherits abilities from element type (NOT key)");
-        println!("    - Structs: looked up from bytecode to get declared abilities");
-
-        println!("\nIMPLEMENTATION:");
-        println!("  - validate_type_args() added to LocalModuleResolver");
-        println!("  - check_type_satisfies_constraints() validates abilities");
-        println!("  - Called before execute_function in PTB executor");
-        println!("  - Provides clear error messages for constraint violations");
+        test_correct_type_arg_count();
+        test_wrong_type_arg_count();
+        test_primitive_type_args();
+        test_vector_type_args();
+        test_struct_type_args_with_abilities();
     }
 }
 
@@ -950,18 +1404,10 @@ mod return_type_validation {
     /// Summary of return type validation
     #[test]
     fn test_return_type_validation_summary() {
-        println!("\n=== RETURN TYPE REFERENCE VALIDATION SUMMARY ===\n");
-
-        println!("VALIDATION RULES:");
-        println!("  - Public non-entry functions CANNOT return references");
-        println!("  - References cannot escape the transaction boundary");
-        println!("  - Entry functions are EXEMPT (special runtime handling)");
-
-        println!("\nIMPLEMENTATION:");
-        println!("  - check_no_reference_returns() added to LocalModuleResolver");
-        println!("  - contains_reference() checks for nested references");
-        println!("  - Called in PTB executor before function execution");
-        println!("  - Matches Sui client: execution.rs:check_non_entry_signature");
+        test_public_function_non_reference_return_ok();
+        test_public_function_object_return_ok();
+        test_entry_function_exempt();
+        test_missing_function_no_crash();
     }
 }
 
@@ -1236,19 +1682,13 @@ mod mutability_enforcement {
     /// Summary of mutability enforcement
     #[test]
     fn test_mutability_enforcement_summary() {
-        println!("\n=== OBJECT MUTABILITY ENFORCEMENT SUMMARY ===\n");
-
-        println!("ENFORCEMENT RULES:");
-        println!("  - Objects passed by immutable reference (&T) cannot be mutated");
-        println!("  - Objects passed by mutable reference (&mut T) can be mutated");
-        println!("  - Objects passed by value (T) can be consumed/modified");
-        println!("  - Enforcement is ENABLED by default for Sui parity");
-
-        println!("\nIMPLEMENTATION:");
-        println!("  - ImmRef objects tracked in immutable_objects set");
-        println!("  - check_mutation_allowed() called before applying mutable ref outputs");
-        println!("  - enforce_immutability defaults to true");
-        println!("  - set_enforce_immutability(false) available to disable");
+        test_immref_tracked_as_immutable();
+        test_shared_immutable_tracked_as_immutable();
+        test_shared_mutable_inputs_recorded_as_mutated();
+        test_shared_immutable_mutation_fails();
+        test_mutref_not_immutable();
+        test_owned_not_immutable();
+        test_enforcement_enabled_by_default();
     }
 }
 
@@ -1380,24 +1820,9 @@ mod shared_object_validation {
     /// Summary of shared object validation
     #[test]
     fn test_shared_object_validation_summary() {
-        println!("\n=== SHARED OBJECT VALIDATION SUMMARY ===\n");
-
-        println!("SUI'S SHARED OBJECT RULES:");
-        println!("  - Shared objects can be accessed by anyone");
-        println!("  - When taken by value, they must be:");
-        println!("    1. Re-shared (via transfer::share_object)");
-        println!("    2. OR Deleted");
-        println!("  - They CANNOT be:");
-        println!("    - Frozen (made immutable)");
-        println!("    - Transferred to an address");
-        println!("    - Wrapped inside another object");
-
-        println!("\nIMPLEMENTATION:");
-        println!("  - Shared inputs tracked in shared_objects_by_value set");
-        println!("  - validate_shared_objects() called after all commands");
-        println!("  - Checks: deleted OR not wrapped -> valid");
-        println!("  - Wrapped shared objects cause validation failure");
-        println!("  - enforce_shared_object_rules defaults to true");
-        println!("  - set_enforce_shared_object_rules(false) to disable");
+        test_shared_object_tracked();
+        test_owned_not_tracked_as_shared();
+        test_validation_passes_with_no_shared();
+        test_shared_enforcement_can_be_disabled();
     }
 }

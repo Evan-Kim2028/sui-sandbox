@@ -50,8 +50,8 @@ Input kinds:
 
 Accepted variants:
 
-- Inputs may use `{ "kind": "pure", "value": ..., "type": "u64" }` **or** `{ "Pure": {...} }`.
-- Commands may use `{ "kind": "move_call", ... }` **or** `{ "MoveCall": {...} }`.
+- Inputs use tagless object keys (for example `{"u64": 1}` or `{ "imm_or_owned_object": "0x..."}`).
+- Arguments use tagless references (`{ "input": 0 }`, `{ "result": 0 }`, `{ "nested_result": [0, 1] }`, `{ "gas_coin": true }`) or inline pure values.
 
 ---
 

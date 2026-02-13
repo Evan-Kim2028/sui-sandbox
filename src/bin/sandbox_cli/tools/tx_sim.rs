@@ -13,8 +13,9 @@ use move_core_types::identifier::Identifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use sui_package_extractor::bytecode::read_local_compiled_module_bytes;
 use sui_transport::grpc::generated::sui_rpc_v2 as proto;
 use sui_transport::grpc::GrpcClient;
 
@@ -248,17 +249,6 @@ fn static_created_types_for_call(
     }
 
     Ok(out)
-}
-
-fn load_bytecode_modules(bytecode_package_dir: &Path) -> Result<HashMap<String, CompiledModule>> {
-    let modules = sui_package_extractor::read_local_compiled_modules(bytecode_package_dir)?;
-    Ok(modules
-        .into_iter()
-        .map(|m| {
-            let name = m.self_id().name().to_string();
-            (name, m)
-        })
-        .collect())
 }
 
 /// Build a gRPC proto Input from a JSON argument spec
@@ -601,7 +591,11 @@ pub async fn run(cmd: &TxSimCmd) -> Result<()> {
     // Static analysis of created types from bytecode
     let mut static_created = BTreeSet::<String>::new();
     if let Some(dir) = args.bytecode_package_dir.as_ref() {
-        let modules = load_bytecode_modules(dir)?;
+        let mut modules = HashMap::new();
+        for (name, bytes) in read_local_compiled_module_bytes(dir)? {
+            let module = CompiledModule::deserialize_with_defaults(&bytes)?;
+            modules.insert(name, module);
+        }
         for call in &spec.calls {
             static_created.extend(static_created_types_for_call(&modules, call)?);
         }
