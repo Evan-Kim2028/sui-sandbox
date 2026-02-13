@@ -33,7 +33,8 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `analyze` | Package and replay-state introspection |
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
-| `tools` | Utility commands (poll/stream/tx-sim) |
+| `test` | Test Move functions (fuzz) |
+| `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs) |
 | `init` | Scaffold task-oriented workflow templates |
 | `run-flow` | Execute deterministic YAML workflow files |
 | `snapshot` | Save/list/load/delete named session snapshots |
@@ -72,6 +73,27 @@ sui-sandbox tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-fil
 sui-sandbox --json tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-file obj.json --bytecode-dir ./pkg
 ```
 
+**`tools stream-transactions` flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--endpoint <URL>` | gRPC endpoint URL | env var or public endpoint |
+| `--duration <SECS>` | How long to run | `60` |
+| `--output <FILE>` | Output file path (JSONL) | `transactions_stream.jsonl` |
+| `--ptb-only` | Only save PTB transactions (skip system txs) | `false` |
+| `-v, --verbose` | Print detailed progress | `false` |
+
+**`tools tx-sim` flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--grpc-url <URL>` | gRPC endpoint URL | `https://fullnode.mainnet.sui.io:443` |
+| `--sender <ADDR>` | Transaction sender address | required |
+| `--mode <MODE>` | `dev-inspect`, `dry-run`, or `build-only` | `dry-run` |
+| `--gas-budget <N>` | Gas budget (required for dry-run) | `10000000` |
+| `--ptb-spec <PATH>` | JSON PTB spec path (use `-` for stdin) | required |
+| `--bytecode-package-dir <DIR>` | Local bytecode dir for static created-object-type inference | - |
+
 ## Developer CLI (`sui-sandbox`)
 
 The `sui-sandbox` binary is a developer-focused CLI for local Move/Sui development. It provides an ergonomic interface for publishing packages, executing functions, fetching mainnet state, and replaying transactions—all with persistent session state.
@@ -99,7 +121,7 @@ cargo build --release --bin sui-sandbox
 |----------|-------------|
 | `SUI_GRPC_API_KEY` | API key for authenticated gRPC endpoints (used with `--rpc-url`) |
 | `SUI_SANDBOX_HOME` | Override sandbox home for cache/logs (default: `~/.sui-sandbox`) |
-| `SUI_GRAPHQL_ENDPOINT` | Default GraphQL endpoint for `fetch`/`replay` (overridden by `--graphql-url`) |
+| `SUI_GRAPHQL_ENDPOINT` | Override GraphQL endpoint for `fetch`/`replay` (defaults from `--rpc-url` network inference) |
 | `SUI_DEBUG_LINKAGE` | Set to `1` to log package linkage/version resolution during replay and fetch |
 | `SUI_DEBUG_MUTATIONS` | Set to `1` to log mutation tracking details during replay |
 | `SUI_WALRUS_ENABLED` | Set to `true` to enable Walrus checkpoint hydration (input/output objects) |
@@ -266,9 +288,15 @@ sui-sandbox fetch package 0x2 --verbose
 | `checkpoint <SEQ>` | Fetch a single Walrus checkpoint and display its summary |
 | `latest-checkpoint` | Show the latest checkpoint sequence number on Walrus |
 
+| Flag | Description |
+|------|-------------|
+| `--with-deps` | Recursively fetch transitive dependency packages |
+| `--bytecodes` | Include base64-encoded module bytecodes in JSON output |
+
 Behavior notes:
 - `fetch package <ID>` fails if any module in the package GraphQL payload is missing `bytecode_base64`, so you do not get partial package fetches.
 - `fetch package <ID> --bytecodes` includes base64-encoded module bytecodes in JSON output (useful for programmatic consumers).
+- `fetch package <ID> --with-deps` resolves and fetches all transitive dependency packages (framework packages 0x1/0x2/0x3 are skipped).
 
 **Walrus checkpoint queries:**
 
@@ -650,6 +678,44 @@ sui-sandbox bridge info --verbose
 - This is a helper, not a replacement for `sui client`
 - Use `bridge info --verbose` to see protocol version and common abort codes
 
+#### `test` - Move Function Testing
+
+Test Move functions with automated input generation.
+
+```bash
+# Fuzz a single function with 500 random inputs
+sui-sandbox test fuzz 0x100::math::add -n 500
+
+# Fuzz all callable functions in a module
+sui-sandbox test fuzz 0x100::math --all-functions -n 100
+
+# Reproducible run with fixed seed
+sui-sandbox test fuzz 0x100::math::add -n 1000 --seed 42
+
+# Dry-run: analyze function signature without executing
+sui-sandbox test fuzz 0x100::math::add --dry-run
+
+# Stop on first error
+sui-sandbox test fuzz 0x100::math::add -n 1000 --fail-fast
+```
+
+**`test fuzz` flags:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-n, --iterations <N>` | Number of fuzz iterations | `100` |
+| `--seed <N>` | Random seed for reproducibility | random |
+| `--sender <ADDR>` | Sender address | `0x0` |
+| `--gas-budget <N>` | Gas budget per execution | `50000000000` |
+| `--type-arg <TYPE>` | Type arguments (repeatable) | - |
+| `--fail-fast` | Stop on first abort/error | `false` |
+| `--dry-run` | Analyze signature only, don't execute | `false` |
+| `--all-functions` | Fuzz all callable functions in the module | `false` |
+| `--max-vector-len <N>` | Maximum vector length for generated inputs | `32` |
+
+Phase 1 supports pure-argument-only functions (bool, integers, address, vectors, strings).
+Functions requiring object inputs are analyzed and reported as not yet fuzzable.
+
 ---
 
 ### Session Persistence
@@ -663,8 +729,8 @@ The `sui-sandbox` maintains session state across commands:
 State is stored in `~/.sui-sandbox/state.json` by default for all commands unless
 overridden with `--state-file`.
 
-If you have an older binary state file (`state.bin`), it will be read and
-automatically migrated to JSON on the next successful run.
+Legacy `state.bin` files are not auto-migrated in current releases.
+Export to JSON from your legacy toolchain if you need to preserve old state.
 
 ### Workflow Example
 

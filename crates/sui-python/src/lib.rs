@@ -339,6 +339,7 @@ fn json_to_bcs_inner(
 // ---------------------------------------------------------------------------
 
 use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
+use sui_package_extractor::utils::is_framework_address;
 
 /// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
 fn fetch_package_modules(
@@ -349,17 +350,6 @@ fn fetch_package_modules(
         .fetch_package(package_id)
         .with_context(|| format!("fetch package {}", package_id))?;
     sui_transport::decode_graphql_modules(package_id, &pkg.modules)
-}
-
-/// Framework package addresses that are bundled into LocalModuleResolver::with_sui_framework().
-fn is_framework_addr(addr: &AccountAddress) -> bool {
-    let hex = addr.to_hex_literal();
-    hex == "0x0000000000000000000000000000000000000000000000000000000000000001"
-        || hex == "0x0000000000000000000000000000000000000000000000000000000000000002"
-        || hex == "0x0000000000000000000000000000000000000000000000000000000000000003"
-        || hex == "0x1"
-        || hex == "0x2"
-        || hex == "0x3"
 }
 
 fn call_view_function_inner(
@@ -390,7 +380,7 @@ fn call_view_function_inner(
     for (pkg_id_str, module_bytecodes) in &package_bytecodes {
         let addr = AccountAddress::from_hex_literal(pkg_id_str)
             .with_context(|| format!("invalid package address: {}", pkg_id_str))?;
-        if is_framework_addr(&addr) {
+        if is_framework_address(&addr) {
             continue;
         }
         let modules: Vec<(String, Vec<u8>)> = module_bytecodes
@@ -429,7 +419,7 @@ fn call_view_function_inner(
         for ta_str in &type_args {
             for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(ta_str) {
                 if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
-                    if !loaded_packages.contains(&addr) && !is_framework_addr(&addr) {
+                    if !loaded_packages.contains(&addr) && !is_framework_address(&addr) {
                         to_fetch.push_back(addr);
                     }
                 }
@@ -438,7 +428,7 @@ fn call_view_function_inner(
         for (_, _, type_tag_str, _, _) in &object_inputs {
             for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_tag_str) {
                 if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
-                    if !loaded_packages.contains(&addr) && !is_framework_addr(&addr) {
+                    if !loaded_packages.contains(&addr) && !is_framework_address(&addr) {
                         to_fetch.push_back(addr);
                     }
                 }
@@ -453,7 +443,7 @@ fn call_view_function_inner(
                 .map(|(i, b)| (format!("m{}", i), b.clone()))
                 .collect();
             for dep_addr in extract_dependency_addrs(&modules) {
-                if !loaded_packages.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
+                if !loaded_packages.contains(&dep_addr) && !is_framework_address(&dep_addr) {
                     to_fetch.push_back(dep_addr);
                 }
             }
@@ -464,7 +454,7 @@ fn call_view_function_inner(
         let mut visited = loaded_packages.clone();
         let mut rounds = 0;
         while let Some(addr) = to_fetch.pop_front() {
-            if visited.contains(&addr) || is_framework_addr(&addr) {
+            if visited.contains(&addr) || is_framework_address(&addr) {
                 continue;
             }
             rounds += 1;
@@ -487,7 +477,7 @@ fn call_view_function_inner(
                     loaded_packages.insert(addr);
 
                     for dep_addr in dep_addrs {
-                        if !visited.contains(&dep_addr) && !is_framework_addr(&dep_addr) {
+                        if !visited.contains(&dep_addr) && !is_framework_address(&dep_addr) {
                             to_fetch.push_back(dep_addr);
                         }
                     }
