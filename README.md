@@ -283,20 +283,20 @@ cp = sui_sandbox.get_latest_checkpoint()
 data = sui_sandbox.get_checkpoint(cp)
 
 # --- Transaction replay (no API key needed via Walrus) ---
-result = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926)
+result = sui_sandbox.replay("At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2", checkpoint=239615926)
 print(result["local_success"])
 
 # Analyze transaction state without executing
-analysis = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926, analyze_only=True)
+analysis = sui_sandbox.replay("At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2", checkpoint=239615926, analyze_only=True)
 print(analysis["commands"], analysis["objects"])
 
 # Compare local vs on-chain effects
-result = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926, compare=True)
+result = sui_sandbox.replay("At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2", checkpoint=239615926, compare=True)
 print(result["comparison"])
 
 # Import + local replay cache path
 sui_sandbox.import_state(state="exports/replay_state.json", cache_dir=".sui-cache")
-result = sui_sandbox.replay(digest="At8M8D7Q...", source="local", cache_dir=".sui-cache")
+result = sui_sandbox.replay(digest="At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2", source="local", cache_dir=".sui-cache")
 
 # --- Move view function execution ---
 result = sui_sandbox.call_view_function(
