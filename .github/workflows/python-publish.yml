@@ -31,15 +31,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # setup-python only affects native (macOS) builds.
+      # Linux builds run inside manylinux Docker containers where
+      # the interpreter is specified via -i in the maturin args.
       - uses: actions/setup-python@v5
+        if: startsWith(matrix.os, 'macos')
         with:
-          python-version: '3.13'
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path crates/sui-python/Cargo.toml
+          args: >-
+            --release --out dist
+            --manifest-path crates/sui-python/Cargo.toml
+            -i python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: auto
 
       - name: Upload wheels

@@ -29,3 +29,8 @@ Repository = "https://github.com/Evan-Kim2028/sui-sandbox"
 [tool.maturin]
 manifest-path = "Cargo.toml"
 module-name = "sui_sandbox"
+# Include framework bytecode blobs in the sdist so source builds work.
+# Paths are relative to the workspace root (maturin resolves via Cargo.toml workspace).
+include = [
+    { path = "framework_bytecode/*", format = "sdist" },
+]
