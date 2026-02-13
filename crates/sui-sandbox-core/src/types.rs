@@ -10,7 +10,7 @@
 //! - [`parse_type_string`] - Parse a type string into a TypeTag (returns `Option`)
 //! - [`parse_type_tag`] - Parse a type string into a TypeTag (returns `Result`, with caching)
 //! - [`parse_type_args`] - Parse comma-separated type arguments
-//! - [`normalize_address`] - Normalize an address to canonical form (0x-prefixed, lowercase)
+//! - [`normalize_address_short`] - Normalize an address to short form with validation
 //!
 //! ## Caching
 //!
@@ -604,33 +604,6 @@ pub fn parse_type_args_result(args_str: &str) -> Result<Vec<TypeTag>> {
 /// Normalize an address string to canonical form.
 ///
 /// Canonical form is:
-/// - Lowercase hex
-/// - 0x-prefixed
-/// - Format depends on `move-core-types` implementation (may be short or long form)
-///
-/// NOTE: For the full 64-character normalized form, use
-/// [`sui_resolver::normalize_address`] instead.
-///
-/// # Examples
-/// ```
-/// use sui_sandbox_core::types::normalize_address;
-///
-/// let normalized = normalize_address("0x2").unwrap();
-/// assert!(normalized.starts_with("0x"));
-///
-/// // Invalid addresses return None
-/// assert!(normalize_address("not_an_address").is_none());
-/// ```
-pub fn normalize_address(addr: &str) -> Option<String> {
-    // Use sui_resolver's checked variant for validation
-    sui_resolver::normalize_address_checked(addr).map(|_| {
-        // But return move-core-types short form for backward compatibility
-        let trimmed = addr.trim();
-        let addr = AccountAddress::from_hex_literal(trimmed).ok().unwrap();
-        addr.to_hex_literal()
-    })
-}
-
 /// Normalize an address to short form (no leading zeros except for special addresses).
 ///
 /// Special addresses (0x0, 0x1, 0x2, 0x3) keep their short form.
@@ -639,9 +612,7 @@ pub fn normalize_address(addr: &str) -> Option<String> {
 /// NOTE: For consistent short-form normalization, prefer
 /// [`sui_resolver::normalize_address_short`] which doesn't validate.
 pub fn normalize_address_short(addr: &str) -> Option<String> {
-    // Use sui_resolver's checked variant for validation
-    sui_resolver::normalize_address_checked(addr)?;
-    Some(sui_resolver::normalize_address_short(addr))
+    sui_resolver::normalize_address_checked(addr).map(|_| sui_resolver::normalize_address_short(addr))
 }
 
 // =============================================================================
@@ -970,15 +941,6 @@ mod tests {
             panic!("Expected struct");
         }
         assert_eq!(args[1], TypeTag::U64);
-    }
-
-    #[test]
-    fn test_normalize_address() {
-        let normalized = normalize_address("0x2").unwrap();
-        assert!(normalized.starts_with("0x"));
-        // Address format depends on move-core-types implementation
-        // Could be short "0x2" or long "0x000...002"
-        assert!(normalized.len() >= 3); // At minimum "0x2"
     }
 
     #[test]

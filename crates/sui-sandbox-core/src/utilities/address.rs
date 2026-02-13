@@ -11,24 +11,8 @@ pub use sui_resolver::{
 
 /// Check if a package ID is a framework package (0x1, 0x2, 0x3).
 ///
-/// This is an alias for [`is_framework_address`] for backward compatibility.
-///
-/// Framework packages are bundled with the VM and don't need to be fetched
-/// from the network. This function handles both short and full address formats.
-///
-/// # Examples
-///
-/// ```
-/// use sui_sandbox_core::utilities::is_framework_package;
-///
-/// assert!(is_framework_package("0x1"));
-/// assert!(is_framework_package("0x2"));
-/// assert!(is_framework_package("0x0000000000000000000000000000000000000000000000000000000000000002"));
-/// assert!(!is_framework_package("0x1234"));
-/// ```
-pub fn is_framework_package(pkg_id: &str) -> bool {
-    is_framework_address(pkg_id)
-}
+/// Alias for [`is_framework_address`] for semantic clarity when working with packages.
+pub use sui_resolver::is_framework_address as is_framework_package;
 
 #[cfg(test)]
 mod tests {

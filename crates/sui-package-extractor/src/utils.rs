@@ -29,8 +29,6 @@ pub fn parse_address(addr: &str) -> Result<AccountAddress> {
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
         .unwrap_or(trimmed);
-
-    // Validate: not empty, only hex chars
     if hex_str.is_empty() {
         return Err(anyhow!("empty address"));
     }
@@ -58,10 +56,7 @@ pub fn format_address_full(addr: &AccountAddress) -> String {
 }
 
 /// Check if an address is a framework address (0x1, 0x2, 0x3).
-/// Delegates to sui-resolver for canonical implementation.
-pub fn is_framework_address(addr: &AccountAddress) -> bool {
-    sui_resolver::is_framework_account_address(addr)
-}
+pub use sui_resolver::is_framework_account_address as is_framework_address;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BytesInfo {
