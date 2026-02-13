@@ -119,35 +119,35 @@ See `.env.example` for full documentation.
 
 The `sui_sandbox` Python module provides native bindings to the Rust sandbox.
 
-### Building the Wheel
+Full guide:
+
+- [guides/PYTHON_BINDINGS.md](guides/PYTHON_BINDINGS.md)
+
+### Quick Build Commands
 
 ```bash
 cd /path/to/sui-sandbox
+python -m pip install --upgrade pip maturin
+maturin build --manifest-path crates/sui-python/Cargo.toml --release -o dist
 
-# Build release wheel
-maturin build --release
+# Install the built wheel
+python -m pip install --force-reinstall dist/sui_sandbox-*.whl
 
-# Install the wheel
-pip install target/wheels/sui_sandbox-*.whl
-
-# Or for development (editable install)
-maturin develop --release
+# Or dev install into active environment
+maturin develop --manifest-path crates/sui-python/Cargo.toml --release
 ```
 
 ### Version Management
 
-Version is defined in `crates/pyo3-bindings/Cargo.toml`:
+Version must stay aligned in:
 
-```toml
-[package]
-name = "sui_sandbox"
-version = "0.1.0"  # <- Update this for new releases
-```
+- `crates/sui-python/Cargo.toml`
+- `crates/sui-python/pyproject.toml`
 
 ### Testing the Bindings
 
 ```bash
-python -c "import sui_sandbox; print(f'Version: {sui_sandbox.__version__}')"
+python -c "import sui_sandbox; print('Version:', sui_sandbox.__version__)"
 ```
 
 ## Documentation Standards

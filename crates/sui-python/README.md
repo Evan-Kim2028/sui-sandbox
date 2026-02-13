@@ -20,6 +20,9 @@ pip install maturin
 maturin develop --release
 ```
 
+For maintainers/contributors, see the full build and validation workflow:
+[`docs/guides/PYTHON_BINDINGS.md`](../../docs/guides/PYTHON_BINDINGS.md).
+
 ## Quick Start
 
 ```python

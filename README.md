@@ -335,6 +335,7 @@ See [crates/sui-python/README.md](crates/sui-python/README.md) for the full API 
 | **Look up a CLI command** | [CLI Reference](docs/reference/CLI_REFERENCE.md) |
 | **Understand replay caveats** | [Limitations](docs/reference/LIMITATIONS.md) |
 | **Use Python bindings** | [Python README](crates/sui-python/README.md) |
+| **Build Python bindings locally** | [Python Bindings Build Guide](docs/guides/PYTHON_BINDINGS.md) |
 | **Understand the system internals** | [Architecture](docs/ARCHITECTURE.md) |
 
 ## Testing

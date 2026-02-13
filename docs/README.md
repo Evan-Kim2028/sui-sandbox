@@ -31,6 +31,8 @@ Use this as the docs entrypoint. Pick the depth you need.
 
 - Python package API reference:
   - [../crates/sui-python/README.md](../crates/sui-python/README.md)
+- Local build/test/release workflow:
+  - [guides/PYTHON_BINDINGS.md](guides/PYTHON_BINDINGS.md)
 
 ## Level 3: Command and Behavior Reference
 
