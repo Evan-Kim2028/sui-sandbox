@@ -665,87 +665,19 @@ impl ReplayCmd {
                     let alias_map_for_resolver = alias_map;
                     let resolver_checkpoint = replay_state.checkpoint;
                     let resolver_strict_checkpoint = strict_checkpoint;
-                    let key_type_resolver = move |parent: AccountAddress,
-                                                  key_bytes: &[u8]|
-                          -> Option<TypeTag> {
-                        let parent_hex = parent.to_hex_literal();
-                        let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-                        let cache_key = format!("{}:{}", parent_hex, key_b64);
-                        if let Ok(cache) = resolver_cache.lock() {
-                            if let Some(tag) = cache.get(&cache_key) {
-                                return Some(tag.clone());
-                            }
-                        }
-                        let gql = provider_clone_for_resolver.graphql();
-                        let enum_limit = std::env::var("SUI_DF_ENUM_LIMIT")
-                            .ok()
-                            .and_then(|v| v.parse::<usize>().ok())
-                            .unwrap_or(1000);
-                        let field = match resolver_checkpoint {
-                            Some(cp) => gql
-                                .find_dynamic_field_by_bcs(
-                                    &parent_hex,
-                                    key_bytes,
-                                    Some(cp),
-                                    enum_limit,
-                                )
-                                .or_else(|err| {
-                                    if resolver_strict_checkpoint {
-                                        Err(err)
-                                    } else {
-                                        gql.find_dynamic_field_by_bcs(
-                                            &parent_hex,
-                                            key_bytes,
-                                            None,
-                                            enum_limit,
-                                        )
-                                    }
-                                }),
-                            None => gql.find_dynamic_field_by_bcs(
-                                &parent_hex,
+                    let key_type_resolver =
+                        move |parent: AccountAddress, key_bytes: &[u8]| -> Option<TypeTag> {
+                            resolve_key_type_via_graphql(
+                                provider_clone_for_resolver.graphql(),
+                                parent,
                                 key_bytes,
-                                None,
-                                enum_limit,
-                            ),
+                                resolver_checkpoint,
+                                resolver_strict_checkpoint,
+                                &alias_map_for_resolver,
+                                &child_id_aliases_for_resolver,
+                                &resolver_cache,
+                            )
                         };
-                        if let Ok(Some(df)) = field {
-                            if let Ok(tag) = parse_type_tag(&df.name_type) {
-                                if let Some(object_id) = df.object_id.as_deref() {
-                                    let mut candidate_tags = vec![tag.clone()];
-                                    let rewritten =
-                                        rewrite_type_tag(tag.clone(), &alias_map_for_resolver);
-                                    if rewritten != tag {
-                                        candidate_tags.push(rewritten);
-                                    }
-                                    for candidate in candidate_tags {
-                                        if let Ok(type_bcs) = bcs::to_bytes(&candidate) {
-                                            if let Some(computed_hex) = compute_dynamic_field_id(
-                                                &parent_hex,
-                                                key_bytes,
-                                                &type_bcs,
-                                            ) {
-                                                if let (Ok(computed_id), Ok(actual_id)) = (
-                                                    AccountAddress::from_hex_literal(&computed_hex),
-                                                    AccountAddress::from_hex_literal(object_id),
-                                                ) {
-                                                    if computed_id != actual_id {
-                                                        let mut map =
-                                                            child_id_aliases_for_resolver.lock();
-                                                        map.insert(computed_id, actual_id);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if let Ok(mut cache) = resolver_cache.lock() {
-                                    cache.insert(cache_key.clone(), tag.clone());
-                                }
-                                return Some(tag);
-                            }
-                        }
-                        None
-                    };
                     harness.set_key_type_resolver(Box::new(key_type_resolver));
                 }
 
@@ -819,6 +751,17 @@ impl ReplayCmd {
             }
         }
 
+        let execution_path = build_execution_path(
+            self,
+            allow_fallback,
+            enable_dynamic_fields,
+            dependency_fetch_mode,
+            fetched_deps,
+            fallback_used,
+            fallback_reasons,
+            synthetic_logs.len(),
+        );
+
         match replay_result {
             Ok(execution) => {
                 let result = execution.result;
@@ -863,29 +806,7 @@ impl ReplayCmd {
                     digest: self.digest_display().to_string(),
                     local_success: result.local_success,
                     local_error: result.local_error,
-                    execution_path: ReplayExecutionPath {
-                        requested_source: self
-                            .hydration
-                            .source
-                            .to_possible_value()
-                            .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
-                        effective_source: self
-                            .hydration
-                            .source
-                            .to_possible_value()
-                            .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string()),
-                        vm_only: self.vm_only,
-                        allow_fallback,
-                        auto_system_objects: self.hydration.auto_system_objects,
-                        fallback_used,
-                        fallback_reasons,
-                        dynamic_field_prefetch: enable_dynamic_fields,
-                        prefetch_depth: self.hydration.prefetch_depth,
-                        prefetch_limit: self.hydration.prefetch_limit,
-                        dependency_fetch_mode,
-                        dependency_packages_fetched: fetched_deps,
-                        synthetic_inputs: synthetic_logs.len(),
-                    },
+                    execution_path,
                     comparison,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
@@ -897,29 +818,7 @@ impl ReplayCmd {
                 digest: self.digest_display().to_string(),
                 local_success: false,
                 local_error: Some(e.to_string()),
-                execution_path: ReplayExecutionPath {
-                    requested_source: self
-                        .hydration
-                        .source
-                        .to_possible_value()
-                        .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
-                    effective_source: self
-                        .hydration
-                        .source
-                        .to_possible_value()
-                        .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string()),
-                    vm_only: self.vm_only,
-                    allow_fallback,
-                    auto_system_objects: self.hydration.auto_system_objects,
-                    fallback_used,
-                    fallback_reasons,
-                    dynamic_field_prefetch: enable_dynamic_fields,
-                    prefetch_depth: self.hydration.prefetch_depth,
-                    prefetch_limit: self.hydration.prefetch_limit,
-                    dependency_fetch_mode,
-                    dependency_packages_fetched: fetched_deps,
-                    synthetic_inputs: synthetic_logs.len(),
-                },
+                execution_path,
                 comparison: None,
                 effects: None,
                 effects_full: None,
@@ -1798,73 +1697,19 @@ impl ReplayCmd {
             let child_id_aliases_for_resolver = child_id_aliases.clone();
             let resolver_cache: Arc<Mutex<HashMap<String, TypeTag>>> =
                 Arc::new(Mutex::new(HashMap::new()));
-            let key_type_resolver = move |parent: AccountAddress,
-                                          key_bytes: &[u8]|
-                  -> Option<TypeTag> {
-                let parent_hex = parent.to_hex_literal();
-                let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-                let cache_key = format!("{}:{}", parent_hex, key_b64);
-                if let Ok(cache) = resolver_cache.lock() {
-                    if let Some(tag) = cache.get(&cache_key) {
-                        return Some(tag.clone());
-                    }
-                }
-                let enum_limit = std::env::var("SUI_DF_ENUM_LIMIT")
-                    .ok()
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .unwrap_or(1000);
-                let field = match checkpoint {
-                    Some(cp) => gql_for_resolver
-                        .find_dynamic_field_by_bcs(&parent_hex, key_bytes, Some(cp), enum_limit)
-                        .or_else(|_| {
-                            gql_for_resolver.find_dynamic_field_by_bcs(
-                                &parent_hex,
-                                key_bytes,
-                                None,
-                                enum_limit,
-                            )
-                        }),
-                    None => gql_for_resolver.find_dynamic_field_by_bcs(
-                        &parent_hex,
+            let key_type_resolver =
+                move |parent: AccountAddress, key_bytes: &[u8]| -> Option<TypeTag> {
+                    resolve_key_type_via_graphql(
+                        &gql_for_resolver,
+                        parent,
                         key_bytes,
-                        None,
-                        enum_limit,
-                    ),
+                        checkpoint,
+                        false, // Walrus path always allows fallback to latest
+                        &alias_map_for_resolver,
+                        &child_id_aliases_for_resolver,
+                        &resolver_cache,
+                    )
                 };
-                if let Ok(Some(df)) = field {
-                    if let Ok(tag) = parse_type_tag(&df.name_type) {
-                        if let Some(object_id) = df.object_id.as_deref() {
-                            let mut candidate_tags = vec![tag.clone()];
-                            let rewritten = rewrite_type_tag(tag.clone(), &alias_map_for_resolver);
-                            if rewritten != tag {
-                                candidate_tags.push(rewritten);
-                            }
-                            for candidate in candidate_tags {
-                                if let Ok(type_bcs) = bcs::to_bytes(&candidate) {
-                                    if let Some(computed_hex) =
-                                        compute_dynamic_field_id(&parent_hex, key_bytes, &type_bcs)
-                                    {
-                                        if let (Ok(computed_id), Ok(actual_id)) = (
-                                            AccountAddress::from_hex_literal(&computed_hex),
-                                            AccountAddress::from_hex_literal(object_id),
-                                        ) {
-                                            if computed_id != actual_id {
-                                                let mut map = child_id_aliases_for_resolver.lock();
-                                                map.insert(computed_id, actual_id);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if let Ok(mut cache) = resolver_cache.lock() {
-                            cache.insert(cache_key.clone(), tag.clone());
-                        }
-                        return Some(tag);
-                    }
-                }
-                None
-            };
             harness.set_key_type_resolver(Box::new(key_type_resolver));
         }
 
@@ -2465,6 +2310,41 @@ fn b64_matches_bytes(encoded: &str, expected: &[u8]) -> bool {
     false
 }
 
+fn build_execution_path(
+    cmd: &ReplayCmd,
+    allow_fallback: bool,
+    enable_dynamic_fields: bool,
+    dependency_fetch_mode: String,
+    fetched_deps: usize,
+    fallback_used: bool,
+    fallback_reasons: Vec<String>,
+    synthetic_inputs: usize,
+) -> ReplayExecutionPath {
+    ReplayExecutionPath {
+        requested_source: cmd
+            .hydration
+            .source
+            .to_possible_value()
+            .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
+        effective_source: cmd
+            .hydration
+            .source
+            .to_possible_value()
+            .map_or_else(|| "unknown".to_string(), |v| v.get_name().to_string()),
+        vm_only: cmd.vm_only,
+        allow_fallback,
+        auto_system_objects: cmd.hydration.auto_system_objects,
+        fallback_used,
+        fallback_reasons,
+        dynamic_field_prefetch: enable_dynamic_fields,
+        prefetch_depth: cmd.hydration.prefetch_depth,
+        prefetch_limit: cmd.hydration.prefetch_limit,
+        dependency_fetch_mode,
+        dependency_packages_fetched: fetched_deps,
+        synthetic_inputs,
+    }
+}
+
 fn build_effects_summary(
     effects: &sui_sandbox_core::ptb::TransactionEffects,
 ) -> ReplayEffectsSummary {
@@ -2548,6 +2428,84 @@ struct ChildFetchOptions<'a> {
     self_heal_dynamic_fields: bool,
     synth_modules: Option<Arc<Vec<CompiledModule>>>,
     log_self_heal: bool,
+}
+
+/// Resolve a dynamic field's key type via GraphQL lookup.
+///
+/// Given a parent object and key bytes, queries the GraphQL API to find the matching
+/// dynamic field and returns its key TypeTag. Results are cached to avoid redundant lookups.
+/// Also detects and records child ID aliases when the computed dynamic field object ID
+/// differs from the on-chain actual ID (due to package upgrades changing type hashes).
+fn resolve_key_type_via_graphql(
+    gql: &GraphQLClient,
+    parent: AccountAddress,
+    key_bytes: &[u8],
+    checkpoint: Option<u64>,
+    strict_checkpoint: bool,
+    aliases: &HashMap<AccountAddress, AccountAddress>,
+    child_id_aliases: &parking_lot::Mutex<HashMap<AccountAddress, AccountAddress>>,
+    cache: &Mutex<HashMap<String, TypeTag>>,
+) -> Option<TypeTag> {
+    let parent_hex = parent.to_hex_literal();
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(key_bytes);
+    let cache_key = format!("{}:{}", parent_hex, key_b64);
+    if let Ok(cache_guard) = cache.lock() {
+        if let Some(tag) = cache_guard.get(&cache_key) {
+            return Some(tag.clone());
+        }
+    }
+    let enum_limit = std::env::var("SUI_DF_ENUM_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1000);
+    let field = match checkpoint {
+        Some(cp) => gql
+            .find_dynamic_field_by_bcs(&parent_hex, key_bytes, Some(cp), enum_limit)
+            .or_else(|err| {
+                if strict_checkpoint {
+                    Err(err)
+                } else {
+                    gql.find_dynamic_field_by_bcs(&parent_hex, key_bytes, None, enum_limit)
+                }
+            }),
+        None => gql.find_dynamic_field_by_bcs(&parent_hex, key_bytes, None, enum_limit),
+    };
+    let df = match field {
+        Ok(Some(df)) => df,
+        _ => return None,
+    };
+    let tag = match parse_type_tag(&df.name_type) {
+        Ok(tag) => tag,
+        _ => return None,
+    };
+    // Check if the on-chain object ID differs from the computed one (upgrade aliasing)
+    if let Some(object_id) = df.object_id.as_deref() {
+        let mut candidate_tags = vec![tag.clone()];
+        let rewritten = rewrite_type_tag(tag.clone(), aliases);
+        if rewritten != tag {
+            candidate_tags.push(rewritten);
+        }
+        for candidate in candidate_tags {
+            if let Ok(type_bcs) = bcs::to_bytes(&candidate) {
+                if let Some(computed_hex) =
+                    compute_dynamic_field_id(&parent_hex, key_bytes, &type_bcs)
+                {
+                    if let (Ok(computed_id), Ok(actual_id)) = (
+                        AccountAddress::from_hex_literal(&computed_hex),
+                        AccountAddress::from_hex_literal(object_id),
+                    ) {
+                        if computed_id != actual_id {
+                            child_id_aliases.lock().insert(computed_id, actual_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(mut cache_guard) = cache.lock() {
+        cache_guard.insert(cache_key, tag.clone());
+    }
+    Some(tag)
 }
 
 fn fetch_child_object_by_key(
