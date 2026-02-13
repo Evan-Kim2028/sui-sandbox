@@ -13,10 +13,12 @@ serde.workspace = true
 serde_json.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+csv = "1"
 
 # Async runtime
 tokio.workspace = true
 futures.workspace = true
+async-trait.workspace = true
 
 # Sui types
 move-core-types.workspace = true

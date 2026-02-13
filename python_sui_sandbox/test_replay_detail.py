@@ -32,8 +32,13 @@ print(f"Sender:     {target_tx['sender']}")
 print(f"Commands:   {target_tx['commands']}")
 print()
 
-# Verbose replay
-info = sui_sandbox.walrus_analyze_replay(digest, checkpoint, verbose=True)
+# Verbose analyze-only replay
+info = sui_sandbox.replay(
+    digest=digest,
+    checkpoint=checkpoint,
+    analyze_only=True,
+    verbose=True,
+)
 
 print(f"Objects hydrated:  {info['objects']}")
 print(f"Packages loaded:   {info['packages']} ({info['modules']} modules)")

@@ -33,4 +33,8 @@ module-name = "sui_sandbox"
 # Paths are relative to the workspace root (maturin resolves via Cargo.toml workspace).
 include = [
     { path = "framework_bytecode/*", format = "sdist" },
+    { path = "sui_sandbox.pyi", format = "sdist" },
+    { path = "sui_sandbox.pyi", format = "wheel" },
+    { path = "py.typed", format = "sdist" },
+    { path = "py.typed", format = "wheel" },
 ]

@@ -104,6 +104,21 @@ Execute a Move function in the local VM with full control over object and pure i
 
 **Returns:** `dict` with `success`, `error`, `return_values`, `return_type_tags`, `gas_used`.
 
+`object_inputs` entries must use:
+
+```python
+{
+    "object_id": "0x...",
+    "type_tag": "0x2::...",
+    "bcs_bytes": [1, 2, 3],   # or bytes in Python
+    "is_shared": False,       # optional
+    "mutable": False,         # optional
+}
+```
+
+Legacy compatibility: `owner` is also accepted as an alias for `is_shared`:
+`"immutable"` / `"address_owned"` => non-shared, `"shared"` => shared.
+
 #### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
 Fuzz a Move function with randomly generated inputs.
@@ -122,11 +137,32 @@ report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50, seed=42)
 print(f"Successes: {report['outcomes']['successes']}")
 ```
 
-#### `replay(digest, *, rpc_url=..., source="hybrid", checkpoint=None, allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, compare=False, analyze_only=False, verbose=False)`
+#### `import_state(*, state=None, transactions=None, objects=None, packages=None, cache_dir=None)`
+
+Import replay data from JSON/JSONL/CSV into a local replay cache.
+
+```python
+sui_sandbox.import_state(
+    transactions="exports/transactions.csv",
+    objects="exports/objects.jsonl",
+    packages="exports/packages.csv",
+    cache_dir=".sui-cache",
+)
+```
+
+#### `deserialize_transaction(raw_bcs)` / `deserialize_package(bcs)`
+
+Decode raw BCS blobs into structured JSON for debugging or preprocessing.
+
+#### `replay(digest=None, *, rpc_url=..., source="hybrid", checkpoint=None, state_file=None, cache_dir=None, allow_fallback=True, prefetch_depth=3, prefetch_limit=200, auto_system_objects=True, no_prefetch=False, compare=False, analyze_only=False, verbose=False)`
 
 Replay a historical Sui transaction locally with the Move VM.
 
-When `checkpoint` is provided, uses Walrus as the data source (no API key needed). Otherwise uses gRPC/hybrid (requires `SUI_GRPC_API_KEY` env var).
+Replay source modes:
+- `checkpoint=...` uses Walrus (no API key needed)
+- `state_file=...` replays from a local exported state file
+- `source="local"` (or `cache_dir=...`) replays from imported local cache
+- otherwise uses gRPC/hybrid (requires `SUI_GRPC_API_KEY`)
 
 Use `analyze_only=True` to inspect state hydration without executing the transaction.
 
@@ -149,6 +185,13 @@ result = sui_sandbox.replay(
     checkpoint=239615926,
 )
 print(f"Success: {result['local_success']}")
+
+# Full replay via local state file
+result = sui_sandbox.replay(state_file="exports/replay_state.json")
+
+# Full replay via local cache import
+sui_sandbox.import_state(state="exports/replay_state.json", cache_dir=".sui-cache")
+result = sui_sandbox.replay(digest="DigestHere...", source="local", cache_dir=".sui-cache")
 
 # Full replay via gRPC with comparison
 import os

@@ -294,10 +294,20 @@ print(analysis["commands"], analysis["objects"])
 result = sui_sandbox.replay("At8M8D7Q...", checkpoint=239615926, compare=True)
 print(result["comparison"])
 
+# Import + local replay cache path
+sui_sandbox.import_state(state="exports/replay_state.json", cache_dir=".sui-cache")
+result = sui_sandbox.replay(digest="At8M8D7Q...", source="local", cache_dir=".sui-cache")
+
 # --- Move view function execution ---
 result = sui_sandbox.call_view_function(
     "0x2", "clock", "timestamp_ms",
-    object_inputs=[{"Clock": "0x6"}],
+    object_inputs=[{
+        "object_id": "0x0000000000000000000000000000000000000000000000000000000000000006",
+        "type_tag": "0x2::clock::Clock",
+        "bcs_bytes": [0, 0, 0, 0],  # placeholder: supply real object BCS bytes
+        "is_shared": False,         # optional (or legacy owner="immutable")
+        "mutable": False,           # optional
+    }],
 )
 print(result["return_values"])
 

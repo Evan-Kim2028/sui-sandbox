@@ -10,11 +10,14 @@
 //! - `call_view_function`: Execute a Move view function in the local VM
 //! - `fuzz_function`: Fuzz a Move function with random inputs
 //! - `replay`: Replay historical transactions (with optional analysis-only mode)
+//! - `import_state`: Import replay data files into local cache
+//! - `deserialize_transaction`: Decode raw transaction BCS
+//! - `deserialize_package`: Decode raw package BCS
 
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -33,6 +36,10 @@ use sui_package_extractor::bytecode::{
 use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
 use sui_package_extractor::utils::is_framework_address;
 use sui_sandbox_core::resolver::ModuleProvider;
+use sui_state_fetcher::{
+    bcs_codec, build_aliases, checkpoint_to_replay_state, import_replay_states,
+    parse_replay_states_file, FileStateProvider, HistoricalStateProvider, ImportSpec, ReplayState,
+};
 use sui_transport::graphql::GraphQLClient;
 use sui_transport::network::resolve_graphql_endpoint;
 use sui_transport::walrus::WalrusClient;
@@ -43,6 +50,18 @@ use sui_transport::walrus::WalrusClient;
 
 fn to_py_err(e: anyhow::Error) -> PyErr {
     PyRuntimeError::new_err(format!("{:#}", e))
+}
+
+fn default_local_cache_dir() -> PathBuf {
+    std::env::var("SUI_SANDBOX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".sui-sandbox")
+        })
+        .join("cache")
+        .join("local")
 }
 
 /// Convert a serde_json::Value to a Python object via JSON round-trip.
@@ -212,10 +231,6 @@ fn replay_inner(
 ) -> Result<serde_json::Value> {
     use sui_sandbox_core::replay_support;
     use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy};
-    use sui_state_fetcher::{
-        build_aliases, checkpoint_to_replay_state, HistoricalStateProvider, ReplayState,
-    };
-    use sui_transport::network::resolve_graphql_endpoint;
 
     // ---------------------------------------------------------------
     // 1. Fetch ReplayState
@@ -244,11 +259,8 @@ fn replay_inner(
         let gql_endpoint = resolve_graphql_endpoint(rpc_url);
         graphql_client = GraphQLClient::new(&gql_endpoint);
 
-        let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-            .or_else(|_| std::env::var("SUI_GRPC_ARCHIVE_ENDPOINT"))
-            .or_else(|_| std::env::var("SUI_GRPC_HISTORICAL_ENDPOINT"))
-            .unwrap_or_else(|_| rpc_url.to_string());
-        let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+        let (grpc_endpoint, api_key) =
+            sui_transport::grpc::historical_endpoint_and_api_key_from_env();
 
         let provider = rt.block_on(async {
             let grpc = sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key)
@@ -370,15 +382,156 @@ fn replay_inner(
     build_replay_output(
         &replay_state,
         replay_result,
+        source,
         &effective_source,
         allow_fallback,
         auto_system_objects,
         !no_prefetch,
         prefetch_depth,
         prefetch_limit,
+        "graphql_dependency_closure",
         fetched_deps,
         compare,
     )
+}
+
+fn replay_loaded_state_inner(
+    replay_state: ReplayState,
+    requested_source: &str,
+    effective_source: &str,
+    allow_fallback: bool,
+    auto_system_objects: bool,
+    compare: bool,
+    analyze_only: bool,
+    verbose: bool,
+) -> Result<serde_json::Value> {
+    use sui_sandbox_core::replay_support;
+    use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy};
+
+    if analyze_only {
+        return build_analyze_output(
+            &replay_state,
+            effective_source,
+            allow_fallback,
+            auto_system_objects,
+            false,
+            0,
+            0,
+            verbose,
+        );
+    }
+
+    let pkg_aliases = build_aliases(&replay_state.packages, None, replay_state.checkpoint);
+    let resolver = replay_support::hydrate_resolver_from_replay_state(
+        &replay_state,
+        &pkg_aliases.linkage_upgrades,
+        &pkg_aliases.aliases,
+    )?;
+
+    let mut maps = replay_support::build_replay_object_maps(&replay_state, &pkg_aliases.versions);
+    replay_support::maybe_patch_replay_objects(
+        &resolver,
+        &replay_state,
+        &pkg_aliases.versions,
+        &pkg_aliases.aliases,
+        &mut maps,
+        verbose,
+    );
+
+    let config = replay_support::build_simulation_config(&replay_state);
+    let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
+    harness
+        .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), maps.versions_str.clone());
+
+    let replay_result = tx_replay::replay_with_version_tracking_with_policy_with_effects(
+        &replay_state.transaction,
+        &mut harness,
+        &maps.cached_objects,
+        &pkg_aliases.aliases,
+        Some(&maps.versions_str),
+        EffectsReconcilePolicy::Strict,
+    );
+
+    build_replay_output(
+        &replay_state,
+        replay_result,
+        requested_source,
+        effective_source,
+        allow_fallback,
+        auto_system_objects,
+        false,
+        0,
+        0,
+        effective_source,
+        0,
+        compare,
+    )
+}
+
+fn load_replay_state_from_file(path: &Path, digest: Option<&str>) -> Result<ReplayState> {
+    let states = parse_replay_states_file(path)?;
+    if states.is_empty() {
+        return Err(anyhow!(
+            "Replay state file '{}' did not contain any states",
+            path.display()
+        ));
+    }
+    if states.len() == 1 {
+        return Ok(states.into_iter().next().expect("single replay state"));
+    }
+    let digest = digest.ok_or_else(|| {
+        anyhow!(
+            "Replay state file '{}' contains multiple states; provide digest",
+            path.display()
+        )
+    })?;
+    states
+        .into_iter()
+        .find(|state| state.transaction.digest.0 == digest)
+        .ok_or_else(|| {
+            anyhow!(
+                "Replay state file '{}' does not contain digest '{}'",
+                path.display(),
+                digest
+            )
+        })
+}
+
+fn import_state_inner(
+    state: Option<&str>,
+    transactions: Option<&str>,
+    objects: Option<&str>,
+    packages: Option<&str>,
+    cache_dir: Option<&str>,
+) -> Result<serde_json::Value> {
+    let cache_dir = cache_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(default_local_cache_dir);
+
+    let spec = ImportSpec {
+        state: state.map(PathBuf::from),
+        transactions: transactions.map(PathBuf::from),
+        objects: objects.map(PathBuf::from),
+        packages: packages.map(PathBuf::from),
+    };
+    let summary = import_replay_states(&cache_dir, &spec)?;
+    Ok(serde_json::json!({
+        "cache_dir": summary.cache_dir,
+        "states_imported": summary.states_imported,
+        "objects_imported": summary.objects_imported,
+        "packages_imported": summary.packages_imported,
+        "digests": summary.digests,
+    }))
+}
+
+fn deserialize_transaction_inner(raw_bcs: &[u8]) -> Result<serde_json::Value> {
+    let decoded = bcs_codec::deserialize_transaction(raw_bcs, "decoded_tx", None, None, None)?;
+    serde_json::to_value(decoded).context("Failed to serialize decoded transaction")
+}
+
+fn deserialize_package_inner(raw_bcs: &[u8]) -> Result<serde_json::Value> {
+    let decoded = bcs_codec::deserialize_package(raw_bcs)?;
+    serde_json::to_value(decoded).context("Failed to serialize decoded package")
 }
 
 /// Build JSON output for analyze-only mode (no VM execution).
@@ -530,17 +683,19 @@ fn build_replay_output(
     replay_state: &sui_state_fetcher::ReplayState,
     replay_result: Result<sui_sandbox_core::tx_replay::ReplayExecution>,
     requested_source: &str,
+    effective_source: &str,
     allow_fallback: bool,
     auto_system_objects: bool,
     dynamic_field_prefetch: bool,
     prefetch_depth: usize,
     prefetch_limit: usize,
+    dependency_fetch_mode: &str,
     dependency_packages_fetched: usize,
     compare: bool,
 ) -> Result<serde_json::Value> {
     let execution_path = serde_json::json!({
         "requested_source": requested_source,
-        "effective_source": requested_source,
+        "effective_source": effective_source,
         "vm_only": false,
         "allow_fallback": allow_fallback,
         "auto_system_objects": auto_system_objects,
@@ -548,7 +703,7 @@ fn build_replay_output(
         "dynamic_field_prefetch": dynamic_field_prefetch,
         "prefetch_depth": prefetch_depth,
         "prefetch_limit": prefetch_limit,
-        "dependency_fetch_mode": "graphql_dependency_closure",
+        "dependency_fetch_mode": dependency_fetch_mode,
         "dependency_packages_fetched": dependency_packages_fetched,
         "synthetic_inputs": 0,
     });
@@ -1211,11 +1366,13 @@ fn extract_interface(
 /// Returns: dict with replay results (or analysis summary if analyze_only)
 #[pyfunction]
 #[pyo3(signature = (
-    digest,
+    digest=None,
     *,
     rpc_url="https://fullnode.mainnet.sui.io:443",
     source="hybrid",
     checkpoint=None,
+    state_file=None,
+    cache_dir=None,
     allow_fallback=true,
     prefetch_depth=3,
     prefetch_limit=200,
@@ -1227,10 +1384,12 @@ fn extract_interface(
 ))]
 fn replay(
     py: Python<'_>,
-    digest: &str,
+    digest: Option<&str>,
     rpc_url: &str,
     source: &str,
     checkpoint: Option<u64>,
+    state_file: Option<&str>,
+    cache_dir: Option<&str>,
     allow_fallback: bool,
     prefetch_depth: usize,
     prefetch_limit: usize,
@@ -1240,13 +1399,63 @@ fn replay(
     analyze_only: bool,
     verbose: bool,
 ) -> PyResult<PyObject> {
-    let digest_owned = digest.to_string();
+    let digest_owned = digest.map(|s| s.to_string());
     let rpc_url_owned = rpc_url.to_string();
     let source_owned = source.to_string();
+    let state_file_owned = state_file.map(PathBuf::from);
+    let cache_dir_owned = cache_dir.map(PathBuf::from);
     let value = py
         .allow_threads(move || {
+            let digest = digest_owned.as_deref();
+            let source_is_local = source_owned.eq_ignore_ascii_case("local");
+            let use_local_cache = source_is_local || cache_dir_owned.is_some();
+
+            if state_file_owned.is_some() && use_local_cache {
+                return Err(anyhow!(
+                    "state_file cannot be combined with cache_dir/source='local'"
+                ));
+            }
+
+            if let Some(state_path) = state_file_owned.as_ref() {
+                let replay_state = load_replay_state_from_file(state_path, digest)?;
+                return replay_loaded_state_inner(
+                    replay_state,
+                    "state_file",
+                    "state_json",
+                    allow_fallback,
+                    auto_system_objects,
+                    compare,
+                    analyze_only,
+                    verbose,
+                );
+            }
+
+            if use_local_cache {
+                let digest = digest.ok_or_else(|| {
+                    anyhow!("digest is required when replaying from cache_dir/source='local'")
+                })?;
+                let cache_dir = cache_dir_owned
+                    .clone()
+                    .unwrap_or_else(default_local_cache_dir);
+                let provider = FileStateProvider::new(&cache_dir).with_context(|| {
+                    format!("Failed to open local replay cache {}", cache_dir.display())
+                })?;
+                let replay_state = provider.get_state(digest)?;
+                return replay_loaded_state_inner(
+                    replay_state,
+                    &source_owned,
+                    "local_cache",
+                    allow_fallback,
+                    auto_system_objects,
+                    compare,
+                    analyze_only,
+                    verbose,
+                );
+            }
+
+            let digest = digest.ok_or_else(|| anyhow!("digest is required"))?;
             replay_inner(
-                &digest_owned,
+                digest,
                 &rpc_url_owned,
                 &source_owned,
                 checkpoint,
@@ -1260,6 +1469,61 @@ fn replay(
                 verbose,
             )
         })
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
+/// Import replay data files into a local replay cache directory.
+#[pyfunction]
+#[pyo3(signature = (
+    *,
+    state=None,
+    transactions=None,
+    objects=None,
+    packages=None,
+    cache_dir=None,
+))]
+fn import_state(
+    py: Python<'_>,
+    state: Option<&str>,
+    transactions: Option<&str>,
+    objects: Option<&str>,
+    packages: Option<&str>,
+    cache_dir: Option<&str>,
+) -> PyResult<PyObject> {
+    let state_owned = state.map(|s| s.to_string());
+    let transactions_owned = transactions.map(|s| s.to_string());
+    let objects_owned = objects.map(|s| s.to_string());
+    let packages_owned = packages.map(|s| s.to_string());
+    let cache_owned = cache_dir.map(|s| s.to_string());
+    let value = py
+        .allow_threads(move || {
+            import_state_inner(
+                state_owned.as_deref(),
+                transactions_owned.as_deref(),
+                objects_owned.as_deref(),
+                packages_owned.as_deref(),
+                cache_owned.as_deref(),
+            )
+        })
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
+/// Deserialize transaction BCS bytes into structured replay transaction JSON.
+#[pyfunction]
+fn deserialize_transaction(py: Python<'_>, raw_bcs: Vec<u8>) -> PyResult<PyObject> {
+    let value = py
+        .allow_threads(move || deserialize_transaction_inner(&raw_bcs))
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
+/// Deserialize package BCS bytes into structured package JSON.
+#[pyfunction]
+fn deserialize_package(py: Python<'_>, bcs: Vec<u8>) -> PyResult<PyObject> {
+    let value = py
+        .allow_threads(move || deserialize_package_inner(&bcs))
         .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
@@ -1301,7 +1565,8 @@ fn json_to_bcs<'py>(
 ///     module: Module name
 ///     function: Function name
 ///     type_args: List of type argument strings (e.g., ["0x2::sui::SUI"])
-///     object_inputs: List of dicts with keys: object_id, bcs_bytes, type_tag, is_shared
+///     object_inputs: List of dicts with keys: object_id, bcs_bytes, type_tag
+///         optional: is_shared/mutable, or legacy owner ("immutable"|"shared"|"address_owned")
 ///     pure_inputs: List of BCS-encoded pure argument bytes
 ///     child_objects: Dict mapping parent_id -> list of {child_id, bcs_bytes, type_tag}
 ///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
@@ -1348,14 +1613,46 @@ fn call_view_function(
             .get_item("type_tag")?
             .ok_or_else(|| PyRuntimeError::new_err("missing 'type_tag' in object_inputs"))?
             .extract()?;
-        let is_shared: bool = dict
-            .get_item("is_shared")?
+
+        let explicit_is_shared = dict.get_item("is_shared")?;
+        let explicit_mutable = dict.get_item("mutable")?;
+        let owner = dict
+            .get_item("owner")?
+            .map(|v| v.extract::<String>())
+            .transpose()?;
+
+        let mut is_shared: bool = explicit_is_shared
+            .as_ref()
             .map(|v| v.extract().unwrap_or(false))
             .unwrap_or(false);
-        let mutable: bool = dict
-            .get_item("mutable")?
+        let mut mutable: bool = explicit_mutable
+            .as_ref()
             .map(|v| v.extract().unwrap_or(false))
             .unwrap_or(false);
+
+        // Backward-compatible alias used in earlier examples:
+        // owner = "immutable" | "shared" | "address_owned"
+        if explicit_is_shared.is_none() {
+            if let Some(owner) = owner {
+                match owner.trim().to_ascii_lowercase().as_str() {
+                    "shared" => {
+                        is_shared = true;
+                        if explicit_mutable.is_none() {
+                            // Shared objects are typically mutable unless explicitly overridden.
+                            mutable = true;
+                        }
+                    }
+                    "immutable" | "address_owned" => {
+                        is_shared = false;
+                    }
+                    other => {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "invalid 'owner' in object_inputs: {other} (expected immutable|shared|address_owned)"
+                        )));
+                    }
+                }
+            }
+        }
         parsed_obj_inputs.push((obj_id, bcs_bytes, type_tag, is_shared, mutable));
     }
 
@@ -1537,9 +1834,13 @@ fn fuzz_function(
 /// Python module: sui_sandbox
 #[pymodule]
 fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(import_state, m)?)?;
+    m.add_function(wrap_pyfunction!(deserialize_transaction, m)?)?;
+    m.add_function(wrap_pyfunction!(deserialize_package, m)?)?;
     m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;

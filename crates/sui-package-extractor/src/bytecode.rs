@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::normalization::signature_token_to_json;
 use crate::types::{
-    BytecodeFieldJson, BytecodeFunctionJson, BytecodeFunctionTypeParamJson, BytecodeModuleJson,
+    BytecodeConstantJson, BytecodeEnumJson, BytecodeEnumVariantJson, BytecodeFieldJson,
+    BytecodeFunctionBodyJson, BytecodeFunctionJson, BytecodeFunctionTypeParamJson,
+    BytecodeInstructionJson, BytecodeJumpTableJson, BytecodeModuleJson,
     BytecodePackageInterfaceJson, BytecodeStructJson, BytecodeStructRefJson,
     BytecodeStructTypeParamJson, LocalBytecodeCounts, LocalBytesCheck, ModuleBytesMismatch,
     SanityCounts,
@@ -15,7 +17,8 @@ use crate::utils::{
     bytes_info, bytes_info_sha256_hex, bytes_to_hex_prefixed, canonicalize_json_value, BytesInfo,
 };
 use move_binary_format::file_format::{
-    Ability, AbilitySet, CompiledModule, StructFieldInformation, Visibility,
+    Ability, AbilitySet, Bytecode, CompiledModule, JumpTableInner, StructFieldInformation,
+    Visibility,
 };
 
 pub fn module_self_address_hex(module: &CompiledModule) -> String {
@@ -47,8 +50,133 @@ pub fn visibility_to_string(v: Visibility) -> String {
     }
 }
 
+fn module_id_to_string(module_id: &move_core_types::language_storage::ModuleId) -> String {
+    format!(
+        "{}::{}",
+        bytes_to_hex_prefixed(module_id.address().as_ref()),
+        module_id.name()
+    )
+}
+
+fn split_top_level_operands(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_angle = 0usize;
+
+    for ch in raw.chars() {
+        match ch {
+            '(' => {
+                depth_paren += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+                current.push(ch);
+            }
+            '[' => {
+                depth_bracket += 1;
+                current.push(ch);
+            }
+            ']' => {
+                depth_bracket = depth_bracket.saturating_sub(1);
+                current.push(ch);
+            }
+            '<' => {
+                depth_angle += 1;
+                current.push(ch);
+            }
+            '>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth_paren == 0 && depth_bracket == 0 && depth_angle == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+fn bytecode_to_instruction_json(offset: usize, bytecode: &Bytecode) -> BytecodeInstructionJson {
+    let debug = format!("{:?}", bytecode);
+    let (opcode, operands) = if let Some(open) = debug.find('(') {
+        if debug.ends_with(')') {
+            let opcode = debug[..open].to_string();
+            let inner = &debug[open + 1..debug.len() - 1];
+            let operands = if inner.trim().is_empty() {
+                Vec::new()
+            } else {
+                split_top_level_operands(inner)
+            };
+            (opcode, operands)
+        } else {
+            (debug, Vec::new())
+        }
+    } else {
+        (debug, Vec::new())
+    };
+
+    BytecodeInstructionJson {
+        offset: u16::try_from(offset).unwrap_or(u16::MAX),
+        opcode,
+        operands,
+    }
+}
+
+fn build_function_body_json(
+    module: &CompiledModule,
+    code: &move_binary_format::file_format::CodeUnit,
+) -> BytecodeFunctionBodyJson {
+    let locals = module
+        .signature_at(code.locals)
+        .0
+        .iter()
+        .map(|t| signature_token_to_json(module, t))
+        .collect();
+
+    let instructions = code
+        .code
+        .iter()
+        .enumerate()
+        .map(|(offset, bc)| bytecode_to_instruction_json(offset, bc))
+        .collect();
+
+    let jump_tables = code
+        .jump_tables
+        .iter()
+        .map(|jt| {
+            let enum_def = module.enum_def_at(jt.head_enum);
+            let enum_handle = module.datatype_handle_at(enum_def.enum_handle);
+            let head_enum = module.identifier_at(enum_handle.name).to_string();
+            let offsets = match &jt.jump_table {
+                JumpTableInner::Full(v) => v.clone(),
+            };
+            BytecodeJumpTableJson { head_enum, offsets }
+        })
+        .collect();
+
+    BytecodeFunctionBodyJson {
+        locals,
+        instructions,
+        jump_tables,
+    }
+}
+
 pub fn build_bytecode_module_json(module: &CompiledModule) -> Result<BytecodeModuleJson> {
     let mut structs: BTreeMap<String, BytecodeStructJson> = BTreeMap::new();
+    let mut enums: BTreeMap<String, BytecodeEnumJson> = BTreeMap::new();
     let mut functions: BTreeMap<String, BytecodeFunctionJson> = BTreeMap::new();
 
     for def in module.struct_defs() {
@@ -91,6 +219,48 @@ pub fn build_bytecode_module_json(module: &CompiledModule) -> Result<BytecodeMod
                 type_params,
                 is_native,
                 fields,
+            },
+        );
+    }
+
+    for def in module.enum_defs() {
+        let handle = module.datatype_handle_at(def.enum_handle);
+        let name = module.identifier_at(handle.name).to_string();
+
+        let type_params: Vec<BytecodeStructTypeParamJson> = handle
+            .type_parameters
+            .iter()
+            .map(|tp| BytecodeStructTypeParamJson {
+                constraints: ability_set_to_strings(&tp.constraints),
+                is_phantom: tp.is_phantom,
+            })
+            .collect();
+
+        let abilities = ability_set_to_strings(&handle.abilities);
+        let variants = def
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(tag, variant)| BytecodeEnumVariantJson {
+                tag: u16::try_from(tag).unwrap_or(u16::MAX),
+                name: module.identifier_at(variant.variant_name).to_string(),
+                fields: variant
+                    .fields
+                    .iter()
+                    .map(|f| BytecodeFieldJson {
+                        name: module.identifier_at(f.name).to_string(),
+                        r#type: signature_token_to_json(module, &f.signature.0),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        enums.insert(
+            name,
+            BytecodeEnumJson {
+                abilities,
+                type_params,
+                variants,
             },
         );
     }
@@ -142,14 +312,39 @@ pub fn build_bytecode_module_json(module: &CompiledModule) -> Result<BytecodeMod
                 params,
                 returns,
                 acquires,
+                body: def
+                    .code
+                    .as_ref()
+                    .map(|code| build_function_body_json(module, code)),
             },
         );
     }
 
+    let constants = module
+        .constant_pool()
+        .iter()
+        .map(|constant| BytecodeConstantJson {
+            r#type: signature_token_to_json(module, &constant.type_),
+            data_hex: bytes_to_hex_prefixed(&constant.data),
+            data_len: constant.data.len(),
+        })
+        .collect();
+
+    let mut friends: Vec<String> = module
+        .immediate_friends()
+        .into_iter()
+        .map(|friend| module_id_to_string(&friend))
+        .collect();
+    friends.sort();
+    friends.dedup();
+
     Ok(BytecodeModuleJson {
         address: module_self_address_hex(module),
         structs,
+        enums,
         functions,
+        constants,
+        friends,
     })
 }
 
@@ -172,7 +367,7 @@ pub fn build_bytecode_interface_value_from_compiled_modules(
     canonicalize_json_value(&mut modules_value);
 
     let interface = BytecodePackageInterfaceJson {
-        schema_version: 1,
+        schema_version: 2,
         package_id: package_id.to_string(),
         module_names: module_names.clone(),
         modules: modules_value,
@@ -190,6 +385,10 @@ pub fn ability_set_has_key(set: &AbilitySet) -> bool {
 
 pub fn analyze_compiled_module(module: &CompiledModule) -> LocalBytecodeCounts {
     let mut structs = 0usize;
+    let mut structs_has_copy = 0usize;
+    let mut structs_has_drop = 0usize;
+    let mut structs_has_store = 0usize;
+    let mut structs_has_key = 0usize;
     let mut key_structs = 0usize;
 
     let mut functions_total = 0usize;
@@ -207,7 +406,17 @@ pub fn analyze_compiled_module(module: &CompiledModule) -> LocalBytecodeCounts {
 
     for def in module.struct_defs() {
         let handle = module.datatype_handle_at(def.struct_handle);
+        if handle.abilities.has_ability(Ability::Copy) {
+            structs_has_copy += 1;
+        }
+        if handle.abilities.has_ability(Ability::Drop) {
+            structs_has_drop += 1;
+        }
+        if handle.abilities.has_ability(Ability::Store) {
+            structs_has_store += 1;
+        }
         if ability_set_has_key(&handle.abilities) {
+            structs_has_key += 1;
             key_structs += 1;
         }
     }
@@ -237,6 +446,10 @@ pub fn analyze_compiled_module(module: &CompiledModule) -> LocalBytecodeCounts {
     LocalBytecodeCounts {
         modules: 1,
         structs,
+        structs_has_copy,
+        structs_has_drop,
+        structs_has_store,
+        structs_has_key,
         functions_total,
         functions_public,
         functions_friend,
@@ -320,6 +533,10 @@ pub fn analyze_local_bytecode_package(
     let mut counts = LocalBytecodeCounts {
         modules: 0,
         structs: 0,
+        structs_has_copy: 0,
+        structs_has_drop: 0,
+        structs_has_store: 0,
+        structs_has_key: 0,
         functions_total: 0,
         functions_public: 0,
         functions_friend: 0,
@@ -340,6 +557,10 @@ pub fn analyze_local_bytecode_package(
         let module_counts = analyze_compiled_module(&module);
         counts.modules += module_counts.modules;
         counts.structs += module_counts.structs;
+        counts.structs_has_copy += module_counts.structs_has_copy;
+        counts.structs_has_drop += module_counts.structs_has_drop;
+        counts.structs_has_store += module_counts.structs_has_store;
+        counts.structs_has_key += module_counts.structs_has_key;
         counts.functions_total += module_counts.functions_total;
         counts.functions_public += module_counts.functions_public;
         counts.functions_friend += module_counts.functions_friend;
@@ -681,6 +902,12 @@ pub fn extract_module_dependency_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use move_binary_format::file_format::{
+        basic_test_module, basic_test_module_with_enum, AbilitySet, AddressIdentifierIndex,
+        Bytecode, Constant, IdentifierIndex, ModuleHandle, SignatureToken,
+    };
+    use move_core_types::account_address::AccountAddress;
+    use move_core_types::identifier::Identifier;
 
     #[test]
     fn test_decode_module_map_entry_bytes_base64_string() {
@@ -787,5 +1014,88 @@ mod tests {
 
         assert!(resolve_local_package_id(&package_dir).is_err());
         std::fs::remove_dir_all(&package_dir).ok();
+    }
+
+    #[test]
+    fn test_split_top_level_operands_nested_groups() {
+        let raw = "Signature(0), Vector<foo::Bar<u8, u64>>, Variant(1)";
+        let parts = split_top_level_operands(raw);
+        assert_eq!(
+            parts,
+            vec![
+                "Signature(0)".to_string(),
+                "Vector<foo::Bar<u8, u64>>".to_string(),
+                "Variant(1)".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_analyze_compiled_module_counts_per_ability() {
+        let mut module = basic_test_module();
+        module.datatype_handles[0].abilities = AbilitySet::ALL;
+
+        let counts = analyze_compiled_module(&module);
+        assert_eq!(counts.structs, 1);
+        assert_eq!(counts.structs_has_copy, 1);
+        assert_eq!(counts.structs_has_drop, 1);
+        assert_eq!(counts.structs_has_store, 1);
+        assert_eq!(counts.structs_has_key, 1);
+        assert_eq!(counts.key_structs, 1);
+    }
+
+    #[test]
+    fn test_build_bytecode_module_json_extracts_constants_friends_enums_and_body() {
+        let mut module = basic_test_module_with_enum();
+
+        module.constant_pool.push(Constant {
+            type_: SignatureToken::U64,
+            data: vec![42, 0, 0, 0, 0, 0, 0, 0],
+        });
+
+        let friend_name = Identifier::new("FriendMod".to_string()).expect("identifier");
+        let friend_name_idx = IdentifierIndex(module.identifiers.len() as u16);
+        module.identifiers.push(friend_name);
+        let friend_handle = ModuleHandle {
+            address: AddressIdentifierIndex(0),
+            name: friend_name_idx,
+        };
+        module.module_handles.push(friend_handle.clone());
+        module.friend_decls.push(friend_handle);
+
+        if let Some(code) = &mut module.function_defs[0].code {
+            code.code = vec![Bytecode::LdU64(7), Bytecode::Ret];
+        }
+
+        let json = build_bytecode_module_json(&module).expect("module json");
+        assert_eq!(json.constants.len(), 1);
+        assert_eq!(json.constants[0].data_len, 8);
+        assert_eq!(json.constants[0].data_hex, "0x2a00000000000000");
+        assert_eq!(json.enums.len(), 1);
+        assert!(json.enums.contains_key("enum"));
+
+        let expected_friend = format!(
+            "{}::FriendMod",
+            bytes_to_hex_prefixed(AccountAddress::ZERO.as_ref())
+        );
+        assert_eq!(json.friends, vec![expected_friend]);
+
+        let function = json.functions.get("foo").expect("foo function");
+        let body = function.body.as_ref().expect("function body");
+        assert_eq!(body.instructions.len(), 2);
+        assert_eq!(body.instructions[0].opcode, "LdU64");
+        assert_eq!(body.instructions[0].operands, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn test_build_bytecode_interface_is_deterministic() {
+        let module = basic_test_module_with_enum();
+        let modules = vec![module];
+        let (_, a) =
+            build_bytecode_interface_value_from_compiled_modules("0x2", &modules).expect("a");
+        let (_, b) =
+            build_bytecode_interface_value_from_compiled_modules("0x2", &modules).expect("b");
+        assert_eq!(a, b);
+        assert_eq!(a.get("schema_version").and_then(Value::as_u64), Some(2));
     }
 }

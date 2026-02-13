@@ -9,6 +9,7 @@
 //! - **run**: Execute single Move function calls
 //! - **ptb**: Execute full Programmable Transaction Blocks from JSON specs
 //! - **fetch**: Import packages and objects from mainnet
+//! - **import**: Ingest replay data files into local cache
 //! - **replay**: Replay historical transactions locally
 //! - **analyze**: Package and replay-state introspection
 //! - **view**: Inspect modules, objects, and session state
@@ -29,6 +30,9 @@
 //! # Fetch a package from mainnet
 //! sui-sandbox fetch package 0x1eabed72...
 //!
+//! # Import replay data into local cache
+//! sui-sandbox import --state replay_state.json --output replay_cache/
+//!
 //! # Replay a transaction
 //! sui-sandbox replay 9V3xKM... --compare
 //!
@@ -45,8 +49,10 @@ mod sandbox_cli;
 use sandbox_cli::analyze::AnalyzeCmd;
 use sandbox_cli::{
     bridge::BridgeCmd,
+    doctor::DoctorCmd,
     fetch::FetchCmd,
     flow::{InitCmd, RunFlowCmd},
+    import::ImportCmd,
     ptb::PtbCmd,
     publish::PublishCmd,
     replay::ReplayCli,
@@ -111,6 +117,9 @@ enum Commands {
     /// Fetch packages or objects from mainnet
     Fetch(FetchCmd),
 
+    /// Import replay data files into a local cache
+    Import(ImportCmd),
+
     /// Replay a historical transaction locally
     Replay(ReplayCli),
 
@@ -129,6 +138,9 @@ enum Commands {
 
     /// Extra utilities (polling, streaming, tx simulation)
     Tools(ToolsCmd),
+
+    /// Validate local environment and endpoint connectivity
+    Doctor(DoctorCmd),
 
     /// Scaffold a task-oriented project/workflow template
     Init(InitCmd),
@@ -156,6 +168,7 @@ impl Commands {
             Commands::Run(_) => "run",
             Commands::Ptb(_) => "ptb",
             Commands::Fetch(_) => "fetch",
+            Commands::Import(_) => "import",
             Commands::Replay(_) => "replay",
             #[cfg(feature = "analysis")]
             Commands::Analyze(_) => "analyze",
@@ -163,6 +176,7 @@ impl Commands {
             Commands::Bridge(_) => "bridge",
             Commands::Test(_) => "test",
             Commands::Tools(_) => "tools",
+            Commands::Doctor(_) => "doctor",
             Commands::Init(_) => "init",
             Commands::RunFlow(_) => "run-flow",
             Commands::Snapshot(_) => "snapshot",
@@ -191,6 +205,24 @@ async fn main() -> Result<()> {
         std::env::set_var("SUI_SANDBOX_DEBUG_JSON", "1");
     }
 
+    if let Commands::Doctor(cmd) = &command {
+        let result = cmd.execute(&state_file, &rpc_url, json, verbose).await;
+        if debug_json {
+            if let Err(err) = &result {
+                eprintln!(
+                    "{}",
+                    sandbox_cli::output::format_debug_diagnostic_json(
+                        &command_name,
+                        err,
+                        None,
+                        sandbox_cli::output::default_diagnostic_hints(&command_name, err),
+                    )
+                );
+            }
+        }
+        return result;
+    }
+
     // Load or create session state
     let mut state = SandboxState::load_or_create(&state_file, &rpc_url)?;
 
@@ -199,6 +231,7 @@ async fn main() -> Result<()> {
         Commands::Run(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Ptb(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Fetch(cmd) => cmd.execute(&mut state, json, verbose).await,
+        Commands::Import(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Replay(cmd) => cmd.execute(&mut state, json, verbose).await,
         #[cfg(feature = "analysis")]
         Commands::Analyze(cmd) => cmd.execute(&mut state, json, verbose).await,
@@ -206,6 +239,7 @@ async fn main() -> Result<()> {
         Commands::Bridge(cmd) => cmd.execute(json),
         Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Tools(cmd) => cmd.execute(json).await,
+        Commands::Doctor(_) => unreachable!(),
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,

@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::provider::HistoricalStateProvider;
+use crate::replay_provider::ReplayStateProvider;
 use crate::types::ReplayState;
 
 /// Configuration for building a replay state.
@@ -33,13 +33,13 @@ impl Default for ReplayStateConfig {
 }
 
 /// Builder for replay state hydration.
-pub struct ReplayStateBuilder<'a> {
-    provider: &'a HistoricalStateProvider,
+pub struct ReplayStateBuilder<'a, P: ReplayStateProvider + ?Sized> {
+    provider: &'a P,
     config: ReplayStateConfig,
 }
 
-impl<'a> ReplayStateBuilder<'a> {
-    pub fn new(provider: &'a HistoricalStateProvider) -> Self {
+impl<'a, P: ReplayStateProvider + ?Sized> ReplayStateBuilder<'a, P> {
+    pub fn new(provider: &'a P) -> Self {
         Self {
             provider,
             config: ReplayStateConfig::default(),
@@ -73,13 +73,7 @@ impl<'a> ReplayStateBuilder<'a> {
 
     pub async fn build(self, digest: &str) -> Result<ReplayState> {
         self.provider
-            .fetch_replay_state_with_config(
-                digest,
-                self.config.prefetch_dynamic_fields,
-                self.config.df_depth,
-                self.config.df_limit,
-                self.config.auto_system_objects,
-            )
+            .fetch_replay_state_with_config(digest, &self.config)
             .await
     }
 }

@@ -16,7 +16,7 @@ use sui_sandbox_types::encoding::base64_decode;
 use tokio::runtime::{Builder, Runtime};
 
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{GrpcClient, GrpcOwner};
+use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient, GrpcOwner};
 
 use crate::simulation::FetcherConfig;
 
@@ -163,14 +163,11 @@ impl GrpcFetcher {
 
     /// Create a new gRPC fetcher for mainnet with archive support.
     pub fn mainnet_with_archive() -> Self {
-        let endpoint = Self::endpoint_from_env(
-            "SUI_GRPC_ARCHIVE_ENDPOINT",
-            "https://archive.mainnet.sui.io:443",
-        );
+        let (endpoint, api_key) = historical_endpoint_and_api_key_from_env();
         Self::new(
             endpoint,
             "mainnet-archive".to_string(),
-            Self::api_key_from_env(),
+            api_key.or_else(Self::api_key_from_env),
         )
     }
 
