@@ -19,6 +19,8 @@ Optional add-ons (after core):
 - `sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json` then `sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json`
 - `sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force`
 - `sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force`
+- `sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force`
+- `sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>`
 - `sui-sandbox workflow auto --package-id 0x2 --force`
 - `cargo run --example walrus_ptb_universe`
 
@@ -124,7 +126,22 @@ Config example:
 
 - `examples/data/workflow_init_suilend.yaml`
 
-### 8) Workflow Auto Draft Adapter
+### 8) Generic Flow (First-Class CLI)
+
+```bash
+sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
+sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
+
+# custom input/state path for replay
+sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --state-json <STATE_FILE>
+```
+
+This is the package-agnostic two-step UX:
+
+- step 1 prepares package + dependency closure
+- step 2 runs replay with your digest/checkpoint/input data
+
+### 9) Workflow Auto Draft Adapter
 
 ```bash
 sui-sandbox workflow auto --package-id 0x2 --force
@@ -140,7 +157,7 @@ sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.
 sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
 ```
 
-### 9) Walrus PTB Universe
+### 10) Walrus PTB Universe
 
 ```bash
 cargo run --example walrus_ptb_universe
@@ -149,7 +166,7 @@ cargo run --example walrus_ptb_universe -- --latest 10 --top-packages 8 --max-pt
 
 Artifacts are written to `examples/out/walrus_ptb_universe/`.
 
-### 10) Local PTB Basics (Rust)
+### 11) Local PTB Basics (Rust)
 
 ```bash
 cargo run --example ptb_basics
@@ -187,7 +204,8 @@ It includes:
 1. Walrus checkpoint summary
 2. Package interface extraction
 3. Replay analyze (no VM execution)
-4. DeepBook `manager_state` native example (no CLI pass-through)
+4. Generic two-step flow (native bindings)
+5. DeepBook `manager_state` native example (no CLI pass-through)
 
 ## Troubleshooting
 

@@ -85,6 +85,8 @@ jobs:
           assert hasattr(sui_sandbox, "import_state")
           assert hasattr(sui_sandbox, "deserialize_transaction")
           assert hasattr(sui_sandbox, "deserialize_package")
+          assert hasattr(sui_sandbox, "prepare_package_context")
+          assert hasattr(sui_sandbox, "replay_transaction")
           assert isinstance(sui_sandbox.__version__, str)
 
           with tempfile.TemporaryDirectory() as td:

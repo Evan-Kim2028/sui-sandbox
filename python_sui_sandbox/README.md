@@ -56,19 +56,35 @@ python3 python_sui_sandbox/examples/03_replay_analyze.py
 python3 python_sui_sandbox/examples/03_replay_analyze.py --digest <DIGEST> --checkpoint <CP>
 ```
 
-## Workflow CLI (Direct)
-
-For workflow orchestration, use direct CLI commands:
+### 4) Generic two-step flow (native bindings)
 
 ```bash
-sui-sandbox workflow auto --package-id 0x2 --output examples/out/workflow_auto/workflow.auto.2.json --force
-sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.json
-sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
+python3 python_sui_sandbox/examples/04_generic_flow_native.py --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+python3 python_sui_sandbox/examples/04_generic_flow_native.py --package-id 0x2 --state-file examples/data/state_json_synthetic_ptb_demo.json
+```
+
+Core usage can stay compact:
+
+```python
+import sui_sandbox
+
+ctx = sui_sandbox.prepare_package_context("0x2")
+out = sui_sandbox.replay_transaction("<DIGEST>", checkpoint=239615926)
+print(out["local_success"], out.get("gas_used"))
+```
+
+## Flow CLI (Direct)
+
+For first-class two-step CLI flow orchestration, use:
+
+```bash
+sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
+sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
 ```
 
 ## Native Margin Example (No CLI Pass-Through)
 
-### 4) DeepBook `manager_state` (native bindings only)
+### 5) DeepBook `manager_state` (native bindings only)
 
 ```bash
 python3 python_sui_sandbox/examples/06_deepbook_margin_state_native.py

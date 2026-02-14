@@ -51,7 +51,7 @@ use sandbox_cli::{
     bridge::BridgeCmd,
     doctor::DoctorCmd,
     fetch::FetchCmd,
-    flow::{InitCmd, RunFlowCmd},
+    flow::{FlowCli, InitCmd, RunFlowCmd},
     import::ImportCmd,
     ptb::PtbCmd,
     publish::PublishCmd,
@@ -143,6 +143,9 @@ enum Commands {
     /// Validate local environment and endpoint connectivity
     Doctor(DoctorCmd),
 
+    /// Generic package/replay developer flow (prepare + replay)
+    Flow(FlowCli),
+
     /// Scaffold a task-oriented project/workflow template
     Init(InitCmd),
 
@@ -181,6 +184,7 @@ impl Commands {
             Commands::Test(_) => "test",
             Commands::Tools(_) => "tools",
             Commands::Doctor(_) => "doctor",
+            Commands::Flow(_) => "flow",
             Commands::Init(_) => "init",
             Commands::RunFlow(_) => "run-flow",
             Commands::Workflow(_) => "workflow",
@@ -245,6 +249,7 @@ async fn main() -> Result<()> {
         Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Tools(cmd) => cmd.execute(json).await,
         Commands::Doctor(_) => unreachable!(),
+        Commands::Flow(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Workflow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,

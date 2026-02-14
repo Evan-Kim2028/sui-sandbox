@@ -184,6 +184,17 @@ impl FetchCmd {
     }
 }
 
+/// Reusable package fetch helper for higher-level orchestration commands.
+pub(crate) fn fetch_package_into_state(
+    state: &mut SandboxState,
+    package_id: &str,
+    with_deps: bool,
+    verbose: bool,
+) -> Result<FetchResult> {
+    // Keep orchestration payloads light: only metadata is needed here.
+    fetch_package(state, package_id, with_deps, false, verbose)
+}
+
 #[derive(Debug, Serialize)]
 pub struct FetchResult {
     pub success: bool,

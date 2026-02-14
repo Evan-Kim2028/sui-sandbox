@@ -8,11 +8,13 @@
 //! - `fetch_object_bcs`: Fetch object BCS (optionally at historical version) via gRPC
 //! - `fetch_historical_package_bytecodes`: Fetch checkpoint-pinned package bytecodes via gRPC
 //! - `fetch_package_bytecodes`: Fetch package bytecodes via GraphQL
+//! - `prepare_package_context`: Fetch package closure for two-step replay flows
 //! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
 //! - `transaction_json_to_bcs`: Convert Snowflake/canonical TransactionData JSON to BCS bytes
 //! - `call_view_function`: Execute a Move view function in the local VM
 //! - `fuzz_function`: Fuzz a Move function with random inputs
 //! - `replay`: Replay historical transactions (with optional analysis-only mode)
+//! - `replay_transaction`: Opinionated replay helper with compact signature
 //! - `import_state`: Import replay data files into local cache
 //! - `deserialize_transaction`: Decode raw transaction BCS
 //! - `deserialize_package`: Decode raw package BCS
@@ -22,6 +24,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -1541,18 +1544,20 @@ fn fetch_package_bytecodes_inner(
     if resolve_deps {
         let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
         let mut visited = HashSet::new();
+        let root = AccountAddress::from_hex_literal(package_id)
+            .with_context(|| format!("invalid package address: {}", package_id))?;
         for fw in ["0x1", "0x2", "0x3"] {
-            visited.insert(AccountAddress::from_hex_literal(fw).unwrap());
+            let fw_addr = AccountAddress::from_hex_literal(fw).unwrap();
+            if fw_addr != root {
+                visited.insert(fw_addr);
+            }
         }
-        to_fetch.push_back(
-            AccountAddress::from_hex_literal(package_id)
-                .with_context(|| format!("invalid package address: {}", package_id))?,
-        );
+        to_fetch.push_back(root);
 
         const MAX_DEP_ROUNDS: usize = 20;
         let mut rounds = 0;
         while let Some(addr) = to_fetch.pop_front() {
-            if visited.contains(&addr) || is_framework_address(&addr) {
+            if visited.contains(&addr) || (is_framework_address(&addr) && addr != root) {
                 continue;
             }
             rounds += 1;
@@ -1593,6 +1598,51 @@ fn fetch_package_bytecodes_inner(
         "packages": packages,
         "count": packages.len(),
     }))
+}
+
+fn prepare_package_context_inner(
+    package_id: &str,
+    resolve_deps: bool,
+    output_path: Option<&str>,
+) -> Result<serde_json::Value> {
+    let fetched = fetch_package_bytecodes_inner(package_id, resolve_deps)?;
+    let generated_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut payload = serde_json::json!({
+        "version": 1,
+        "package_id": package_id,
+        "resolve_deps": resolve_deps,
+        "generated_at_ms": generated_at_ms,
+        "packages": fetched.get("packages").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "count": fetched.get("count").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    });
+
+    if let Some(path) = output_path {
+        let path_buf = PathBuf::from(path);
+        if let Some(parent) = path_buf.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "Failed to create context output directory {}",
+                        parent.display()
+                    )
+                })?;
+            }
+        }
+        std::fs::write(&path_buf, serde_json::to_string_pretty(&payload)?)
+            .with_context(|| format!("Failed to write context file {}", path_buf.display()))?;
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "context_path".to_string(),
+                serde_json::json!(path_buf.display().to_string()),
+            );
+        }
+    }
+
+    Ok(payload)
 }
 
 // ---------------------------------------------------------------------------
@@ -2341,6 +2391,120 @@ fn fetch_package_bytecodes(
     json_value_to_py(py, &value)
 }
 
+/// Prepare a generic package context by fetching package bytecodes (+deps by default).
+///
+/// This is step 1 of a simple two-step developer flow:
+/// 1) `prepare_package_context(...)`
+/// 2) `replay_transaction(...)`
+///
+/// Args:
+///     package_id: Root package id (0x...)
+///     resolve_deps: If True, fetch transitive dependency closure (default: True)
+///     output_path: Optional JSON path to persist the context payload
+///
+/// Returns: Dict with `package_id`, `packages`, and `count`
+#[pyfunction]
+#[pyo3(signature = (package_id, *, resolve_deps=true, output_path=None))]
+fn prepare_package_context(
+    py: Python<'_>,
+    package_id: &str,
+    resolve_deps: bool,
+    output_path: Option<&str>,
+) -> PyResult<PyObject> {
+    let package_id_owned = package_id.to_string();
+    let output_path_owned = output_path.map(|s| s.to_string());
+    let value = py
+        .allow_threads(move || {
+            prepare_package_context_inner(
+                &package_id_owned,
+                resolve_deps,
+                output_path_owned.as_deref(),
+            )
+        })
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
+/// Replay a transaction with opinionated defaults for a compact native API.
+///
+/// Args:
+///     digest: Transaction digest (optional when state_file contains a single transaction)
+///     checkpoint: Optional checkpoint (if provided and source is omitted, source defaults to walrus)
+///     source: "hybrid", "grpc", or "walrus" (default: inferred)
+///     state_file: Optional replay-state JSON for deterministic local input data
+///     cache_dir: Optional local replay cache when source="local"
+///     rpc_url: Sui RPC endpoint
+///     allow_fallback: Allow fallback hydration paths
+///     prefetch_depth: Dynamic field prefetch depth
+///     prefetch_limit: Dynamic field prefetch limit
+///     auto_system_objects: Auto inject Clock/Random if missing
+///     no_prefetch: Disable prefetch
+///     compare: Compare local execution with on-chain effects
+///     analyze_only: Hydration-only mode
+///     verbose: Verbose replay logging
+///
+/// Returns: Replay result dict
+#[pyfunction]
+#[pyo3(signature = (
+    digest=None,
+    *,
+    checkpoint=None,
+    source=None,
+    state_file=None,
+    cache_dir=None,
+    rpc_url="https://fullnode.mainnet.sui.io:443",
+    allow_fallback=true,
+    prefetch_depth=3,
+    prefetch_limit=200,
+    auto_system_objects=true,
+    no_prefetch=false,
+    compare=false,
+    analyze_only=false,
+    verbose=false,
+))]
+fn replay_transaction(
+    py: Python<'_>,
+    digest: Option<&str>,
+    checkpoint: Option<u64>,
+    source: Option<&str>,
+    state_file: Option<&str>,
+    cache_dir: Option<&str>,
+    rpc_url: &str,
+    allow_fallback: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
+    auto_system_objects: bool,
+    no_prefetch: bool,
+    compare: bool,
+    analyze_only: bool,
+    verbose: bool,
+) -> PyResult<PyObject> {
+    let source_owned = source.map(|s| s.to_string()).unwrap_or_else(|| {
+        if checkpoint.is_some() {
+            "walrus".to_string()
+        } else {
+            "hybrid".to_string()
+        }
+    });
+    replay(
+        py,
+        digest,
+        rpc_url,
+        &source_owned,
+        checkpoint,
+        state_file,
+        cache_dir,
+        allow_fallback,
+        prefetch_depth,
+        prefetch_limit,
+        auto_system_objects,
+        no_prefetch,
+        compare,
+        analyze_only,
+        verbose,
+    )
+}
+
 /// Fuzz a Move function with randomly generated inputs.
 ///
 /// Standalone — no CLI binary needed.
@@ -2447,10 +2611,12 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deserialize_transaction, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize_package, m)?)?;
     m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_package_context, m)?)?;
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(transaction_json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
     m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
     m.add_function(wrap_pyfunction!(replay, m)?)?;
+    m.add_function(wrap_pyfunction!(replay_transaction, m)?)?;
     Ok(())
 }
