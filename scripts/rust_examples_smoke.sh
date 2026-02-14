@@ -45,7 +45,6 @@ fi
 for ex in \
   ptb_basics \
   state_json_offline_replay \
-  workflow_auto_from_package \
   deepbook_margin_state \
   deepbook_spot_offline_ptb
 do

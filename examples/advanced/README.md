@@ -19,7 +19,9 @@ sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json
 sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json
 
 # package-id -> draft adapter workflow (scaffold + validate + dry-run)
-cargo run --example workflow_auto_from_package -- --package-id 0x2
+sui-sandbox workflow auto --package-id 0x2 --output examples/out/workflow_auto/workflow.auto.2.json --force
+sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.json
+sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
 ```
 
 ### Package Analysis

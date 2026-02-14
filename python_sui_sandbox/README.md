@@ -56,54 +56,19 @@ python3 python_sui_sandbox/examples/03_replay_analyze.py
 python3 python_sui_sandbox/examples/03_replay_analyze.py --digest <DIGEST> --checkpoint <CP>
 ```
 
-## Optional Workflow Pass-Through Examples
+## Workflow CLI (Direct)
 
-Use these after the core 3 examples if you want typed workflow orchestration from Python.
-
-### 4) Typed workflow pass-through (Python -> Rust CLI)
+For workflow orchestration, use direct CLI commands:
 
 ```bash
-python3 python_sui_sandbox/examples/04_workflow_passthrough.py
-python3 python_sui_sandbox/examples/04_workflow_passthrough.py --run
+sui-sandbox workflow auto --package-id 0x2 --output examples/out/workflow_auto/workflow.auto.2.json --force
+sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.json
+sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
 ```
-
-This example intentionally keeps Python thin:
-
-- Python builds a workflow JSON spec.
-- Rust CLI (`sui-sandbox workflow`) performs validation and execution.
-- The run report is emitted as JSON for downstream tooling.
-
-### 5) Built-in workflow template pass-through
-
-```bash
-python3 python_sui_sandbox/examples/05_workflow_init_template.py --template cetus
-python3 python_sui_sandbox/examples/05_workflow_init_template.py --template suilend --package-id 0x2 --view-object 0x6 --view-object 0x8
-python3 python_sui_sandbox/examples/05_workflow_init_template.py --from-config examples/data/workflow_init_suilend.yaml
-```
-
-This flow delegates planning to Rust:
-
-- Python calls `workflow init` with template + optional protocol context.
-- Rust emits the typed spec.
-- Python calls `workflow validate` and `workflow run`.
-
-### 6) Workflow auto from package id (Python -> Rust CLI)
-
-```bash
-python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0x2
-python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
-python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0xdeadbeef --best-effort
-```
-
-This example mirrors the Rust `workflow_auto_from_package` flow and runs:
-
-- `workflow auto`
-- `workflow validate`
-- `workflow run --dry-run` (or `--run`)
 
 ## Native Margin Example (No CLI Pass-Through)
 
-### 7) DeepBook `manager_state` (native bindings only)
+### 4) DeepBook `manager_state` (native bindings only)
 
 ```bash
 python3 python_sui_sandbox/examples/06_deepbook_margin_state_native.py

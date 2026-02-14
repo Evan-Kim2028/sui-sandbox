@@ -20,7 +20,6 @@ Optional add-ons (after core):
 - `sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force`
 - `sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force`
 - `sui-sandbox workflow auto --package-id 0x2 --force`
-- `cargo run --example workflow_auto_from_package -- --package-id 0x2`
 - `cargo run --example walrus_ptb_universe`
 
 ### 1) Checkpoint Stream Replay (Core External Flow)
@@ -97,7 +96,7 @@ This demonstrates the typed `workflow` contract:
 
 - `kind: analyze_replay` step
 - `kind: replay` step
-- `kind: command` pass-through step
+- `kind: command` step
 - package-id-first draft adapter generation via `workflow auto`
 
 Use `--dry-run` for plan inspection and remove it to execute for real.
@@ -133,12 +132,12 @@ sui-sandbox workflow auto --package-id 0x2 --digest <DIGEST> --checkpoint <CP> -
 sui-sandbox workflow auto --package-id 0xdeadbeef --best-effort --force
 ```
 
-Recommended one-command path (generate + validate + dry-run):
+Recommended direct CLI path (generate + validate + dry-run):
 
 ```bash
-cargo run --example workflow_auto_from_package -- --package-id 0x2
-cargo run --example workflow_auto_from_package -- --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
-cargo run --example workflow_auto_from_package -- --package-id 0xdeadbeef --best-effort
+sui-sandbox workflow auto --package-id 0x2 --output examples/out/workflow_auto/workflow.auto.2.json --force
+sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.json
+sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
 ```
 
 ### 9) Walrus PTB Universe
@@ -188,10 +187,7 @@ It includes:
 1. Walrus checkpoint summary
 2. Package interface extraction
 3. Replay analyze (no VM execution)
-4. Typed workflow pass-through (Python -> Rust CLI)
-5. Built-in workflow template pass-through
-6. Workflow auto from package id (Python -> Rust CLI)
-7. DeepBook `manager_state` native example (no CLI pass-through)
+4. DeepBook `manager_state` native example (no CLI pass-through)
 
 ## Troubleshooting
 

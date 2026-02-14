@@ -80,25 +80,21 @@ EOF
   exit 1
 fi
 
-echo "[python-smoke] Syntax check examples 01/02/03/04/05/07"
+echo "[python-smoke] Syntax check examples 01/02/03/06"
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/01_walrus_checkpoint.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/02_extract_interface.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/03_replay_analyze.py
-"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/04_workflow_passthrough.py
-"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/05_workflow_init_template.py
-"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/07_workflow_auto_from_package.py
+"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/06_deepbook_margin_state_native.py
 
 echo "[python-smoke] Offline execution check for example 02 (local bytecode)"
 "$PYTHON_BIN" python_sui_sandbox/examples/02_extract_interface.py \
   --bytecode-dir tests/fixture/build/fixture \
   --module-limit 1 >/dev/null
 
-echo "[python-smoke] Offline CLI parse checks for examples 01/03/04/05/07"
+echo "[python-smoke] Offline CLI parse checks for examples 01/03/06"
 "$PYTHON_BIN" python_sui_sandbox/examples/01_walrus_checkpoint.py --help >/dev/null
 "$PYTHON_BIN" python_sui_sandbox/examples/03_replay_analyze.py --help >/dev/null
-"$PYTHON_BIN" python_sui_sandbox/examples/04_workflow_passthrough.py --help >/dev/null
-"$PYTHON_BIN" python_sui_sandbox/examples/05_workflow_init_template.py --help >/dev/null
-"$PYTHON_BIN" python_sui_sandbox/examples/07_workflow_auto_from_package.py --help >/dev/null
+"$PYTHON_BIN" python_sui_sandbox/examples/06_deepbook_margin_state_native.py --help >/dev/null
 
 if [[ "$RUN_NETWORK" == "1" ]]; then
   echo "[python-smoke] Network execution checks for examples 01 and 03"
