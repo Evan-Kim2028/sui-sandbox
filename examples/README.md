@@ -20,6 +20,7 @@ Optional add-ons (after core):
 - `sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force`
 - `sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force`
 - `sui-sandbox workflow auto --package-id 0x2 --force`
+- `./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force`
 - `cargo run --example walrus_ptb_universe`
 
 ### 1) Checkpoint Stream Replay (Core External Flow)
@@ -130,6 +131,13 @@ Config example:
 sui-sandbox workflow auto --package-id 0x2 --force
 sui-sandbox workflow auto --package-id 0x2 --digest <DIGEST> --checkpoint <CP> --force
 sui-sandbox workflow auto --package-id 0xdeadbeef --best-effort --force
+```
+
+Recommended one-command path (generate + validate + dry-run):
+
+```bash
+./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force
+./scripts/workflow_auto_bootstrap.sh --package-id 0xdeadbeef --best-effort --force
 ```
 
 ### 9) Walrus PTB Universe

@@ -17,6 +17,9 @@ sui-sandbox replay mutate --demo --out-dir examples/out/replay_mutation_lab
 ```bash
 sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json
 sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json
+
+# package-id -> draft adapter workflow (scaffold + validate + dry-run)
+./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force
 ```
 
 ### Package Analysis

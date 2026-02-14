@@ -87,6 +87,15 @@ This flow delegates planning to Rust:
 - Rust emits the typed spec.
 - Python calls `workflow validate` and `workflow run`.
 
+### 5b) Package-id draft adapter bootstrap (CLI helper)
+
+```bash
+./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force
+./scripts/workflow_auto_bootstrap.sh --package-id 0xdeadbeef --best-effort --force
+```
+
+Use this when onboarding a new protocol package quickly, then consume the generated workflow spec from Python pass-through flows.
+
 ## Native Margin Example (No CLI Pass-Through)
 
 ### 6) DeepBook `manager_state` (native bindings only)
