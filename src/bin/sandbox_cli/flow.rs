@@ -45,16 +45,13 @@ pub struct RunFlowCmd {
 #[derive(Debug, Deserialize)]
 struct FlowFile {
     version: u32,
-    #[allow(dead_code)]
     name: Option<String>,
-    #[allow(dead_code)]
     description: Option<String>,
     steps: Vec<FlowStep>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FlowStep {
-    #[allow(dead_code)]
     name: Option<String>,
     command: Vec<String>,
     #[serde(default)]
@@ -64,6 +61,8 @@ struct FlowStep {
 #[derive(Debug, Serialize)]
 struct FlowRunReport {
     flow_file: String,
+    name: Option<String>,
+    description: Option<String>,
     dry_run: bool,
     total_steps: usize,
     succeeded_steps: usize,
@@ -75,6 +74,7 @@ struct FlowRunReport {
 #[derive(Debug, Serialize, Clone)]
 struct FlowStepReport {
     index: usize,
+    name: Option<String>,
     command: Vec<String>,
     success: bool,
     exit_code: i32,
@@ -153,10 +153,18 @@ impl RunFlowCmd {
             return Err(anyhow!("Flow has no steps"));
         }
 
+        if let Some(name) = flow.name.as_deref() {
+            println!("Flow: {name}");
+        }
+        if let Some(description) = flow.description.as_deref() {
+            println!("Description: {description}");
+        }
+
         let start = Instant::now();
         let mut reports = Vec::with_capacity(flow.steps.len());
 
         for (idx, step) in flow.steps.iter().enumerate() {
+            let step_name = step.name.clone();
             if step.command.is_empty() {
                 return Err(anyhow!("Step {} has empty command", idx + 1));
             }
@@ -170,12 +178,16 @@ impl RunFlowCmd {
             let step_start = Instant::now();
             let display_cmd = step.command.join(" ");
             if !json_output {
-                println!("[flow:{}] {}", idx + 1, display_cmd);
+                match step_name.as_deref() {
+                    Some(name) => println!("[flow:{}:{}] {}", idx + 1, name, display_cmd),
+                    None => println!("[flow:{}] {}", idx + 1, display_cmd),
+                }
             }
 
             if self.dry_run {
                 reports.push(FlowStepReport {
                     index: idx + 1,
+                    name: step_name.clone(),
                     command: step.command.clone(),
                     success: true,
                     exit_code: 0,
@@ -220,6 +232,7 @@ impl RunFlowCmd {
             };
             reports.push(FlowStepReport {
                 index: idx + 1,
+                name: step_name.clone(),
                 command: step.command.clone(),
                 success: ok,
                 exit_code: code,
@@ -228,7 +241,13 @@ impl RunFlowCmd {
             });
 
             if !(ok || self.continue_on_error || step.continue_on_error) {
-                let report = build_report(&self.flow_file, self.dry_run, &reports, start.elapsed());
+                let report = build_report(
+                    &self.flow_file,
+                    &flow,
+                    self.dry_run,
+                    &reports,
+                    start.elapsed(),
+                );
                 if json_output {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
@@ -245,7 +264,13 @@ impl RunFlowCmd {
             }
         }
 
-        let report = build_report(&self.flow_file, self.dry_run, &reports, start.elapsed());
+        let report = build_report(
+            &self.flow_file,
+            &flow,
+            self.dry_run,
+            &reports,
+            start.elapsed(),
+        );
         if json_output {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -268,6 +293,7 @@ impl RunFlowCmd {
 
 fn build_report(
     flow_file: &Path,
+    flow: &FlowFile,
     dry_run: bool,
     reports: &[FlowStepReport],
     elapsed: std::time::Duration,
@@ -276,6 +302,8 @@ fn build_report(
     let failed = reports.len().saturating_sub(succeeded);
     FlowRunReport {
         flow_file: flow_file.display().to_string(),
+        name: flow.name.clone(),
+        description: flow.description.clone(),
         dry_run,
         total_steps: reports.len(),
         succeeded_steps: succeeded,

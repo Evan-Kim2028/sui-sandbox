@@ -17,6 +17,8 @@ pip install sui-sandbox
 ```bash
 cd crates/sui-python
 pip install maturin
+# For Python 3.14 with current PyO3 constraints:
+#   PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 maturin develop --release
 maturin develop --release
 ```
 

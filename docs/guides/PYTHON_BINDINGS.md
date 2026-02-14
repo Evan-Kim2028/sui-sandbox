@@ -12,6 +12,10 @@ All commands below run from the repository root: `sui-sandbox/`.
 
 If your default interpreter is Python 3.14, prefer creating a 3.13 virtual environment for local builds.
 
+If you must build with Python 3.14, set:
+`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`
+when running build/test commands.
+
 ## 1. Local Development Install
 
 ```bash
@@ -19,6 +23,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
 
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 \\
 maturin develop --manifest-path crates/sui-python/Cargo.toml --release
 ```
 
@@ -39,6 +44,11 @@ PY
 python -m pip install --upgrade maturin
 rm -rf dist
 
+# For Python 3.9-3.13:
+maturin build --manifest-path crates/sui-python/Cargo.toml --release -o dist
+
+# For Python 3.14, set ABI3 compatibility explicitly:
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 \\
 maturin build --manifest-path crates/sui-python/Cargo.toml --release -o dist
 maturin sdist --manifest-path crates/sui-python/Cargo.toml -o dist
 
