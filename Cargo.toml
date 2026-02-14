@@ -194,6 +194,10 @@ path = "examples/walrus_ptb_universe.rs"
 name = "state_json_offline_replay"
 path = "examples/state_json_offline_replay.rs"
 
+[[example]]
+name = "workflow_auto_from_package"
+path = "examples/workflow_auto_from_package.rs"
+
 # sui-sandbox CLI binary
 [[bin]]
 name = "sui-sandbox"

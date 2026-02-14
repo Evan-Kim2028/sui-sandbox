@@ -20,7 +20,7 @@ Optional add-ons (after core):
 - `sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force`
 - `sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force`
 - `sui-sandbox workflow auto --package-id 0x2 --force`
-- `./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force`
+- `cargo run --example workflow_auto_from_package -- --package-id 0x2`
 - `cargo run --example walrus_ptb_universe`
 
 ### 1) Checkpoint Stream Replay (Core External Flow)
@@ -136,8 +136,9 @@ sui-sandbox workflow auto --package-id 0xdeadbeef --best-effort --force
 Recommended one-command path (generate + validate + dry-run):
 
 ```bash
-./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force
-./scripts/workflow_auto_bootstrap.sh --package-id 0xdeadbeef --best-effort --force
+cargo run --example workflow_auto_from_package -- --package-id 0x2
+cargo run --example workflow_auto_from_package -- --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+cargo run --example workflow_auto_from_package -- --package-id 0xdeadbeef --best-effort
 ```
 
 ### 9) Walrus PTB Universe
@@ -189,7 +190,8 @@ It includes:
 3. Replay analyze (no VM execution)
 4. Typed workflow pass-through (Python -> Rust CLI)
 5. Built-in workflow template pass-through
-6. DeepBook `manager_state` native example (no CLI pass-through)
+6. Workflow auto from package id (Python -> Rust CLI)
+7. DeepBook `manager_state` native example (no CLI pass-through)
 
 ## Troubleshooting
 

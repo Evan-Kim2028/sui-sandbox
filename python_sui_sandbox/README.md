@@ -87,18 +87,23 @@ This flow delegates planning to Rust:
 - Rust emits the typed spec.
 - Python calls `workflow validate` and `workflow run`.
 
-### 5b) Package-id draft adapter bootstrap (CLI helper)
+### 6) Workflow auto from package id (Python -> Rust CLI)
 
 ```bash
-./scripts/workflow_auto_bootstrap.sh --package-id 0x2 --force
-./scripts/workflow_auto_bootstrap.sh --package-id 0xdeadbeef --best-effort --force
+python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0x2
+python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+python3 python_sui_sandbox/examples/07_workflow_auto_from_package.py --package-id 0xdeadbeef --best-effort
 ```
 
-Use this when onboarding a new protocol package quickly, then consume the generated workflow spec from Python pass-through flows.
+This example mirrors the Rust `workflow_auto_from_package` flow and runs:
+
+- `workflow auto`
+- `workflow validate`
+- `workflow run --dry-run` (or `--run`)
 
 ## Native Margin Example (No CLI Pass-Through)
 
-### 6) DeepBook `manager_state` (native bindings only)
+### 7) DeepBook `manager_state` (native bindings only)
 
 ```bash
 python3 python_sui_sandbox/examples/06_deepbook_margin_state_native.py
