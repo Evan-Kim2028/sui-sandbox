@@ -105,15 +105,11 @@ Copy `.env.example` to `.env` and configure:
 cp .env.example .env
 ```
 
-Key variables:
+Environment variable reference:
 
-- `SUI_GRPC_ENDPOINT` - gRPC endpoint for mainnet data
-- `SUI_GRPC_API_KEY` - API key for gRPC (if required by your provider)
-- `SUI_SANDBOX_HOME` - Override default sandbox home (cache, projects, logs)
-- `OPENROUTER_API_KEY` - For LLM-based features (optional)
-- `SMI_SENDER` - Public address for dry-run simulation
+- [docs/reference/ENV_VARS.md](reference/ENV_VARS.md)
 
-See `.env.example` for full documentation.
+See `.env.example` for optional helper defaults and credentials placeholders.
 
 ## PyO3 Native Python Bindings
 

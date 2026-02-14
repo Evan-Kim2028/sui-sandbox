@@ -117,23 +117,11 @@ cargo build --release --bin sui-sandbox
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `SUI_GRPC_API_KEY` | API key for authenticated gRPC endpoints (used with `--rpc-url`) |
-| `SUI_SANDBOX_HOME` | Override sandbox home for cache/logs (default: `~/.sui-sandbox`) |
-| `SUI_GRAPHQL_ENDPOINT` | Override GraphQL endpoint for `fetch`/`replay` (defaults from `--rpc-url` network inference) |
-| `SUI_DEBUG_LINKAGE` | Set to `1` to log package linkage/version resolution during replay and fetch |
-| `SUI_DEBUG_MUTATIONS` | Set to `1` to log mutation tracking details during replay |
-| `SUI_WALRUS_ENABLED` | Set to `true` to enable Walrus checkpoint hydration (input/output objects) |
-| `SUI_WALRUS_CACHE_URL` | Walrus caching server base URL (checkpoint metadata) |
-| `SUI_WALRUS_AGGREGATOR_URL` | Walrus aggregator base URL (checkpoint blobs) |
-| `SUI_WALRUS_NETWORK` | `mainnet` or `testnet` (used for Walrus defaults) |
-| `SUI_WALRUS_TIMEOUT_SECS` | Walrus fetch timeout in seconds (default 10) |
-| `SUI_WALRUS_LOCAL_STORE` | Enable local filesystem object store for Walrus checkpoints |
-| `SUI_WALRUS_STORE_DIR` | Override local store path (defaults to `$SUI_SANDBOX_HOME/walrus-store/<network>`) |
-| `SUI_WALRUS_FULL_CHECKPOINT_INGEST` | Ingest all objects in a checkpoint into the local store (default: true when local store enabled) |
-| `SUI_WALRUS_RECURSIVE_LOOKUP` | Use local index to hydrate missing objects from Walrus checkpoints (default: true when local store enabled) |
-| `SUI_WALRUS_RECURSIVE_MAX_CHECKPOINTS` | Max checkpoints to pull per replay when doing recursive lookup (default 5) |
+Most environment variables are centralized in:
+
+- [ENV_VARS.md](ENV_VARS.md)
+
+The fetch/replay path also reads a local `.env` file if present.
 
 ### Commands
 

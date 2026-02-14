@@ -105,6 +105,7 @@ More:
 | Learn by running examples | [examples/README.md](examples/README.md) |
 | Replay transactions end-to-end | [docs/guides/TRANSACTION_REPLAY.md](docs/guides/TRANSACTION_REPLAY.md) |
 | Debug replay failures | [docs/guides/REPLAY_TRIAGE.md](docs/guides/REPLAY_TRIAGE.md) |
+| Configure environment variables | [docs/reference/ENV_VARS.md](docs/reference/ENV_VARS.md) |
 | Find every CLI flag | [docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md) |
 | Review caveats/parity limits | [docs/reference/LIMITATIONS.md](docs/reference/LIMITATIONS.md) |
 | Build/test Python bindings locally | [docs/guides/PYTHON_BINDINGS.md](docs/guides/PYTHON_BINDINGS.md) |

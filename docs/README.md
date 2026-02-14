@@ -35,6 +35,8 @@ Use this file as the docs entrypoint.
 
 - CLI commands and flags:
   - [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md)
+- Environment variables:
+  - [reference/ENV_VARS.md](reference/ENV_VARS.md)
 - PTB JSON schema:
   - [reference/PTB_SCHEMA.md](reference/PTB_SCHEMA.md)
 - Error codes:

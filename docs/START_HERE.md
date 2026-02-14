@@ -46,5 +46,6 @@ Start here if you just want to run replay now:
 | Find all CLI flags and commands | [reference/CLI_REFERENCE.md](reference/CLI_REFERENCE.md) |
 | Understand known parity caveats | [reference/LIMITATIONS.md](reference/LIMITATIONS.md) |
 | Build Python bindings locally | [guides/PYTHON_BINDINGS.md](guides/PYTHON_BINDINGS.md) |
+| Review environment variables | [reference/ENV_VARS.md](reference/ENV_VARS.md) |
 
 Docs index: [README.md](README.md)
