@@ -1286,8 +1286,9 @@ fn call_view_function_inner(
 
                 let rt = tokio::runtime::Runtime::new().ok()?;
                 let fetched = rt.block_on(async {
-                    let client =
-                        GrpcClient::with_api_key(&grpc_cfg.0, grpc_cfg.1.clone()).await.ok()?;
+                    let client = GrpcClient::with_api_key(&grpc_cfg.0, grpc_cfg.1.clone())
+                        .await
+                        .ok()?;
                     client
                         .get_object_at_version(&child_id_str, historical_version)
                         .await
@@ -1504,7 +1505,10 @@ fn fetch_historical_package_bytecodes_inner(
         for (dep_runtime, dep_storage) in &pkg.linkage {
             let dep_runtime_id = dep_runtime.to_hex_literal();
             let dep_storage_id = dep_storage.to_hex_literal();
-            linkage_map.insert(dep_runtime_id.clone(), serde_json::json!(dep_storage_id.clone()));
+            linkage_map.insert(
+                dep_runtime_id.clone(),
+                serde_json::json!(dep_storage_id.clone()),
+            );
             if dep_runtime_id != dep_storage_id {
                 linkage_upgrades.insert(dep_runtime_id, serde_json::json!(dep_storage_id));
             }
@@ -2181,13 +2185,13 @@ fn call_view_function(
     let mut parsed_package_versions: HashMap<String, u64> = HashMap::new();
     let mut historical_payload_mode = false;
     if let Some(ref pb) = package_bytecodes {
-        let packages_dict: Bound<'_, PyDict> = if let Some(packages_any) = pb.get_item("packages")?
-        {
-            historical_payload_mode = true;
-            packages_any.extract()?
-        } else {
-            pb.clone()
-        };
+        let packages_dict: Bound<'_, PyDict> =
+            if let Some(packages_any) = pb.get_item("packages")? {
+                historical_payload_mode = true;
+                packages_any.extract()?
+            } else {
+                pb.clone()
+            };
 
         for (key, value) in packages_dict.iter() {
             let pkg_id: String = key.extract()?;
@@ -2225,9 +2229,7 @@ fn call_view_function(
         }
         if let Some(pkg_versions_any) = pb.get_item("package_versions")? {
             parsed_package_versions = pkg_versions_any.extract().map_err(|_| {
-                PyRuntimeError::new_err(
-                    "package_bytecodes.package_versions must be Dict[str, int]",
-                )
+                PyRuntimeError::new_err("package_bytecodes.package_versions must be Dict[str, int]")
             })?;
         }
     }

@@ -70,8 +70,7 @@ fn run(args: Args) -> Result<()> {
     }
 
     let aliases = build_address_aliases(&replay_state);
-    let resolver =
-        hydrate_resolver_from_replay_state(&replay_state, &linkage_upgrades, &aliases)?;
+    let resolver = hydrate_resolver_from_replay_state(&replay_state, &linkage_upgrades, &aliases)?;
 
     let package_versions: HashMap<AccountAddress, u64> = replay_state
         .packages
@@ -155,5 +154,6 @@ fn select_replay_state(states: Vec<ReplayState>, digest: &str) -> Result<ReplayS
 }
 
 fn default_state_json_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/data/state_json_synthetic_ptb_demo.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/state_json_synthetic_ptb_demo.json")
 }

@@ -2213,7 +2213,9 @@ fn build_guided_summary_from_report(report: &Value, run_dir: &Path) -> GuidedSum
             .pointer("/heal/local_success")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        heal_synthetic_inputs: chosen.pointer("/heal/synthetic_inputs").and_then(Value::as_u64),
+        heal_synthetic_inputs: chosen
+            .pointer("/heal/synthetic_inputs")
+            .and_then(Value::as_u64),
         heal_commands_executed: chosen
             .pointer("/heal/commands_executed")
             .and_then(Value::as_u64),
