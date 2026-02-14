@@ -185,6 +185,18 @@ It includes:
 
 ## Troubleshooting
 
+### Rust example smoke checks
+
+```bash
+./scripts/rust_examples_smoke.sh
+```
+
+Include network DeepBook runs:
+
+```bash
+SUI_GRPC_ENDPOINT=https://archive.mainnet.sui.io:443 ./scripts/rust_examples_smoke.sh --network
+```
+
 ### Build errors
 
 ```bash

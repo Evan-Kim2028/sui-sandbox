@@ -103,6 +103,16 @@ This path mirrors the Rust DeepBook flow with Python bindings only:
 3. Fetch checkpoint-pinned package bytecodes/dependencies via `fetch_historical_package_bytecodes(...)`.
 4. Execute `call_view_function(...)` with on-demand child-object fetch enabled (`fetch_deps=False` because deps are already in the historical package payload).
 
+## DeepBook Spot Pool + Orders
+
+For now, the full multi-step offline PTB flow (create permissionless pool, deposit, place orders, then query state) is available as a Rust example:
+
+```bash
+cargo run --example deepbook_spot_offline_ptb
+```
+
+Current Python bindings expose single-call `call_view_function(...)`, but not a multi-command PTB builder with cross-command object chaining yet.
+
 ## Margin State Direction
 
 To keep Rust and Python margin logic aligned 1:1, use the same phase model in both languages:

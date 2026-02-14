@@ -79,10 +79,30 @@ cargo run --example deepbook_timeseries
 cargo run --example deepbook_json_bcs_only
 ```
 
+### DeepBook Spot Offline PTB (Pool + Orders)
+
+```bash
+cargo run --example deepbook_spot_offline_ptb
+```
+
+This example fetches live DeepBook package/state once, then runs locally to:
+
+- create a permissionless SUI/STABLECOIN pool
+- create a balance manager + deposits
+- place bid/ask limit orders
+- query locked balances
+
 Data and docs:
 
 - `examples/advanced/deepbook_margin_state/README.md`
 - `examples/advanced/deepbook_margin_state/data/`
+
+Validation helper:
+
+```bash
+./scripts/rust_examples_smoke.sh
+./scripts/rust_examples_smoke.sh --network
+```
 
 ## Notes
 

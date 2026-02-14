@@ -48,6 +48,8 @@ jobs:
           cache-on-failure: true
 
       - run: cargo test --locked --workspace --tests
+      - name: Rust examples smoke (offline)
+        run: ./scripts/rust_examples_smoke.sh
 
   python-smoke:
     runs-on: ubuntu-latest

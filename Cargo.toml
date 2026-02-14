@@ -183,6 +183,10 @@ name = "deepbook_json_bcs_only"
 path = "examples/advanced/deepbook_margin_state/json_bcs_only.rs"
 
 [[example]]
+name = "deepbook_spot_offline_ptb"
+path = "examples/advanced/deepbook_spot_offline_ptb.rs"
+
+[[example]]
 name = "walrus_ptb_universe"
 path = "examples/walrus_ptb_universe.rs"
 
