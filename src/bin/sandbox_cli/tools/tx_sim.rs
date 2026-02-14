@@ -42,8 +42,8 @@ enum Mode {
     about = "Tx simulation helper (dev-inspect or dry-run) using gRPC"
 )]
 pub struct TxSimCmd {
-    /// gRPC endpoint URL (default: mainnet fullnode)
-    #[arg(long, default_value = "https://fullnode.mainnet.sui.io:443")]
+    /// gRPC endpoint URL (default: mainnet archive endpoint)
+    #[arg(long, default_value = "https://archive.mainnet.sui.io:443")]
     grpc_url: String,
 
     /// Transaction sender address.

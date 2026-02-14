@@ -14,7 +14,7 @@
 //!   cargo run --example gas_accuracy_test
 //!
 //! Required environment variables:
-//!   SUI_GRPC_ENDPOINT - gRPC endpoint (default: https://fullnode.mainnet.sui.io:443)
+//!   SUI_GRPC_ENDPOINT - gRPC endpoint (default: https://archive.mainnet.sui.io:443)
 //!   SUI_GRPC_API_KEY  - API key for gRPC (optional)
 
 use anyhow::{anyhow, Result};
@@ -157,7 +157,7 @@ fn main() -> Result<()> {
 
     // Get gRPC endpoint from environment
     let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
+        .unwrap_or_else(|_| "https://archive.mainnet.sui.io:443".to_string());
     let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     println!("gRPC Endpoint: {}", endpoint);

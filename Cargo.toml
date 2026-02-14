@@ -168,23 +168,27 @@ path = "examples/ptb_basics.rs"
 
 [[example]]
 name = "fork_state"
-path = "examples/fork_state.rs"
+path = "examples/advanced/fork_state.rs"
 
 [[example]]
 name = "deepbook_margin_state"
-path = "examples/deepbook_margin_state/main.rs"
+path = "examples/advanced/deepbook_margin_state/main.rs"
 
 [[example]]
 name = "deepbook_timeseries"
-path = "examples/deepbook_margin_state/timeseries.rs"
+path = "examples/advanced/deepbook_margin_state/timeseries.rs"
 
 [[example]]
 name = "deepbook_json_bcs_only"
-path = "examples/deepbook_margin_state/json_bcs_only.rs"
+path = "examples/advanced/deepbook_margin_state/json_bcs_only.rs"
 
 [[example]]
 name = "walrus_ptb_universe"
 path = "examples/walrus_ptb_universe.rs"
+
+[[example]]
+name = "state_json_offline_replay"
+path = "examples/state_json_offline_replay.rs"
 
 # sui-sandbox CLI binary
 [[bin]]

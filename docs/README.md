@@ -50,6 +50,8 @@ Use this file as the docs entrypoint.
   - [ARCHITECTURE.md](ARCHITECTURE.md)
 - Prefetch internals:
   - [architecture/PREFETCHING.md](architecture/PREFETCHING.md)
+- Typed workflow engine contract:
+  - [architecture/WORKFLOW_ENGINE.md](architecture/WORKFLOW_ENGINE.md)
 - Consolidation notes:
   - [architecture/CONSOLIDATION_CANDIDATES.md](architecture/CONSOLIDATION_CANDIDATES.md)
 - Issue 26 implementation roadmap:

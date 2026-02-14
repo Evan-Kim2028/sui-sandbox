@@ -9,6 +9,14 @@ def get_latest_checkpoint() -> int: ...
 
 def get_checkpoint(checkpoint: int) -> Dict[str, Any]: ...
 
+def fetch_object_bcs(
+    object_id: str,
+    *,
+    version: Optional[int] = ...,
+    endpoint: Optional[str] = ...,
+    api_key: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
 def import_state(*, state: Optional[str] = ..., transactions: Optional[str] = ..., objects: Optional[str] = ..., packages: Optional[str] = ..., cache_dir: Optional[str] = ...) -> Dict[str, Any]: ...
 
 def deserialize_transaction(raw_bcs: bytes) -> Dict[str, Any]: ...
@@ -16,6 +24,15 @@ def deserialize_transaction(raw_bcs: bytes) -> Dict[str, Any]: ...
 def deserialize_package(bcs: bytes) -> Dict[str, Any]: ...
 
 def fetch_package_bytecodes(package_id: str, *, resolve_deps: bool = ...) -> Dict[str, Any]: ...
+
+def fetch_historical_package_bytecodes(
+    package_ids: List[str],
+    *,
+    type_refs: List[str] = ...,
+    checkpoint: Optional[int] = ...,
+    endpoint: Optional[str] = ...,
+    api_key: Optional[str] = ...,
+) -> Dict[str, Any]: ...
 
 def json_to_bcs(type_str: str, object_json: str, package_bytecodes: List[bytes]) -> bytes: ...
 
@@ -30,7 +47,11 @@ def call_view_function(
     object_inputs: List[Dict[str, Any]] = ...,
     pure_inputs: List[bytes] = ...,
     child_objects: Optional[Dict[str, List[Dict[str, Any]]]] = ...,
-    package_bytecodes: Optional[Dict[str, List[bytes]]] = ...,
+    historical_versions: Optional[Dict[str, int]] = ...,
+    fetch_child_objects: bool = ...,
+    grpc_endpoint: Optional[str] = ...,
+    grpc_api_key: Optional[str] = ...,
+    package_bytecodes: Optional[Dict[str, Any]] = ...,
     fetch_deps: bool = ...,
 ) -> Dict[str, Any]: ...
 

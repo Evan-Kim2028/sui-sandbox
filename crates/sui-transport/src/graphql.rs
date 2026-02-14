@@ -38,6 +38,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Parse an environment variable with a default value.
@@ -56,6 +58,13 @@ const MAX_PAGE_SIZE: usize = 50;
 pub struct GraphQLClient {
     endpoint: String,
     agent: ureq::Agent,
+    circuit_state: Arc<GraphQLCircuitState>,
+}
+
+#[derive(Debug, Default)]
+struct GraphQLCircuitState {
+    consecutive_timeouts: AtomicUsize,
+    open_until_epoch_ms: AtomicU64,
 }
 
 /// Relay-style pagination info from GraphQL responses.
@@ -547,6 +556,90 @@ impl GraphQLClient {
             .build()
     }
 
+    fn circuit_breaker_enabled() -> bool {
+        !matches!(
+            std::env::var("SUI_GRAPHQL_CIRCUIT_BREAKER")
+                .ok()
+                .as_deref()
+                .map(|v| v.to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("no") | Some("off")
+        )
+    }
+
+    fn circuit_timeout_threshold() -> usize {
+        env_var_or("SUI_GRAPHQL_CIRCUIT_TIMEOUT_THRESHOLD", 2usize).max(1)
+    }
+
+    fn circuit_cooldown_secs() -> u64 {
+        env_var_or("SUI_GRAPHQL_CIRCUIT_COOLDOWN_SECS", 60u64).max(1)
+    }
+
+    fn unix_epoch_millis() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn timeout_like_error(msg: &str) -> bool {
+        let lower = msg.to_ascii_lowercase();
+        lower.contains("timed out") || lower.contains("timeout")
+    }
+
+    fn circuit_open_remaining_ms(&self) -> Option<u64> {
+        let now = Self::unix_epoch_millis();
+        let open_until = self
+            .circuit_state
+            .open_until_epoch_ms
+            .load(Ordering::Relaxed);
+        if open_until > now {
+            Some(open_until.saturating_sub(now))
+        } else {
+            None
+        }
+    }
+
+    fn record_circuit_success(&self) {
+        self.circuit_state
+            .consecutive_timeouts
+            .store(0, Ordering::Relaxed);
+        self.circuit_state
+            .open_until_epoch_ms
+            .store(0, Ordering::Relaxed);
+    }
+
+    fn record_circuit_error(&self, err_msg: &str) {
+        if !Self::timeout_like_error(err_msg) {
+            return;
+        }
+
+        let count = self
+            .circuit_state
+            .consecutive_timeouts
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        let threshold = Self::circuit_timeout_threshold();
+        if count < threshold {
+            return;
+        }
+
+        let now = Self::unix_epoch_millis();
+        let cooldown_ms = Self::circuit_cooldown_secs().saturating_mul(1000);
+        let open_until = now.saturating_add(cooldown_ms);
+        self.circuit_state
+            .open_until_epoch_ms
+            .store(open_until, Ordering::Relaxed);
+        self.circuit_state
+            .consecutive_timeouts
+            .store(0, Ordering::Relaxed);
+        eprintln!(
+            "[graphql_circuit] opened cooldown_ms={} reason=timeout threshold={}",
+            cooldown_ms, threshold
+        );
+    }
+
     /// Create a client for mainnet.
     pub fn mainnet() -> Self {
         Self::new("https://graphql.mainnet.sui.io/graphql")
@@ -568,24 +661,48 @@ impl GraphQLClient {
         Self {
             endpoint: endpoint.to_string(),
             agent: Self::build_agent(timeout, connect_timeout),
+            circuit_state: Arc::new(GraphQLCircuitState::default()),
         }
     }
 
     /// Execute a GraphQL query.
     fn query(&self, query: &str, variables: Option<Value>) -> Result<Value> {
+        if Self::circuit_breaker_enabled() {
+            if let Some(remaining_ms) = self.circuit_open_remaining_ms() {
+                return Err(anyhow!(
+                    "GraphQL circuit open ({}ms remaining)",
+                    remaining_ms
+                ));
+            }
+        }
+
         let body = serde_json::json!({
             "query": query,
             "variables": variables.unwrap_or(Value::Null)
         });
 
-        let response: Value = self
+        let response = self
             .agent
             .post(&self.endpoint)
             .set("Content-Type", "application/json")
             .send_json(&body)
-            .map_err(|e| anyhow!("GraphQL request failed: {}", e))?
-            .into_json()
-            .map_err(|e| anyhow!("Failed to parse GraphQL response: {}", e))?;
+            .map_err(|e| {
+                if Self::circuit_breaker_enabled() {
+                    self.record_circuit_error(&e.to_string());
+                }
+                anyhow!("GraphQL request failed: {}", e)
+            })?;
+
+        let response: Value = response.into_json().map_err(|e| {
+            if Self::circuit_breaker_enabled() {
+                self.record_circuit_error(&e.to_string());
+            }
+            anyhow!("Failed to parse GraphQL response: {}", e)
+        })?;
+
+        if Self::circuit_breaker_enabled() {
+            self.record_circuit_success();
+        }
 
         // Check for GraphQL errors
         if let Some(errors) = response.get("errors") {

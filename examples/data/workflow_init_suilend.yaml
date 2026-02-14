@@ -1,0 +1,12 @@
+template: suilend
+format: yaml
+output: ./examples/out/workflow_templates/workflow.suilend.config.yaml
+digest: At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2
+checkpoint: 239615926
+include_analyze_step: true
+strict_replay: true
+name: suilend_from_config_demo
+package_id: "0x2"
+view_objects:
+  - "0x6"
+  - "0x8"

@@ -16,8 +16,8 @@ sui-sandbox replay At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
 # Scan the latest 5 checkpoints — auto-discovers tip, prints summary
 sui-sandbox replay '*' --source walrus --latest 5 --compare
 
-# Or use the example script
-./examples/scan_checkpoints.sh 10
+# Scan a larger latest window
+sui-sandbox replay '*' --source walrus --latest 10 --compare
 ```
 
 ### Batch Replay

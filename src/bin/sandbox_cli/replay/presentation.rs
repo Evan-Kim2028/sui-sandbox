@@ -4,6 +4,8 @@ use crate::sandbox_cli::output::format_effects;
 
 use super::ReplayOutput;
 
+const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
+
 pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, verbose: bool) {
     println!("\x1b[1mTransaction Replay: {}\x1b[0m\n", result.digest);
 
@@ -18,6 +20,9 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
         println!("\x1b[31m✗ Local execution failed\x1b[0m");
         if let Some(err) = &result.local_error {
             println!("  Error: {}", err);
+            if let Some(hint) = archive_runtime_hint(err) {
+                println!("  Hint: {}", hint);
+            }
         }
         println!("  Commands executed: {}", result.commands_executed);
     }
@@ -141,6 +146,11 @@ pub(super) fn build_replay_debug_json(
 
 fn replay_hints_from_output(output: &ReplayOutput) -> Vec<String> {
     let mut hints = Vec::new();
+    if let Some(err) = output.local_error.as_deref() {
+        if let Some(hint) = archive_runtime_hint(err) {
+            hints.push(hint);
+        }
+    }
     if output.execution_path.vm_only && output.execution_path.fallback_used {
         hints.push("vm-only is enabled but fallback was used; inspect command flags".to_string());
     }
@@ -157,6 +167,33 @@ fn replay_hints_from_output(output: &ReplayOutput) -> Vec<String> {
         hints.push("Retry with --verbose and review failed command details above".to_string());
     }
     hints
+}
+
+fn archive_runtime_hint(error_message: &str) -> Option<String> {
+    if !looks_like_archive_runtime_gap(error_message) {
+        return None;
+    }
+
+    Some(format!(
+        "Likely missing runtime objects from archive replay (current endpoint: {}). Retry with `SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443`.",
+        effective_grpc_endpoint_for_hint()
+    ))
+}
+
+fn effective_grpc_endpoint_for_hint() -> String {
+    std::env::var("SUI_GRPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string())
+}
+
+fn looks_like_archive_runtime_gap(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("contractabort") && lower.contains("abort_code: 1"))
+        || lower.contains("unchanged_loaded_runtime_objects")
+        || lower.contains("missing runtime object")
+        || lower.contains("missing object input")
 }
 
 pub(super) fn enforce_strict(output: &ReplayOutput) -> Result<()> {
@@ -183,4 +220,36 @@ pub(super) fn enforce_strict(output: &ReplayOutput) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox_cli::replay::ReplayExecutionPath;
+
+    #[test]
+    fn replay_hints_include_archive_runtime_hint() {
+        let output = ReplayOutput {
+            digest: "dummy".to_string(),
+            local_success: false,
+            local_error: Some(
+                "ContractAbort { location: Undefined, abort_code: 1 } missing runtime object"
+                    .to_string(),
+            ),
+            execution_path: ReplayExecutionPath {
+                allow_fallback: true,
+                ..Default::default()
+            },
+            comparison: None,
+            effects: None,
+            effects_full: None,
+            commands_executed: 0,
+            batch_summary_printed: false,
+        };
+
+        let hints = replay_hints_from_output(&output);
+        assert!(hints
+            .iter()
+            .any(|hint| hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")));
+    }
 }

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "walrus_multi_swap_flash_loan_replay",
+  "description": "Pinned Walrus replay for a multi-DEX flash-loan arbitrage transaction.",
+  "defaults": {
+    "source": "walrus",
+    "compare": true
+  },
+  "steps": [
+    {
+      "id": "replay",
+      "name": "Replay multi-swap flash loan",
+      "kind": "replay",
+      "digest": "63fPrufC6iYHdNzG7mXscaKkqTaYH8h4RQHuiUfUCXqz",
+      "checkpoint": "237204492"
+    },
+    {
+      "id": "status",
+      "name": "Session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    }
+  ]
+}

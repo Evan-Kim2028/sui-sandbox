@@ -12,6 +12,7 @@ hex.workspace = true
 
 # Async runtime
 tokio.workspace = true
+futures.workspace = true
 
 # Sui types
 move-core-types.workspace = true

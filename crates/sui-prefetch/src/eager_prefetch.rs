@@ -358,15 +358,18 @@ pub fn ground_truth_prefetch_for_transaction(
             fetch_pairs.push((pkg_id.clone(), version));
         }
 
-        // Fetch packages (sequentially for now, packages are usually few)
-        // Use get_object_at_version to respect historical versions from linkage
+        // Fetch packages in parallel while respecting historical versions from linkage.
         let pkg_results = rt.block_on(async {
-            let mut results = Vec::new();
-            for (id, version) in &fetch_pairs {
-                let res = grpc.get_object_at_version(id, *version).await;
-                results.push((id.clone(), res));
-            }
-            results
+            use futures::stream::{self, StreamExt};
+
+            stream::iter(fetch_pairs.into_iter())
+                .map(|(id, version)| async move {
+                    let res = grpc.get_object_at_version(&id, version).await;
+                    (id, res)
+                })
+                .buffer_unordered(config.fetch_concurrency.max(1))
+                .collect::<Vec<_>>()
+                .await
         });
 
         let mut new_deps: HashSet<String> = HashSet::new();
@@ -508,12 +511,16 @@ pub fn ground_truth_prefetch_for_transaction(
     // Fetch any upgraded packages we found
     if !upgrade_fetch_queue.is_empty() {
         let upgrade_results = rt.block_on(async {
-            let mut results = Vec::new();
-            for (pkg_id, version) in &upgrade_fetch_queue {
-                let res = grpc.get_object_at_version(pkg_id, Some(*version)).await;
-                results.push((pkg_id.clone(), version, res));
-            }
-            results
+            use futures::stream::{self, StreamExt};
+
+            stream::iter(upgrade_fetch_queue.into_iter())
+                .map(|(pkg_id, version)| async move {
+                    let res = grpc.get_object_at_version(&pkg_id, Some(version)).await;
+                    (pkg_id, version, res)
+                })
+                .buffer_unordered(config.fetch_concurrency.max(1))
+                .collect::<Vec<_>>()
+                .await
         });
 
         for (pkg_id, _version, fetch_result) in upgrade_results {
@@ -569,12 +576,16 @@ pub fn ground_truth_prefetch_for_transaction(
         // Fetch the upgraded packages discovered via GraphQL
         if !graphql_upgrade_queue.is_empty() {
             let upgrade_results = rt.block_on(async {
-                let mut results = Vec::new();
-                for (original_id, latest_addr) in &graphql_upgrade_queue {
-                    let res = grpc.get_object(latest_addr).await;
-                    results.push((original_id.clone(), latest_addr.clone(), res));
-                }
-                results
+                use futures::stream::{self, StreamExt};
+
+                stream::iter(graphql_upgrade_queue.into_iter())
+                    .map(|(original_id, latest_addr)| async move {
+                        let res = grpc.get_object(&latest_addr).await;
+                        (original_id, latest_addr, res)
+                    })
+                    .buffer_unordered(config.fetch_concurrency.max(1))
+                    .collect::<Vec<_>>()
+                    .await
             });
 
             for (original_id, latest_addr, fetch_result) in upgrade_results {

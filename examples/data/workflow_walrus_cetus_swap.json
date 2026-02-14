@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "walrus_cetus_swap_replay",
+  "description": "Pinned Walrus replay for a Cetus LEIA/SUI swap transaction.",
+  "defaults": {
+    "source": "walrus",
+    "compare": true
+  },
+  "steps": [
+    {
+      "id": "replay",
+      "name": "Replay Cetus swap",
+      "kind": "replay",
+      "digest": "7aQ29xk764ELpHjxxTyMUcHdvyoNzUcnBdwT7emhPNrp",
+      "checkpoint": "234219761"
+    },
+    {
+      "id": "status",
+      "name": "Session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    }
+  ]
+}

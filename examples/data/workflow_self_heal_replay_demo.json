@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "name": "self_heal_replay_demo",
+  "description": "Two-pass replay workflow: baseline strict pass, then self-heal pass with synthetic inputs/dynamic fields. Replace digest/checkpoint before running.",
+  "defaults": {
+    "source": "hybrid",
+    "compare": true
+  },
+  "steps": [
+    {
+      "id": "baseline_strict",
+      "name": "baseline replay (strict, expected to fail on missing data)",
+      "continue_on_error": true,
+      "kind": "replay",
+      "digest": "REPLACE_WITH_DIGEST",
+      "fetch_strategy": "full",
+      "strict": true
+    },
+    {
+      "id": "self_heal_pass",
+      "name": "self-heal replay (synthesize missing + dynamic fields)",
+      "kind": "replay",
+      "digest": "REPLACE_WITH_DIGEST",
+      "fetch_strategy": "full",
+      "synthesize_missing": true,
+      "self_heal_dynamic_fields": true
+    },
+    {
+      "id": "status",
+      "name": "session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    }
+  ]
+}

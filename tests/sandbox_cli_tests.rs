@@ -1235,6 +1235,41 @@ fn test_run_flow_end_to_end_publish_and_view() {
         .stdout(predicate::str::contains("Flow complete"));
 }
 
+#[test]
+fn test_workflow_validate_core_example_spec() {
+    let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/workflow_replay_analyze_demo.json");
+
+    sandbox_cmd()
+        .arg("workflow")
+        .arg("validate")
+        .arg("--spec")
+        .arg(&spec)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Workflow spec valid"));
+}
+
+#[test]
+fn test_workflow_run_core_example_dry_run() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/data/workflow_replay_analyze_demo.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("workflow")
+        .arg("run")
+        .arg("--spec")
+        .arg(&spec)
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Workflow complete"));
+}
+
 // ============================================================================
 // Global Options Tests
 // ============================================================================

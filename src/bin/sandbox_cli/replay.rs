@@ -6,6 +6,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use move_binary_format::CompiledModule;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -98,6 +99,15 @@ pub struct ReplayCmd {
     /// Shared replay hydration controls (source/fallback/prefetch/system-object injection).
     #[command(flatten)]
     pub hydration: ReplayHydrationArgs,
+
+    /// Runtime defaults profile (tunes fallback and transport behavior).
+    #[arg(
+        long,
+        value_enum,
+        default_value = "balanced",
+        help_heading = "Hydration"
+    )]
+    pub profile: ReplayProfile,
 
     /// Disable fallback paths and force direct VM path execution only
     #[arg(long, default_value_t = false)]
@@ -259,6 +269,61 @@ pub enum ReplaySource {
     Local,
 }
 
+impl ReplaySource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Grpc => "grpc",
+            Self::Walrus => "walrus",
+            Self::Hybrid => "hybrid",
+            Self::Local => "local",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum ReplayProfile {
+    Safe,
+    Balanced,
+    Fast,
+}
+
+impl ReplayProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Balanced => "balanced",
+            Self::Fast => "fast",
+        }
+    }
+
+    fn env_defaults(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Safe => &[
+                ("SUI_CHECKPOINT_LOOKUP_GRAPHQL", "1"),
+                ("SUI_PACKAGE_LOOKUP_GRAPHQL", "1"),
+                ("SUI_OBJECT_FETCH_CONCURRENCY", "8"),
+                ("SUI_PACKAGE_FETCH_CONCURRENCY", "4"),
+                ("SUI_PACKAGE_FETCH_PARALLEL", "1"),
+            ],
+            Self::Balanced => &[],
+            Self::Fast => &[
+                ("SUI_CHECKPOINT_LOOKUP_GRAPHQL", "0"),
+                ("SUI_PACKAGE_LOOKUP_GRAPHQL", "0"),
+                ("SUI_OBJECT_FETCH_CONCURRENCY", "32"),
+                ("SUI_PACKAGE_FETCH_CONCURRENCY", "16"),
+                ("SUI_PACKAGE_FETCH_PARALLEL", "1"),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ReplayAutoDefaults {
+    profile_env_applied: Vec<&'static str>,
+    auto_ptb_progress: bool,
+    auto_error_context: bool,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct ReplayHydrationArgs {
     /// Data source for replay hydration
@@ -335,7 +400,13 @@ impl ReplayCmd {
         {
             return Err(anyhow!("Walrus source requires the `walrus` feature"));
         }
-        let result = self.execute_inner(state, verbose || self.verbose).await;
+        let effective_verbose = verbose || self.verbose;
+        std::env::remove_var("SUI_WALRUS_AUTO_ENABLED_RUN");
+        std::env::remove_var("SUI_WALRUS_EFFECTIVE_RUN");
+        let auto_defaults = self.apply_auto_runtime_defaults(json_output, effective_verbose);
+        let result = self
+            .execute_inner(state, effective_verbose, json_output, auto_defaults)
+            .await;
 
         match result {
             Ok(output) => {
@@ -388,18 +459,131 @@ impl ReplayCmd {
         }
     }
 
-    async fn execute_inner(&self, state: &SandboxState, verbose: bool) -> Result<ReplayOutput> {
+    fn apply_auto_runtime_defaults(&self, json_output: bool, verbose: bool) -> ReplayAutoDefaults {
+        let mut defaults = ReplayAutoDefaults::default();
+        for (key, value) in self.profile.env_defaults() {
+            if std::env::var(key).is_err() {
+                std::env::set_var(key, value);
+                defaults.profile_env_applied.push(*key);
+            }
+        }
+
+        let auto_progress = auto_progress_enabled(json_output);
+        if env_bool_opt("SUI_PTB_PROGRESS").is_none() && auto_progress {
+            std::env::set_var("SUI_PTB_PROGRESS", "1");
+            defaults.auto_ptb_progress = true;
+        }
+        if env_bool_opt("SUI_DEBUG_ERROR_CONTEXT").is_none() && (self.strict || verbose) {
+            std::env::set_var("SUI_DEBUG_ERROR_CONTEXT", "1");
+            defaults.auto_error_context = true;
+        }
+        defaults
+    }
+
+    fn print_effective_runtime_config(
+        &self,
+        json_output: bool,
+        allow_fallback: bool,
+        strict_df_checkpoint: bool,
+        auto_defaults: &ReplayAutoDefaults,
+    ) {
+        if json_output {
+            return;
+        }
+
+        let walrus_effective = env_bool_opt("SUI_WALRUS_EFFECTIVE_RUN").unwrap_or_else(|| {
+            matches!(self.hydration.source, ReplaySource::Walrus)
+                || matches!(self.hydration.source, ReplaySource::Hybrid)
+                    && (self.latest.is_some() || self.checkpoint.is_some())
+        });
+        let walrus_auto = env_bool_opt("SUI_WALRUS_AUTO_ENABLED_RUN").unwrap_or(false);
+        let replay_progress =
+            env_bool_opt("SUI_REPLAY_PROGRESS").unwrap_or(auto_progress_enabled(json_output));
+        let ptb_progress = env_bool_opt("SUI_PTB_PROGRESS").unwrap_or(false);
+        let gql_checkpoint = env_bool_opt("SUI_CHECKPOINT_LOOKUP_GRAPHQL").unwrap_or(true);
+        let gql_package = env_bool_opt("SUI_PACKAGE_LOOKUP_GRAPHQL").unwrap_or(true);
+        let gql_cb = env_bool_opt("SUI_GRAPHQL_CIRCUIT_BREAKER").unwrap_or(true);
+
+        let object_concurrency =
+            std::env::var("SUI_OBJECT_FETCH_CONCURRENCY").unwrap_or_else(|_| "16".to_string());
+        let package_concurrency =
+            std::env::var("SUI_PACKAGE_FETCH_CONCURRENCY").unwrap_or_else(|_| "8".to_string());
+        let package_parallel = env_bool_opt("SUI_PACKAGE_FETCH_PARALLEL").unwrap_or(true);
+
+        let mut auto_notes: Vec<String> = Vec::new();
+        if !auto_defaults.profile_env_applied.is_empty() {
+            auto_notes.push(format!(
+                "profile({})={}",
+                self.profile.as_str(),
+                auto_defaults.profile_env_applied.join("|")
+            ));
+        }
+        if auto_defaults.auto_ptb_progress {
+            auto_notes.push("ptb_progress=tty".to_string());
+        }
+        if auto_defaults.auto_error_context {
+            auto_notes.push("error_context=verbose_or_strict".to_string());
+        }
+        if walrus_auto {
+            auto_notes.push("walrus=source_default".to_string());
+        }
+        if auto_notes.is_empty() {
+            auto_notes.push("none".to_string());
+        }
+
+        eprintln!(
+            "[replay_config] profile={} source={} fallback={} walrus={} strict_df={} replay_progress={} ptb_progress={} gql_checkpoint={} gql_package={} gql_circuit={} obj_conc={} pkg_conc={} pkg_parallel={} auto={}",
+            self.profile.as_str(),
+            self.hydration.source.as_str(),
+            allow_fallback,
+            if walrus_effective {
+                if walrus_auto { "on(auto)" } else { "on" }
+            } else {
+                "off"
+            },
+            strict_df_checkpoint,
+            replay_progress,
+            ptb_progress,
+            gql_checkpoint,
+            gql_package,
+            gql_cb,
+            object_concurrency,
+            package_concurrency,
+            package_parallel,
+            auto_notes.join(","),
+        );
+    }
+
+    async fn execute_inner(
+        &self,
+        state: &SandboxState,
+        verbose: bool,
+        json_output: bool,
+        auto_defaults: ReplayAutoDefaults,
+    ) -> Result<ReplayOutput> {
         let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
-        let replay_progress = std::env::var("SUI_REPLAY_PROGRESS")
-            .ok()
-            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(false);
+        let replay_progress =
+            env_bool_opt("SUI_REPLAY_PROGRESS").unwrap_or(auto_progress_enabled(json_output));
+        let strict_df_checkpoint =
+            env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(self.strict || self.compare);
+        if strict_df_checkpoint {
+            std::env::set_var("SUI_DF_STRICT_CHECKPOINT", "1");
+        }
+
         if verbose {
             eprintln!("Fetching transaction {}...", self.digest_display());
         }
 
         // JSON state path: --state-json provided, load from file (no network)
         if let Some(json_path) = &self.state_json {
+            if replay_progress || verbose {
+                self.print_effective_runtime_config(
+                    json_output,
+                    allow_fallback,
+                    strict_df_checkpoint,
+                    &auto_defaults,
+                );
+            }
             return self
                 .execute_from_json(state, verbose, json_path, replay_progress)
                 .await;
@@ -438,6 +622,12 @@ impl ReplayCmd {
                     tip,
                     tip
                 );
+                self.print_effective_runtime_config(
+                    json_output,
+                    allow_fallback,
+                    strict_df_checkpoint,
+                    &auto_defaults,
+                );
             }
             return self
                 .execute_walrus_batch_v2(state, verbose, &checkpoints, replay_progress)
@@ -449,6 +639,14 @@ impl ReplayCmd {
         if let Some(ref checkpoint_str) = self.checkpoint {
             let checkpoints = parse_checkpoint_spec(checkpoint_str)?;
             let digest_filter = self.digest_display();
+            if replay_progress || verbose {
+                self.print_effective_runtime_config(
+                    json_output,
+                    allow_fallback,
+                    strict_df_checkpoint,
+                    &auto_defaults,
+                );
+            }
             if checkpoints.len() == 1 && digest_filter != "*" && !digest_filter.contains(',') {
                 return self
                     .execute_walrus_first(state, verbose, checkpoints[0], replay_progress)
@@ -493,6 +691,14 @@ impl ReplayCmd {
                     cache_dir.display()
                 );
             }
+            if replay_progress || verbose {
+                self.print_effective_runtime_config(
+                    json_output,
+                    allow_fallback,
+                    strict_df_checkpoint,
+                    &auto_defaults,
+                );
+            }
             return self.execute_replay_state(
                 state,
                 &replay_state,
@@ -506,13 +712,17 @@ impl ReplayCmd {
         let provider =
             build_historical_state_provider(state, self.hydration.source, allow_fallback, verbose)
                 .await?;
+        if replay_progress || verbose {
+            self.print_effective_runtime_config(
+                json_output,
+                allow_fallback,
+                strict_df_checkpoint,
+                &auto_defaults,
+            );
+        }
 
         let enable_dynamic_fields =
             !self.hydration.no_prefetch && self.fetch_strategy == FetchStrategy::Full;
-        let strict_df_checkpoint = env_bool_opt("SUI_DF_STRICT_CHECKPOINT").unwrap_or(false);
-        if strict_df_checkpoint {
-            std::env::set_var("SUI_DF_STRICT_CHECKPOINT", "1");
-        }
         let digest = self.digest_required()?;
         let replay_state = build_replay_state(
             provider.as_ref(),
@@ -2269,6 +2479,10 @@ fn env_bool_opt(key: &str) -> Option<bool> {
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
+fn auto_progress_enabled(json_output: bool) -> bool {
+    !json_output && std::io::stderr().is_terminal()
+}
+
 fn ensure_system_objects(
     objects: &mut HashMap<AccountAddress, VersionedObject>,
     historical_versions: &HashMap<String, u64>,
@@ -3625,6 +3839,7 @@ mod tests {
         let defaults = parse_replay_cmd(&["replay", "dummy-digest"]);
         assert!(defaults.hydration.allow_fallback);
         assert!(defaults.hydration.auto_system_objects);
+        assert_eq!(defaults.profile, ReplayProfile::Balanced);
 
         let disabled = parse_replay_cmd(&[
             "replay",
@@ -3647,5 +3862,8 @@ mod tests {
         ]);
         assert!(enabled.hydration.allow_fallback);
         assert!(enabled.hydration.auto_system_objects);
+
+        let fast = parse_replay_cmd(&["replay", "dummy-digest", "--profile", "fast"]);
+        assert_eq!(fast.profile, ReplayProfile::Fast);
     }
 }

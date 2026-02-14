@@ -77,6 +77,7 @@ Out of scope (fullnode/validator responsibilities):
 | `VMHarness` | `crates/sui-sandbox-core/src/vm.rs` | Move VM configuration |
 | `LocalModuleResolver` | `crates/sui-sandbox-core/src/resolver.rs` | Package loading and address aliasing |
 | `tx_replay` | `crates/sui-sandbox-core/src/tx_replay.rs` | Transaction replay orchestration |
+| `WorkflowSpec` | `crates/sui-sandbox-core/src/workflow.rs` | Typed replay/analyze workflow contract |
 
 ## PTB Control Flow (Function-Level)
 
@@ -157,6 +158,20 @@ Design goal: keep default replay/analyze paths dependency-light and deterministi
 Legacy igloo integration source remains in-repo for internal use and future extraction work:
 `src/bin/sandbox_cli/replay/igloo.rs`.
 
+## Typed Workflow Layer
+
+`sui-sandbox workflow` adds a typed orchestration layer above direct CLI invocations:
+
+- Spec schema and validation live in `crates/sui-sandbox-core/src/workflow.rs`.
+- Execution adapter lives in `src/bin/sandbox_cli/workflow.rs`.
+- Step kinds currently supported: `replay`, `analyze_replay`, and `command`.
+
+Design intent:
+
+- Reuse existing stable command implementations (`replay`, `analyze replay`) instead of duplicating logic.
+- Keep the workflow contract protocol-agnostic so future adapters (Suilend/Cetus/Scallop/etc.) can compile into the same step model.
+- Allow higher-level tooling (including Python bindings) to emit one workflow spec and delegate heavy lifting to Rust execution paths.
+
 ## Data Fetching
 
 See [Prefetching Architecture](architecture/PREFETCHING.md) for the three-layer prefetch strategy.
@@ -212,4 +227,6 @@ sui-sandbox/
 - **[Examples](../examples/README.md)** - Start here to learn the library
 - [Transaction Replay Guide](guides/TRANSACTION_REPLAY.md) - End-to-end workflow
 - [Prefetching Architecture](architecture/PREFETCHING.md) - Data fetching internals
+- [Workflow Engine Contract](architecture/WORKFLOW_ENGINE.md) - Typed workflow orchestration layer
+- [Shell-to-Rust Example Migration Plan](architecture/SHELL_TO_RUST_MIGRATION_PLAN.md) - Script consolidation roadmap
 - [Limitations](reference/LIMITATIONS.md) - Known differences from mainnet

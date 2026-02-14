@@ -61,6 +61,7 @@ use sandbox_cli::{
     test::TestCli,
     tools::ToolsCmd,
     view::ViewCmd,
+    workflow::WorkflowCmd,
     SandboxState,
 };
 
@@ -81,11 +82,11 @@ struct Cli {
     #[arg(long, global = true)]
     state_file: Option<std::path::PathBuf>,
 
-    /// RPC URL for mainnet fetching (default: mainnet fullnode)
+    /// RPC URL for mainnet fetching (default: mainnet archive endpoint)
     #[arg(
         long,
         global = true,
-        default_value = "https://fullnode.mainnet.sui.io:443"
+        default_value = "https://archive.mainnet.sui.io:443"
     )]
     rpc_url: String,
 
@@ -148,6 +149,9 @@ enum Commands {
     /// Execute a YAML flow file with deterministic step sequencing
     RunFlow(RunFlowCmd),
 
+    /// Validate/run typed workflow specs for replay/analyze automation
+    Workflow(WorkflowCmd),
+
     /// Save/list/load/delete named local sandbox snapshots
     Snapshot(SnapshotCmd),
 
@@ -179,6 +183,7 @@ impl Commands {
             Commands::Doctor(_) => "doctor",
             Commands::Init(_) => "init",
             Commands::RunFlow(_) => "run-flow",
+            Commands::Workflow(_) => "workflow",
             Commands::Snapshot(_) => "snapshot",
             Commands::Reset => "reset",
             Commands::Clean => "clean",
@@ -242,6 +247,7 @@ async fn main() -> Result<()> {
         Commands::Doctor(_) => unreachable!(),
         Commands::Init(cmd) => cmd.execute().await,
         Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
+        Commands::Workflow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,
         Commands::Reset => {
             state.reset_session()?;

@@ -91,6 +91,26 @@ pub(crate) async fn build_historical_state_provider(
     let mut provider =
         HistoricalStateProvider::with_clients(grpc_client, graphql_client).with_cache(cache);
     if matches!(source, ReplaySource::Walrus | ReplaySource::Hybrid) {
+        for key in [
+            "SUI_WALRUS_ENABLED",
+            "SUI_WALRUS_CACHE_URL",
+            "SUI_WALRUS_AGGREGATOR_URL",
+            "SUI_WALRUS_NETWORK",
+            "SUI_WALRUS_LOCAL_STORE",
+            "SUI_WALRUS_STORE_DIR",
+        ] {
+            seed_env_from_dotenv_if_missing(&dotenv, key);
+        }
+        let walrus_auto_enabled = maybe_auto_enable_walrus(source, &network, verbose);
+        let walrus_effective = walrus_effective_from_env();
+        if walrus_effective {
+            std::env::set_var("SUI_WALRUS_EFFECTIVE_RUN", "1");
+        } else {
+            std::env::remove_var("SUI_WALRUS_EFFECTIVE_RUN");
+        }
+        if walrus_auto_enabled {
+            std::env::set_var("SUI_WALRUS_AUTO_ENABLED_RUN", "1");
+        }
         provider = provider
             .with_walrus_from_env()
             .with_local_object_store_from_env();
@@ -180,4 +200,80 @@ fn load_dotenv_vars() -> HashMap<String, String> {
         vars.insert(key.to_string(), unquoted);
     }
     vars
+}
+
+fn env_var_nonempty(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn seed_env_from_dotenv_if_missing(dotenv: &HashMap<String, String>, key: &str) {
+    if env_var_nonempty(key).is_some() {
+        return;
+    }
+    if let Some(value) = dotenv.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        std::env::set_var(key, value);
+    }
+}
+
+fn env_var_truthy(key: &str) -> bool {
+    env_var_nonempty(key)
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn walrus_effective_from_env() -> bool {
+    env_var_truthy("SUI_WALRUS_ENABLED")
+        || env_var_nonempty("SUI_WALRUS_CACHE_URL").is_some()
+        || env_var_nonempty("SUI_WALRUS_AGGREGATOR_URL").is_some()
+}
+
+fn maybe_auto_enable_walrus(source: ReplaySource, network: &str, verbose: bool) -> bool {
+    let enabled = env_var_nonempty("SUI_WALRUS_ENABLED");
+    let has_url_config = env_var_nonempty("SUI_WALRUS_CACHE_URL").is_some()
+        || env_var_nonempty("SUI_WALRUS_AGGREGATOR_URL").is_some();
+
+    if matches!(source, ReplaySource::Walrus) {
+        let already_enabled = enabled
+            .as_deref()
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if has_url_config || already_enabled {
+            return false;
+        }
+        if verbose && enabled.is_some() {
+            eprintln!(
+                "[walrus] --source walrus overrides SUI_WALRUS_ENABLED={} to ensure Walrus hydration",
+                enabled.unwrap_or_default()
+            );
+        }
+    } else if enabled.is_some() || has_url_config {
+        return false;
+    }
+
+    if env_var_nonempty("SUI_WALRUS_NETWORK").is_none() {
+        let inferred_network = if network.eq_ignore_ascii_case("testnet") {
+            "testnet"
+        } else {
+            "mainnet"
+        };
+        std::env::set_var("SUI_WALRUS_NETWORK", inferred_network);
+    }
+    std::env::set_var("SUI_WALRUS_ENABLED", "1");
+
+    if verbose {
+        let source_label = match source {
+            ReplaySource::Walrus => "walrus",
+            ReplaySource::Hybrid => "hybrid",
+            ReplaySource::Grpc => "grpc",
+            ReplaySource::Local => "local",
+        };
+        eprintln!(
+            "[walrus] auto-enabled for --source {} (set SUI_WALRUS_ENABLED=0 to disable)",
+            source_label
+        );
+    }
+    true
 }

@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "replay_analyze_cetus_swap",
+  "description": "Typed workflow demo that chains analyze replay, replay execution, and status reporting.",
+  "defaults": {
+    "source": "walrus",
+    "allow_fallback": true,
+    "auto_system_objects": true,
+    "prefetch_depth": 3,
+    "prefetch_limit": 200,
+    "compare": true
+  },
+  "steps": [
+    {
+      "id": "inspect_tx",
+      "name": "Analyze hydration inputs",
+      "kind": "analyze_replay",
+      "digest": "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+      "checkpoint": 239615926
+    },
+    {
+      "id": "replay_tx",
+      "name": "Replay and compare effects",
+      "kind": "replay",
+      "digest": "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+      "checkpoint": "239615926",
+      "strict": true
+    },
+    {
+      "id": "session_status",
+      "name": "Print session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    }
+  ]
+}

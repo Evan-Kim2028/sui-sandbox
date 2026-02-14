@@ -93,7 +93,7 @@ pub struct HistoricalStateProvider {
 }
 
 /// Default mainnet gRPC endpoint
-const MAINNET_GRPC: &str = "https://fullnode.mainnet.sui.io:443";
+const MAINNET_GRPC: &str = "https://archive.mainnet.sui.io:443";
 /// Default testnet gRPC endpoint
 const TESTNET_GRPC: &str = "https://fullnode.testnet.sui.io:443";
 use sui_sandbox_types::{
@@ -371,6 +371,86 @@ fn walrus_recursive_max_tx_steps() -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(3)
+}
+
+fn object_fetch_concurrency() -> usize {
+    std::env::var("SUI_OBJECT_FETCH_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(16)
+}
+
+fn package_fetch_concurrency() -> usize {
+    std::env::var("SUI_PACKAGE_FETCH_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(8)
+}
+
+fn package_parallel_fetch_enabled() -> bool {
+    !matches!(
+        std::env::var("SUI_PACKAGE_FETCH_PARALLEL")
+            .ok()
+            .as_deref()
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref(),
+        Some("0") | Some("false") | Some("no") | Some("off")
+    )
+}
+
+#[derive(Debug, Default)]
+struct PackageFetchStatsDelta {
+    cache_hits: usize,
+    grpc_ok: usize,
+    grpc_fail: usize,
+    gql_ok: usize,
+    gql_fail: usize,
+    gql_fetches: usize,
+    grpc_elapsed: u128,
+    gql_elapsed: u128,
+}
+
+#[derive(Debug)]
+struct PackageStepOutcome {
+    pkg_id: AccountAddress,
+    package: Option<PackageData>,
+    dependencies: Vec<AccountAddress>,
+    stats: PackageFetchStatsDelta,
+}
+
+fn collect_package_dependencies(pkg: &PackageData) -> Vec<AccountAddress> {
+    let mut deps = HashSet::new();
+    deps.extend(pkg.linkage.values().copied());
+    deps.extend(extract_module_dependency_ids(&pkg.modules));
+    deps.into_iter().collect()
+}
+
+fn package_success_outcome(
+    pkg_id: AccountAddress,
+    pkg: PackageData,
+    stats: PackageFetchStatsDelta,
+) -> PackageStepOutcome {
+    let dependencies = collect_package_dependencies(&pkg);
+    PackageStepOutcome {
+        pkg_id,
+        package: Some(pkg),
+        dependencies,
+        stats,
+    }
+}
+
+fn package_missing_outcome(
+    pkg_id: AccountAddress,
+    stats: PackageFetchStatsDelta,
+) -> PackageStepOutcome {
+    PackageStepOutcome {
+        pkg_id,
+        package: None,
+        dependencies: Vec::new(),
+        stats,
+    }
 }
 
 fn log_package_linkage(
@@ -2145,69 +2225,157 @@ impl HistoricalStateProvider {
         let mut gql_fail = 0usize;
         let mut grpc_elapsed = 0u128;
         let mut gql_elapsed = 0u128;
-        for (id, version) in &to_fetch {
-            let id_str = format!("0x{}", hex::encode(id.as_ref()));
+        let network_concurrency = object_fetch_concurrency().min(std::cmp::max(to_fetch.len(), 1));
+        type ObjectFetchItem = (
+            ObjectID,
+            u64,
+            String,
+            Option<VersionedObject>,
+            usize,
+            usize,
+            usize,
+            usize,
+            u128,
+            u128,
+            bool,
+        );
 
-            // Try gRPC first
-            let grpc_start = std::time::Instant::now();
-            let grpc_result = self
-                .grpc
-                .get_object_at_version(&id_str, Some(*version))
-                .await;
-            grpc_elapsed += grpc_start.elapsed().as_millis();
+        let fetch_results = {
+            use futures::stream::{self, StreamExt};
 
-            match grpc_result {
-                Ok(Some(grpc_obj)) => {
-                    let obj = grpc_object_to_versioned(&grpc_obj, *id, *version)?;
-                    if use_cache {
-                        self.cache.put_object(obj.clone());
-                    }
-                    result.insert(*id, obj);
-                    grpc_ok += 1;
-                }
-                Ok(None) | Err(_) => {
-                    grpc_fail += 1;
-                    // gRPC failed - try GraphQL for current version as fallback
-                    // This is necessary when historical versions are pruned from the archive
-                    let gql_start = std::time::Instant::now();
-                    let gql_obj = self
-                        .graphql
-                        .fetch_object_at_version(&id_str, *version)
-                        .or_else(|_| self.graphql.fetch_object(&id_str));
-                    gql_elapsed += gql_start.elapsed().as_millis();
-                    if let Ok(gql_obj) = gql_obj {
-                        if let (Some(type_str), Some(bcs_b64)) =
-                            (gql_obj.type_string, gql_obj.bcs_base64)
-                        {
-                            if let Ok(bcs) =
-                                base64::engine::general_purpose::STANDARD.decode(&bcs_b64)
-                            {
-                                let obj = VersionedObject {
-                                    id: *id,
-                                    version: gql_obj.version, // Use current version
-                                    digest: None,
-                                    type_tag: Some(type_str),
-                                    bcs_bytes: bcs,
-                                    is_shared: false, // GraphQL doesn't give us owner info easily
-                                    is_immutable: false,
-                                };
-                                if use_cache {
-                                    self.cache.put_object(obj.clone());
+            stream::iter(to_fetch.iter().copied())
+                .map(|(id, version)| {
+                    let graphql = self.graphql.clone();
+                    async move {
+                        let id_str = format!("0x{}", hex::encode(id.as_ref()));
+
+                        let grpc_start = std::time::Instant::now();
+                        let grpc_result = self
+                            .grpc
+                            .get_object_at_version(&id_str, Some(version))
+                            .await;
+                        let grpc_ms = grpc_start.elapsed().as_millis();
+
+                        match grpc_result {
+                            Ok(Some(grpc_obj)) => {
+                                let obj = grpc_object_to_versioned(&grpc_obj, id, version)?;
+                                Result::<ObjectFetchItem>::Ok((
+                                    id,
+                                    version,
+                                    id_str,
+                                    Some(obj),
+                                    1usize,
+                                    0usize,
+                                    0usize,
+                                    0usize,
+                                    grpc_ms,
+                                    0u128,
+                                    false,
+                                ))
+                            }
+                            Ok(None) | Err(_) => {
+                                let gql_start = std::time::Instant::now();
+                                let gql_result = tokio::task::spawn_blocking({
+                                    let id_for_fetch = id_str.clone();
+                                    move || {
+                                        graphql
+                                            .fetch_object_at_version(&id_for_fetch, version)
+                                            .or_else(|_| graphql.fetch_object(&id_for_fetch))
+                                    }
+                                })
+                                .await;
+                                let gql_ms = gql_start.elapsed().as_millis();
+
+                                match gql_result {
+                                    Ok(Ok(gql_obj)) => {
+                                        if let (Some(type_str), Some(bcs_b64)) =
+                                            (gql_obj.type_string, gql_obj.bcs_base64)
+                                        {
+                                            if let Ok(bcs) =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .decode(&bcs_b64)
+                                            {
+                                                let obj = VersionedObject {
+                                                    id,
+                                                    version: gql_obj.version, // Use current version
+                                                    digest: None,
+                                                    type_tag: Some(type_str),
+                                                    bcs_bytes: bcs,
+                                                    is_shared: false, // GraphQL doesn't give us owner info easily
+                                                    is_immutable: false,
+                                                };
+                                                return Result::<ObjectFetchItem>::Ok((
+                                                    id,
+                                                    version,
+                                                    id_str,
+                                                    Some(obj),
+                                                    0usize,
+                                                    1usize,
+                                                    1usize,
+                                                    0usize,
+                                                    grpc_ms,
+                                                    gql_ms,
+                                                    false,
+                                                ));
+                                            }
+                                        }
+
+                                        Result::<ObjectFetchItem>::Ok((
+                                            id, version, id_str, None, 0usize, 1usize, 0usize,
+                                            0usize, grpc_ms, gql_ms, false,
+                                        ))
+                                    }
+                                    Ok(Err(_)) | Err(_) => Result::<ObjectFetchItem>::Ok((
+                                        id, version, id_str, None, 0usize, 1usize, 0usize, 1usize,
+                                        grpc_ms, gql_ms, true,
+                                    )),
                                 }
-                                result.insert(*id, obj);
-                                gql_ok += 1;
                             }
                         }
-                    } else {
-                        gql_fail += 1;
-                        eprintln!("Warning: Failed to fetch object {} at version {} (gRPC and GraphQL both failed)", id_str, version);
-                        if debug_gaps {
-                            eprintln!(
-                                "[data_gap] kind=object_missing id={} version={} source=grpc_graphql",
-                                id_str, version
-                            );
-                        }
                     }
+                })
+                .buffer_unordered(network_concurrency)
+                .collect::<Vec<_>>()
+                .await
+        };
+
+        for fetched in fetch_results {
+            let (
+                id,
+                version,
+                id_str,
+                maybe_object,
+                grpc_ok_inc,
+                grpc_fail_inc,
+                gql_ok_inc,
+                gql_fail_inc,
+                grpc_ms,
+                gql_ms,
+                warn_missing,
+            ) = fetched?;
+
+            grpc_ok += grpc_ok_inc;
+            grpc_fail += grpc_fail_inc;
+            gql_ok += gql_ok_inc;
+            gql_fail += gql_fail_inc;
+            grpc_elapsed += grpc_ms;
+            gql_elapsed += gql_ms;
+
+            if let Some(obj) = maybe_object {
+                if use_cache {
+                    self.cache.put_object(obj.clone());
+                }
+                result.insert(id, obj);
+            } else if warn_missing {
+                eprintln!(
+                    "Warning: Failed to fetch object {} at version {} (gRPC and GraphQL both failed)",
+                    id_str, version
+                );
+                if debug_gaps {
+                    eprintln!(
+                        "[data_gap] kind=object_missing id={} version={} source=grpc_graphql",
+                        id_str, version
+                    );
                 }
             }
         }
@@ -2297,7 +2465,7 @@ impl HistoricalStateProvider {
         let timing = timing_enabled();
         let start = std::time::Instant::now();
         let mut result = HashMap::new();
-        let mut to_process: Vec<AccountAddress> = package_ids.to_vec();
+        let mut frontier: Vec<AccountAddress> = package_ids.to_vec();
         let mut processed: HashSet<AccountAddress> = HashSet::new();
         let mut cache_hits = 0usize;
         let mut grpc_ok = 0usize;
@@ -2325,184 +2493,317 @@ impl HistoricalStateProvider {
                 .as_deref(),
             Some("0") | Some("false") | Some("no") | Some("off")
         );
+        let allow_checkpoint_lookup_remote = std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
+            .ok()
+            .as_deref()
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+            != Some("0");
+        let package_parallel_enabled = package_parallel_fetch_enabled();
 
-        while let Some(pkg_id) = to_process.pop() {
-            if processed.contains(&pkg_id) {
+        while !frontier.is_empty() {
+            let mut current_frontier = Vec::new();
+            for pkg_id in frontier.drain(..) {
+                if processed.insert(pkg_id) {
+                    current_frontier.push(pkg_id);
+                }
+            }
+
+            if current_frontier.is_empty() {
                 continue;
             }
-            processed.insert(pkg_id);
 
-            let mut version_hint = package_versions.and_then(|m| m.get(&pkg_id).copied());
-            let mut missing_reasons: Vec<String> = Vec::new();
-            if version_hint.is_none() {
-                if let (Some(pkg_index), Some(cp)) =
-                    (self.local_package_index.as_deref(), checkpoint)
-                {
-                    if let Ok(Some(entry)) = pkg_index.get_at_or_before_checkpoint(pkg_id, cp) {
-                        version_hint = Some(entry.version);
+            current_frontier.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            let round_concurrency = if package_parallel_enabled {
+                package_fetch_concurrency().min(std::cmp::max(current_frontier.len(), 1))
+            } else {
+                1
+            };
+
+            let outcomes = {
+                use futures::stream::{self, StreamExt};
+
+                stream::iter(current_frontier.into_iter())
+                    .map(|pkg_id| async move {
+                        self.fetch_single_package_with_deps_step(
+                            pkg_id,
+                            package_versions,
+                            package_prev_txs,
+                            checkpoint,
+                            use_cache,
+                            strict_checkpoint,
+                            walrus_only,
+                            allow_package_graphql,
+                            allow_checkpoint_lookup_remote,
+                            debug_gaps,
+                        )
+                        .await
+                    })
+                    .buffer_unordered(round_concurrency)
+                    .collect::<Vec<_>>()
+                    .await
+            };
+
+            let mut next_frontier = Vec::new();
+            let mut seen_next: HashSet<AccountAddress> = HashSet::new();
+
+            for outcome in outcomes {
+                let outcome = outcome?;
+
+                cache_hits += outcome.stats.cache_hits;
+                grpc_ok += outcome.stats.grpc_ok;
+                grpc_fail += outcome.stats.grpc_fail;
+                gql_ok += outcome.stats.gql_ok;
+                gql_fail += outcome.stats.gql_fail;
+                gql_fetches += outcome.stats.gql_fetches;
+                grpc_elapsed += outcome.stats.grpc_elapsed;
+                gql_elapsed += outcome.stats.gql_elapsed;
+
+                if let Some(pkg) = outcome.package {
+                    result.insert(outcome.pkg_id, pkg);
+                }
+
+                for dep_id in outcome.dependencies {
+                    if !processed.contains(&dep_id) && seen_next.insert(dep_id) {
+                        next_frontier.push(dep_id);
                     }
                 }
             }
-            if version_hint.is_none()
-                && std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
-                    .ok()
-                    .as_deref()
-                    .map(|v| v.to_ascii_lowercase())
-                    .as_deref()
-                    != Some("0")
-                && allow_package_graphql
-            {
+
+            next_frontier.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            frontier = next_frontier;
+        }
+
+        if timing {
+            eprintln!(
+                "[timing] stage=fetch_packages_with_deps requested={} processed={} cache_hits={} grpc_ok={} grpc_fail={} gql_fetches={} gql_ok={} gql_fail={} grpc_ms={} gql_ms={} total_ms={}",
+                package_ids.len(),
+                processed.len(),
+                cache_hits,
+                grpc_ok,
+                grpc_fail,
+                gql_fetches,
+                gql_ok,
+                gql_fail,
+                grpc_elapsed,
+                gql_elapsed,
+                start.elapsed().as_millis()
+            );
+        }
+
+        Ok(result)
+    }
+
+    async fn fetch_single_package_with_deps_step(
+        &self,
+        pkg_id: AccountAddress,
+        package_versions: Option<&HashMap<AccountAddress, u64>>,
+        package_prev_txs: Option<&HashMap<AccountAddress, String>>,
+        checkpoint: Option<u64>,
+        use_cache: bool,
+        strict_checkpoint: bool,
+        walrus_only: bool,
+        allow_package_graphql: bool,
+        allow_checkpoint_lookup_remote: bool,
+        debug_gaps: bool,
+    ) -> Result<PackageStepOutcome> {
+        let mut version_hint = package_versions.and_then(|m| m.get(&pkg_id).copied());
+        let mut missing_reasons: Vec<String> = Vec::new();
+        let mut stats = PackageFetchStatsDelta::default();
+
+        if version_hint.is_none() {
+            if let (Some(pkg_index), Some(cp)) = (self.local_package_index.as_deref(), checkpoint) {
+                if let Ok(Some(entry)) = pkg_index.get_at_or_before_checkpoint(pkg_id, cp) {
+                    version_hint = Some(entry.version);
+                }
+            }
+        }
+        if version_hint.is_none() && allow_checkpoint_lookup_remote && allow_package_graphql {
+            if let Some(cp) = checkpoint {
+                let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
+                let graphql = self.graphql.clone();
+                let version_lookup = tokio::task::spawn_blocking(move || {
+                    graphql.fetch_package_version_at_checkpoint(&pkg_id_str, cp)
+                })
+                .await;
+                if let Ok(Ok(Some(ver))) = version_lookup {
+                    version_hint = Some(ver);
+                }
+            }
+        }
+        if version_hint.is_none() {
+            missing_reasons.push("version_hint_missing".to_string());
+        }
+
+        if use_cache {
+            if let Some(ver) = version_hint {
+                if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
+                    stats.cache_hits += 1;
+                    log_package_linkage(&pkg, "cache", version_hint, true);
+                    return Ok(package_success_outcome(pkg_id, pkg, stats));
+                }
+            } else if checkpoint.is_none() {
+                if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
+                    stats.cache_hits += 1;
+                    log_package_linkage(&pkg, "cache_latest", version_hint, true);
+                    return Ok(package_success_outcome(pkg_id, pkg, stats));
+                }
+            }
+        }
+
+        if let (Some(pkg_index), Some(walrus)) =
+            (self.local_package_index.as_deref(), self.walrus.as_ref())
+        {
+            let mut walrus_checkpoint = None;
+            if let Some(ver) = version_hint {
+                if let Ok(Some(entry)) = pkg_index.get_entry(pkg_id, ver) {
+                    walrus_checkpoint = Some(entry.checkpoint);
+                }
+            }
+            if walrus_checkpoint.is_none() {
                 if let Some(cp) = checkpoint {
-                    if let Ok(Some(ver)) = self.graphql.fetch_package_version_at_checkpoint(
-                        &format!("0x{}", hex::encode(pkg_id.as_ref())),
-                        cp,
-                    ) {
-                        version_hint = Some(ver);
-                    }
-                }
-            }
-            if version_hint.is_none() {
-                missing_reasons.push("version_hint_missing".to_string());
-            }
-
-            if use_cache {
-                // Check cache first (version-aware if possible)
-                if let Some(ver) = version_hint {
-                    if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
-                        cache_hits += 1;
-                        log_package_linkage(&pkg, "cache", version_hint, true);
-                        // Add dependencies to process queue
-                        for dep_id in pkg.linkage.values() {
-                            if !processed.contains(dep_id) {
-                                to_process.push(*dep_id);
-                            }
-                        }
-                        result.insert(pkg_id, pkg);
-                        continue;
-                    }
-                } else if checkpoint.is_none() {
-                    if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
-                        cache_hits += 1;
-                        log_package_linkage(&pkg, "cache_latest", version_hint, true);
-                        // Add dependencies to process queue
-                        for dep_id in pkg.linkage.values() {
-                            if !processed.contains(dep_id) {
-                                to_process.push(*dep_id);
-                            }
-                        }
-                        result.insert(pkg_id, pkg);
-                        continue;
-                    }
-                }
-            }
-
-            if let (Some(pkg_index), Some(walrus)) =
-                (self.local_package_index.as_deref(), self.walrus.as_ref())
-            {
-                let mut walrus_checkpoint = None;
-                if let Some(ver) = version_hint {
-                    if let Ok(Some(entry)) = pkg_index.get_entry(pkg_id, ver) {
-                        walrus_checkpoint = Some(entry.checkpoint);
-                    }
-                }
-                if walrus_checkpoint.is_none() {
-                    if let Some(cp) = checkpoint {
-                        if let Ok(Some(entry)) = pkg_index.get_at_or_before_checkpoint(pkg_id, cp) {
-                            walrus_checkpoint = Some(entry.checkpoint);
-                            if version_hint.is_none() {
-                                version_hint = Some(entry.version);
-                            }
-                        }
-                    } else if let Ok(Some(entry)) = pkg_index.get_latest(pkg_id) {
+                    if let Ok(Some(entry)) = pkg_index.get_at_or_before_checkpoint(pkg_id, cp) {
                         walrus_checkpoint = Some(entry.checkpoint);
                         if version_hint.is_none() {
                             version_hint = Some(entry.version);
                         }
                     }
-                }
-                if walrus_checkpoint.is_none() {
-                    if let Some(obj_index) = self.local_object_index.as_deref() {
-                        let entry = if let Some(cp) = checkpoint {
-                            obj_index
-                                .get_at_or_before_checkpoint(pkg_id, cp)
-                                .ok()
-                                .flatten()
-                        } else {
-                            obj_index.get_latest(pkg_id).ok().flatten()
-                        };
-                        if let Some(entry) = entry {
-                            if let Some(tx_digest) = entry.tx_digest.clone() {
-                                if let Some(cp) =
-                                    self.resolve_checkpoint_for_tx_digest(&tx_digest).await
-                                {
-                                    walrus_checkpoint = Some(cp);
-                                    if version_hint.is_none() {
-                                        version_hint = Some(entry.version);
-                                    }
-                                } else {
-                                    missing_reasons.push("checkpoint_lookup_failed".to_string());
-                                    if debug_gaps {
-                                        eprintln!(
-                                            "[data_gap] kind=package_checkpoint_lookup pkg={} tx_digest={} source=obj_index",
-                                            pkg_id, tx_digest
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                } else if let Ok(Some(entry)) = pkg_index.get_latest(pkg_id) {
+                    walrus_checkpoint = Some(entry.checkpoint);
+                    if version_hint.is_none() {
+                        version_hint = Some(entry.version);
                     }
                 }
-                if walrus_checkpoint.is_none() {
-                    if let Some(ver) = version_hint {
-                        if std::env::var("SUI_CHECKPOINT_LOOKUP_REMOTE")
+            }
+            if walrus_checkpoint.is_none() {
+                if let Some(obj_index) = self.local_object_index.as_deref() {
+                    let entry = if let Some(cp) = checkpoint {
+                        obj_index
+                            .get_at_or_before_checkpoint(pkg_id, cp)
                             .ok()
-                            .as_deref()
-                            .map(|v| v.to_ascii_lowercase())
-                            .as_deref()
-                            != Some("0")
-                        {
-                            let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
-                            if let Ok(Some(grpc_obj)) = self
-                                .grpc
-                                .get_object_at_version(&pkg_id_str, Some(ver))
-                                .await
+                            .flatten()
+                    } else {
+                        obj_index.get_latest(pkg_id).ok().flatten()
+                    };
+                    if let Some(entry) = entry {
+                        if let Some(tx_digest) = entry.tx_digest.clone() {
+                            if let Some(cp) =
+                                self.resolve_checkpoint_for_tx_digest(&tx_digest).await
                             {
-                                if let Some(prev_tx) = grpc_obj.previous_transaction.as_ref() {
-                                    if let Some(cp) =
-                                        self.resolve_checkpoint_for_tx_digest(prev_tx).await
-                                    {
-                                        walrus_checkpoint = Some(cp);
-                                    } else {
-                                        missing_reasons
-                                            .push("checkpoint_lookup_failed".to_string());
-                                        if debug_gaps {
-                                            eprintln!(
-                                                "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=grpc_object",
-                                                pkg_id, prev_tx
-                                            );
-                                        }
-                                    }
-                                } else if debug_gaps {
+                                walrus_checkpoint = Some(cp);
+                                if version_hint.is_none() {
+                                    version_hint = Some(entry.version);
+                                }
+                            } else {
+                                missing_reasons.push("checkpoint_lookup_failed".to_string());
+                                if debug_gaps {
                                     eprintln!(
-                                        "[data_gap] kind=package_prev_tx_missing pkg={} source=grpc_object",
-                                        pkg_id
+                                        "[data_gap] kind=package_checkpoint_lookup pkg={} tx_digest={} source=obj_index",
+                                        pkg_id, tx_digest
                                     );
                                 }
                             }
                         }
                     }
                 }
-                if walrus_checkpoint.is_none() {
-                    missing_reasons.push("walrus_checkpoint_missing".to_string());
+            }
+            if walrus_checkpoint.is_none() {
+                if let Some(ver) = version_hint {
+                    if allow_checkpoint_lookup_remote {
+                        let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
+                        if let Ok(Some(grpc_obj)) = self
+                            .grpc
+                            .get_object_at_version(&pkg_id_str, Some(ver))
+                            .await
+                        {
+                            if let Some(prev_tx) = grpc_obj.previous_transaction.as_ref() {
+                                if let Some(cp) =
+                                    self.resolve_checkpoint_for_tx_digest(prev_tx).await
+                                {
+                                    walrus_checkpoint = Some(cp);
+                                } else {
+                                    missing_reasons.push("checkpoint_lookup_failed".to_string());
+                                    if debug_gaps {
+                                        eprintln!(
+                                            "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=grpc_object",
+                                            pkg_id, prev_tx
+                                        );
+                                    }
+                                }
+                            } else if debug_gaps {
+                                eprintln!(
+                                    "[data_gap] kind=package_prev_tx_missing pkg={} source=grpc_object",
+                                    pkg_id
+                                );
+                            }
+                        }
+                    }
                 }
-                if let Some(cp) = walrus_checkpoint {
+            }
+            if walrus_checkpoint.is_none() {
+                missing_reasons.push("walrus_checkpoint_missing".to_string());
+            }
+            if let Some(cp) = walrus_checkpoint {
+                if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
+                    if let Some(tx_index) = self.local_tx_index.as_deref() {
+                        ingest_walrus_checkpoint_tx_index(checkpoint_json.as_ref(), tx_index, cp);
+                    }
+                    let _ = ingest_walrus_checkpoint_packages(
+                        checkpoint_json.as_ref(),
+                        &self.cache,
+                        self.local_package_index.as_deref(),
+                        cp,
+                    );
+                    if version_hint.is_none() {
+                        if let Some(pkg_index) = self.local_package_index.as_deref() {
+                            if let Ok(Some(entry)) =
+                                pkg_index.get_at_or_before_checkpoint(pkg_id, cp)
+                            {
+                                version_hint = Some(entry.version);
+                            }
+                        }
+                    }
+                    if use_cache {
+                        if let Some(ver) = version_hint {
+                            if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
+                                stats.cache_hits += 1;
+                                log_package_linkage(&pkg, "walrus_cache", version_hint, true);
+                                return Ok(package_success_outcome(pkg_id, pkg, stats));
+                            }
+                        } else if checkpoint.is_none() {
+                            if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
+                                stats.cache_hits += 1;
+                                log_package_linkage(
+                                    &pkg,
+                                    "walrus_cache_latest",
+                                    version_hint,
+                                    true,
+                                );
+                                return Ok(package_success_outcome(pkg_id, pkg, stats));
+                            }
+                        }
+                    }
+                    missing_reasons.push("package_missing_after_walrus_ingest".to_string());
+                } else {
+                    missing_reasons.push("walrus_checkpoint_fetch_failed".to_string());
+                }
+            }
+        }
+
+        if let Some(walrus) = self.walrus.as_ref() {
+            if let Some(prev_tx) = package_prev_txs.and_then(|m| m.get(&pkg_id)) {
+                if let Some(cp) = self.resolve_checkpoint_for_tx_digest(prev_tx).await {
+                    if linkage_debug_enabled() {
+                        eprintln!(
+                            "[linkage] prev_tx_lookup pkg=0x{} prev_tx={} checkpoint={}",
+                            hex::encode(pkg_id.as_ref()),
+                            prev_tx,
+                            cp
+                        );
+                    }
                     if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
-                        if let Some(tx_index) = self.local_tx_index.as_deref() {
-                            ingest_walrus_checkpoint_tx_index(
-                                checkpoint_json.as_ref(),
-                                tx_index,
-                                cp,
-                            );
+                        if let Some(tx_idx) = self.local_tx_index.as_deref() {
+                            ingest_walrus_checkpoint_tx_index(checkpoint_json.as_ref(), tx_idx, cp);
                         }
                         let _ = ingest_walrus_checkpoint_packages(
                             checkpoint_json.as_ref(),
@@ -2522,75 +2823,141 @@ impl HistoricalStateProvider {
                         if use_cache {
                             if let Some(ver) = version_hint {
                                 if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
-                                    cache_hits += 1;
-                                    log_package_linkage(&pkg, "walrus_cache", version_hint, true);
-                                    for dep_id in pkg.linkage.values() {
-                                        if !processed.contains(dep_id) {
-                                            to_process.push(*dep_id);
-                                        }
-                                    }
-                                    for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                        if !processed.contains(&dep_id) {
-                                            to_process.push(dep_id);
-                                        }
-                                    }
-                                    result.insert(pkg_id, pkg);
-                                    continue;
+                                    stats.cache_hits += 1;
+                                    log_package_linkage(&pkg, "walrus_prev_tx", version_hint, true);
+                                    return Ok(package_success_outcome(pkg_id, pkg, stats));
                                 }
                             } else if checkpoint.is_none() {
                                 if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
-                                    cache_hits += 1;
+                                    stats.cache_hits += 1;
                                     log_package_linkage(
                                         &pkg,
-                                        "walrus_cache_latest",
+                                        "walrus_prev_tx_latest",
                                         version_hint,
                                         true,
                                     );
-                                    for dep_id in pkg.linkage.values() {
-                                        if !processed.contains(dep_id) {
-                                            to_process.push(*dep_id);
-                                        }
-                                    }
-                                    for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                        if !processed.contains(&dep_id) {
-                                            to_process.push(dep_id);
-                                        }
-                                    }
-                                    result.insert(pkg_id, pkg);
-                                    continue;
+                                    return Ok(package_success_outcome(pkg_id, pkg, stats));
                                 }
                             }
                         }
-                        missing_reasons.push("package_missing_after_walrus_ingest".to_string());
-                    } else {
-                        missing_reasons.push("walrus_checkpoint_fetch_failed".to_string());
+                    }
+                } else {
+                    missing_reasons.push("checkpoint_lookup_failed".to_string());
+                    if debug_gaps {
+                        eprintln!(
+                            "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=prev_tx_hint",
+                            pkg_id, prev_tx
+                        );
                     }
                 }
             }
+        }
 
-            // Try to find package via previous_transaction -> tx_index -> checkpoint -> Walrus
-            // This allows discovering packages that aren't in the package index yet
-            if let Some(walrus) = self.walrus.as_ref() {
-                if let Some(prev_tx) = package_prev_txs.and_then(|m| m.get(&pkg_id)) {
-                    if let Some(cp) = self.resolve_checkpoint_for_tx_digest(prev_tx).await {
+        if walrus_only {
+            eprintln!(
+                "[walrus_package_only] missing package=0x{} version_hint={:?} reasons={:?}",
+                hex::encode(pkg_id.as_ref()),
+                version_hint,
+                missing_reasons
+            );
+            return Ok(package_missing_outcome(pkg_id, stats));
+        }
+
+        let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
+        let mut gql_pkg: Option<GraphQLPackage> = None;
+        if version_hint.is_none() {
+            if let Some(cp) = checkpoint {
+                if allow_package_graphql {
+                    let gql_start = std::time::Instant::now();
+                    let graphql = self.graphql.clone();
+                    let pkg_id_for_fetch = pkg_id_str.clone();
+                    let gql_res = tokio::task::spawn_blocking(move || {
+                        graphql.fetch_package_at_checkpoint(&pkg_id_for_fetch, cp)
+                    })
+                    .await;
+                    stats.gql_fetches += 1;
+                    stats.gql_elapsed += gql_start.elapsed().as_millis();
+                    if let Ok(Ok(pkg)) = gql_res {
+                        version_hint = Some(pkg.version);
+                        gql_pkg = Some(pkg);
+                        stats.gql_ok += 1;
                         if linkage_debug_enabled() {
                             eprintln!(
-                                "[linkage] prev_tx_lookup pkg=0x{} prev_tx={} checkpoint={}",
-                                hex::encode(pkg_id.as_ref()),
-                                prev_tx,
-                                cp
+                                "[linkage] graphql_checkpoint_version pkg={} version={}",
+                                pkg_id_str,
+                                version_hint.unwrap_or(0)
                             );
                         }
+                    } else {
+                        stats.gql_fail += 1;
+                    }
+                }
+            }
+        }
+
+        let grpc_start = std::time::Instant::now();
+        let grpc_result = if let Some(ver) = version_hint {
+            self.grpc
+                .get_object_at_version(&pkg_id_str, Some(ver))
+                .await
+        } else {
+            self.grpc.get_object(&pkg_id_str).await
+        };
+        stats.grpc_elapsed += grpc_start.elapsed().as_millis();
+
+        match grpc_result {
+            Ok(Some(grpc_obj)) => {
+                stats.grpc_ok += 1;
+                if version_hint.is_none() && !strict_checkpoint {
+                    version_hint = Some(grpc_obj.version);
+                }
+                let expected_version = version_hint;
+                let mut gql_pkg_override = gql_pkg.clone();
+                let mut version_mismatch = false;
+                if let Some(expected_version) = expected_version {
+                    if grpc_obj.version != expected_version {
+                        version_mismatch = true;
+                        if linkage_debug_enabled() {
+                            eprintln!(
+                                "[linkage] grpc_version_mismatch pkg={} expected={} got={}",
+                                pkg_id_str, expected_version, grpc_obj.version
+                            );
+                        }
+                        if gql_pkg_override.is_none() && allow_package_graphql {
+                            if let Some(cp) = checkpoint {
+                                let gql_start = std::time::Instant::now();
+                                let graphql = self.graphql.clone();
+                                let pkg_id_for_fetch = pkg_id_str.clone();
+                                let gql_res = tokio::task::spawn_blocking(move || {
+                                    graphql.fetch_package_at_checkpoint(&pkg_id_for_fetch, cp)
+                                })
+                                .await;
+                                stats.gql_fetches += 1;
+                                stats.gql_elapsed += gql_start.elapsed().as_millis();
+                                if let Ok(Ok(pkg)) = gql_res {
+                                    stats.gql_ok += 1;
+                                    gql_pkg_override = Some(pkg);
+                                } else {
+                                    stats.gql_fail += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let (Some(prev_tx), Some(walrus)) =
+                    (grpc_obj.previous_transaction.as_ref(), self.walrus.as_ref())
+                {
+                    let checkpoint_for_tx = self.resolve_checkpoint_for_tx_digest(prev_tx).await;
+                    if let Some(cp) = checkpoint_for_tx {
                         if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
-                            // Ingest tx index entries from this checkpoint
-                            if let Some(tx_idx) = self.local_tx_index.as_deref() {
+                            if let Some(tx_index) = self.local_tx_index.as_deref() {
                                 ingest_walrus_checkpoint_tx_index(
                                     checkpoint_json.as_ref(),
-                                    tx_idx,
+                                    tx_index,
                                     cp,
                                 );
                             }
-                            // Ingest packages from this checkpoint
                             let _ = ingest_walrus_checkpoint_packages(
                                 checkpoint_json.as_ref(),
                                 &self.cache,
@@ -2606,317 +2973,108 @@ impl HistoricalStateProvider {
                                     }
                                 }
                             }
-                            // Try to get the package from cache now
                             if use_cache {
                                 if let Some(ver) = version_hint {
                                     if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
-                                        cache_hits += 1;
+                                        stats.cache_hits += 1;
                                         log_package_linkage(
                                             &pkg,
                                             "walrus_prev_tx",
                                             version_hint,
                                             true,
                                         );
-                                        for dep_id in pkg.linkage.values() {
-                                            if !processed.contains(dep_id) {
-                                                to_process.push(*dep_id);
-                                            }
-                                        }
-                                        for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                            if !processed.contains(&dep_id) {
-                                                to_process.push(dep_id);
-                                            }
-                                        }
-                                        result.insert(pkg_id, pkg);
-                                        continue;
+                                        return Ok(package_success_outcome(pkg_id, pkg, stats));
                                     }
                                 } else if checkpoint.is_none() {
                                     if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
-                                        cache_hits += 1;
+                                        stats.cache_hits += 1;
                                         log_package_linkage(
                                             &pkg,
                                             "walrus_prev_tx_latest",
                                             version_hint,
                                             true,
                                         );
-                                        for dep_id in pkg.linkage.values() {
-                                            if !processed.contains(dep_id) {
-                                                to_process.push(*dep_id);
-                                            }
-                                        }
-                                        for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                            if !processed.contains(&dep_id) {
-                                                to_process.push(dep_id);
-                                            }
-                                        }
-                                        result.insert(pkg_id, pkg);
-                                        continue;
+                                        return Ok(package_success_outcome(pkg_id, pkg, stats));
                                     }
                                 }
                             }
                         }
-                    } else {
-                        missing_reasons.push("checkpoint_lookup_failed".to_string());
+                    } else if debug_gaps {
+                        eprintln!(
+                            "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=grpc_object",
+                            pkg_id, prev_tx
+                        );
+                    }
+                }
+
+                if strict_checkpoint {
+                    if expected_version.is_none() {
+                        if let Some(pkg_at_cp) = gql_pkg_override.clone() {
+                            let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
+                            version_hint = Some(pkg_data.version);
+                            log_package_linkage(
+                                &pkg_data,
+                                "graphql_checkpoint",
+                                version_hint,
+                                false,
+                            );
+                            if use_cache {
+                                self.cache.put_package(pkg_data.clone());
+                            }
+                            return Ok(package_success_outcome(pkg_id, pkg_data, stats));
+                        }
+                        missing_reasons.push("version_hint_missing".to_string());
                         if debug_gaps {
                             eprintln!(
-                                "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=prev_tx_hint",
-                                pkg_id, prev_tx
+                                "[data_gap] kind=package_version_hint_missing pkg={} source=grpc_object",
+                                pkg_id
                             );
                         }
+                        return Ok(package_missing_outcome(pkg_id, stats));
                     }
-                }
-            }
-
-            if walrus_only {
-                eprintln!(
-                    "[walrus_package_only] missing package=0x{} version_hint={:?} reasons={:?}",
-                    hex::encode(pkg_id.as_ref()),
-                    version_hint,
-                    missing_reasons
-                );
-                continue;
-            }
-
-            let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
-            let mut gql_pkg: Option<GraphQLPackage> = None;
-            if version_hint.is_none() {
-                if let Some(cp) = checkpoint {
-                    if allow_package_graphql {
-                        let gql_start = std::time::Instant::now();
-                        let gql_res = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
-                        gql_fetches += 1;
-                        gql_elapsed += gql_start.elapsed().as_millis();
-                        if let Ok(pkg) = gql_res {
-                            version_hint = Some(pkg.version);
-                            gql_pkg = Some(pkg);
-                            gql_ok += 1;
-                            if linkage_debug_enabled() {
-                                eprintln!(
-                                    "[linkage] graphql_checkpoint_version pkg={} version={}",
-                                    pkg_id_str,
-                                    version_hint.unwrap_or(0)
-                                );
+                    if version_mismatch {
+                        if let Some(pkg_at_cp) = gql_pkg_override.clone() {
+                            let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
+                            version_hint = Some(pkg_data.version);
+                            log_package_linkage(
+                                &pkg_data,
+                                "graphql_checkpoint",
+                                version_hint,
+                                false,
+                            );
+                            if use_cache {
+                                self.cache.put_package(pkg_data.clone());
                             }
-                        } else {
-                            gql_fail += 1;
+                            return Ok(package_success_outcome(pkg_id, pkg_data, stats));
                         }
-                    }
-                }
-            }
-
-            // Fetch via gRPC (has linkage table, unlike GraphQL)
-            let grpc_start = std::time::Instant::now();
-            let grpc_result = if let Some(ver) = version_hint {
-                self.grpc
-                    .get_object_at_version(&pkg_id_str, Some(ver))
-                    .await
-            } else {
-                self.grpc.get_object(&pkg_id_str).await
-            };
-            grpc_elapsed += grpc_start.elapsed().as_millis();
-
-            match grpc_result {
-                Ok(Some(grpc_obj)) => {
-                    grpc_ok += 1;
-                    if version_hint.is_none() && !strict_checkpoint {
-                        version_hint = Some(grpc_obj.version);
-                    }
-                    let expected_version = version_hint;
-                    let mut gql_pkg_override = gql_pkg.clone();
-                    let mut version_mismatch = false;
-                    if let Some(expected_version) = expected_version {
-                        if grpc_obj.version != expected_version {
-                            version_mismatch = true;
-                            if linkage_debug_enabled() {
-                                eprintln!(
-                                    "[linkage] grpc_version_mismatch pkg={} expected={} got={}",
-                                    pkg_id_str, expected_version, grpc_obj.version
-                                );
-                            }
-                            if gql_pkg_override.is_none() && allow_package_graphql {
-                                if let Some(cp) = checkpoint {
-                                    let gql_start = std::time::Instant::now();
-                                    let gql_res =
-                                        self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
-                                    gql_fetches += 1;
-                                    gql_elapsed += gql_start.elapsed().as_millis();
-                                    if let Ok(pkg) = gql_res {
-                                        gql_ok += 1;
-                                        gql_pkg_override = Some(pkg);
-                                    } else {
-                                        gql_fail += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Attempt Walrus fetch via previous_transaction -> checkpoint for packages.
-                    if let (Some(prev_tx), Some(walrus)) =
-                        (grpc_obj.previous_transaction.as_ref(), self.walrus.as_ref())
-                    {
-                        let checkpoint_for_tx =
-                            self.resolve_checkpoint_for_tx_digest(prev_tx).await;
-                        if let Some(cp) = checkpoint_for_tx {
-                            if let Some(checkpoint_json) = self.walrus_pool.get(walrus, cp).await {
-                                if let Some(tx_index) = self.local_tx_index.as_deref() {
-                                    ingest_walrus_checkpoint_tx_index(
-                                        checkpoint_json.as_ref(),
-                                        tx_index,
-                                        cp,
-                                    );
-                                }
-                                let _ = ingest_walrus_checkpoint_packages(
-                                    checkpoint_json.as_ref(),
-                                    &self.cache,
-                                    self.local_package_index.as_deref(),
-                                    cp,
-                                );
-                                if version_hint.is_none() {
-                                    if let Some(pkg_index) = self.local_package_index.as_deref() {
-                                        if let Ok(Some(entry)) =
-                                            pkg_index.get_at_or_before_checkpoint(pkg_id, cp)
-                                        {
-                                            version_hint = Some(entry.version);
-                                        }
-                                    }
-                                }
-                                if use_cache {
-                                    if let Some(ver) = version_hint {
-                                        if let Some(pkg) = self.cache.get_package(&pkg_id, ver) {
-                                            cache_hits += 1;
-                                            log_package_linkage(
-                                                &pkg,
-                                                "walrus_prev_tx",
-                                                version_hint,
-                                                true,
-                                            );
-                                            for dep_id in pkg.linkage.values() {
-                                                if !processed.contains(dep_id) {
-                                                    to_process.push(*dep_id);
-                                                }
-                                            }
-                                            for dep_id in
-                                                extract_module_dependency_ids(&pkg.modules)
-                                            {
-                                                if !processed.contains(&dep_id) {
-                                                    to_process.push(dep_id);
-                                                }
-                                            }
-                                            result.insert(pkg_id, pkg);
-                                            continue;
-                                        }
-                                    } else if checkpoint.is_none() {
-                                        if let Some(pkg) = self.cache.get_package_latest(&pkg_id) {
-                                            cache_hits += 1;
-                                            log_package_linkage(
-                                                &pkg,
-                                                "walrus_prev_tx_latest",
-                                                version_hint,
-                                                true,
-                                            );
-                                            for dep_id in pkg.linkage.values() {
-                                                if !processed.contains(dep_id) {
-                                                    to_process.push(*dep_id);
-                                                }
-                                            }
-                                            for dep_id in
-                                                extract_module_dependency_ids(&pkg.modules)
-                                            {
-                                                if !processed.contains(&dep_id) {
-                                                    to_process.push(dep_id);
-                                                }
-                                            }
-                                            result.insert(pkg_id, pkg);
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                        } else if debug_gaps {
+                        missing_reasons.push("grpc_version_mismatch".to_string());
+                        if debug_gaps {
                             eprintln!(
-                                "[data_gap] kind=package_checkpoint_lookup pkg={} prev_tx={} source=grpc_object",
-                                pkg_id, prev_tx
+                                "[data_gap] kind=package_version_mismatch pkg={} expected={:?} got={} source=grpc_object",
+                                pkg_id, expected_version, grpc_obj.version
                             );
                         }
+                        return Ok(package_missing_outcome(pkg_id, stats));
                     }
+                }
 
-                    if strict_checkpoint {
-                        if expected_version.is_none() {
-                            if let Some(pkg_at_cp) = gql_pkg_override.clone() {
-                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
-                                version_hint = Some(pkg_data.version);
-                                for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
-                                    if !processed.contains(&dep_id) {
-                                        to_process.push(dep_id);
-                                    }
-                                }
-                                log_package_linkage(
-                                    &pkg_data,
-                                    "graphql_checkpoint",
-                                    version_hint,
-                                    false,
-                                );
-                                if use_cache {
-                                    self.cache.put_package(pkg_data.clone());
-                                }
-                                result.insert(pkg_id, pkg_data);
-                                continue;
-                            }
-                            missing_reasons.push("version_hint_missing".to_string());
-                            if debug_gaps {
-                                eprintln!(
-                                    "[data_gap] kind=package_version_hint_missing pkg={} source=grpc_object",
-                                    pkg_id
-                                );
-                            }
-                            continue;
-                        }
-                        if version_mismatch {
-                            if let Some(pkg_at_cp) = gql_pkg_override.clone() {
-                                let pkg_data = graphql_package_to_data(pkg_id, pkg_at_cp)?;
-                                version_hint = Some(pkg_data.version);
-                                for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
-                                    if !processed.contains(&dep_id) {
-                                        to_process.push(dep_id);
-                                    }
-                                }
-                                log_package_linkage(
-                                    &pkg_data,
-                                    "graphql_checkpoint",
-                                    version_hint,
-                                    false,
-                                );
-                                if use_cache {
-                                    self.cache.put_package(pkg_data.clone());
-                                }
-                                result.insert(pkg_id, pkg_data);
-                                continue;
-                            }
-                            missing_reasons.push("grpc_version_mismatch".to_string());
-                            if debug_gaps {
-                                eprintln!(
-                                    "[data_gap] kind=package_version_mismatch pkg={} expected={:?} got={} source=grpc_object",
-                                    pkg_id, expected_version, grpc_obj.version
-                                );
-                            }
-                            continue;
-                        }
-                    }
-
-                    let mut pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
-                    if let Some(cp) = checkpoint {
-                        if gql_pkg_override.is_none() && allow_package_graphql {
-                            let gql_start = std::time::Instant::now();
-                            let gql_res = self.graphql.fetch_package_at_checkpoint(&pkg_id_str, cp);
-                            gql_fetches += 1;
-                            gql_elapsed += gql_start.elapsed().as_millis();
-                            if let Ok(pkg_at_cp) = gql_res {
-                                gql_ok += 1;
-                                gql_pkg_override = Some(pkg_at_cp);
-                            } else {
-                                gql_fail += 1;
-                            }
+                let mut pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
+                if let Some(cp) = checkpoint {
+                    if gql_pkg_override.is_none() && allow_package_graphql {
+                        let gql_start = std::time::Instant::now();
+                        let graphql = self.graphql.clone();
+                        let pkg_id_for_fetch = pkg_id_str.clone();
+                        let gql_res = tokio::task::spawn_blocking(move || {
+                            graphql.fetch_package_at_checkpoint(&pkg_id_for_fetch, cp)
+                        })
+                        .await;
+                        stats.gql_fetches += 1;
+                        stats.gql_elapsed += gql_start.elapsed().as_millis();
+                        if let Ok(Ok(pkg_at_cp)) = gql_res {
+                            stats.gql_ok += 1;
+                            gql_pkg_override = Some(pkg_at_cp);
+                        } else {
+                            stats.gql_fail += 1;
                         }
                     }
                     if let Some(pkg_at_cp) = gql_pkg_override {
@@ -2942,137 +3100,74 @@ impl HistoricalStateProvider {
                     } else {
                         log_package_linkage(&pkg, "grpc", version_hint, false);
                     }
+                } else {
+                    log_package_linkage(&pkg, "grpc", version_hint, false);
+                }
 
-                    // Add dependencies to process queue
-                    for dep_id in pkg.linkage.values() {
-                        if !processed.contains(dep_id) {
-                            to_process.push(*dep_id);
-                        }
-                    }
-                    for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                        if !processed.contains(&dep_id) {
-                            to_process.push(dep_id);
-                        }
-                    }
-
+                if use_cache {
+                    self.cache.put_package(pkg.clone());
+                }
+                Ok(package_success_outcome(pkg_id, pkg, stats))
+            }
+            Ok(None) => {
+                stats.grpc_fail += 1;
+                if let Some(pkg) = gql_pkg {
+                    let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
+                    log_package_linkage(&pkg_data, "graphql_checkpoint", version_hint, false);
                     if use_cache {
-                        self.cache.put_package(pkg.clone());
+                        self.cache.put_package(pkg_data.clone());
                     }
-                    result.insert(pkg_id, pkg);
+                    return Ok(package_success_outcome(pkg_id, pkg_data, stats));
                 }
-                Ok(None) => {
-                    grpc_fail += 1;
-                    if let Some(pkg) = gql_pkg {
-                        let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
-                        for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
-                            if !processed.contains(&dep_id) {
-                                to_process.push(dep_id);
-                            }
-                        }
-                        log_package_linkage(&pkg_data, "graphql_checkpoint", version_hint, false);
+                if !strict_checkpoint && version_hint.is_some() {
+                    let grpc_start = std::time::Instant::now();
+                    let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
+                    stats.grpc_elapsed += grpc_start.elapsed().as_millis();
+                    if let Ok(Some(grpc_obj)) = grpc_latest {
+                        stats.grpc_ok += 1;
+                        let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
+                        log_package_linkage(&pkg, "grpc_fallback_latest", version_hint, false);
                         if use_cache {
-                            self.cache.put_package(pkg_data.clone());
+                            self.cache.put_package(pkg.clone());
                         }
-                        result.insert(pkg_id, pkg_data);
-                        continue;
+                        return Ok(package_success_outcome(pkg_id, pkg, stats));
+                    } else if grpc_latest.is_err() {
+                        stats.grpc_fail += 1;
                     }
-                    // If versioned fetch failed and no checkpoint package is available, fall back to latest
-                    if !strict_checkpoint && version_hint.is_some() {
-                        let grpc_start = std::time::Instant::now();
-                        let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
-                        grpc_elapsed += grpc_start.elapsed().as_millis();
-                        if let Ok(Some(grpc_obj)) = grpc_latest {
-                            grpc_ok += 1;
-                            let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
-                            log_package_linkage(&pkg, "grpc_fallback_latest", version_hint, false);
-                            for dep_id in pkg.linkage.values() {
-                                if !processed.contains(dep_id) {
-                                    to_process.push(*dep_id);
-                                }
-                            }
-                            for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                if !processed.contains(&dep_id) {
-                                    to_process.push(dep_id);
-                                }
-                            }
-                            if use_cache {
-                                self.cache.put_package(pkg.clone());
-                            }
-                            result.insert(pkg_id, pkg);
-                            continue;
-                        } else if grpc_latest.is_err() {
-                            grpc_fail += 1;
-                        }
-                    }
-                    eprintln!("Warning: Package not found: {}", pkg_id_str);
                 }
-                Err(e) => {
-                    grpc_fail += 1;
-                    if let Some(pkg) = gql_pkg {
-                        let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
-                        for dep_id in extract_module_dependency_ids(&pkg_data.modules) {
-                            if !processed.contains(&dep_id) {
-                                to_process.push(dep_id);
-                            }
-                        }
-                        log_package_linkage(&pkg_data, "graphql_checkpoint", version_hint, false);
+                eprintln!("Warning: Package not found: {}", pkg_id_str);
+                Ok(package_missing_outcome(pkg_id, stats))
+            }
+            Err(e) => {
+                stats.grpc_fail += 1;
+                if let Some(pkg) = gql_pkg {
+                    let pkg_data = graphql_package_to_data(pkg_id, pkg)?;
+                    log_package_linkage(&pkg_data, "graphql_checkpoint", version_hint, false);
+                    if use_cache {
+                        self.cache.put_package(pkg_data.clone());
+                    }
+                    return Ok(package_success_outcome(pkg_id, pkg_data, stats));
+                }
+                if !strict_checkpoint && version_hint.is_some() {
+                    let grpc_start = std::time::Instant::now();
+                    let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
+                    stats.grpc_elapsed += grpc_start.elapsed().as_millis();
+                    if let Ok(Some(grpc_obj)) = grpc_latest {
+                        stats.grpc_ok += 1;
+                        let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
                         if use_cache {
-                            self.cache.put_package(pkg_data.clone());
+                            self.cache.put_package(pkg.clone());
                         }
-                        result.insert(pkg_id, pkg_data);
-                        continue;
+                        return Ok(package_success_outcome(pkg_id, pkg, stats));
+                    } else if grpc_latest.is_err() {
+                        stats.grpc_fail += 1;
                     }
-                    // If versioned fetch failed and no checkpoint package is available, fall back to latest
-                    if !strict_checkpoint && version_hint.is_some() {
-                        let grpc_start = std::time::Instant::now();
-                        let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
-                        grpc_elapsed += grpc_start.elapsed().as_millis();
-                        if let Ok(Some(grpc_obj)) = grpc_latest {
-                            grpc_ok += 1;
-                            let pkg = grpc_object_to_package(&grpc_obj, pkg_id)?;
-                            for dep_id in pkg.linkage.values() {
-                                if !processed.contains(dep_id) {
-                                    to_process.push(*dep_id);
-                                }
-                            }
-                            for dep_id in extract_module_dependency_ids(&pkg.modules) {
-                                if !processed.contains(&dep_id) {
-                                    to_process.push(dep_id);
-                                }
-                            }
-                            if use_cache {
-                                self.cache.put_package(pkg.clone());
-                            }
-                            result.insert(pkg_id, pkg);
-                            continue;
-                        } else if grpc_latest.is_err() {
-                            grpc_fail += 1;
-                        }
-                    }
-                    eprintln!("Warning: Failed to fetch package {}: {}", pkg_id_str, e);
                 }
+                eprintln!("Warning: Failed to fetch package {}: {}", pkg_id_str, e);
+                Ok(package_missing_outcome(pkg_id, stats))
             }
         }
-        if timing {
-            eprintln!(
-                "[timing] stage=fetch_packages_with_deps requested={} processed={} cache_hits={} grpc_ok={} grpc_fail={} gql_fetches={} gql_ok={} gql_fail={} grpc_ms={} gql_ms={} total_ms={}",
-                package_ids.len(),
-                processed.len(),
-                cache_hits,
-                grpc_ok,
-                grpc_fail,
-                gql_fetches,
-                gql_ok,
-                gql_fail,
-                grpc_elapsed,
-                gql_elapsed,
-                start.elapsed().as_millis()
-            );
-        }
-
-        Ok(result)
     }
-
     // ==================== On-Demand Fetcher ====================
 
     /// Create an on-demand fetcher callback for the VM.

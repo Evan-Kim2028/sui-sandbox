@@ -1,8 +1,8 @@
 //! gRPC Client implementation for Sui
 //!
 //! Sui's public fullnodes now support gRPC:
-//! - **Mainnet**: `https://fullnode.mainnet.sui.io:443` (streaming + queries)
-//! - **Archive**: `https://archive.mainnet.sui.io:443` (historical queries, no streaming)
+//! - **Mainnet archive (default)**: `https://archive.mainnet.sui.io:443` (historical queries)
+//! - **Mainnet live**: `https://fullnode.mainnet.sui.io:443` (streaming + queries)
 //! - **Testnet**: `https://fullnode.testnet.sui.io:443`
 //!
 //! Set the SUI_GRPC_ENDPOINT environment variable or use `GrpcClient::new()`.
@@ -24,8 +24,8 @@ use super::generated::sui_rpc_v2::{
 /// # Public Endpoints
 ///
 /// Sui's public fullnodes support gRPC:
+/// - `https://archive.mainnet.sui.io:443` - Historical queries (default)
 /// - `https://fullnode.mainnet.sui.io:443` - Live streaming + queries
-/// - `https://archive.mainnet.sui.io:443` - Historical queries (no streaming)
 /// - `https://fullnode.testnet.sui.io:443` - Testnet
 pub struct GrpcClient {
     endpoint: String,
@@ -33,7 +33,7 @@ pub struct GrpcClient {
     api_key: Option<String>,
 }
 
-const MAINNET_ENDPOINT: &str = "https://fullnode.mainnet.sui.io:443";
+const MAINNET_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
 const TESTNET_ENDPOINT: &str = "https://fullnode.testnet.sui.io:443";
 const MYSTEN_ARCHIVE_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
 const SURFLUX_ARCHIVE_ENDPOINT: &str = "https://grpc.surflux.dev:443";
@@ -92,7 +92,7 @@ impl GrpcClient {
     /// Create a client for Sui mainnet.
     ///
     /// Reads the `SUI_GRPC_ENDPOINT` environment variable, or defaults to
-    /// `https://fullnode.mainnet.sui.io:443`.
+    /// `https://archive.mainnet.sui.io:443`.
     pub async fn mainnet() -> Result<Self> {
         let endpoint =
             std::env::var("SUI_GRPC_ENDPOINT").unwrap_or_else(|_| MAINNET_ENDPOINT.to_string());

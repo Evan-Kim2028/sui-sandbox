@@ -190,6 +190,7 @@ pub(super) async fn execute_walrus_batch_v2(
                     no_prefetch: cmd.hydration.no_prefetch,
                     auto_system_objects: cmd.hydration.auto_system_objects,
                 },
+                profile: cmd.profile,
                 vm_only: cmd.vm_only,
                 strict: false, // don't fail-fast in batch mode
                 compare: cmd.compare,

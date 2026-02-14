@@ -23,8 +23,8 @@ This is the concrete follow-up to Phase 0 baseline (`2026-02-09` snapshot) for i
 ## WS1: New User End-to-End Flow
 
 1. Make one canonical onboarding sequence explicit in docs:
-- `examples/replay.sh` (single digest)
-- `examples/scan_checkpoints.sh` (latest checkpoints)
+- `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare` (single digest)
+- `sui-sandbox replay '*' --source walrus --latest <N> --compare` (latest checkpoints)
 - `analyze replay` triage loop
 2. Add a single "validation command pack" for maintainers.
 3. Ensure each step has expected output cues and next action.

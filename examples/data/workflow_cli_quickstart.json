@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "name": "cli_quickstart",
+  "description": "Minimal CLI walkthrough as a typed workflow (no shell script required).",
+  "steps": [
+    {
+      "id": "modules",
+      "name": "List framework modules",
+      "kind": "command",
+      "args": [
+        "view",
+        "modules",
+        "0x2"
+      ]
+    },
+    {
+      "id": "coin_interface",
+      "name": "Inspect coin module",
+      "kind": "command",
+      "args": [
+        "view",
+        "module",
+        "0x2::coin"
+      ]
+    },
+    {
+      "id": "status",
+      "name": "Session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    },
+    {
+      "id": "analyze_pkg",
+      "name": "Analyze framework package",
+      "kind": "command",
+      "args": [
+        "analyze",
+        "package",
+        "--package-id",
+        "0x2",
+        "--list-modules"
+      ]
+    },
+    {
+      "id": "run_coin_zero",
+      "name": "Run coin::zero",
+      "kind": "command",
+      "args": [
+        "run",
+        "0x2::coin::zero",
+        "--type-arg",
+        "0x2::sui::SUI",
+        "--sender",
+        "0x1"
+      ]
+    },
+    {
+      "id": "bridge_call",
+      "name": "Generate sui client call",
+      "kind": "command",
+      "args": [
+        "bridge",
+        "call",
+        "0x2::coin::zero",
+        "--type-arg",
+        "0x2::sui::SUI",
+        "--quiet"
+      ]
+    }
+  ]
+}

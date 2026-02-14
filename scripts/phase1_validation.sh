@@ -23,6 +23,9 @@ Environment:
   RUN_HYBRID_CANARY      Set to 1 to require hybrid replay canary pass (default: 0)
   GATE_TIMEOUT_SECS      Per-gate timeout in seconds (default: 420)
   SCAN_REQUIRED          Set to 1 to fail when latest-scan command times out/fails (default: 0)
+  RUN_PYTHON_SMOKE       Set to 1 to run Python core examples smoke checks (default: 0)
+  RUN_PYTHON_SMOKE_NETWORK  Set to 1 to include network Python smoke checks (default: 0)
+  PYTHON_BIN             Python interpreter override for Python smoke script (default: python3)
 EOF
 }
 
@@ -59,6 +62,8 @@ MIN_SCAN_SUCCESS_PCT="${MIN_SCAN_SUCCESS_PCT:-35}"
 RUN_HYBRID_CANARY="${RUN_HYBRID_CANARY:-0}"
 GATE_TIMEOUT_SECS="${GATE_TIMEOUT_SECS:-420}"
 SCAN_REQUIRED="${SCAN_REQUIRED:-0}"
+RUN_PYTHON_SMOKE="${RUN_PYTHON_SMOKE:-0}"
+RUN_PYTHON_SMOKE_NETWORK="${RUN_PYTHON_SMOKE_NETWORK:-0}"
 
 RUN_TESTS=1
 RUN_NETWORK=1
@@ -356,6 +361,16 @@ else
   warn "offline execution_path schema check (skipped: state-json run failed)"
 fi
 
+WORKFLOW_SPEC="$ROOT/examples/data/workflow_replay_analyze_demo.json"
+if [[ -f "$WORKFLOW_SPEC" ]]; then
+  run_gate "workflow spec validate (core example)" \
+    "$SUI_SANDBOX_BIN" workflow validate --spec "$WORKFLOW_SPEC"
+  run_gate "workflow spec dry-run (core example)" \
+    "$SUI_SANDBOX_BIN" workflow run --spec "$WORKFLOW_SPEC" --dry-run
+else
+  warn "workflow core example gates (skipped: missing $WORKFLOW_SPEC)"
+fi
+
 if [[ "$RUN_NETWORK" -eq 1 ]]; then
   WALRUS_CANARY_OUT="$TMP_DIR/walrus_canary.json"
   if run_capture_stdout_gate_timeout "$GATE_TIMEOUT_SECS" "walrus replay canary" \
@@ -404,6 +419,16 @@ if [[ "$RUN_SCAN" -eq 1 ]]; then
     run_python_gate "scan non-regression checks" "$SCAN_OUT" "scan_non_regression"
   else
     warn "scan non-regression checks (skipped: no scan summary)"
+  fi
+fi
+
+if [[ "$RUN_PYTHON_SMOKE" == "1" ]]; then
+  if [[ "$RUN_PYTHON_SMOKE_NETWORK" == "1" ]]; then
+    run_gate "python core examples smoke (network)" \
+      "$ROOT/scripts/python_examples_smoke.sh" --network
+  else
+    run_gate "python core examples smoke (offline)" \
+      "$ROOT/scripts/python_examples_smoke.sh"
   fi
 fi
 

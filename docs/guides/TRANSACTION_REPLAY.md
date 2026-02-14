@@ -15,9 +15,6 @@ Replay historical Sui transactions locally for debugging, verification, and offl
 # Replay one known transaction and compare effects
 sui-sandbox replay At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
   --source walrus --checkpoint 239615926 --compare
-
-# Example wrapper
-./examples/replay.sh
 ```
 
 Walrus is the default recommended path for most replay work.
@@ -112,7 +109,7 @@ If you need Rust-level integration, use:
 See examples:
 
 - [../../examples/README.md](../../examples/README.md)
-- [../../examples/fork_state.rs](../../examples/fork_state.rs)
+- [../../examples/advanced/fork_state.rs](../../examples/advanced/fork_state.rs)
 - [../../examples/walrus_ptb_universe.rs](../../examples/walrus_ptb_universe.rs)
 
 ## Related Docs

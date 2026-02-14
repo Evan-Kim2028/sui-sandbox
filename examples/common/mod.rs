@@ -58,15 +58,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use base64::Engine;
+use move_core_types::identifier::Identifier;
+use std::collections::BTreeMap;
 use std::str::FromStr;
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectID, ObjectInput};
 use sui_sandbox_core::resolver::LocalModuleResolver;
 use sui_sandbox_core::sandbox_runtime::ChildFetcherFn;
+use sui_sandbox_core::simulation::{ExecutionResult, SimulationEnvironment};
 use sui_sandbox_core::tx_replay::CachedTransaction;
 use sui_sandbox_core::utilities::GenericObjectPatcher;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness, DEFAULT_PROTOCOL_VERSION};
-use sui_state_fetcher::ReplayState;
+use sui_state_fetcher::types::PackageData;
+use sui_state_fetcher::{HistoricalStateProvider, ReplayState};
 use sui_transport::grpc::{GrpcClient, GrpcTransaction};
 use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
@@ -248,6 +253,160 @@ pub fn create_child_fetcher(
     )
 }
 
+/// Common fetched object tuple used by replay examples:
+/// `(bcs_bytes, type_string, version, is_shared)`.
+pub type ExampleFetchedObjectData = (Vec<u8>, Option<String>, u64, bool);
+
+/// Fetch object BCS data at an optional historical version with optional latest fallback.
+pub fn fetch_object_data(
+    rt: &Runtime,
+    grpc: &GrpcClient,
+    object_id: &str,
+    historical_version: Option<u64>,
+    allow_latest_fallback: bool,
+) -> Option<ExampleFetchedObjectData> {
+    let at_version = historical_version.and_then(|version| {
+        rt.block_on(async { grpc.get_object_at_version(object_id, Some(version)).await })
+            .ok()
+            .flatten()
+            .and_then(|obj| {
+                let is_shared = matches!(obj.owner, sui_transport::grpc::GrpcOwner::Shared { .. });
+                let bcs = obj.bcs?;
+                Some((bcs, obj.type_string, obj.version, is_shared))
+            })
+    });
+    if at_version.is_some() {
+        return at_version;
+    }
+    if historical_version.is_some() && !allow_latest_fallback {
+        return None;
+    }
+
+    rt.block_on(async { grpc.get_object(object_id).await })
+        .ok()
+        .flatten()
+        .and_then(|obj| {
+            let is_shared = matches!(obj.owner, sui_transport::grpc::GrpcOwner::Shared { .. });
+            let bcs = obj.bcs?;
+            Some((bcs, obj.type_string, obj.version, is_shared))
+        })
+}
+
+/// Preload dynamic field wrapper objects for a list of parent object ids.
+///
+/// Returns a map of dynamic-field object id to fetched object tuple.
+pub fn preload_dynamic_field_objects(
+    rt: &Runtime,
+    graphql: &sui_transport::graphql::GraphQLClient,
+    grpc: &GrpcClient,
+    parent_ids: &[&str],
+    limit: usize,
+) -> HashMap<String, ExampleFetchedObjectData> {
+    let mut loaded = HashMap::new();
+    for parent_id in parent_ids {
+        if let Ok(fields) = graphql.fetch_dynamic_fields(parent_id, limit) {
+            for field in fields {
+                let Some(obj_id) = field.object_id else {
+                    continue;
+                };
+                if loaded.contains_key(&obj_id) {
+                    continue;
+                }
+                if let Some((bcs, type_str, version, _is_shared)) =
+                    fetch_object_data(rt, grpc, &obj_id, None, false)
+                {
+                    // Dynamic field wrapper objects are loaded as owned/non-shared.
+                    loaded.insert(obj_id, (bcs, type_str, version, false));
+                }
+            }
+        }
+    }
+    loaded
+}
+
+/// Load fetched object blobs into a simulation environment.
+///
+/// When `fail_on_error` is true, returns the first load error.
+/// When false, skips failing objects and continues.
+pub fn load_fetched_objects_into_env(
+    env: &mut SimulationEnvironment,
+    fetched: &HashMap<String, ExampleFetchedObjectData>,
+    fail_on_error: bool,
+) -> Result<usize> {
+    let mut loaded = 0usize;
+    for (obj_id, (bcs, type_str, version, is_shared)) in fetched {
+        let result = env.load_object_from_data(
+            obj_id,
+            bcs.clone(),
+            type_str.as_deref(),
+            *is_shared,
+            false,
+            *version,
+        );
+        match result {
+            Ok(_) => loaded += 1,
+            Err(err) if fail_on_error => {
+                return Err(anyhow!("failed loading object {}: {}", obj_id, err));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(loaded)
+}
+
+/// Build a shared-object PTB input from cached fetched object data.
+pub fn make_shared_object_input(
+    obj_id: &str,
+    fetched: &HashMap<String, ExampleFetchedObjectData>,
+) -> Result<InputValue> {
+    let (bcs, type_str, version, _) = fetched
+        .get(obj_id)
+        .ok_or_else(|| anyhow!("Object {} not found", obj_id))?;
+    let type_tag = type_str.as_ref().and_then(|s| TypeTag::from_str(s).ok());
+    Ok(InputValue::Object(ObjectInput::Shared {
+        id: ObjectID::from_hex_literal(obj_id)?,
+        bytes: bcs.clone(),
+        type_tag,
+        version: Some(*version),
+        mutable: false,
+    }))
+}
+
+/// Execute a single MoveCall with shared-object inputs sourced from fetched object data.
+pub fn execute_shared_move_call(
+    env: &mut SimulationEnvironment,
+    package: AccountAddress,
+    module: &str,
+    function: &str,
+    type_args: Vec<TypeTag>,
+    object_arg_ids: &[&str],
+    fetched: &HashMap<String, ExampleFetchedObjectData>,
+) -> Result<ExecutionResult> {
+    let inputs = object_arg_ids
+        .iter()
+        .map(|obj_id| make_shared_object_input(obj_id, fetched))
+        .collect::<Result<Vec<_>>>()?;
+    let args = object_arg_ids
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let input_idx =
+                u16::try_from(idx).map_err(|_| anyhow!("too many PTB inputs: {}", idx + 1))?;
+            Ok(Argument::Input(input_idx))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let commands = vec![Command::MoveCall {
+        package,
+        module: Identifier::new(module)?,
+        function: Identifier::new(function)?,
+        type_args,
+        args,
+    }];
+
+    Ok(env.execute_ptb(inputs, commands))
+}
+
 /// Create a VM harness configured for transaction replay.
 ///
 /// Sets up the harness with:
@@ -324,6 +483,171 @@ pub fn build_replay_config(state: &ReplayState) -> Result<SimulationConfig> {
     }
 
     Ok(config)
+}
+
+/// Create a mainnet HistoricalStateProvider with practical endpoint defaults.
+///
+/// Behavior:
+/// - Uses `SUI_GRPC_ENDPOINT` when explicitly set.
+/// - Uses `https://archive.mainnet.sui.io:443` by default when no explicit endpoint is set.
+/// - Warns when historical mode uses a likely non-archival endpoint.
+pub async fn create_mainnet_provider(historical_mode: bool) -> Result<HistoricalStateProvider> {
+    const MAINNET_PUBLIC_GRPC: &str = "https://fullnode.mainnet.sui.io:443";
+    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
+
+    let configured_endpoint = std::env::var("SUI_GRPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let mut endpoint = configured_endpoint
+        .clone()
+        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string());
+
+    if historical_mode && endpoint.contains("fullnode.mainnet.sui.io") {
+        if configured_endpoint.is_some() {
+            eprintln!(
+                "  ⚠ Historical mode detected non-archival endpoint ({}); switching to {}",
+                endpoint, MAINNET_ARCHIVE_GRPC
+            );
+        }
+        endpoint = MAINNET_ARCHIVE_GRPC.to_string();
+    } else if historical_mode && configured_endpoint.is_none() {
+        endpoint = MAINNET_ARCHIVE_GRPC.to_string();
+    }
+
+    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+    let grpc = GrpcClient::with_api_key(&endpoint, api_key).await?;
+    let graphql = GraphQLClient::mainnet();
+
+    Ok(HistoricalStateProvider::with_clients(grpc, graphql))
+}
+
+/// Resolve the effective gRPC endpoint used by examples, honoring env overrides.
+pub fn effective_grpc_endpoint_for_examples() -> String {
+    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
+    std::env::var("SUI_GRPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string())
+}
+
+/// Whether the endpoint appears to be Mysten's public archive endpoint.
+pub fn is_mainnet_archive_endpoint(endpoint: &str) -> bool {
+    let lower = endpoint.to_ascii_lowercase();
+    lower.contains("archive.mainnet.sui.io") || lower.contains("fullnode.mainnet.sui.io")
+}
+
+/// Heuristic for failures that often come from missing runtime objects in archive replay.
+pub fn is_likely_runtime_object_gap_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    (lower.contains("contractabort") && lower.contains("abort_code: 1"))
+        || lower.contains("unchanged_loaded_runtime_objects")
+        || lower.contains("missing runtime object")
+        || lower.contains("missing object input")
+}
+
+/// Print an actionable hint when archive replay likely failed due to runtime-object gaps.
+pub fn maybe_print_archive_runtime_hint(error_message: &str) {
+    if !is_likely_runtime_object_gap_error(error_message) {
+        return;
+    }
+
+    let endpoint = effective_grpc_endpoint_for_examples();
+    if is_mainnet_archive_endpoint(&endpoint) {
+        println!("\n  ℹ️  Likely archive runtime-object gap detected.");
+        println!("     Current endpoint: {}", endpoint);
+        println!("     Suggestion: retry with `SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443`.");
+    }
+}
+
+/// Derived package-linkage metadata used to register packages in a simulation environment.
+#[derive(Debug, Clone, Default)]
+pub struct PackageRegistrationPlan {
+    /// storage address -> fetched package version
+    pub package_versions: HashMap<AccountAddress, u64>,
+    /// original/runtime package id -> upgraded/storage package id
+    pub upgrade_map: HashMap<AccountAddress, AccountAddress>,
+    /// upgraded/storage package id -> original/runtime package id
+    pub original_id_map: HashMap<AccountAddress, AccountAddress>,
+}
+
+/// Build package-linkage registration maps from fetched package data.
+pub fn build_package_registration_plan(
+    packages: &HashMap<AccountAddress, PackageData>,
+) -> PackageRegistrationPlan {
+    let package_versions: HashMap<AccountAddress, u64> = packages
+        .iter()
+        .map(|(addr, pkg)| (*addr, pkg.version))
+        .collect();
+
+    let mut upgrade_map: HashMap<AccountAddress, AccountAddress> = HashMap::new();
+    for pkg in packages.values() {
+        for (original, upgraded) in &pkg.linkage {
+            if original != upgraded {
+                upgrade_map.insert(*original, *upgraded);
+            }
+        }
+    }
+
+    let original_id_map: HashMap<AccountAddress, AccountAddress> = upgrade_map
+        .iter()
+        .map(|(original, upgraded)| (*upgraded, *original))
+        .collect();
+
+    PackageRegistrationPlan {
+        package_versions,
+        upgrade_map,
+        original_id_map,
+    }
+}
+
+/// Result summary for package registration into the simulation environment.
+#[derive(Debug, Clone, Default)]
+pub struct PackageRegistrationResult {
+    pub loaded: usize,
+    pub skipped_upgraded: usize,
+    pub failed: Vec<(AccountAddress, String)>,
+}
+
+/// Register fetched packages in the simulation environment with full linkage metadata.
+pub fn register_packages_with_linkage_plan(
+    env: &mut SimulationEnvironment,
+    packages: &HashMap<AccountAddress, PackageData>,
+    plan: &PackageRegistrationPlan,
+) -> PackageRegistrationResult {
+    let mut result = PackageRegistrationResult::default();
+
+    for (addr, pkg) in packages {
+        // Skip packages superseded by an upgraded storage address.
+        if plan.upgrade_map.contains_key(addr) {
+            result.skipped_upgraded += 1;
+            continue;
+        }
+
+        let original_id = plan.original_id_map.get(addr).copied();
+        let linkage: BTreeMap<AccountAddress, (AccountAddress, u64)> = pkg
+            .linkage
+            .iter()
+            .map(|(original, upgraded)| {
+                let linked_version = plan.package_versions.get(upgraded).copied().unwrap_or(1);
+                (*original, (*upgraded, linked_version))
+            })
+            .collect();
+
+        match env.register_package_with_linkage(
+            *addr,
+            pkg.version,
+            original_id,
+            pkg.modules.clone(),
+            linkage,
+        ) {
+            Ok(()) => result.loaded += 1,
+            Err(err) => result.failed.push((*addr, err.to_string())),
+        }
+    }
+
+    result
 }
 
 /// Build a replay config directly from a gRPC transaction, resolving epoch metadata

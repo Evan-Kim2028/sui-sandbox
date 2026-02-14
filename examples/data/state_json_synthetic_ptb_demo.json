@@ -1,0 +1,43 @@
+{
+  "transaction": {
+    "digest": "synthetic_make_move_vec_demo",
+    "sender": "0x1",
+    "gas_budget": 1000000,
+    "gas_price": 1000,
+    "commands": [
+      {
+        "type": "MakeMoveVec",
+        "type_arg": "u64",
+        "elements": [
+          {
+            "type": "Input",
+            "index": 0
+          },
+          {
+            "type": "Input",
+            "index": 1
+          }
+        ]
+      }
+    ],
+    "inputs": [
+      {
+        "type": "Pure",
+        "bytes": "AQAAAAAAAAA="
+      },
+      {
+        "type": "Pure",
+        "bytes": "AgAAAAAAAAA="
+      }
+    ],
+    "effects": null,
+    "timestamp_ms": null,
+    "checkpoint": null
+  },
+  "objects": {},
+  "packages": {},
+  "protocol_version": 64,
+  "epoch": 0,
+  "reference_gas_price": null,
+  "checkpoint": null
+}

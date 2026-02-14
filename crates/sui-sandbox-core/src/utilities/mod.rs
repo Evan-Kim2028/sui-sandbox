@@ -52,6 +52,7 @@ pub mod historical_state;
 pub mod historical_version_finder;
 pub mod json_to_bcs;
 pub mod offset_calculator;
+pub mod package_roots;
 pub mod type_utils;
 pub mod version_field_detector;
 pub mod version_utils;
@@ -60,6 +61,10 @@ pub mod version_utils;
 pub use address::{is_framework_package, normalize_address};
 pub use generic_patcher::{FieldPatchRule, GenericObjectPatcher, PatchAction, PatchCondition};
 pub use json_to_bcs::JsonToBcsConverter;
+pub use package_roots::{
+    collect_required_package_roots_from_type_strings,
+    collect_required_package_roots_from_type_tags, unresolved_package_dependencies_for_modules,
+};
 pub use type_utils::{
     extract_dependencies_from_bytecode, extract_package_ids_from_type,
     extract_package_ids_from_type_tag, parse_and_rewrite_type, parse_type_tag, rewrite_type_tag,

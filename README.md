@@ -43,9 +43,8 @@ cargo build --release --bin sui-sandbox
 sui-sandbox replay At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
   --source walrus --checkpoint 239615926 --compare
 
-# Or run the example scripts
-./examples/scan_checkpoints.sh
-./examples/replay.sh
+# Scan latest checkpoints
+sui-sandbox replay '*' --source walrus --latest 5 --compare
 ```
 
 ## Common CLI Workflows
@@ -136,7 +135,7 @@ Tip: set `SUI_SANDBOX_HOME` to isolate cache/logs/projects during tests.
 
 ```text
 sui-sandbox/
-├── examples/                 # starter scripts and sample workflows
+├── examples/                 # sample workflows and Rust examples
 ├── src/                      # CLI entrypoints
 ├── crates/
 │   ├── sui-sandbox-core/     # VM + PTB execution kernel

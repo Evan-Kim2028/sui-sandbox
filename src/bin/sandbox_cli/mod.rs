@@ -19,5 +19,6 @@ pub mod state;
 pub mod test;
 pub mod tools;
 pub mod view;
+pub mod workflow;
 
 pub use state::SandboxState;

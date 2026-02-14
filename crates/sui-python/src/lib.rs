@@ -5,6 +5,8 @@
 //! - `extract_interface`: Extract full Move package interface from bytecode or GraphQL
 //! - `get_latest_checkpoint`: Get latest Walrus checkpoint number
 //! - `get_checkpoint`: Fetch and summarize a Walrus checkpoint
+//! - `fetch_object_bcs`: Fetch object BCS (optionally at historical version) via gRPC
+//! - `fetch_historical_package_bytecodes`: Fetch checkpoint-pinned package bytecodes via gRPC
 //! - `fetch_package_bytecodes`: Fetch package bytecodes via GraphQL
 //! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
 //! - `transaction_json_to_bcs`: Convert Snowflake/canonical TransactionData JSON to BCS bytes
@@ -19,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -42,6 +45,7 @@ use sui_state_fetcher::{
     parse_replay_states_file, FileStateProvider, HistoricalStateProvider, ImportSpec, ReplayState,
 };
 use sui_transport::graphql::GraphQLClient;
+use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient, GrpcOwner};
 use sui_transport::network::resolve_graphql_endpoint;
 use sui_transport::walrus::WalrusClient;
 
@@ -72,6 +76,32 @@ fn json_value_to_py(py: Python<'_>, value: &serde_json::Value) -> PyResult<PyObj
     let json_mod = py.import("json")?;
     let result = json_mod.call_method1("loads", (json_str,))?;
     Ok(result.into())
+}
+
+/// Parse package module bytecodes from Python input.
+///
+/// Accepts either:
+/// - `List[bytes]`
+/// - `List[str]` where each string is base64-encoded module bytecode
+fn decode_package_module_bytes(value: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<Vec<u8>>> {
+    if let Ok(raw) = value.extract::<Vec<Vec<u8>>>() {
+        return Ok(raw);
+    }
+    if let Ok(encoded) = value.extract::<Vec<String>>() {
+        let mut out = Vec::with_capacity(encoded.len());
+        for module_b64 in encoded {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(module_b64.as_bytes())
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("invalid base64 package module bytecode: {e}"))
+                })?;
+            out.push(bytes);
+        }
+        return Ok(out);
+    }
+    Err(PyRuntimeError::new_err(
+        "package module list must be List[bytes] or List[str] (base64)",
+    ))
 }
 
 /// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
@@ -837,6 +867,103 @@ fn get_checkpoint_inner(checkpoint_num: u64) -> Result<serde_json::Value> {
     }))
 }
 
+fn resolve_grpc_endpoint_and_key(
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> (String, Option<String>) {
+    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
+    let endpoint_explicit = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
+    let mut resolved_endpoint = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(default_endpoint);
+    if resolved_endpoint
+        .to_ascii_lowercase()
+        .contains("fullnode.mainnet.sui.io")
+    {
+        resolved_endpoint = MAINNET_ARCHIVE_GRPC.to_string();
+    }
+    let explicit_api_key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let sui_api_key = std::env::var("SUI_GRPC_API_KEY")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let resolved_api_key = if endpoint_explicit {
+        // Keep explicit endpoint behavior predictable:
+        // explicit arg > SUI_GRPC_API_KEY > no key.
+        explicit_api_key.or(sui_api_key)
+    } else {
+        explicit_api_key.or(default_api_key)
+    };
+    (resolved_endpoint, resolved_api_key)
+}
+
+fn fetch_object_bcs_inner(
+    object_id: &str,
+    version: Option<u64>,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<serde_json::Value> {
+    let (grpc_endpoint, grpc_api_key) = resolve_grpc_endpoint_and_key(endpoint, api_key);
+    let object_id_owned = object_id.to_string();
+
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+    let object = rt.block_on(async {
+        let grpc = GrpcClient::with_api_key(&grpc_endpoint, grpc_api_key)
+            .await
+            .context("Failed to create gRPC client")?;
+        grpc.get_object_at_version(&object_id_owned, version)
+            .await
+            .context("Failed to fetch object via gRPC")
+    })?;
+
+    let object = object.ok_or_else(|| {
+        anyhow!(
+            "Object {} not found at version {:?}",
+            object_id_owned,
+            version
+        )
+    })?;
+
+    let bcs = object
+        .bcs
+        .ok_or_else(|| anyhow!("Object {} missing BCS payload", object_id_owned))?;
+    let type_tag = object.type_string.clone().ok_or_else(|| {
+        anyhow!(
+            "Object {} missing type string; cannot build view input",
+            object_id_owned
+        )
+    })?;
+
+    let (owner_kind, is_shared, is_immutable) = match object.owner {
+        GrpcOwner::Shared { .. } => ("shared", true, false),
+        GrpcOwner::Immutable => ("immutable", false, true),
+        GrpcOwner::Address(_) => ("address_owned", false, false),
+        GrpcOwner::Object(_) => ("object_owned", false, false),
+        GrpcOwner::Unknown => ("unknown", false, false),
+    };
+
+    Ok(serde_json::json!({
+        "object_id": object_id_owned,
+        "requested_version": version,
+        "version": object.version,
+        "endpoint_used": grpc_endpoint,
+        "type_tag": type_tag,
+        "bcs_base64": base64::engine::general_purpose::STANDARD.encode(&bcs),
+        "is_shared": is_shared,
+        "is_immutable": is_immutable,
+        "owner_kind": owner_kind,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // json_to_bcs (native)
 // ---------------------------------------------------------------------------
@@ -870,7 +997,16 @@ fn call_view_function_inner(
     object_inputs: Vec<(String, Vec<u8>, String, bool, bool)>,
     pure_inputs: Vec<Vec<u8>>,
     child_objects: HashMap<String, Vec<(String, Vec<u8>, String)>>,
+    historical_versions: HashMap<String, u64>,
+    fetch_child_objects: bool,
+    grpc_endpoint: Option<String>,
+    grpc_api_key: Option<String>,
     package_bytecodes: HashMap<String, Vec<Vec<u8>>>,
+    package_aliases: HashMap<String, String>,
+    linkage_upgrades: HashMap<String, String>,
+    package_runtime_ids: HashMap<String, String>,
+    package_linkage: HashMap<String, HashMap<String, String>>,
+    package_versions: HashMap<String, u64>,
     fetch_deps: bool,
 ) -> Result<serde_json::Value> {
     use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
@@ -885,7 +1021,24 @@ fn call_view_function_inner(
     loaded_packages.insert(AccountAddress::from_hex_literal("0x2").unwrap());
     loaded_packages.insert(AccountAddress::from_hex_literal("0x3").unwrap());
 
-    for (pkg_id_str, module_bytecodes) in &package_bytecodes {
+    // If both original and upgraded storage packages are present, skip loading
+    // the original package bytes so upgraded bytecode wins deterministically.
+    let mut skipped_original_packages: HashSet<String> = HashSet::new();
+    for (original, upgraded) in &linkage_upgrades {
+        if original != upgraded
+            && package_bytecodes.contains_key(original)
+            && package_bytecodes.contains_key(upgraded)
+        {
+            skipped_original_packages.insert(original.clone());
+        }
+    }
+
+    let mut package_entries: Vec<(&String, &Vec<Vec<u8>>)> = package_bytecodes.iter().collect();
+    package_entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (pkg_id_str, module_bytecodes) in package_entries {
+        if skipped_original_packages.contains(pkg_id_str) {
+            continue;
+        }
         let addr = AccountAddress::from_hex_literal(pkg_id_str)
             .with_context(|| format!("invalid package address: {}", pkg_id_str))?;
         if is_framework_address(&addr) {
@@ -903,8 +1056,66 @@ fn call_view_function_inner(
                 }
             })
             .collect();
-        resolver.load_package_at(modules, addr)?;
+        resolver.add_package_modules_at(modules, Some(addr))?;
         loaded_packages.insert(addr);
+    }
+
+    // Apply explicit package metadata from historical fetchers:
+    // - aliases: storage -> runtime (bytecode) IDs
+    // - linkage_upgrades: runtime -> storage upgrades
+    // - package_runtime_ids + package_linkage: per-package linkage tables
+    for (storage_str, runtime_str) in &package_aliases {
+        let storage = AccountAddress::from_hex_literal(storage_str)
+            .with_context(|| format!("invalid package alias storage id: {}", storage_str))?;
+        let runtime = AccountAddress::from_hex_literal(runtime_str)
+            .with_context(|| format!("invalid package alias runtime id: {}", runtime_str))?;
+        resolver.add_address_alias(storage, runtime);
+    }
+
+    for (original_str, upgraded_str) in &linkage_upgrades {
+        let original = AccountAddress::from_hex_literal(original_str)
+            .with_context(|| format!("invalid linkage original id: {}", original_str))?;
+        let upgraded = AccountAddress::from_hex_literal(upgraded_str)
+            .with_context(|| format!("invalid linkage upgraded id: {}", upgraded_str))?;
+        resolver.add_linkage_upgrade(original, upgraded);
+    }
+
+    for (storage_str, linkage_entries) in &package_linkage {
+        if skipped_original_packages.contains(storage_str) {
+            continue;
+        }
+        let storage = AccountAddress::from_hex_literal(storage_str)
+            .with_context(|| format!("invalid linkage storage id: {}", storage_str))?;
+        let runtime = if let Some(runtime_str) = package_runtime_ids.get(storage_str) {
+            AccountAddress::from_hex_literal(runtime_str)
+                .with_context(|| format!("invalid package runtime id: {}", runtime_str))?
+        } else {
+            storage
+        };
+
+        let mut linkage_map: HashMap<AccountAddress, AccountAddress> = HashMap::new();
+        for (dep_runtime_str, dep_storage_str) in linkage_entries {
+            let dep_runtime = AccountAddress::from_hex_literal(dep_runtime_str)
+                .with_context(|| format!("invalid dep runtime id: {}", dep_runtime_str))?;
+            let dep_storage = AccountAddress::from_hex_literal(dep_storage_str)
+                .with_context(|| format!("invalid dep storage id: {}", dep_storage_str))?;
+            linkage_map.insert(dep_runtime, dep_storage);
+        }
+        resolver.add_package_linkage(storage, runtime, &linkage_map);
+    }
+
+    for (storage_str, runtime_str) in &package_runtime_ids {
+        if skipped_original_packages.contains(storage_str) {
+            continue;
+        }
+        if package_linkage.contains_key(storage_str) {
+            continue;
+        }
+        let storage = AccountAddress::from_hex_literal(storage_str)
+            .with_context(|| format!("invalid package runtime storage id: {}", storage_str))?;
+        let runtime = AccountAddress::from_hex_literal(runtime_str)
+            .with_context(|| format!("invalid package runtime id: {}", runtime_str))?;
+        resolver.add_package_linkage(storage, runtime, &HashMap::new());
     }
 
     // 3. If fetch_deps, resolve transitive dependencies via GraphQL
@@ -974,7 +1185,7 @@ fn call_view_function_inner(
             match fetch_package_modules(&graphql, &hex) {
                 Ok(modules) => {
                     let dep_addrs = extract_dependency_addrs(&modules);
-                    resolver.load_package_at(modules, addr)?;
+                    resolver.add_package_modules_at(modules, Some(addr))?;
                     loaded_packages.insert(addr);
 
                     for dep_addr in dep_addrs {
@@ -993,9 +1204,27 @@ fn call_view_function_inner(
     // 4. Create VMHarness with simulation config
     let config = SimulationConfig::default();
     let mut vm = VMHarness::with_config(&resolver, false, config)?;
+    let mut alias_map: HashMap<AccountAddress, AccountAddress> = HashMap::new();
+    for (storage_str, runtime_str) in &package_aliases {
+        let storage = AccountAddress::from_hex_literal(storage_str)
+            .with_context(|| format!("invalid alias storage id: {}", storage_str))?;
+        let runtime = AccountAddress::from_hex_literal(runtime_str)
+            .with_context(|| format!("invalid alias runtime id: {}", runtime_str))?;
+        if storage != runtime {
+            alias_map.insert(storage, runtime);
+        }
+    }
+    if alias_map.is_empty() {
+        alias_map = resolver.get_all_aliases().into_iter().collect();
+    }
+    if !alias_map.is_empty() {
+        vm.set_address_aliases_with_versions(alias_map, package_versions.clone());
+    }
 
-    // 5. Set up child fetcher if child_objects provided
-    if !child_objects.is_empty() {
+    // 5. Set up child fetcher:
+    //    - static preloaded children (if provided)
+    //    - optional on-demand gRPC fetch for missing child objects
+    if !child_objects.is_empty() || fetch_child_objects {
         let mut child_map: HashMap<(AccountAddress, AccountAddress), (TypeTag, Vec<u8>)> =
             HashMap::new();
         for (parent_id_str, children) in &child_objects {
@@ -1010,8 +1239,91 @@ fn call_view_function_inner(
             }
         }
 
+        let grpc_child_config: Option<Arc<(String, Option<String>)>> = if fetch_child_objects {
+            let (resolved_endpoint, resolved_api_key) =
+                resolve_grpc_endpoint_and_key(grpc_endpoint.as_deref(), grpc_api_key.as_deref());
+            if std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[py_child_fetcher] init endpoint={} api_key_present={}",
+                    resolved_endpoint,
+                    resolved_api_key.is_some()
+                );
+            }
+            Some(Arc::new((resolved_endpoint, resolved_api_key)))
+        } else {
+            None
+        };
+
+        let child_map = Arc::new(child_map);
+        let historical_versions_for_fetcher = Arc::new(historical_versions.clone());
         let fetcher: sui_sandbox_core::sandbox_runtime::ChildFetcherFn =
-            Box::new(move |parent, child| child_map.get(&(parent, child)).cloned());
+            Box::new(move |parent, child| {
+                let debug_child_fetch =
+                    std::env::var("SUI_CHILD_FETCH_DEBUG").ok().as_deref() == Some("1");
+                if let Some(found) = child_map.get(&(parent, child)).cloned() {
+                    if debug_child_fetch {
+                        eprintln!(
+                            "[py_child_fetcher] HIT static parent={} child={}",
+                            parent.to_hex_literal(),
+                            child.to_hex_literal()
+                        );
+                    }
+                    return Some(found);
+                }
+
+                let grpc_cfg = grpc_child_config.as_ref()?;
+                let child_id_str = child.to_hex_literal();
+                let historical_version =
+                    historical_versions_for_fetcher.get(&child_id_str).copied();
+                if debug_child_fetch {
+                    eprintln!(
+                        "[py_child_fetcher] FETCH parent={} child={} version_hint={:?}",
+                        parent.to_hex_literal(),
+                        child_id_str,
+                        historical_version
+                    );
+                }
+
+                let rt = tokio::runtime::Runtime::new().ok()?;
+                let fetched = rt.block_on(async {
+                    let client =
+                        GrpcClient::with_api_key(&grpc_cfg.0, grpc_cfg.1.clone()).await.ok()?;
+                    client
+                        .get_object_at_version(&child_id_str, historical_version)
+                        .await
+                        .ok()
+                        .flatten()
+                });
+                if fetched.is_none() {
+                    if debug_child_fetch {
+                        eprintln!(
+                            "[py_child_fetcher] MISS grpc child={} version_hint={:?}",
+                            child_id_str, historical_version
+                        );
+                    }
+                    return None;
+                }
+                let object = fetched?;
+                if debug_child_fetch && (object.type_string.is_none() || object.bcs.is_none()) {
+                    eprintln!(
+                        "[py_child_fetcher] MISS payload child={} has_type={} has_bcs={}",
+                        child_id_str,
+                        object.type_string.is_some(),
+                        object.bcs.is_some()
+                    );
+                }
+
+                let type_tag_str = object.type_string?;
+                let bcs = object.bcs?;
+                let type_tag = sui_sandbox_core::types::parse_type_tag(&type_tag_str).ok()?;
+                if debug_child_fetch {
+                    eprintln!(
+                        "[py_child_fetcher] HIT grpc child={} type={}",
+                        child_id_str, type_tag_str
+                    );
+                }
+                Some((type_tag, bcs))
+            });
         vm.set_child_fetcher(fetcher);
     }
 
@@ -1024,13 +1336,14 @@ fn call_view_function_inner(
             .with_context(|| format!("invalid object_id: {}", obj_id_str))?;
         let type_tag = sui_sandbox_core::types::parse_type_tag(type_tag_str)
             .with_context(|| format!("invalid type tag: {}", type_tag_str))?;
+        let obj_version = historical_versions.get(obj_id_str).copied();
 
         let obj_input = if *is_shared {
             ObjectInput::Shared {
                 id,
                 bytes: bcs_bytes.clone(),
                 type_tag: Some(type_tag),
-                version: None,
+                version: obj_version,
                 mutable: *mutable,
             }
         } else {
@@ -1038,7 +1351,7 @@ fn call_view_function_inner(
                 id,
                 bytes: bcs_bytes.clone(),
                 type_tag: Some(type_tag),
-                version: None,
+                version: obj_version,
             }
         };
 
@@ -1114,6 +1427,103 @@ fn call_view_function_inner(
 // ---------------------------------------------------------------------------
 // fetch_package_bytecodes (native — GraphQL)
 // ---------------------------------------------------------------------------
+
+fn fetch_historical_package_bytecodes_inner(
+    package_ids: &[String],
+    type_refs: &[String],
+    checkpoint: Option<u64>,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mut explicit_roots = Vec::new();
+    for package_id in package_ids {
+        let addr = AccountAddress::from_hex_literal(package_id)
+            .with_context(|| format!("invalid package id: {}", package_id))?;
+        if !explicit_roots.contains(&addr) {
+            explicit_roots.push(addr);
+        }
+    }
+    let package_roots: Vec<AccountAddress> =
+        sui_sandbox_core::utilities::collect_required_package_roots_from_type_strings(
+            &explicit_roots,
+            type_refs,
+        )?
+        .into_iter()
+        .collect();
+
+    let (grpc_endpoint, grpc_api_key) = resolve_grpc_endpoint_and_key(endpoint, api_key);
+    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+    let packages = rt.block_on(async {
+        let grpc = GrpcClient::with_api_key(&grpc_endpoint, grpc_api_key)
+            .await
+            .context("Failed to create gRPC client")?;
+        let graphql = GraphQLClient::new(&graphql_endpoint);
+        let provider = HistoricalStateProvider::with_clients(grpc, graphql);
+        provider
+            .fetch_packages_with_deps(&package_roots, None, checkpoint)
+            .await
+            .context("Failed to fetch historical packages with deps")
+    })?;
+
+    let mut package_map = serde_json::Map::new();
+    let mut aliases = serde_json::Map::new(); // storage -> runtime
+    let mut linkage_upgrades = serde_json::Map::new(); // runtime -> storage
+    let mut package_runtime_ids = serde_json::Map::new(); // storage -> runtime
+    let mut package_linkage = serde_json::Map::new(); // storage -> {runtime_dep -> storage_dep}
+    let mut package_versions = serde_json::Map::new(); // storage -> version
+
+    for (addr, pkg) in &packages {
+        let encoded_modules: Vec<String> = pkg
+            .modules
+            .iter()
+            .map(|(_, bytes)| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .collect();
+        let storage_id = addr.to_hex_literal();
+        let inferred_runtime_id = pkg
+            .modules
+            .iter()
+            .find_map(|(_, bytes)| {
+                CompiledModule::deserialize_with_defaults(bytes)
+                    .ok()
+                    .map(|module| *module.self_id().address())
+            })
+            .unwrap_or_else(|| pkg.runtime_id());
+        let runtime_id = inferred_runtime_id.to_hex_literal();
+        package_map.insert(storage_id.clone(), serde_json::json!(encoded_modules));
+        package_runtime_ids.insert(storage_id.clone(), serde_json::json!(runtime_id.clone()));
+        package_versions.insert(storage_id.clone(), serde_json::json!(pkg.version));
+
+        if storage_id != runtime_id {
+            aliases.insert(storage_id.clone(), serde_json::json!(runtime_id.clone()));
+            linkage_upgrades.insert(runtime_id.clone(), serde_json::json!(storage_id.clone()));
+        }
+
+        let mut linkage_map = serde_json::Map::new();
+        for (dep_runtime, dep_storage) in &pkg.linkage {
+            let dep_runtime_id = dep_runtime.to_hex_literal();
+            let dep_storage_id = dep_storage.to_hex_literal();
+            linkage_map.insert(dep_runtime_id.clone(), serde_json::json!(dep_storage_id.clone()));
+            if dep_runtime_id != dep_storage_id {
+                linkage_upgrades.insert(dep_runtime_id, serde_json::json!(dep_storage_id));
+            }
+        }
+        package_linkage.insert(storage_id, serde_json::Value::Object(linkage_map));
+    }
+
+    Ok(serde_json::json!({
+        "checkpoint": checkpoint,
+        "endpoint_used": grpc_endpoint,
+        "packages": package_map,
+        "aliases": aliases,
+        "linkage_upgrades": linkage_upgrades,
+        "package_runtime_ids": package_runtime_ids,
+        "package_linkage": package_linkage,
+        "package_versions": package_versions,
+        "count": package_map.len(),
+    }))
+}
 
 fn fetch_package_bytecodes_inner(
     package_id: &str,
@@ -1307,6 +1717,40 @@ fn get_checkpoint(py: Python<'_>, checkpoint: u64) -> PyResult<PyObject> {
     // Release GIL during Walrus fetch
     let value = py
         .allow_threads(move || get_checkpoint_inner(checkpoint))
+        .map_err(to_py_err)?;
+    json_value_to_py(py, &value)
+}
+
+/// Fetch object BCS via gRPC, optionally pinned to a historical version.
+///
+/// Useful for constructing deterministic `call_view_function` object inputs.
+#[pyfunction]
+#[pyo3(signature = (
+    object_id,
+    *,
+    version=None,
+    endpoint=None,
+    api_key=None,
+))]
+fn fetch_object_bcs(
+    py: Python<'_>,
+    object_id: &str,
+    version: Option<u64>,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> PyResult<PyObject> {
+    let object_id_owned = object_id.to_string();
+    let endpoint_owned = endpoint.map(|s| s.to_string());
+    let api_key_owned = api_key.map(|s| s.to_string());
+    let value = py
+        .allow_threads(move || {
+            fetch_object_bcs_inner(
+                &object_id_owned,
+                version,
+                endpoint_owned.as_deref(),
+                api_key_owned.as_deref(),
+            )
+        })
         .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
@@ -1591,7 +2035,13 @@ fn transaction_json_to_bcs<'py>(
 ///         optional: is_shared/mutable, or legacy owner ("immutable"|"shared"|"address_owned")
 ///     pure_inputs: List of BCS-encoded pure argument bytes
 ///     child_objects: Dict mapping parent_id -> list of {child_id, bcs_bytes, type_tag}
-///     package_bytecodes: Dict mapping package_id -> list of module bytecodes
+///     historical_versions: Optional object_id -> version map for on-demand child fetches
+///     fetch_child_objects: If True, fetch child objects on-demand via gRPC
+///     grpc_endpoint: Optional gRPC endpoint override for child fetches
+///     grpc_api_key: Optional gRPC API key override for child fetches
+///     package_bytecodes: Either:
+///         - Dict[package_id -> list[module_bytes or module_base64]]
+///         - Full payload returned by fetch_historical_package_bytecodes(...)
 ///     fetch_deps: If True, automatically resolve transitive deps via GraphQL
 ///
 /// Returns: Dict with success, error, return_values, return_type_tags, gas_used
@@ -1605,6 +2055,10 @@ fn transaction_json_to_bcs<'py>(
     object_inputs=vec![],
     pure_inputs=vec![],
     child_objects=None,
+    historical_versions=None,
+    fetch_child_objects=false,
+    grpc_endpoint=None,
+    grpc_api_key=None,
     package_bytecodes=None,
     fetch_deps=true,
 ))]
@@ -1617,6 +2071,10 @@ fn call_view_function(
     object_inputs: Vec<Bound<'_, PyDict>>,
     pure_inputs: Vec<Vec<u8>>,
     child_objects: Option<Bound<'_, PyDict>>,
+    historical_versions: Option<Bound<'_, PyDict>>,
+    fetch_child_objects: bool,
+    grpc_endpoint: Option<&str>,
+    grpc_api_key: Option<&str>,
     package_bytecodes: Option<Bound<'_, PyDict>>,
     fetch_deps: bool,
 ) -> PyResult<PyObject> {
@@ -1704,13 +2162,73 @@ fn call_view_function(
         }
     }
 
+    // Parse historical_versions map from Python dict
+    let mut parsed_historical_versions: HashMap<String, u64> = HashMap::new();
+    if let Some(ref hv) = historical_versions {
+        for (key, value) in hv.iter() {
+            let object_id: String = key.extract()?;
+            let version: u64 = value.extract()?;
+            parsed_historical_versions.insert(object_id, version);
+        }
+    }
+
     // Parse package_bytecodes from Python dict
     let mut parsed_pkg_bytes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+    let mut parsed_package_aliases: HashMap<String, String> = HashMap::new();
+    let mut parsed_linkage_upgrades: HashMap<String, String> = HashMap::new();
+    let mut parsed_package_runtime_ids: HashMap<String, String> = HashMap::new();
+    let mut parsed_package_linkage: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut parsed_package_versions: HashMap<String, u64> = HashMap::new();
+    let mut historical_payload_mode = false;
     if let Some(ref pb) = package_bytecodes {
-        for (key, value) in pb.iter() {
+        let packages_dict: Bound<'_, PyDict> = if let Some(packages_any) = pb.get_item("packages")?
+        {
+            historical_payload_mode = true;
+            packages_any.extract()?
+        } else {
+            pb.clone()
+        };
+
+        for (key, value) in packages_dict.iter() {
             let pkg_id: String = key.extract()?;
-            let bytecodes: Vec<Vec<u8>> = value.extract()?;
+            let bytecodes = decode_package_module_bytes(&value)?;
             parsed_pkg_bytes.insert(pkg_id, bytecodes);
+        }
+
+        if let Some(aliases_any) = pb.get_item("aliases")? {
+            parsed_package_aliases = aliases_any.extract().map_err(|_| {
+                PyRuntimeError::new_err(
+                    "package_bytecodes.aliases must be Dict[str, str] (storage -> runtime)",
+                )
+            })?;
+        }
+        if let Some(linkage_any) = pb.get_item("linkage_upgrades")? {
+            parsed_linkage_upgrades = linkage_any.extract().map_err(|_| {
+                PyRuntimeError::new_err(
+                    "package_bytecodes.linkage_upgrades must be Dict[str, str] (runtime -> storage)",
+                )
+            })?;
+        }
+        if let Some(runtime_ids_any) = pb.get_item("package_runtime_ids")? {
+            parsed_package_runtime_ids = runtime_ids_any.extract().map_err(|_| {
+                PyRuntimeError::new_err(
+                    "package_bytecodes.package_runtime_ids must be Dict[str, str] (storage -> runtime)",
+                )
+            })?;
+        }
+        if let Some(pkg_linkage_any) = pb.get_item("package_linkage")? {
+            parsed_package_linkage = pkg_linkage_any.extract().map_err(|_| {
+                PyRuntimeError::new_err(
+                    "package_bytecodes.package_linkage must be Dict[str, Dict[str, str]]",
+                )
+            })?;
+        }
+        if let Some(pkg_versions_any) = pb.get_item("package_versions")? {
+            parsed_package_versions = pkg_versions_any.extract().map_err(|_| {
+                PyRuntimeError::new_err(
+                    "package_bytecodes.package_versions must be Dict[str, int]",
+                )
+            })?;
         }
     }
 
@@ -1718,6 +2236,13 @@ fn call_view_function(
     let pkg_id_owned = package_id.to_string();
     let module_owned = module.to_string();
     let function_owned = function.to_string();
+    let grpc_endpoint_owned = grpc_endpoint.map(|s| s.to_string());
+    let grpc_api_key_owned = grpc_api_key.map(|s| s.to_string());
+    let effective_fetch_deps = if historical_payload_mode {
+        false
+    } else {
+        fetch_deps
+    };
     let value = py
         .allow_threads(move || {
             call_view_function_inner(
@@ -1728,12 +2253,66 @@ fn call_view_function(
                 parsed_obj_inputs,
                 pure_inputs,
                 parsed_children,
+                parsed_historical_versions,
+                fetch_child_objects,
+                grpc_endpoint_owned,
+                grpc_api_key_owned,
                 parsed_pkg_bytes,
-                fetch_deps,
+                parsed_package_aliases,
+                parsed_linkage_upgrades,
+                parsed_package_runtime_ids,
+                parsed_package_linkage,
+                parsed_package_versions,
+                effective_fetch_deps,
             )
         })
         .map_err(to_py_err)?;
 
+    json_value_to_py(py, &value)
+}
+
+/// Fetch historical package bytecodes with transitive dependency resolution.
+///
+/// Standalone — no CLI binary needed.
+///
+/// Args:
+///     package_ids: Root package IDs to fetch
+///     type_refs: Optional type strings to infer additional package roots
+///     checkpoint: Optional checkpoint to pin historical package versions
+///     endpoint: Optional gRPC endpoint override
+///     api_key: Optional gRPC API key override
+///
+/// Returns: Dict with packages (pkg_id -> [base64 module bytes]), count, endpoint_used
+#[pyfunction]
+#[pyo3(signature = (
+    package_ids,
+    *,
+    type_refs=vec![],
+    checkpoint=None,
+    endpoint=None,
+    api_key=None,
+))]
+fn fetch_historical_package_bytecodes(
+    py: Python<'_>,
+    package_ids: Vec<String>,
+    type_refs: Vec<String>,
+    checkpoint: Option<u64>,
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> PyResult<PyObject> {
+    let endpoint_owned = endpoint.map(|s| s.to_string());
+    let api_key_owned = api_key.map(|s| s.to_string());
+    let value = py
+        .allow_threads(move || {
+            fetch_historical_package_bytecodes_inner(
+                &package_ids,
+                &type_refs,
+                checkpoint,
+                endpoint_owned.as_deref(),
+                api_key_owned.as_deref(),
+            )
+        })
+        .map_err(to_py_err)?;
     json_value_to_py(py, &value)
 }
 
@@ -1860,6 +2439,8 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(fetch_object_bcs, m)?)?;
+    m.add_function(wrap_pyfunction!(fetch_historical_package_bytecodes, m)?)?;
     m.add_function(wrap_pyfunction!(import_state, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize_transaction, m)?)?;
     m.add_function(wrap_pyfunction!(deserialize_package, m)?)?;

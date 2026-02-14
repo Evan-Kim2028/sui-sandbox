@@ -67,6 +67,8 @@ pub mod types;
 pub mod validator;
 pub mod vm;
 pub mod well_known;
+pub mod workflow;
+pub mod workflow_adapter;
 
 // Package building and analysis (for creating mock contracts)
 // Note: bytecode_analyzer functionality is in mm2/bytecode_analyzer.rs

@@ -125,6 +125,9 @@ jobs:
               assert replay["digest"] == "dummy_digest"
           PY
 
+      - name: Python examples smoke (offline)
+        run: ./scripts/python_examples_smoke.sh
+
       - name: Python example compatibility guards
         run: |
           python - <<'PY'

@@ -1,0 +1,91 @@
+# Advanced Examples
+
+These examples are intentionally separated from the core onboarding path.
+They are useful for power users, debugging, and research workflows.
+
+## Advanced Workflows
+
+### Replay Mutation Lab (Native CLI)
+
+```bash
+sui-sandbox replay mutate --latest 5 --max-transactions 60 --out-dir examples/out/replay_mutation_lab
+sui-sandbox replay mutate --demo --out-dir examples/out/replay_mutation_lab
+```
+
+### CLI Quickstart (Typed Workflow)
+
+```bash
+sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json
+sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json
+```
+
+### Package Analysis
+
+```bash
+sui-sandbox analyze package --package-id <PACKAGE_ID> --list-modules --mm2
+sui-sandbox --json analyze package --bytecode-dir <PACKAGE_DIR> --mm2
+
+# corpus object classification (direct CLI)
+sui-sandbox --json analyze objects --corpus-dir <CORPUS_DIR> --top 20
+```
+
+### Obfuscated Package Analysis
+
+```bash
+sui-sandbox fetch package <PACKAGE_ID> --with-deps
+sui-sandbox view modules <PACKAGE_ID>
+sui-sandbox view module <PACKAGE_ID>::<MODULE> --json
+```
+
+### Self-Heal Replay Workflow
+
+```bash
+sui-sandbox workflow validate --spec examples/data/workflow_self_heal_replay_demo.json
+sui-sandbox workflow run --spec examples/data/workflow_self_heal_replay_demo.json --dry-run
+# then replace REPLACE_WITH_DIGEST in the spec and run without --dry-run
+```
+
+### Walrus Digest-Specific Workflows
+
+```bash
+# direct zero-setup replay/analyze commands
+sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare --verbose
+sui-sandbox analyze replay <DIGEST> --source walrus --checkpoint <CP> --json --verbose
+
+# protocol-focused typed workflow specs
+sui-sandbox workflow validate --spec examples/data/workflow_walrus_cetus_swap.json
+sui-sandbox workflow run --spec examples/data/workflow_walrus_cetus_swap.json
+
+sui-sandbox workflow validate --spec examples/data/workflow_walrus_deepbook_orders.json
+sui-sandbox workflow run --spec examples/data/workflow_walrus_deepbook_orders.json --continue-on-error
+
+sui-sandbox workflow validate --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+sui-sandbox workflow run --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+```
+
+## Advanced Rust Examples
+
+### Fork Mainnet State + Custom Contract
+
+```bash
+cargo run --example fork_state
+```
+
+### DeepBook Margin Manager Historical Reconstruction
+
+```bash
+cargo run --example deepbook_margin_state
+cargo run --example deepbook_timeseries
+cargo run --example deepbook_json_bcs_only
+```
+
+Data and docs:
+
+- `examples/advanced/deepbook_margin_state/README.md`
+- `examples/advanced/deepbook_margin_state/data/`
+
+## Notes
+
+- Some advanced flows require gRPC historical data.
+- Core onboarding remains in `examples/README.md`.
+- Power-user shell orchestration is intentionally moved out of examples to `scripts/internal/README.md`.

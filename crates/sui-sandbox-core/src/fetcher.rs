@@ -157,7 +157,7 @@ impl GrpcFetcher {
     /// Create a new gRPC fetcher for mainnet.
     pub fn mainnet() -> Self {
         let endpoint =
-            Self::endpoint_from_env("SUI_GRPC_ENDPOINT", "https://fullnode.mainnet.sui.io:443");
+            Self::endpoint_from_env("SUI_GRPC_ENDPOINT", "https://archive.mainnet.sui.io:443");
         Self::new(endpoint, "mainnet".to_string(), Self::api_key_from_env())
     }
 

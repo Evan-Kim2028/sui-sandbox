@@ -432,6 +432,12 @@ pub fn default_diagnostic_hints(command: &str, error: &anyhow::Error) -> Vec<Str
                 .to_string(),
         );
     }
+    if looks_like_archive_runtime_gap(&message) {
+        hints.push(format!(
+            "Replay may be failing due to runtime-object gaps on archive endpoints (current: {}); try `SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443`",
+            effective_grpc_endpoint_for_hints()
+        ));
+    }
     if message.contains("state file") {
         hints.push("Verify state-file path permissions, then retry the same command".to_string());
     }
@@ -442,6 +448,22 @@ pub fn default_diagnostic_hints(command: &str, error: &anyhow::Error) -> Vec<Str
         hints.push("Retry with `--verbose` for additional execution details".to_string());
     }
     hints
+}
+
+fn effective_grpc_endpoint_for_hints() -> String {
+    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
+    std::env::var("SUI_GRPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string())
+}
+
+fn looks_like_archive_runtime_gap(message: &str) -> bool {
+    (message.contains("contractabort") && message.contains("abort_code: 1"))
+        || message.contains("unchanged_loaded_runtime_objects")
+        || message.contains("missing runtime object")
+        || message.contains("missing object input")
 }
 
 fn classify_error(error: &anyhow::Error) -> String {
@@ -476,6 +498,7 @@ pub fn format_address(addr: &AccountAddress) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
 
     #[test]
     fn test_format_address() {
@@ -484,5 +507,17 @@ mod tests {
 
         let addr = AccountAddress::from_hex_literal("0x123456").unwrap();
         assert_eq!(format_address(&addr), "0x123456");
+    }
+
+    #[test]
+    fn test_default_diagnostic_hints_archive_runtime_gap() {
+        let err = anyhow!(
+            "ContractAbort {{ location: Undefined, abort_code: 1 }} (unchanged_loaded_runtime_objects missing)"
+        );
+        let hints = default_diagnostic_hints("replay", &err);
+        assert!(hints.iter().any(|hint| {
+            hint.contains("runtime-object gaps")
+                && hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")
+        }));
     }
 }

@@ -17,6 +17,10 @@ sui-sandbox replay 9V3xKMnFpXyz...            # Replay mainnet tx
 sui-sandbox replay mutate --demo              # Guided replay-mutation demo
 sui-sandbox analyze package --package-id 0x2  # Package introspection
 sui-sandbox analyze replay 9V3xKMnFpXyz...     # Replay-state introspection
+sui-sandbox workflow init --template cetus --output workflow.cetus.json
+sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json
+sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
+sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
 sui-sandbox view module 0x2::coin             # Inspect interface
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
 ```
@@ -37,6 +41,7 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs) |
 | `init` | Scaffold task-oriented workflow templates |
 | `run-flow` | Execute deterministic YAML workflow files |
+| `workflow` | Validate/run typed workflow specs (replay/analyze/command) |
 | `snapshot` | Save/list/load/delete named session snapshots |
 | `reset` | Reset in-memory session state |
 | `status` | Show session state |
@@ -87,7 +92,7 @@ sui-sandbox --json tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --j
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--grpc-url <URL>` | gRPC endpoint URL | `https://fullnode.mainnet.sui.io:443` |
+| `--grpc-url <URL>` | gRPC endpoint URL | `https://archive.mainnet.sui.io:443` |
 | `--sender <ADDR>` | Transaction sender address | required |
 | `--mode <MODE>` | `dev-inspect`, `dry-run`, or `build-only` | `dry-run` |
 | `--gas-budget <N>` | Gas budget (required for dry-run) | `10000000` |
@@ -110,7 +115,7 @@ cargo build --release --bin sui-sandbox
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--state-file <PATH>` | Session state persistence file | `~/.sui-sandbox/state.json` |
-| `--rpc-url <URL>` | RPC URL for mainnet fetching | `https://fullnode.mainnet.sui.io:443` |
+| `--rpc-url <URL>` | RPC URL for mainnet fetching | `https://archive.mainnet.sui.io:443` |
 | `--json` | Output as JSON instead of human-readable | `false` |
 | `--debug-json` | Emit structured debug diagnostics on failures | `false` |
 | `-v, --verbose` | Show execution traces | `false` |
@@ -337,6 +342,13 @@ sui-sandbox replay <DIGEST> --source grpc --compare --verbose
 sui-sandbox replay <DIGEST> --vm-only    # Deterministic VM-only mode
 ```
 
+If replay fails with `ContractAbort ... abort_code: 1` and missing runtime-object context,
+switch to a different historical provider:
+
+```bash
+SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 sui-sandbox replay <DIGEST> --source grpc --compare
+```
+
 **Replay mutate (fail -> heal orchestration):**
 
 ```bash
@@ -385,12 +397,17 @@ sui-sandbox replay mutate \
 | `--state-json <PATH>` | Load replay state from a JSON file (no network needed) |
 | `--export-state <PATH>` | Export fetched replay state as JSON before executing |
 
+Notes:
+- `--source hybrid` now auto-enables Walrus hydration by default (no `SUI_WALRUS_ENABLED=1` required).
+- Set `SUI_WALRUS_ENABLED=0` to explicitly disable Walrus auto-hydration in `--source hybrid` runs (`--source walrus` still forces Walrus on).
+
 **Behavior flags:**
 
 | Flag | Description |
 |------|-------------|
 | `--compare` | Compare local effects with on-chain effects |
 | `--allow-fallback` / `--fallback` | Allow fallback to secondary data sources |
+| `--profile <safe\|balanced\|fast>` | Replay runtime defaults profile (default: `balanced`) |
 | `--vm-only` | Disable fallback and force direct VM replay path |
 | `--fetch-strategy` | Dynamic field strategy: `eager` (only accessed) or `full` (prefetch) |
 | `--prefetch-depth` | Max dynamic field discovery depth (default: 3) |
@@ -400,6 +417,13 @@ sui-sandbox replay mutate \
 | `--reconcile-dynamic-fields` | Reconcile dynamic-field effects when on-chain lists omit them |
 | `--synthesize-missing` | If replay fails due to missing input objects, synthesize placeholders and retry |
 | `--self-heal-dynamic-fields` | Synthesize placeholder dynamic-field values when data is missing (testing only) |
+
+Default runtime behavior:
+- Replay/PTB progress logs auto-enable in interactive TTY mode (and stay off for `--json` output) unless you explicitly set `SUI_REPLAY_PROGRESS`/`SUI_PTB_PROGRESS`.
+- `--strict` and `--compare` auto-enable checkpoint-strict dynamic field reads (`SUI_DF_STRICT_CHECKPOINT=1`) unless explicitly overridden.
+- Failure-only error context (`SUI_DEBUG_ERROR_CONTEXT`) auto-enables when `--verbose` or `--strict` is used.
+- A startup `[replay_config]` line prints effective runtime settings and which values were auto-applied.
+- GraphQL timeout circuit breaker auto-opens after repeated timeout-like failures and disables GraphQL calls for a cooldown (`SUI_GRAPHQL_CIRCUIT_*`).
 
 Replay output includes an **Execution Path** summary (requested/effective source, fallback usage, auto-system-object flag, dependency mode, and prefetch settings) in both human and JSON modes.
 
@@ -496,13 +520,13 @@ Dynamic field interpretation notes:
 - `dynamic_field_types` is semantic/call-site based: it tracks object types with nearby UID-borrow flow into `0x2::dynamic_field` / `0x2::dynamic_object_field` API calls.
 - This is conservative for wrapper-style usage (for example table/bag helpers) and may undercount those patterns.
 
-For runnable corpus workflows, see `examples/package_analysis/README.md`.
+For runnable corpus workflows, see `examples/advanced/package_analysis/README.md`.
 
 Quick workflow:
 1. `analyze package` for a single package/module debugging pass.
 2. `analyze objects` on corpus for baseline and trend diffs.
 3. Use `party_transfer_eligible` vs `party_transfer_observed_in_bytecode` to spot latent capabilities not exercised in package code.
-4. Run MM2 corpus sweep (`examples/package_analysis/cli_mm2_corpus_sweep.sh`) as a reliability check.
+4. Run MM2 corpus sweep (`scripts/internal/cli_mm2_corpus_sweep.sh`) as a reliability check.
 
 Behavior notes:
 - `analyze package --package-id` fails if any module in the fetched package is missing `bytecode_base64` in GraphQL data, so you do not get partial interface output.
@@ -587,6 +611,74 @@ Run deterministic YAML workflows where each step is one `sui-sandbox` argv list.
 sui-sandbox run-flow flow.quickstart.yaml
 sui-sandbox run-flow flow.quickstart.yaml --dry-run
 ```
+
+#### `workflow` - Typed Workflow Specs
+
+Run typed JSON/YAML workflow specs for replay/analyze automation. This is the
+forward-compatible path for protocol adapters and higher-level orchestration.
+
+```bash
+sui-sandbox workflow init --template generic --output workflow.generic.json
+sui-sandbox workflow init --template suilend --output workflow.suilend.json
+sui-sandbox workflow init --template suilend --format yaml --output workflow.suilend.yaml
+sui-sandbox workflow init --template cetus --output workflow.cetus.json --package-id 0x2 --view-object 0x6
+sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force
+sui-sandbox workflow auto --package-id 0x2 --output workflow.auto.pkg2.json
+sui-sandbox workflow auto --package-id 0x2 --digest <DIGEST> --checkpoint <CHECKPOINT> --output workflow.auto.pkg2.replay.yaml --format yaml
+sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json
+sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
+sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
+```
+
+Supported step kinds:
+
+- `replay`
+- `analyze_replay`
+- `command` (argv pass-through to `sui-sandbox`)
+
+`workflow auto` flags:
+
+By default, `workflow auto` validates package bytecode dependency closure and
+fails closed with `AUTO_CLOSURE_INCOMPLETE` when unresolved packages remain.
+Use `--best-effort` to emit a scaffold anyway.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--package-id <ID>` | Package id for draft adapter generation | required |
+| `--template <NAME>` | Optional template override (`generic`, `cetus`, `suilend`, `scallop`) | inferred from module names, fallback `generic` |
+| `--output <PATH>` | Output workflow spec path | `workflow.auto.<template>.<package_suffix>.<fmt>` |
+| `--format <FORMAT>` | Output spec format: `json`, `yaml` | inferred from `--output` extension, else `json` |
+| `--digest <DIGEST>` | Include replay/analyze replay steps in draft | scaffold-only when omitted |
+| `--checkpoint <N>` | Checkpoint for replay/analyze replay steps | template default (when `--digest` is set) |
+| `--name <NAME>` | Override generated workflow name | `auto_<template>_<package_suffix>` |
+| `--best-effort` | Emit scaffold even if dependency-closure probe fails | `false` |
+| `--force` | Overwrite existing output file | `false` |
+
+`workflow init` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--from-config <PATH>` | Load workflow init options from JSON/YAML file | - |
+| `--template <NAME>` | Built-in template: `generic`, `cetus`, `suilend`, `scallop` | `generic` |
+| `--output <PATH>` | Output workflow spec path | `workflow.<template>.json` (or `.yaml` when `--format yaml`) |
+| `--format <FORMAT>` | Output spec format: `json`, `yaml` | inferred from `--output` extension, else `json` |
+| `--digest <DIGEST>` | Seed digest for replay/analyze steps | built-in demo digest |
+| `--checkpoint <N>` | Checkpoint for replay/analyze steps | built-in demo checkpoint |
+| `--no-analyze` | Skip `analyze_replay` step generation | `false` |
+| `--no-strict` | Disable strict replay in generated spec | `false` |
+| `--name <NAME>` | Override generated workflow name | - |
+| `--package-id <ID>` | Add `analyze package --package-id <ID>` command step | - |
+| `--view-object <ID>` | Add `view object <ID>` command step (repeatable) | - |
+| `--force` | Overwrite existing output file | `false` |
+
+`workflow run` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--spec <PATH>` | Workflow spec file (JSON or YAML) | required |
+| `--dry-run` | Print resolved commands without executing | `false` |
+| `--continue-on-error` | Continue after failed steps | `false` |
+| `--report <PATH>` | Write workflow run JSON report to file | - |
 
 #### `clean` - Reset Session
 

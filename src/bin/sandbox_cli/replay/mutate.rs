@@ -333,6 +333,33 @@ pub struct RunRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct GuidedWinningCaseSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u64>,
+    pub baseline_success: bool,
+    pub heal_success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heal_synthetic_inputs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heal_commands_executed: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GuidedSummary {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_source: Option<String>,
+    pub tested: usize,
+    pub run_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub winning_case: Option<GuidedWinningCaseSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Finding {
     pub fingerprint: String,
     pub summary: String,
@@ -353,6 +380,8 @@ pub struct ReplayMutateReport {
     pub targets: Vec<Target>,
     pub run_records: Vec<RunRecord>,
     pub findings: Vec<Finding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guided_summary: Option<GuidedSummary>,
     pub elapsed_ms: u64,
 }
 
@@ -828,6 +857,7 @@ impl ReplayMutateCmd {
 
         let mut run_records = Vec::new();
         let mut findings = Vec::new();
+        let mut guided_summary: Option<GuidedSummary> = None;
 
         if !self.no_op {
             if self.targets_file.is_some() {
@@ -874,6 +904,10 @@ impl ReplayMutateCmd {
                         &strategy,
                     )
                     .await?;
+                guided_summary = Some(build_guided_summary_from_report(
+                    &outcome.report,
+                    &outcome.run_dir,
+                ));
                 let target = targets.first().cloned().unwrap_or(Target {
                     digest: "*".to_string(),
                     checkpoint: 0,
@@ -914,6 +948,7 @@ impl ReplayMutateCmd {
             targets,
             run_records,
             findings,
+            guided_summary,
             elapsed_ms: started.elapsed().as_millis() as u64,
         };
 
@@ -946,6 +981,36 @@ impl ReplayMutateCmd {
             let _ = writeln!(&mut text, "  targets: {}", report.targets.len());
             let _ = writeln!(&mut text, "  run records: {}", report.run_records.len());
             let _ = writeln!(&mut text, "  findings: {}", report.findings.len());
+            if let Some(summary) = report.guided_summary.as_ref() {
+                let _ = writeln!(&mut text, "  guided status: {}", summary.status);
+                if let Some(source) = summary.candidate_source.as_deref() {
+                    let _ = writeln!(&mut text, "  guided source: {source}");
+                }
+                let _ = writeln!(&mut text, "  guided tested: {}", summary.tested);
+                if let Some(winning) = summary.winning_case.as_ref() {
+                    if let Some(source) = winning.source.as_deref() {
+                        let _ = writeln!(&mut text, "  winning source: {source}");
+                    }
+                    if let Some(digest) = winning.digest.as_deref() {
+                        let _ = writeln!(&mut text, "  winning digest: {digest}");
+                    }
+                    if let Some(checkpoint) = winning.checkpoint {
+                        let _ = writeln!(&mut text, "  winning checkpoint: {checkpoint}");
+                    }
+                    let _ = writeln!(
+                        &mut text,
+                        "  winning baseline_success/heal_success: {}/{}",
+                        winning.baseline_success, winning.heal_success
+                    );
+                    if let Some(synth) = winning.heal_synthetic_inputs {
+                        let _ = writeln!(&mut text, "  winning heal synthetic inputs: {synth}");
+                    }
+                    if let Some(commands) = winning.heal_commands_executed {
+                        let _ = writeln!(&mut text, "  winning heal commands executed: {commands}");
+                    }
+                }
+                let _ = writeln!(&mut text, "  guided run dir: {}", summary.run_dir);
+            }
             let _ = writeln!(&mut text, "  report: {}", report_path.display());
             print!("{text}");
         }
@@ -2126,6 +2191,47 @@ impl ReplayMutateCmd {
         }
 
         out
+    }
+}
+
+fn build_guided_summary_from_report(report: &Value, run_dir: &Path) -> GuidedSummary {
+    let winning_case = report.get("chosen").map(|chosen| GuidedWinningCaseSummary {
+        source: chosen
+            .get("source")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        digest: chosen
+            .get("digest")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        checkpoint: chosen.get("checkpoint").and_then(Value::as_u64),
+        baseline_success: chosen
+            .pointer("/baseline/local_success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        heal_success: chosen
+            .pointer("/heal/local_success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        heal_synthetic_inputs: chosen.pointer("/heal/synthetic_inputs").and_then(Value::as_u64),
+        heal_commands_executed: chosen
+            .pointer("/heal/commands_executed")
+            .and_then(Value::as_u64),
+    });
+
+    GuidedSummary {
+        status: report
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string(),
+        candidate_source: report
+            .get("candidate_source")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        tested: report.get("tested").and_then(Value::as_u64).unwrap_or(0) as usize,
+        run_dir: run_dir.display().to_string(),
+        winning_case,
     }
 }
 

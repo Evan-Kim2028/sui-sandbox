@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "name": "walrus_deepbook_orders_replay",
+  "description": "Pinned Walrus replay for a DeepBook cancel_order transaction. Uses continue_on_error due potential missing historical dynamic fields.",
+  "defaults": {
+    "source": "walrus",
+    "compare": true
+  },
+  "steps": [
+    {
+      "id": "replay",
+      "name": "Replay DeepBook cancel_order",
+      "continue_on_error": true,
+      "kind": "replay",
+      "digest": "FbrMKMyzWm1K89qBZ45sYfCDsEtNmcnBdU9xiT7NKvmR",
+      "checkpoint": "235835535"
+    },
+    {
+      "id": "status",
+      "name": "Session status",
+      "kind": "command",
+      "args": [
+        "status"
+      ]
+    }
+  ]
+}

@@ -218,11 +218,13 @@ impl DoctorCmd {
             .to_ascii_lowercase()
             .contains("archive.mainnet.sui.io")
         {
-            checks.push(fail_check(
+            checks.push(pass_check(
                 "grpc_env",
                 "gRPC Env Configuration",
-                env_detail,
-                "Mysten archive may omit `unchanged_loaded_runtime_objects` for replay. Prefer Surflux (`SURFLUX_API_KEY`) or set `SUI_GRPC_HISTORICAL_ENDPOINT`.",
+                format!(
+                    "{} (note: if replay misses unchanged runtime objects, consider setting `SUI_GRPC_HISTORICAL_ENDPOINT` or provider-specific archival endpoints)",
+                    env_detail
+                ),
                 env_start,
             ));
         } else if grpc_endpoint.to_ascii_lowercase().contains("surflux.dev")

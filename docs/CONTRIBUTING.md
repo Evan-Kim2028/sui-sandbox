@@ -144,6 +144,11 @@ Version must stay aligned in:
 
 ```bash
 python -c "import sui_sandbox; print('Version:', sui_sandbox.__version__)"
+
+# Offline smoke checks for core Python examples (01-03)
+./scripts/python_examples_smoke.sh
+# Optional explicit interpreter override
+PYTHON_BIN=python3.13 ./scripts/python_examples_smoke.sh
 ```
 
 ## Documentation Standards

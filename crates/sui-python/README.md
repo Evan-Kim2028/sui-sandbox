@@ -47,6 +47,10 @@ report = sui_sandbox.fuzz_function("0x1", "u64", "max", iterations=50)
 print(f"Successes: {report['outcomes']['successes']}")
 ```
 
+For runnable end-to-end scripts, see:
+
+- `python_sui_sandbox/README.md`
+
 ## API Reference
 
 #### `extract_interface(*, package_id=None, bytecode_dir=None, rpc_url="https://fullnode.mainnet.sui.io:443")`
@@ -86,6 +90,48 @@ for tx in data["transactions"]:
     print(f"  {tx['digest']}: {tx['commands']} commands, {tx['input_objects']} inputs")
 ```
 
+#### `fetch_object_bcs(object_id, *, version=None, endpoint=None, api_key=None)`
+
+Fetch a Sui object's BCS payload via gRPC (optionally pinned to a historical version).
+
+**Returns:** `dict` with `object_id`, `version`, `type_tag`, `bcs_base64`, and owner metadata.
+
+```python
+obj = sui_sandbox.fetch_object_bcs("0x6", version=714666359)
+print(obj["type_tag"], obj["version"])
+```
+
+#### `fetch_historical_package_bytecodes(package_ids, *, type_refs=None, checkpoint=None, endpoint=None, api_key=None)`
+
+Fetch package bytecodes via `HistoricalStateProvider` with transitive dependency resolution, optionally pinned to a checkpoint.
+
+This mirrors the Rust historical package-loading path used by advanced examples like DeepBook margin reconstruction.
+
+**Returns:** `dict` with:
+
+- `packages`: package ID -> list of base64 module bytecodes
+- `aliases`: storage -> runtime package ID aliases
+- `linkage_upgrades`: runtime -> storage upgrade map
+- `package_runtime_ids`: storage -> runtime IDs
+- `package_linkage`: per-package linkage tables
+- `package_versions`: storage -> package version (used for alias/version-aware child lookup)
+- `count`, `checkpoint`, `endpoint_used`
+
+```python
+pkgs = sui_sandbox.fetch_historical_package_bytecodes(
+    [
+        "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+        "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497",
+    ],
+    type_refs=[
+        "0x2::sui::SUI",
+        "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC",
+    ],
+    checkpoint=240733000,
+)
+print(f"Fetched {pkgs['count']} packages")
+```
+
 #### `fetch_package_bytecodes(package_id, *, resolve_deps=True)`
 
 Fetch package bytecodes via GraphQL, optionally resolving transitive dependencies.
@@ -112,7 +158,7 @@ This is useful when your pipeline has transaction JSON but not transaction BCS.
 
 **Returns:** `bytes`
 
-#### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, package_bytecodes=None, fetch_deps=True)`
+#### `call_view_function(package_id, module, function, *, type_args=None, object_inputs=None, pure_inputs=None, child_objects=None, historical_versions=None, fetch_child_objects=False, grpc_endpoint=None, grpc_api_key=None, package_bytecodes=None, fetch_deps=True)`
 
 Execute a Move function in the local VM with full control over object and pure inputs.
 
@@ -132,6 +178,26 @@ Execute a Move function in the local VM with full control over object and pure i
 
 Legacy compatibility: `owner` is also accepted as an alias for `is_shared`:
 `"immutable"` / `"address_owned"` => non-shared, `"shared"` => shared.
+
+`package_bytecodes` accepts either:
+
+- `{"0xpackage": [b"...", b"..."]}` or `{"0xpackage": ["<base64>", ...]}`
+- the full payload returned by `fetch_historical_package_bytecodes(...)`
+
+When passing the full historical payload, dependency fetching is auto-disabled to avoid mixing in latest GraphQL dependency fetches.
+
+To enable on-demand child-object loading (useful for `sui::versioned` wrappers):
+
+```python
+result = sui_sandbox.call_view_function(
+    package_id="0x...",
+    module="mod",
+    function="fn",
+    object_inputs=[...],
+    historical_versions={"0xchild_or_known_obj": 123},
+    fetch_child_objects=True,
+)
+```
 
 #### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
