@@ -434,7 +434,7 @@ Generic historical view execution helper.
 
 ```python
 out = sui_sandbox.historical_view_from_versions(
-    versions_file="examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json",
+    versions_file="examples/data/deepbook_margin_state/deepbook_versions_240733000.json",
     package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
     module="margin_manager",
     function="manager_state",
@@ -447,9 +447,60 @@ print(out["raw"]["return_values"])
 
 When archive endpoints miss runtime objects, the result includes a retry `hint`.
 
+Historical replay also attempts dynamic-field auto-hydration by default. Optional env controls:
+`SUI_HISTORICAL_AUTO_HYDRATE_DYNAMIC_FIELDS`, `SUI_HISTORICAL_DYNAMIC_FIELD_DEPTH`,
+`SUI_HISTORICAL_DYNAMIC_FIELD_LIMIT`, `SUI_HISTORICAL_DYNAMIC_FIELD_MAX_OBJECTS`,
+`SUI_HISTORICAL_DYNAMIC_FIELD_PARENT_SCAN_LIMIT`, `SUI_HISTORICAL_DYNAMIC_FIELD_LOG`.
+
+#### `historical_series_from_points(*, points, package_id, module, function, required_objects, type_args=[], package_roots=[], type_refs=[], fetch_child_objects=True, schema=None, command_index=0, grpc_endpoint=None, grpc_api_key=None, max_concurrency=1)`
+
+Execute the same historical view request across multiple checkpoint/version points.
+
+- `points`: list of `{checkpoint, versions, label?, metadata?}`
+- `schema`: optional decode schema (same shape as `historical_decode_with_schema`)
+- returns `{request, points, summary, runs}` with per-point raw output and optional decoded fields
+
+```python
+points = [
+    {"checkpoint": 240732600, "versions": {"0x6": 129466613}, "label": "day-1"},
+    {"checkpoint": 240733000, "versions": {"0x6": 129466871}, "label": "day-2"},
+]
+series = sui_sandbox.historical_series_from_points(
+    points=points,
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+    module="margin_manager",
+    function="manager_state",
+    required_objects=[...],
+    type_args=["0x2::sui::SUI", "<USDC_TYPE>"],
+    schema=[{"index": 2, "name": "risk_ratio_pct", "type_hint": "u64", "scale": 1e7}],
+    max_concurrency=4,
+)
+print(series["summary"])
+```
+
+#### `historical_series_from_files(*, request_file, series_file, schema_file=None, command_index=0, grpc_endpoint=None, grpc_api_key=None, max_concurrency=1)`
+
+File-driven historical-series runner (parity with Rust CLI `context historical-series`).
+
+- `request_file`: JSON/YAML `HistoricalViewRequest`
+- `series_file`: JSON/YAML points payload (`points` or `daily_snapshots`)
+- `schema_file`: optional JSON/YAML list of decode schema fields
+- returns `{request, points, runs, summary}`
+
+```python
+report = sui_sandbox.historical_series_from_files(
+    request_file="examples/data/deepbook_margin_state/manager_state_request.json",
+    series_file="examples/data/deepbook_margin_state/position_b_daily_timeseries.json",
+    schema_file="examples/data/deepbook_margin_state/manager_state_schema.json",
+    max_concurrency=4,
+)
+print(report["summary"])
+```
+
 #### `historical_decode_return_u64(result, *, command_index=0, value_index)`
 
 Decode a single little-endian `u64` return value from `historical_view_from_versions` output.
+The decoder accepts either the full result object or `result["raw"]`.
 
 Returns `None` when execution failed or index is missing.
 
@@ -461,6 +512,7 @@ current_px = sui_sandbox.historical_decode_return_u64(out, value_index=11)
 #### `historical_decode_return_u64s(result, *, command_index=0)`
 
 Decode all command return values into `u64` slots where possible.
+The decoder accepts either the full result object or `result["raw"]`.
 
 Returns `None` when execution failed or no command return values are available.
 
@@ -472,6 +524,7 @@ print(vals[2], vals[11])  # risk_ratio, current_price
 #### `historical_decode_returns_typed(result, *, command_index=0)`
 
 Decode command return values into typed JSON using `return_type_tags` when available.
+The decoder accepts either the full result object or `result["raw"]`.
 
 Returns `None` when execution failed or no command return values are available.
 
@@ -490,6 +543,7 @@ Decode command return values into a named object using a field schema:
 - `scale`: optional numeric divisor
 
 Returns `None` when execution failed or no command return values are available.
+The decoder accepts either the full result object or `result["raw"]`.
 
 ```python
 schema = [

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import os, sui_sandbox
 
-VERSIONS_FILE = os.getenv("VERSIONS_FILE", "examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json")
+VERSIONS_FILE = os.getenv(
+    "VERSIONS_FILE",
+    "examples/data/deepbook_margin_state/deepbook_versions_240733000.json",
+)
 MARGIN_PKG = "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b"
 SPOT_PKG = "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497"
 SUI = "0x2::sui::SUI"

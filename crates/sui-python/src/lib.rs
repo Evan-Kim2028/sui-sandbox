@@ -26,6 +26,7 @@
 //! - `transaction_json_to_bcs`: Convert Snowflake/canonical TransactionData JSON to BCS bytes
 //! - `call_view_function`: Execute a Move view function in the local VM
 //! - `historical_view_from_versions`: Generic historical view execution from versions snapshots
+//! - `historical_series_from_points`: Execute historical view requests across checkpoint/version series
 //! - `historical_decode_returns_typed`: Decode historical command return values by type tags
 //! - `historical_decode_with_schema`: Decode historical command return values via named schema
 //! - `fuzz_function`: Fuzz a Move function with random inputs
@@ -83,7 +84,10 @@ use sui_sandbox_core::historical_view::{
     execute_historical_view_from_versions as core_execute_historical_view_from_versions,
     HistoricalViewRequest as CoreHistoricalViewRequest,
 };
-use sui_sandbox_core::orchestrator::{ReplayOrchestrator, ReturnDecodeField};
+use sui_sandbox_core::orchestrator::{
+    HistoricalSeriesExecutionOptions as CoreHistoricalSeriesExecutionOptions,
+    HistoricalSeriesPoint as CoreHistoricalSeriesPoint, ReplayOrchestrator, ReturnDecodeField,
+};
 use sui_sandbox_core::ptb_universe::{
     run_with_args as core_run_ptb_universe, Args as CorePtbUniverseArgs,
     CheckpointSource as CoreCheckpointSource, DEFAULT_LATEST as CORE_PTB_UNIVERSE_DEFAULT_LATEST,
@@ -2229,6 +2233,162 @@ fn historical_view_from_versions(
     json_value_to_py(py, &value)
 }
 
+/// Execute a historical view request across labeled checkpoint/version points.
+///
+/// `points` is a JSON-serializable list of:
+/// `{ "checkpoint": int, "versions": {"0x...": version}, "label": str|None, "metadata": any|None }`.
+#[pyfunction]
+#[pyo3(signature = (
+    *,
+    points,
+    package_id,
+    module,
+    function,
+    required_objects,
+    type_args=vec![],
+    package_roots=vec![],
+    type_refs=vec![],
+    fetch_child_objects=true,
+    schema=None,
+    command_index=0,
+    grpc_endpoint=None,
+    grpc_api_key=None,
+    max_concurrency=1,
+))]
+fn historical_series_from_points(
+    py: Python<'_>,
+    points: &Bound<'_, PyAny>,
+    package_id: &str,
+    module: &str,
+    function: &str,
+    required_objects: Vec<String>,
+    type_args: Vec<String>,
+    package_roots: Vec<String>,
+    type_refs: Vec<String>,
+    fetch_child_objects: bool,
+    schema: Option<&Bound<'_, PyAny>>,
+    command_index: usize,
+    grpc_endpoint: Option<&str>,
+    grpc_api_key: Option<&str>,
+    max_concurrency: usize,
+) -> PyResult<PyObject> {
+    let points_json = py_json_value(py, points).map_err(to_py_err)?;
+    let parsed_points: Vec<CoreHistoricalSeriesPoint> = serde_json::from_value(points_json)
+        .map_err(|e| to_py_err(anyhow!("invalid historical series points payload: {}", e)))?;
+    let schema_fields: Option<Vec<ReturnDecodeField>> = schema
+        .map(|value| {
+            py_json_value(py, value).and_then(|json| {
+                serde_json::from_value(json)
+                    .map_err(|e| anyhow!("invalid historical series schema: {}", e))
+            })
+        })
+        .transpose()
+        .map_err(to_py_err)?;
+
+    let package_id_owned = package_id.to_string();
+    let module_owned = module.to_string();
+    let function_owned = function.to_string();
+    let endpoint_owned = grpc_endpoint.map(ToOwned::to_owned);
+    let api_key_owned = grpc_api_key.map(ToOwned::to_owned);
+
+    let value = py
+        .allow_threads(move || -> Result<serde_json::Value> {
+            let request = CoreHistoricalViewRequest {
+                package_id: package_id_owned,
+                module: module_owned,
+                function: function_owned,
+                type_args,
+                required_objects,
+                package_roots,
+                type_refs,
+                fetch_child_objects,
+            };
+            let options = CoreHistoricalSeriesExecutionOptions {
+                max_concurrency: Some(max_concurrency.max(1)),
+            };
+
+            let runs = if let Some(fields) = schema_fields.as_ref() {
+                ReplayOrchestrator::execute_historical_series_with_schema_and_options(
+                    &parsed_points,
+                    &request,
+                    command_index,
+                    fields,
+                    endpoint_owned.as_deref(),
+                    api_key_owned.as_deref(),
+                    &options,
+                )?
+            } else {
+                ReplayOrchestrator::execute_historical_series_with_options(
+                    &parsed_points,
+                    &request,
+                    endpoint_owned.as_deref(),
+                    api_key_owned.as_deref(),
+                    &options,
+                )?
+            };
+            let summary = ReplayOrchestrator::summarize_historical_series_runs(&runs);
+            Ok(serde_json::json!({
+                "request": request,
+                "points": parsed_points.len(),
+                "summary": summary,
+                "runs": runs,
+            }))
+        })
+        .map_err(to_py_err)?;
+
+    json_value_to_py(py, &value)
+}
+
+/// Execute historical series directly from request/series/schema file inputs.
+#[pyfunction]
+#[pyo3(signature = (
+    *,
+    request_file,
+    series_file,
+    schema_file=None,
+    command_index=0,
+    grpc_endpoint=None,
+    grpc_api_key=None,
+    max_concurrency=1,
+))]
+fn historical_series_from_files(
+    py: Python<'_>,
+    request_file: &str,
+    series_file: &str,
+    schema_file: Option<&str>,
+    command_index: usize,
+    grpc_endpoint: Option<&str>,
+    grpc_api_key: Option<&str>,
+    max_concurrency: usize,
+) -> PyResult<PyObject> {
+    let request_file_owned = request_file.to_string();
+    let series_file_owned = series_file.to_string();
+    let schema_file_owned = schema_file.map(ToOwned::to_owned);
+    let endpoint_owned = grpc_endpoint.map(ToOwned::to_owned);
+    let api_key_owned = grpc_api_key.map(ToOwned::to_owned);
+
+    let value = py
+        .allow_threads(move || -> Result<serde_json::Value> {
+            let options = CoreHistoricalSeriesExecutionOptions {
+                max_concurrency: Some(max_concurrency.max(1)),
+            };
+            let report = ReplayOrchestrator::execute_historical_series_from_files_with_options(
+                Path::new(&request_file_owned),
+                Path::new(&series_file_owned),
+                schema_file_owned.as_deref().map(Path::new),
+                command_index,
+                endpoint_owned.as_deref(),
+                api_key_owned.as_deref(),
+                &options,
+            )?;
+            serde_json::to_value(report)
+                .context("Failed to serialize historical series file-run report")
+        })
+        .map_err(to_py_err)?;
+
+    json_value_to_py(py, &value)
+}
+
 fn py_json_value(py: Python<'_>, value: &Bound<'_, PyAny>) -> Result<serde_json::Value> {
     let json_mod = py
         .import("json")
@@ -2240,6 +2400,32 @@ fn py_json_value(py: Python<'_>, value: &Bound<'_, PyAny>) -> Result<serde_json:
         .extract()
         .context("failed to extract serialized JSON string")?;
     serde_json::from_str(&dumped).context("invalid JSON payload")
+}
+
+fn decode_historical_result_with_raw_fallback<T, F>(
+    raw: &serde_json::Value,
+    mut decode: F,
+) -> Result<Option<T>>
+where
+    F: FnMut(&serde_json::Value) -> Result<Option<T>>,
+{
+    match decode(raw) {
+        Ok(Some(value)) => Ok(Some(value)),
+        Ok(None) => {
+            if let Some(inner) = raw.get("raw") {
+                decode(inner)
+            } else {
+                Ok(None)
+            }
+        }
+        Err(primary_err) => {
+            if let Some(inner) = raw.get("raw") {
+                decode(inner).or(Err(primary_err))
+            } else {
+                Err(primary_err)
+            }
+        }
+    }
 }
 
 /// Decode one u64 return value from `historical_view_from_versions` output.
@@ -2254,8 +2440,10 @@ fn historical_decode_return_u64(
     value_index: usize,
 ) -> PyResult<Option<u64>> {
     let raw = py_json_value(py, result).map_err(to_py_err)?;
-    ReplayOrchestrator::decode_command_return_u64(&raw, command_index, value_index)
-        .map_err(to_py_err)
+    decode_historical_result_with_raw_fallback(&raw, |candidate| {
+        ReplayOrchestrator::decode_command_return_u64(candidate, command_index, value_index)
+    })
+    .map_err(to_py_err)
 }
 
 /// Decode all return values from a command into `u64` values where possible.
@@ -2269,21 +2457,24 @@ fn historical_decode_return_u64s(
     command_index: usize,
 ) -> PyResult<Option<Vec<Option<u64>>>> {
     let raw = py_json_value(py, result).map_err(to_py_err)?;
-    let decoded = ReplayOrchestrator::decode_command_return_values(&raw, command_index)
-        .map_err(to_py_err)?
-        .map(|values| {
-            values
-                .into_iter()
-                .map(|bytes| {
-                    if bytes.len() < 8 {
-                        return None;
-                    }
-                    let mut buf = [0u8; 8];
-                    buf.copy_from_slice(&bytes[..8]);
-                    Some(u64::from_le_bytes(buf))
-                })
-                .collect::<Vec<_>>()
-        });
+    let decoded = decode_historical_result_with_raw_fallback(&raw, |candidate| {
+        ReplayOrchestrator::decode_command_return_values(candidate, command_index).map(|opt| {
+            opt.map(|values| {
+                values
+                    .into_iter()
+                    .map(|bytes| {
+                        if bytes.len() < 8 {
+                            return None;
+                        }
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(&bytes[..8]);
+                        Some(u64::from_le_bytes(buf))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+    })
+    .map_err(to_py_err)?;
     Ok(decoded)
 }
 
@@ -2298,8 +2489,10 @@ fn historical_decode_returns_typed(
     command_index: usize,
 ) -> PyResult<Option<PyObject>> {
     let raw = py_json_value(py, result).map_err(to_py_err)?;
-    let decoded = ReplayOrchestrator::decode_command_return_values_typed(&raw, command_index)
-        .map_err(to_py_err)?;
+    let decoded = decode_historical_result_with_raw_fallback(&raw, |candidate| {
+        ReplayOrchestrator::decode_command_return_values_typed(candidate, command_index)
+    })
+    .map_err(to_py_err)?;
     match decoded {
         Some(values) => {
             let value = serde_json::to_value(values).map_err(|e| {
@@ -2331,8 +2524,10 @@ fn historical_decode_with_schema(
     let fields: Vec<ReturnDecodeField> = serde_json::from_value(schema_json)
         .map_err(|e| to_py_err(anyhow!("invalid return decode schema: {}", e)))?;
 
-    let decoded = ReplayOrchestrator::decode_command_return_schema(&raw, command_index, &fields)
-        .map_err(to_py_err)?;
+    let decoded = decode_historical_result_with_raw_fallback(&raw, |candidate| {
+        ReplayOrchestrator::decode_command_return_schema(candidate, command_index, &fields)
+    })
+    .map_err(to_py_err)?;
     match decoded {
         Some(map) => json_value_to_py(py, &serde_json::Value::Object(map)).map(Some),
         None => Ok(None),
@@ -3140,6 +3335,32 @@ mod tests {
     }
 
     #[test]
+    fn historical_decode_falls_back_to_nested_raw_payload() {
+        let wrapper = json!({
+            "success": true,
+            "raw": {
+                "success": true,
+                "return_values": [["AQAAAAAAAAA="]],
+                "return_type_tags": [["u64"]]
+            }
+        });
+        let schema = vec![ReturnDecodeField {
+            index: 0,
+            name: "value".to_string(),
+            type_hint: Some("u64".to_string()),
+            scale: None,
+        }];
+
+        let decoded = decode_historical_result_with_raw_fallback(&wrapper, |candidate| {
+            ReplayOrchestrator::decode_command_return_schema(candidate, 0, &schema)
+        })
+        .expect("decode with fallback")
+        .expect("decoded payload");
+
+        assert_eq!(decoded.get("value"), Some(&json!(1)));
+    }
+
+    #[test]
     fn workflow_execute_replay_step_supports_local_cache_source() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         let state_file = synthetic_state_fixture();
@@ -3286,9 +3507,8 @@ mod tests {
 
     #[test]
     fn load_versions_snapshot_reads_fixture() {
-        let path = fixture_path(
-            "examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json",
-        );
+        let path =
+            fixture_path("examples/data/deepbook_margin_state/deepbook_versions_240733000.json");
         let (checkpoint, versions) =
             sui_sandbox_core::historical_view::load_versions_snapshot(&path)
                 .expect("load versions fixture");
@@ -3409,6 +3629,8 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(transaction_json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
     m.add_function(wrap_pyfunction!(historical_view_from_versions, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_series_from_points, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_series_from_files, m)?)?;
     m.add_function(wrap_pyfunction!(historical_decode_return_u64, m)?)?;
     m.add_function(wrap_pyfunction!(historical_decode_return_u64s, m)?)?;
     m.add_function(wrap_pyfunction!(historical_decode_returns_typed, m)?)?;
