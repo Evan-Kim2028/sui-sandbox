@@ -30,7 +30,7 @@ YAML
 
 start_ns=$(date +%s%N)
 
-./target/debug/sui-sandbox --state-file "$STATE_FILE" run-flow "$FLOW_FILE" --json || true
+./target/debug/sui-sandbox --state-file "$STATE_FILE" script "$FLOW_FILE" --json || true
 
 end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))

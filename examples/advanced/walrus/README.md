@@ -1,7 +1,7 @@
 # Walrus-First Workflow Examples
 
 This directory now uses typed workflow specs instead of shell wrappers.
-The specs live in `examples/data/` and run via `sui-sandbox workflow run`.
+The specs live in `examples/data/` and run via `sui-sandbox pipeline run`.
 
 These examples demonstrate the zero-setup Walrus replay path using public data:
 
@@ -22,14 +22,14 @@ No API keys are required for the Walrus-first path.
 ## Quick start
 
 ```bash
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_cetus_swap.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_cetus_swap.json
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_cetus_swap.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_cetus_swap.json
 
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_deepbook_orders.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_deepbook_orders.json --continue-on-error
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_deepbook_orders.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_deepbook_orders.json --continue-on-error
 
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
 ```
 
 Direct replay/analyze is still available:

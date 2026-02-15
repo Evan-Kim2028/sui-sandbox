@@ -22,14 +22,14 @@ Run:
 cp examples/data/workflow_self_heal_replay_demo.json /tmp/workflow.self_heal.json
 
 # 2) validate + run
-sui-sandbox workflow validate --spec /tmp/workflow.self_heal.json
-SUI_SELF_HEAL_LOG=1 sui-sandbox workflow run --spec /tmp/workflow.self_heal.json
+sui-sandbox pipeline validate --spec /tmp/workflow.self_heal.json
+SUI_SELF_HEAL_LOG=1 sui-sandbox pipeline run --spec /tmp/workflow.self_heal.json
 ```
 
 For dry-run planning only:
 
 ```bash
-sui-sandbox workflow run --spec /tmp/workflow.self_heal.json --dry-run
+sui-sandbox pipeline run --spec /tmp/workflow.self_heal.json --dry-run
 ```
 
 ## Direct CLI Equivalent

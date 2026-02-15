@@ -55,11 +55,20 @@ sui-sandbox replay '*' --source walrus --latest 5 --compare
 | Scan latest checkpoints | `sui-sandbox replay '*' --source walrus --latest 5 --compare` |
 | Export offline replay state | `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json` |
 | Replay fully offline | `sui-sandbox replay <DIGEST> --state-json state.json` |
+| Package-first replay orchestration | `sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>` |
+| Protocol-first replay orchestration | `sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only` |
+| Typed pipeline orchestration | `sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run` |
 | Import package | `sui-sandbox fetch package 0x2` |
 | Publish + run local package | `sui-sandbox publish ./my_package` then `sui-sandbox run 0x100::module::func --arg 42` |
 | Inspect replay inputs/hydration | `sui-sandbox analyze replay <DIGEST>` |
 
 Full command/flag reference: [docs/reference/CLI_REFERENCE.md](docs/reference/CLI_REFERENCE.md)
+
+Canonical command families:
+- `context` (alias: `flow`)
+- `adapter` (alias: `protocol`)
+- `script` (alias: `run-flow`)
+- `pipeline` (alias: `workflow`)
 
 ## Data Sources
 

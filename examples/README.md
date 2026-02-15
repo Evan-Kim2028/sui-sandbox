@@ -1,239 +1,93 @@
-# Examples - Core Path
+# Examples - Core Onboarding Set
 
-This directory is intentionally slimmed down for onboarding.
-Start with the core flow below, then use `examples/advanced/README.md` for deeper workflows.
+This index is intentionally small. It tracks a single Rust/Python path with
+four examples total.
 
-## Core Examples (Recommended)
+Canonical CLI names are:
+- `context` (alias: `flow`)
+- `adapter` (alias: `protocol`)
+- `script` (alias: `run-flow`)
+- `pipeline` (alias: `workflow`)
 
-Run these in order:
+## Core Set
 
-1. `sui-sandbox replay '*' --source walrus --latest 5 --compare`
-2. `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare`
-3. `cargo run --example state_json_offline_replay`
-4. `sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json` then `sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run`
-5. `cargo run --example ptb_basics`
+### 1) Walrus checkpoint summary
 
-Optional add-ons (after core):
-
-- `sui-sandbox replay mutate --demo --out-dir examples/out/replay_mutation_guided_demo`
-- `sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json` then `sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json`
-- `sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force`
-- `sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force`
-- `sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force`
-- `sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>`
-- `sui-sandbox workflow auto --package-id 0x2 --force`
-- `cargo run --example walrus_ptb_universe`
-
-### 1) Checkpoint Stream Replay (Core External Flow)
+Rust CLI:
 
 ```bash
-sui-sandbox replay '*' --source walrus --latest 5 --compare
-sui-sandbox replay '*' --source walrus --latest 10 --compare
-sui-sandbox replay '*' --source walrus --checkpoint 239615920..239615926 --compare
+sui-sandbox fetch latest-checkpoint
+sui-sandbox --json fetch checkpoint 239615926
 ```
 
-Why this is first:
-
-- zero setup
-- no API key
-- validates replay behavior on fresh mainnet activity
-
-### 2) Single-Transaction Replay
+Python:
 
 ```bash
-# Walrus (recommended)
-sui-sandbox replay <DIGEST> --source walrus --checkpoint <CHECKPOINT> --compare
-
-# gRPC / hybrid
-sui-sandbox replay <DIGEST> --source grpc --compare
-sui-sandbox replay <DIGEST> --source hybrid --compare
-
-# Offline JSON state
-sui-sandbox replay <DIGEST> --state-json <STATE_FILE>
+python3 python_sui_sandbox/examples/01_walrus_checkpoint.py
 ```
 
-### 3) Offline Replay from Custom State JSON
+### 2) Package interface extraction
+
+Rust CLI:
+
+```bash
+sui-sandbox --json analyze package --package-id 0x2 --list-modules
+```
+
+Python:
+
+```bash
+python3 python_sui_sandbox/examples/02_extract_interface.py --package-id 0x2
+```
+
+### 3) Context replay flow
+
+Rust CLI:
+
+```bash
+sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+sui-sandbox context run --package-id 0x2 --state-json examples/data/state_json_synthetic_ptb_demo.json
+```
+
+Rust example binary:
 
 ```bash
 cargo run --example state_json_offline_replay
-cargo run --example state_json_offline_replay -- --state-json ./examples/data/state_json_synthetic_ptb_demo.json
 ```
 
-This demonstrates a fully offline synthetic PTB replay flow:
-
-- replay source is local `--state-json`
-- synthetic PTB command data comes from your JSON fixture
-- no network hydration required
-
-Default fixture:
-
-- `examples/data/state_json_synthetic_ptb_demo.json`
-
-### 4) Guided Replay Mutation Demo
+Python:
 
 ```bash
-sui-sandbox replay mutate --demo --out-dir examples/out/replay_mutation_guided_demo
-sui-sandbox replay mutate --demo --max-transactions 2 --out-dir examples/out/replay_mutation_guided_demo
+python3 python_sui_sandbox/examples/03_context_replay_native.py --package-id 0x2 --discover-latest 1 --analyze-only
 ```
 
-This is a deterministic fail->heal walkthrough using:
+### 4) DeepBook margin state
 
-- fixture: `examples/data/replay_mutation_fixture_v1.json`
-- mutation strategy engine from `sui-sandbox replay mutate`
-- built-in guided summary in command output and JSON report
-
-### 5) Typed Workflow Spec (Validate + Dry-Run)
+Rust:
 
 ```bash
-sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --report examples/out/workflow_demo/report.json --dry-run
+cargo run --example deepbook_margin_state
 ```
 
-Default spec:
-
-- `examples/data/workflow_replay_analyze_demo.json`
-
-This demonstrates the typed `workflow` contract:
-
-- `kind: analyze_replay` step
-- `kind: replay` step
-- `kind: command` step
-- package-id-first draft adapter generation via `workflow auto`
-
-Use `--dry-run` for plan inspection and remove it to execute for real.
-
-### 6) Built-In Workflow Template Generation
+Python:
 
 ```bash
-sui-sandbox workflow init --template generic --output examples/out/workflow_templates/workflow.generic.json --force
-sui-sandbox workflow init --template cetus --output examples/out/workflow_templates/workflow.cetus.json --force
-sui-sandbox workflow init --template suilend --output examples/out/workflow_templates/workflow.suilend.json --force
-sui-sandbox workflow init --template scallop --output examples/out/workflow_templates/workflow.scallop.json --force
-
-sui-sandbox workflow validate --spec examples/out/workflow_templates/workflow.suilend.json
+python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 ```
 
-### 7) Workflow Init From Config
+## Additional Rust Advanced Example
+
+The PTB universe engine remains available as an advanced Rust example:
 
 ```bash
-sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force
-sui-sandbox workflow validate --spec workflow.suilend.json
-sui-sandbox workflow run --spec workflow.suilend.json --dry-run
+cargo run --example walrus_ptb_universe -- --latest 1 --top-packages 1 --max-ptbs 1
 ```
 
-Config example:
+Core engine location: `crates/sui-sandbox-core/src/ptb_universe.rs`.
 
-- `examples/data/workflow_init_suilend.yaml`
-
-### 8) Generic Flow (First-Class CLI)
-
-```bash
-sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
-sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
-
-# custom input/state path for replay
-sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --state-json <STATE_FILE>
-```
-
-This is the package-agnostic two-step UX:
-
-- step 1 prepares package + dependency closure
-- step 2 runs replay with your digest/checkpoint/input data
-
-### 9) Workflow Auto Draft Adapter
-
-```bash
-sui-sandbox workflow auto --package-id 0x2 --force
-sui-sandbox workflow auto --package-id 0x2 --digest <DIGEST> --checkpoint <CP> --force
-sui-sandbox workflow auto --package-id 0xdeadbeef --best-effort --force
-```
-
-Recommended direct CLI path (generate + validate + dry-run):
-
-```bash
-sui-sandbox workflow auto --package-id 0x2 --output examples/out/workflow_auto/workflow.auto.2.json --force
-sui-sandbox workflow validate --spec examples/out/workflow_auto/workflow.auto.2.json
-sui-sandbox workflow run --spec examples/out/workflow_auto/workflow.auto.2.json --dry-run
-```
-
-### 10) Walrus PTB Universe
-
-```bash
-cargo run --example walrus_ptb_universe
-cargo run --example walrus_ptb_universe -- --latest 10 --top-packages 8 --max-ptbs 20
-```
-
-Artifacts are written to `examples/out/walrus_ptb_universe/`.
-
-### 11) Local PTB Basics (Rust)
-
-```bash
-cargo run --example ptb_basics
-```
-
-No network access required.
-
-## Core vs Advanced
-
-| Tier | What it covers | Index |
-|------|----------------|-------|
-| Core | Quick onboarding + primary replay workflows | `examples/README.md` |
-| Advanced | Deep replay analysis, package corpus workflows, obfuscated package analysis, DeepBook historical reconstruction, forked-state prototyping | `examples/advanced/README.md` |
-
-## Advanced Entry Point
-
-See `examples/advanced/README.md` for:
-
-- replay mutation lab (`replay mutate`)
-- package analysis workflows
-- obfuscated package analysis
-- self-heal replay workflow
-- Walrus digest-specific workflows
-- advanced Rust examples (`fork_state`, `deepbook_*`)
-- optional maintainer-grade shell tooling in `scripts/internal/README.md`
-
-## Python Examples
-
-If you prefer Python bindings, use:
-
-- `python_sui_sandbox/README.md`
-
-It includes:
-
-1. Walrus checkpoint summary
-2. Package interface extraction
-3. Replay analyze (no VM execution)
-4. Generic two-step flow (native bindings)
-5. DeepBook `manager_state` native example (no CLI pass-through)
-
-## Troubleshooting
-
-### Rust example smoke checks
+## Smoke Checks
 
 ```bash
 ./scripts/rust_examples_smoke.sh
-```
-
-Include network DeepBook runs:
-
-```bash
-SUI_GRPC_ENDPOINT=https://archive.mainnet.sui.io:443 ./scripts/rust_examples_smoke.sh --network
-```
-
-### Build errors
-
-```bash
-cargo clean
-cargo build --release --bin sui-sandbox
-```
-
-### gRPC endpoint issues
-
-Set your endpoint before running gRPC/hybrid examples:
-
-```bash
-export SUI_GRPC_ENDPOINT=https://archive.mainnet.sui.io:443
-# optional
-export SUI_GRPC_API_KEY=...
+./scripts/python_examples_smoke.sh
 ```

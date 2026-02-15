@@ -26,7 +26,7 @@ Target command surface:
 
 3. Reproducible command flow
 - Goal: execute a deterministic sequence from a file.
-- Command: `sui-sandbox run-flow flow.quickstart.yaml`
+- Command: `sui-sandbox script flow.quickstart.yaml`
 - Success signal: pass/fail summary with per-step timing and failure index.
 
 ## Baseline Metrics
@@ -44,14 +44,14 @@ Target command surface:
 - Collection: replay `execution_path.fallback_used` JSON field.
 
 4. Flow determinism pass rate (FDP)
-- Definition: successful steps / total steps for `run-flow` in CI and local runs.
-- Collection: `run-flow --json` summary.
+- Definition: successful steps / total steps for `script` (`run-flow` alias) in CI and local runs.
+- Collection: `script --json` summary.
 
 ## Phase 0 Exit Criteria
 
 - Baseline journeys documented.
 - Baseline script exists and runs locally.
-- CLI tests include coverage for run-flow summary and enhanced status JSON fields.
+- CLI tests include coverage for script summary and enhanced status JSON fields.
 
 ## Next Phase
 

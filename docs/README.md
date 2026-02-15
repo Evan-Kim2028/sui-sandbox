@@ -2,6 +2,12 @@
 
 Use this file as the docs entrypoint.
 
+Canonical CLI naming used throughout docs:
+- `context` (alias: `flow`)
+- `adapter` (alias: `protocol`)
+- `script` (alias: `run-flow`)
+- `pipeline` (alias: `workflow`)
+
 ## Start Here
 
 - New to the project:

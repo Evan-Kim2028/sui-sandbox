@@ -17,10 +17,11 @@ sui-sandbox replay 9V3xKMnFpXyz...            # Replay mainnet tx
 sui-sandbox replay mutate --demo              # Guided replay-mutation demo
 sui-sandbox analyze package --package-id 0x2  # Package introspection
 sui-sandbox analyze replay 9V3xKMnFpXyz...     # Replay-state introspection
-sui-sandbox workflow init --template cetus --output workflow.cetus.json
-sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
+sui-sandbox pipeline init --template cetus --output workflow.cetus.json
+sui-sandbox pipeline validate --spec examples/data/workflow_replay_analyze_demo.json
+sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
+sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
+sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only
 sui-sandbox view module 0x2::coin             # Inspect interface
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
 ```
@@ -39,9 +40,11 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `bridge` | Generate `sui client` commands for real deployment |
 | `test` | Test Move functions (fuzz) |
 | `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs) |
+| `context` | Generic package/replay context flow (alias: `flow`) |
+| `adapter` | First-class protocol adapter flow (alias: `protocol`) |
 | `init` | Scaffold task-oriented workflow templates |
-| `run-flow` | Execute deterministic YAML workflow files |
-| `workflow` | Validate/run typed workflow specs (replay/analyze/command) |
+| `script` | Execute deterministic YAML workflow files (alias: `run-flow`) |
+| `pipeline` | Validate/run typed workflow specs (alias: `workflow`) |
 | `snapshot` | Save/list/load/delete named session snapshots |
 | `reset` | Reset in-memory session state |
 | `status` | Show session state |
@@ -76,6 +79,22 @@ sui-sandbox tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-fil
 
 # Same with JSON output (includes type and size metadata)
 sui-sandbox --json tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --json-file obj.json --bytecode-dir ./pkg
+
+# Historical view execution (checkpoint-pinned package hydration)
+sui-sandbox tools call-view-function \
+  --package-id 0x97d9...fb86b \
+  --module manager \
+  --function manager_state \
+  --object-inputs '[{"object_id":"0x...","bcs_bytes":"<base64>","type_tag":"0x...","is_shared":true}]' \
+  --checkpoint 240733000
+
+# Historical payload mode (output from fetch_historical_package_bytecodes)
+sui-sandbox tools call-view-function \
+  --package-id 0x97d9...fb86b \
+  --module manager \
+  --function manager_state \
+  --historical-packages-file historical_packages.json \
+  --object-inputs '[{"object_id":"0x...","bcs_bytes":"<base64>","type_tag":"0x...","is_shared":true}]'
 ```
 
 **`tools stream-transactions` flags:**
@@ -98,6 +117,15 @@ sui-sandbox --json tools json-to-bcs --type "0x2::coin::Coin<0x2::sui::SUI>" --j
 | `--gas-budget <N>` | Gas budget (required for dry-run) | `10000000` |
 | `--ptb-spec <PATH>` | JSON PTB spec path (use `-` for stdin) | required |
 | `--bytecode-package-dir <DIR>` | Local bytecode dir for static created-object-type inference | - |
+
+**`tools call-view-function` flags (historical additions):**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--checkpoint <SEQ>` | Fetch package bytecode closure at a checkpoint via archive gRPC | - |
+| `--grpc-endpoint <URL>` | Override historical gRPC endpoint for checkpoint package hydration | `https://archive.mainnet.sui.io:443` (env/default) |
+| `--grpc-api-key <KEY>` | Optional API key for historical gRPC endpoint | env/default |
+| `--historical-packages-file <PATH>` | Load checkpoint package payload JSON instead of fetching live | - |
 
 ## Developer CLI (`sui-sandbox`)
 
@@ -391,7 +419,7 @@ sui-sandbox replay mutate \
 
 | Flag | Description |
 |------|-------------|
-| `--source <grpc\|walrus\|hybrid>` | Replay hydration source (default: `hybrid`) |
+| `--source <grpc\|walrus\|hybrid\|local>` | Replay hydration source (default: `hybrid`) |
 | `--checkpoint <SPEC>` | Walrus checkpoint: single (`239615926`), range (`100..200`), or list (`100,105,110`) |
 | `--latest <N>` | Auto-discover tip and replay the latest N checkpoints (max 100) |
 | `--state-json <PATH>` | Load replay state from a JSON file (no network needed) |
@@ -406,6 +434,7 @@ Notes:
 | Flag | Description |
 |------|-------------|
 | `--compare` | Compare local effects with on-chain effects |
+| `--analyze-only` / `--hydrate-only` | Hydration-only mode (skip VM execution, output replay-state summary) |
 | `--allow-fallback` / `--fallback` | Allow fallback to secondary data sources |
 | `--profile <safe\|balanced\|fast>` | Replay runtime defaults profile (default: `balanced`) |
 | `--vm-only` | Disable fallback and force direct VM replay path |
@@ -426,6 +455,7 @@ Default runtime behavior:
 - GraphQL timeout circuit breaker auto-opens after repeated timeout-like failures and disables GraphQL calls for a cooldown (`SUI_GRAPHQL_CIRCUIT_*`).
 
 Replay output includes an **Execution Path** summary (requested/effective source, fallback usage, auto-system-object flag, dependency mode, and prefetch settings) in both human and JSON modes.
+In `--analyze-only` mode, output also includes an `analysis` summary payload instead of VM effects.
 
 **Digest format:**
 
@@ -603,31 +633,172 @@ Create a task-oriented flow template for reproducible local execution.
 sui-sandbox init --example quickstart --output-dir .
 ```
 
-#### `run-flow` - Execute Workflow File
+#### `script` - Execute Workflow File
 
 Run deterministic YAML workflows where each step is one `sui-sandbox` argv list.
 
 ```bash
-sui-sandbox run-flow flow.quickstart.yaml
-sui-sandbox run-flow flow.quickstart.yaml --dry-run
+sui-sandbox script flow.quickstart.yaml
+sui-sandbox script flow.quickstart.yaml --dry-run
 ```
 
-#### `workflow` - Typed Workflow Specs
+#### `context` - Generic Package Replay Flow
+
+Fast path for package-centric replay UX. Supports:
+
+- one-shot: `context run` (prepare + replay)
+- two-step: `context prepare` then `context replay --context ...`
+- checkpoint discovery: `context discover` (digest/package target discovery)
+- cross-language context: Rust CLI context files and Python `context_prepare` files (`prepare_package_context` alias)
+
+```bash
+# Discover package/digest targets from checkpoints
+sui-sandbox context discover --latest 5 --package-id 0x2
+sui-sandbox context discover --checkpoint 239615920..239615926 --package-id 0x2 --limit 100
+sui-sandbox context discover --latest 5 --package-id 0x2 --walrus-network testnet
+
+# One-shot prepare + replay
+sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+sui-sandbox context run --package-id 0x2 --discover-latest 5 --analyze-only
+sui-sandbox context run --package-id 0x2 --state-json examples/data/state_json_synthetic_ptb_demo.json
+
+# Two-step context flow
+sui-sandbox context prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
+sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
+sui-sandbox context replay --context examples/out/flow_context/flow_context.2.json --discover-latest 5 --analyze-only
+sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --state-json <STATE_FILE>
+```
+
+`context prepare` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--package-id <ID>` | Root package id to prepare | required |
+| `--with-deps <BOOL>` | Fetch transitive package closure | `true` |
+| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json` |
+| `--force` | Overwrite existing context file | `false` |
+
+`context replay` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `<DIGEST>` | Replay digest | - |
+| `--context <PATH>` | Prepared context file (preferred) | - |
+| `--package-id <ID>` | Fetch package closure inline (alternative to `--context`) | - |
+| `--state-json <PATH>` | Replay from custom state snapshot | - |
+| `--checkpoint <N>` | Checkpoint override | - |
+| `--discover-latest <N>` | Auto-discover digest/checkpoint from latest N checkpoints (requires package context) | - |
+| `--walrus-network <mainnet\|testnet>` | Archive network for `--discover-latest` | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
+| `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--strict` | Exit non-zero on replay failure/mismatch | `false` |
+
+`context run` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--package-id <ID>` | Root package id to prepare | required |
+| `--digest <DIGEST>` | Replay digest | - |
+| `--state-json <PATH>` | Replay from custom state snapshot | - |
+| `--discover-latest <N>` | Auto-discover digest/checkpoint from latest N checkpoints for `--package-id` | - |
+| `--context-out <PATH>` | Persist prepared context for reuse | - |
+| `--force` | Overwrite `--context-out` | `false` |
+| `--walrus-network <mainnet\|testnet>` | Archive network for `--discover-latest` | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
+| `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--strict` | Exit non-zero on replay failure/mismatch | `false` |
+
+`context discover` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--checkpoint <SPEC>` | Checkpoint spec: single/range/list | - |
+| `--latest <N>` | Scan latest N checkpoints (auto tip discovery) | `1` |
+| `--package-id <ID>` | Filter to Move calls touching this package | - |
+| `--include-framework` | Include framework package calls in output | `false` |
+| `--limit <N>` | Max matching transactions to return | `200` |
+| `--walrus-network <mainnet\|testnet>` | Archive network used for checkpoint fetch/tip discovery | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
+
+#### `adapter` - First-Class Protocol Adapter Flow
+
+Protocol-first wrapper around `context` runtime. It applies protocol package defaults
+when available and keeps protocol-specific runtime inputs explicit.
+
+```bash
+# DeepBook defaults package id automatically
+sui-sandbox adapter prepare --protocol deepbook
+sui-sandbox adapter run --protocol deepbook --digest <DIGEST> --checkpoint <CP>
+sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only
+sui-sandbox adapter discover --protocol deepbook --latest 5
+
+# Generic mode (explicit package id)
+sui-sandbox adapter prepare --protocol generic --package-id 0x2
+sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+```
+
+`adapter prepare` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
+| `--package-id <ID>` | Package id override (required when protocol has no default package) | protocol-specific |
+| `--with-deps <BOOL>` | Fetch transitive package closure | `true` |
+| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json` |
+| `--force` | Overwrite existing context file | `false` |
+
+`adapter run` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
+| `--package-id <ID>` | Package id override (required when protocol has no default package) | protocol-specific |
+| `--digest <DIGEST>` | Replay digest | - |
+| `--state-json <PATH>` | Replay from custom state snapshot | - |
+| `--discover-latest <N>` | Auto-discover digest/checkpoint from latest N checkpoints for protocol package | - |
+| `--context-out <PATH>` | Persist prepared context for reuse | - |
+| `--walrus-network <mainnet\|testnet>` | Archive network for `--discover-latest` | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
+| `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--strict` | Exit non-zero on replay failure/mismatch | `false` |
+
+`adapter discover` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
+| `--package-id <ID>` | Package filter override | protocol-specific |
+| `--checkpoint <SPEC>` | Checkpoint spec: single/range/list | - |
+| `--latest <N>` | Scan latest N checkpoints (auto tip discovery) | `1` |
+| `--limit <N>` | Max matching transactions to return | `200` |
+| `--walrus-network <mainnet\|testnet>` | Archive network used for checkpoint fetch/tip discovery | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
+
+#### `pipeline` - Typed Workflow Specs
 
 Run typed JSON/YAML workflow specs for replay/analyze automation. This is the
 forward-compatible path for protocol adapters and higher-level orchestration.
 
 ```bash
-sui-sandbox workflow init --template generic --output workflow.generic.json
-sui-sandbox workflow init --template suilend --output workflow.suilend.json
-sui-sandbox workflow init --template suilend --format yaml --output workflow.suilend.yaml
-sui-sandbox workflow init --template cetus --output workflow.cetus.json --package-id 0x2 --view-object 0x6
-sui-sandbox workflow init --from-config examples/data/workflow_init_suilend.yaml --force
-sui-sandbox workflow auto --package-id 0x2 --output workflow.auto.pkg2.json
-sui-sandbox workflow auto --package-id 0x2 --digest <DIGEST> --checkpoint <CHECKPOINT> --output workflow.auto.pkg2.replay.yaml --format yaml
-sui-sandbox workflow validate --spec examples/data/workflow_replay_analyze_demo.json
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
-sui-sandbox workflow run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
+sui-sandbox pipeline init --template generic --output workflow.generic.json
+sui-sandbox pipeline init --template suilend --output workflow.suilend.json
+sui-sandbox pipeline init --template suilend --format yaml --output workflow.suilend.yaml
+sui-sandbox pipeline init --template cetus --output workflow.cetus.json --package-id 0x2 --view-object 0x6
+sui-sandbox pipeline init --from-config examples/data/workflow_init_suilend.yaml --force
+sui-sandbox pipeline auto --package-id 0x2 --output workflow.auto.pkg2.json
+sui-sandbox pipeline auto --package-id 0x2 --discover-latest 25 --output workflow.auto.pkg2.replay.json
+sui-sandbox pipeline auto --package-id 0x2 --digest <DIGEST> --checkpoint <CHECKPOINT> --output workflow.auto.pkg2.replay.yaml --format yaml
+sui-sandbox pipeline validate --spec examples/data/workflow_replay_analyze_demo.json
+sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
+sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
 ```
 
 Supported step kinds:
@@ -636,9 +807,9 @@ Supported step kinds:
 - `analyze_replay`
 - `command` (argv pass-through to `sui-sandbox`)
 
-`workflow auto` flags:
+`pipeline auto` flags:
 
-By default, `workflow auto` validates package bytecode dependency closure and
+By default, `pipeline auto` validates package bytecode dependency closure and
 fails closed with `AUTO_CLOSURE_INCOMPLETE` when unresolved packages remain.
 Use `--best-effort` to emit a scaffold anyway.
 
@@ -649,16 +820,20 @@ Use `--best-effort` to emit a scaffold anyway.
 | `--output <PATH>` | Output workflow spec path | `workflow.auto.<template>.<package_suffix>.<fmt>` |
 | `--format <FORMAT>` | Output spec format: `json`, `yaml` | inferred from `--output` extension, else `json` |
 | `--digest <DIGEST>` | Include replay/analyze replay steps in draft | scaffold-only when omitted |
+| `--discover-latest <N>` | Auto-discover replay digest/checkpoint from latest N checkpoints for `--package-id` | - |
 | `--checkpoint <N>` | Checkpoint for replay/analyze replay steps | template default (when `--digest` is set) |
+| `--walrus-network <mainnet\|testnet>` | Archive network for `--discover-latest` probe | `mainnet` |
+| `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
+| `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
 | `--name <NAME>` | Override generated workflow name | `auto_<template>_<package_suffix>` |
 | `--best-effort` | Emit scaffold even if dependency-closure probe fails | `false` |
 | `--force` | Overwrite existing output file | `false` |
 
-`workflow init` flags:
+`pipeline init` flags:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--from-config <PATH>` | Load workflow init options from JSON/YAML file | - |
+| `--from-config <PATH>` | Load pipeline init options from JSON/YAML file | - |
 | `--template <NAME>` | Built-in template: `generic`, `cetus`, `suilend`, `scallop` | `generic` |
 | `--output <PATH>` | Output workflow spec path | `workflow.<template>.json` (or `.yaml` when `--format yaml`) |
 | `--format <FORMAT>` | Output spec format: `json`, `yaml` | inferred from `--output` extension, else `json` |
@@ -671,14 +846,14 @@ Use `--best-effort` to emit a scaffold anyway.
 | `--view-object <ID>` | Add `view object <ID>` command step (repeatable) | - |
 | `--force` | Overwrite existing output file | `false` |
 
-`workflow run` flags:
+`pipeline run` flags:
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--spec <PATH>` | Workflow spec file (JSON or YAML) | required |
 | `--dry-run` | Print resolved commands without executing | `false` |
 | `--continue-on-error` | Continue after failed steps | `false` |
-| `--report <PATH>` | Write workflow run JSON report to file | - |
+| `--report <PATH>` | Write pipeline run JSON report to file | - |
 
 #### `clean` - Reset Session
 

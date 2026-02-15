@@ -26,7 +26,7 @@ Primary data points:
   - `view`: 12
   - `ptb`: 9
   - `replay`: 8
-  - `snapshot`: 4, `run-flow`: 2, `init`: 1
+  - `snapshot`: 4, `script` (`run-flow` alias): 2, `init`: 1
   - `tools`: no direct CLI integration tests
 
 ## Keep vs Consolidate vs Remove
@@ -78,7 +78,7 @@ Why:
 - Keeps core CLI focused and lowers cognitive load for new users.
 - Lowers risk of peripheral regressions affecting core command UX.
 
-### 4) Flow orchestration commands (`init`, `run-flow`, `snapshot`)
+### 4) Flow orchestration commands (`init`, `script`, `snapshot`)
 
 Current state:
 - Helpful convenience layer, but mostly wraps functionality that can be done with shell scripts + `--state-file`.
@@ -86,7 +86,7 @@ Current state:
 Recommendation:
 - Either:
   1. move to examples/scripts and deprecate these commands, or
-  2. keep only `run-flow`, deprecate `init` and `snapshot`.
+  2. keep only `script` (`run-flow` alias), deprecate `init` and `snapshot`.
 
 Why:
 - Small but non-trivial maintenance footprint; not core replay architecture.

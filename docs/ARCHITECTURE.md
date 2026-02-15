@@ -160,7 +160,7 @@ Legacy igloo integration source remains in-repo for internal use and future extr
 
 ## Typed Workflow Layer
 
-`sui-sandbox workflow` adds a typed orchestration layer above direct CLI invocations:
+`sui-sandbox pipeline` (alias: `workflow`) adds a typed orchestration layer above direct CLI invocations:
 
 - Spec schema and validation live in `crates/sui-sandbox-core/src/workflow.rs`.
 - Execution adapter lives in `src/bin/sandbox_cli/workflow.rs`.

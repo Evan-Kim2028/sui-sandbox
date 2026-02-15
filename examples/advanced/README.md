@@ -2,6 +2,7 @@
 
 These examples are intentionally separated from the core onboarding path.
 They are useful for power users, debugging, and research workflows.
+They are not part of the Rust/Python parity onboarding set in `examples/README.md`.
 
 ## Advanced Workflows
 
@@ -15,12 +16,15 @@ sui-sandbox replay mutate --demo --out-dir examples/out/replay_mutation_lab
 ### CLI Quickstart (Typed Workflow)
 
 ```bash
-sui-sandbox workflow validate --spec examples/data/workflow_cli_quickstart.json
-sui-sandbox workflow run --spec examples/data/workflow_cli_quickstart.json
+sui-sandbox pipeline validate --spec examples/data/workflow_cli_quickstart.json
+sui-sandbox pipeline run --spec examples/data/workflow_cli_quickstart.json
 
 # package-agnostic two-step replay flow
-sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
-sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
+sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
+sui-sandbox context run --package-id 0x2 --discover-latest 5 --analyze-only
+sui-sandbox context prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
+sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
+sui-sandbox context replay --context examples/out/flow_context/flow_context.2.json --discover-latest 5 --analyze-only
 ```
 
 ### Package Analysis
@@ -44,8 +48,8 @@ sui-sandbox view module <PACKAGE_ID>::<MODULE> --json
 ### Self-Heal Replay Workflow
 
 ```bash
-sui-sandbox workflow validate --spec examples/data/workflow_self_heal_replay_demo.json
-sui-sandbox workflow run --spec examples/data/workflow_self_heal_replay_demo.json --dry-run
+sui-sandbox pipeline validate --spec examples/data/workflow_self_heal_replay_demo.json
+sui-sandbox pipeline run --spec examples/data/workflow_self_heal_replay_demo.json --dry-run
 # then replace REPLACE_WITH_DIGEST in the spec and run without --dry-run
 ```
 
@@ -57,17 +61,20 @@ sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --compare --verbos
 sui-sandbox analyze replay <DIGEST> --source walrus --checkpoint <CP> --json --verbose
 
 # protocol-focused typed workflow specs
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_cetus_swap.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_cetus_swap.json
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_cetus_swap.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_cetus_swap.json
 
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_deepbook_orders.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_deepbook_orders.json --continue-on-error
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_deepbook_orders.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_deepbook_orders.json --continue-on-error
 
-sui-sandbox workflow validate --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
-sui-sandbox workflow run --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+sui-sandbox pipeline validate --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
+sui-sandbox pipeline run --spec examples/data/workflow_walrus_multi_swap_flash_loan.json
 ```
 
 ## Advanced Rust Examples
+
+These are intentionally deeper and larger than the core parity examples.
+Treat them as protocol-specific research workflows, not first-step onboarding.
 
 ### Fork Mainnet State + Custom Contract
 

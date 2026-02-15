@@ -361,14 +361,14 @@ else
   warn "offline execution_path schema check (skipped: state-json run failed)"
 fi
 
-WORKFLOW_SPEC="$ROOT/examples/data/workflow_replay_analyze_demo.json"
-if [[ -f "$WORKFLOW_SPEC" ]]; then
-  run_gate "workflow spec validate (core example)" \
-    "$SUI_SANDBOX_BIN" workflow validate --spec "$WORKFLOW_SPEC"
-  run_gate "workflow spec dry-run (core example)" \
-    "$SUI_SANDBOX_BIN" workflow run --spec "$WORKFLOW_SPEC" --dry-run
+PIPELINE_SPEC="$ROOT/examples/data/workflow_replay_analyze_demo.json"
+if [[ -f "$PIPELINE_SPEC" ]]; then
+  run_gate "pipeline spec validate (core example)" \
+    "$SUI_SANDBOX_BIN" pipeline validate --spec "$PIPELINE_SPEC"
+  run_gate "pipeline spec dry-run (core example)" \
+    "$SUI_SANDBOX_BIN" pipeline run --spec "$PIPELINE_SPEC" --dry-run
 else
-  warn "workflow core example gates (skipped: missing $WORKFLOW_SPEC)"
+  warn "pipeline core example gates (skipped: missing $PIPELINE_SPEC)"
 fi
 
 if [[ "$RUN_NETWORK" -eq 1 ]]; then

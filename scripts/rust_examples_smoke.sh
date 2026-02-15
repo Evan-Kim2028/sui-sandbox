@@ -43,10 +43,9 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 for ex in \
-  ptb_basics \
   state_json_offline_replay \
-  deepbook_margin_state \
-  deepbook_spot_offline_ptb
+  walrus_ptb_universe \
+  deepbook_margin_state
 do
   echo "[rust-smoke] cargo check --example $ex"
   cargo check --example "$ex" >/dev/null
@@ -60,10 +59,11 @@ if [[ "$RUN_NETWORK" == "1" ]]; then
   if [[ -z "${SUI_GRPC_ENDPOINT:-}" ]]; then
     export SUI_GRPC_ENDPOINT="https://archive.mainnet.sui.io:443"
   fi
+  echo "[rust-smoke] network run check for walrus_ptb_universe"
+  cargo run --quiet --example walrus_ptb_universe -- \
+    --latest 1 --top-packages 1 --max-ptbs 1 >/dev/null
   echo "[rust-smoke] network run check for deepbook_margin_state"
   cargo run --quiet --example deepbook_margin_state >/dev/null
-  echo "[rust-smoke] network run check for deepbook_spot_offline_ptb"
-  cargo run --quiet --example deepbook_spot_offline_ptb >/dev/null
 fi
 
 echo "[rust-smoke] PASS"

@@ -1,6 +1,6 @@
-# Python Examples (sui_sandbox)
+# Python Examples (`sui_sandbox`)
 
-These examples target the PyO3 extension in `crates/sui-python`.
+These examples use the native PyO3 extension from `crates/sui-python`.
 
 ## Setup
 
@@ -13,28 +13,14 @@ maturin develop --release
 cd ../..
 ```
 
-If your default Python is `3.14`, build in a `3.13` virtualenv (current PyO3 compatibility limit):
-
-```bash
-cd crates/sui-python
-python3.13 -m venv .venv313
-. .venv313/bin/activate
-pip install maturin
-maturin develop --release
-cd ../..
-```
-
 Optional smoke check:
 
 ```bash
 ./scripts/python_examples_smoke.sh
-# include network execution for examples 01 and 03
 ./scripts/python_examples_smoke.sh --network
-# override interpreter explicitly
-PYTHON_BIN=python3.13 ./scripts/python_examples_smoke.sh
 ```
 
-## Core Examples (Start Here)
+## Core Example Set (4 files)
 
 ### 1) Walrus checkpoint summary
 
@@ -49,72 +35,43 @@ python3 python_sui_sandbox/examples/01_walrus_checkpoint.py --checkpoint 2396159
 python3 python_sui_sandbox/examples/02_extract_interface.py --package-id 0x2
 ```
 
-### 3) Replay analyze (no VM execution)
+### 3) Context replay flow (native bindings)
 
 ```bash
-python3 python_sui_sandbox/examples/03_replay_analyze.py
-python3 python_sui_sandbox/examples/03_replay_analyze.py --digest <DIGEST> --checkpoint <CP>
+python3 python_sui_sandbox/examples/03_context_replay_native.py --package-id 0x2 --discover-latest 1 --analyze-only
+python3 python_sui_sandbox/examples/03_context_replay_native.py --package-id 0x2 --state-file examples/data/state_json_synthetic_ptb_demo.json
 ```
 
-### 4) Generic two-step flow (native bindings)
+### 4) DeepBook margin state (native bindings)
 
 ```bash
-python3 python_sui_sandbox/examples/04_generic_flow_native.py --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
-python3 python_sui_sandbox/examples/04_generic_flow_native.py --package-id 0x2 --state-file examples/data/state_json_synthetic_ptb_demo.json
+python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 ```
 
-Core usage can stay compact:
+## Canonical API Names
 
-```python
-import sui_sandbox
+Primary naming now mirrors CLI naming:
+- `context_prepare`, `context_replay`, `context_run`, `context_discover`
+- `adapter_prepare`, `adapter_run`, `adapter_discover`
+- `pipeline_validate`, `pipeline_init`, `pipeline_auto`, `pipeline_run`, `pipeline_run_inline`
 
-ctx = sui_sandbox.prepare_package_context("0x2")
-out = sui_sandbox.replay_transaction("<DIGEST>", checkpoint=239615926)
-print(out["local_success"], out.get("gas_used"))
-```
+Compatibility aliases remain available:
+- `prepare_package_context` (`context_prepare`)
+- `protocol_*` (`adapter_*`)
+- `workflow_*` (`pipeline_*`)
 
-## Flow CLI (Direct)
+`FlowSession` and `ContextSession` are equivalent session helpers (`ContextSession` is the naming-parity alias).
 
-For first-class two-step CLI flow orchestration, use:
+## CLI parity
+
+Canonical CLI names:
+- `context` (alias: `flow`)
+- `adapter` (alias: `protocol`)
+- `script` (alias: `run-flow`)
+- `pipeline` (alias: `workflow`)
+
+Example:
 
 ```bash
-sui-sandbox flow prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
-sui-sandbox flow replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
+sui-sandbox context run --package-id 0x2 --discover-latest 5 --analyze-only
 ```
-
-## Native Margin Example (No CLI Pass-Through)
-
-### 5) DeepBook `manager_state` (native bindings only)
-
-```bash
-python3 python_sui_sandbox/examples/06_deepbook_margin_state_native.py
-python3 python_sui_sandbox/examples/06_deepbook_margin_state_native.py --grpc-endpoint https://grpc.surflux.dev:443
-```
-
-This path mirrors the Rust DeepBook flow with Python bindings only:
-
-1. Load versions JSON snapshot.
-2. Fetch historical object BCS via `fetch_object_bcs(...)`.
-3. Fetch checkpoint-pinned package bytecodes/dependencies via `fetch_historical_package_bytecodes(...)`.
-4. Execute `call_view_function(...)` with on-demand child-object fetch enabled (`fetch_deps=False` because deps are already in the historical package payload).
-
-## DeepBook Spot Pool + Orders
-
-For now, the full multi-step offline PTB flow (create permissionless pool, deposit, place orders, then query state) is available as a Rust example:
-
-```bash
-cargo run --example deepbook_spot_offline_ptb
-```
-
-Current Python bindings expose single-call `call_view_function(...)`, but not a multi-command PTB builder with cross-command object chaining yet.
-
-## Margin State Direction
-
-To keep Rust and Python margin logic aligned 1:1, use the same phase model in both languages:
-
-1. Load snapshot spec (object IDs + versions + call target).
-2. Hydrate object BCS and package bytecode.
-3. Execute `manager_state` view call.
-4. Decode and format return values.
-
-This keeps behavior equivalent while still allowing each language to stay readable and explicit.
