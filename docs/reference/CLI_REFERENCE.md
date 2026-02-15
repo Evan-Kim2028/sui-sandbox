@@ -39,7 +39,7 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
 | `test` | Test Move functions (fuzz) |
-| `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs) |
+| `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs/call-view-function/historical-series) |
 | `context` | Generic package/replay context flow (alias: `flow`) |
 | `adapter` | First-class protocol adapter flow (alias: `protocol`) |
 | `init` | Compatibility scaffold for legacy YAML flow templates |
@@ -651,9 +651,11 @@ sui-sandbox script flow.quickstart.yaml --dry-run
 
 Fast path for package-centric replay UX. Supports:
 
+- environment bootstrap: `context bootstrap` (hydrate + build + finalize + session priming)
 - one-shot: `context run` (prepare + replay)
 - two-step: `context prepare` then `context replay --context ...`
 - checkpoint discovery: `context discover` (digest/package target discovery)
+- historical view series execution: `context historical-series`
 - cross-language context: Rust CLI context files and Python `context_prepare` files (`prepare_package_context` alias)
 
 ```bash
@@ -661,6 +663,13 @@ Fast path for package-centric replay UX. Supports:
 sui-sandbox context discover --latest 5 --package-id 0x2
 sui-sandbox context discover --checkpoint 239615920..239615926 --package-id 0x2 --limit 100
 sui-sandbox context discover --latest 5 --package-id 0x2 --walrus-network testnet
+
+# Generic bootstrap (hydrate packages + objects + runtime finalize)
+sui-sandbox context bootstrap \
+  --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b \
+  --type-ref 0x2::sui::SUI \
+  --object 0x6 \
+  --dynamic-field-parent 0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d
 
 # One-shot prepare + replay
 sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
@@ -672,7 +681,30 @@ sui-sandbox context prepare --package-id 0x2 --output examples/out/flow_context/
 sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
 sui-sandbox context replay --context examples/out/flow_context/flow_context.2.json --discover-latest 5 --analyze-only
 sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --state-json <STATE_FILE>
+
+# Historical series execution (canonical surface; tools historical-series also supported)
+sui-sandbox context historical-series \
+  --request-file examples/data/deepbook_margin_state/manager_state_request.json \
+  --series-file examples/data/deepbook_margin_state/position_b_daily_timeseries.json \
+  --schema-file examples/data/deepbook_margin_state/manager_state_schema.json \
+  --max-concurrency 4
 ```
+
+`context bootstrap` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--package-id <ID[,ID...]>` | Root package ids to hydrate (repeatable or comma-separated) | required |
+| `--type-ref <TYPE>` | Optional type refs used to infer additional package roots | - |
+| `--object <ID>` | Object id to hydrate at latest version | - |
+| `--object-at <ID@VERSION>` | Object id with explicit historical version | - |
+| `--sender <ADDR>` | Sender for environment initialization | `0x0` |
+| `--historical-mode` | Use historical-mode provider fetch paths | `false` |
+| `--allow-latest-object-fallback <BOOL>` | Allow latest-object fallback when `--object-at` misses | `true` |
+| `--fail-on-object-load <BOOL>` | Fail when hydrated objects cannot be loaded into local env | `true` |
+| `--dynamic-field-parent <ID>` | Parent object id to preload dynamic-field wrappers for | - |
+| `--dynamic-field-limit <N>` | Dynamic-field preload scan limit per parent | `32` |
+| `--configure-fetchers <BOOL>` | Configure on-demand gRPC fetchers in local env | `true` |
 
 `context prepare` flags:
 
@@ -713,6 +745,18 @@ sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_con
 | `--self-heal-dynamic-fields` | Enable dynamic-field self-healing during VM execution | `false` |
 | `--grpc-timeout-secs <N>` | gRPC object fetch timeout (seconds) | `30` |
 | `--strict` | Exit non-zero on replay failure/mismatch | `false` |
+
+`context historical-series` flags:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--request-file <PATH>` | Historical request spec file (JSON/YAML) | required |
+| `--series-file <PATH>` | Historical series points file (JSON/YAML) | required |
+| `--schema-file <PATH>` | Optional decode schema file (JSON/YAML) | - |
+| `--command-index <N>` | Command index to decode when schema is supplied | `0` |
+| `--grpc-endpoint <URL>` | Optional gRPC endpoint override | env/default |
+| `--grpc-api-key <KEY>` | Optional gRPC API key override | env/default |
+| `--max-concurrency <N>` | Max worker threads for per-point execution | `1` |
 
 `context run` flags:
 

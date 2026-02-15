@@ -2,12 +2,14 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod call_view_function;
+mod historical_series;
 mod json_to_bcs;
 mod poll_transactions;
 mod stream_transactions;
 mod tx_sim;
 
 pub use call_view_function::CallViewFunctionCmd;
+pub use historical_series::HistoricalSeriesCmd;
 pub use json_to_bcs::JsonToBcsCmd;
 pub use poll_transactions::PollTransactionsCmd;
 pub use stream_transactions::StreamTransactionsCmd;
@@ -31,6 +33,8 @@ pub enum ToolsSubcommand {
     JsonToBcs(JsonToBcsCmd),
     /// Execute a Move function in a local VM using supplied bytecode
     CallViewFunction(CallViewFunctionCmd),
+    /// Execute a historical view function across a checkpoint/version series
+    HistoricalSeries(HistoricalSeriesCmd),
 }
 
 impl ToolsCmd {
@@ -41,6 +45,7 @@ impl ToolsCmd {
             ToolsSubcommand::TxSim(cmd) => cmd.execute().await,
             ToolsSubcommand::JsonToBcs(cmd) => cmd.execute(json_output),
             ToolsSubcommand::CallViewFunction(cmd) => cmd.execute(json_output).await,
+            ToolsSubcommand::HistoricalSeries(cmd) => cmd.execute(json_output).await,
         }
     }
 }

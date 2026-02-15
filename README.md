@@ -55,7 +55,9 @@ sui-sandbox replay '*' --source walrus --latest 5 --compare
 | Scan latest checkpoints | `sui-sandbox replay '*' --source walrus --latest 5 --compare` |
 | Export offline replay state | `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json` |
 | Replay fully offline | `sui-sandbox replay <DIGEST> --state-json state.json` |
+| Bootstrap generic package/object runtime context | `sui-sandbox context bootstrap --package-id 0x2 --object 0x6 --dynamic-field-parent 0x6` |
 | Package-first replay orchestration | `sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>` |
+| Historical view series runner | `sui-sandbox context historical-series --request-file <REQ_JSON> --series-file <POINTS_JSON>` |
 | Protocol-first replay orchestration | `sui-sandbox adapter run --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --discover-latest 5 --analyze-only` |
 | Typed pipeline orchestration | `sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run` |
 | Import package | `sui-sandbox fetch package 0x2` |

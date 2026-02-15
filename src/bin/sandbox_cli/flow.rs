@@ -3,12 +3,16 @@
 //! Canonical command: `context` (alias: `flow`).
 
 use anyhow::{anyhow, Context, Result};
+use base64::Engine;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use move_core_types::account_address::AccountAddress;
 use serde_json::json;
 use std::path::PathBuf;
 
 use super::fetch::fetch_package_into_state;
 use super::replay::{FetchStrategy, ReplayCmd, ReplayHydrationArgs, ReplayProfile, ReplaySource};
+use super::state::ObjectMetadata;
+use super::tools::HistoricalSeriesCmd;
 use super::SandboxState;
 use sui_sandbox_core::checkpoint_discovery::{
     build_walrus_client as core_build_walrus_client,
@@ -16,6 +20,11 @@ use sui_sandbox_core::checkpoint_discovery::{
     resolve_replay_target_from_discovery as core_resolve_replay_target_from_discovery,
     DiscoverOutput as CoreDiscoverOutput, WalrusArchiveNetwork as CoreWalrusArchiveNetwork,
 };
+use sui_sandbox_core::environment_bootstrap::{
+    hydrate_build_and_finalize_mainnet_environment, EnvironmentBuildPlan, EnvironmentFinalizePlan,
+    MainnetHydrationPlan, MainnetObjectRequest,
+};
+use sui_sandbox_core::utilities::collect_required_package_roots_from_type_strings;
 use sui_transport::walrus::WalrusClient;
 
 mod context_io;
@@ -33,6 +42,8 @@ pub struct FlowCli {
 
 #[derive(Subcommand, Debug)]
 enum FlowSubcommand {
+    /// Hydrate package/object state and initialize a replay-ready local environment
+    Bootstrap(FlowBootstrapCmd),
     /// Prepare a reusable package context (fetch package + deps)
     Prepare(FlowPrepareCmd),
     /// Replay a transaction with optional prepared context
@@ -41,6 +52,58 @@ enum FlowSubcommand {
     Run(FlowRunCmd),
     /// Discover replay-ready digests + packages from checkpoints
     Discover(FlowDiscoverCmd),
+    /// Execute a historical view function across a checkpoint/version series
+    HistoricalSeries(HistoricalSeriesCmd),
+}
+
+#[derive(Args, Debug)]
+pub struct FlowBootstrapCmd {
+    /// Root package ids to hydrate (repeat flag or pass comma-separated list)
+    #[arg(long = "package-id", required = true, value_delimiter = ',')]
+    pub package_ids: Vec<String>,
+
+    /// Optional type references used to infer additional package roots
+    #[arg(long = "type-ref")]
+    pub type_refs: Vec<String>,
+
+    /// Optional object IDs to hydrate at latest version
+    #[arg(long = "object")]
+    pub objects: Vec<String>,
+
+    /// Optional object@version pins to hydrate historical object state
+    #[arg(long = "object-at")]
+    pub object_at: Vec<String>,
+
+    /// Sender address for local environment initialization
+    #[arg(
+        long,
+        default_value = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    )]
+    pub sender: String,
+
+    /// Historical-mode provider (strict versioned hydration paths)
+    #[arg(long, default_value_t = false)]
+    pub historical_mode: bool,
+
+    /// When object@version is missing, allow latest-object fallback
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub allow_latest_object_fallback: bool,
+
+    /// Fail bootstrap when object loading into the local environment fails
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub fail_on_object_load: bool,
+
+    /// Parent object IDs whose dynamic-field wrappers should be preloaded
+    #[arg(long = "dynamic-field-parent")]
+    pub dynamic_field_parents: Vec<String>,
+
+    /// Dynamic-field preload scan limit per parent
+    #[arg(long, default_value_t = 32)]
+    pub dynamic_field_limit: usize,
+
+    /// Configure on-demand gRPC fetchers in the environment
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub configure_fetchers: bool,
 }
 
 #[derive(Args, Debug)]
@@ -79,97 +142,14 @@ pub struct FlowReplayCmd {
     #[arg(long = "with-deps", default_value_t = true, action = ArgAction::Set)]
     pub with_deps: bool,
 
-    /// Optional checkpoint override (recommended for walrus source)
-    #[arg(long)]
-    pub checkpoint: Option<u64>,
+    #[command(flatten)]
+    pub target: ReplayTargetArgs,
 
-    /// Auto-discover a digest from latest N checkpoints (requires --context or --package-id)
-    #[arg(long, conflicts_with_all = ["digest", "state_json", "checkpoint"])]
-    pub discover_latest: Option<u64>,
+    #[command(flatten)]
+    pub walrus: WalrusEndpointArgs,
 
-    /// Walrus archive network used for --discover-latest
-    #[arg(long, value_enum, default_value = "mainnet")]
-    pub walrus_network: WalrusArchiveNetwork,
-
-    /// Override Walrus caching endpoint (requires --walrus-aggregator-url)
-    #[arg(long)]
-    pub walrus_caching_url: Option<String>,
-
-    /// Override Walrus aggregator endpoint (requires --walrus-caching-url)
-    #[arg(long)]
-    pub walrus_aggregator_url: Option<String>,
-
-    /// Optional state JSON for deterministic custom replay input data
-    #[arg(long = "state-json")]
-    pub state_json: Option<PathBuf>,
-
-    /// Replay hydration source
-    #[arg(long, value_enum, default_value = "hybrid")]
-    pub source: ReplaySource,
-
-    /// Runtime defaults profile (tunes fallback and transport behavior)
-    #[arg(long, value_enum, default_value = "balanced")]
-    pub profile: ReplayProfile,
-
-    /// Fetch strategy for dynamic field children during replay
-    #[arg(long, value_enum, default_value = "full")]
-    pub fetch_strategy: FetchStrategy,
-
-    /// Allow fallback hydration paths when data is missing
-    #[arg(long = "allow-fallback", default_value_t = true, action = ArgAction::Set)]
-    pub allow_fallback: bool,
-
-    /// Prefetch depth for dynamic fields
-    #[arg(long, default_value_t = 3)]
-    pub prefetch_depth: usize,
-
-    /// Prefetch limit per dynamic-field parent
-    #[arg(long, default_value_t = 200)]
-    pub prefetch_limit: usize,
-
-    /// Disable dynamic-field prefetch
-    #[arg(long, default_value_t = false)]
-    pub no_prefetch: bool,
-
-    /// Auto-inject system objects (Clock/Random) when missing
-    #[arg(long, default_value_t = true, action = ArgAction::Set)]
-    pub auto_system_objects: bool,
-
-    /// Compare local replay against on-chain effects
-    #[arg(long, default_value_t = false)]
-    pub compare: bool,
-
-    /// Hydration-only mode (skip VM execution and print replay-state summary)
-    #[arg(long, default_value_t = false)]
-    pub analyze_only: bool,
-
-    /// VM-only mode (disable fallback paths)
-    #[arg(long, default_value_t = false)]
-    pub vm_only: bool,
-
-    /// Reconcile dynamic-field effects when on-chain lists omit them
-    #[arg(long, default_value_t = true, action = ArgAction::Set)]
-    pub reconcile_dynamic_fields: bool,
-
-    /// Synthesize placeholder inputs when replay fails on missing objects
-    #[arg(long, default_value_t = false)]
-    pub synthesize_missing: bool,
-
-    /// Allow dynamic-field reads to synthesize placeholder values when missing
-    #[arg(long, default_value_t = false)]
-    pub self_heal_dynamic_fields: bool,
-
-    /// Timeout in seconds for gRPC object fetches
-    #[arg(long, default_value_t = 30)]
-    pub grpc_timeout_secs: u64,
-
-    /// Local replay cache path (used when --source local)
-    #[arg(long)]
-    pub cache_dir: Option<PathBuf>,
-
-    /// Fail command when replay output indicates mismatch/failure
-    #[arg(long, default_value_t = false)]
-    pub strict: bool,
+    #[command(flatten)]
+    pub execution: ReplayExecutionArgs,
 }
 
 #[derive(Args, Debug)]
@@ -194,15 +174,60 @@ pub struct FlowRunCmd {
     #[arg(long, default_value_t = false)]
     pub force: bool,
 
+    #[command(flatten)]
+    pub target: ReplayTargetArgs,
+
+    #[command(flatten)]
+    pub walrus: WalrusEndpointArgs,
+
+    #[command(flatten)]
+    pub execution: ReplayExecutionArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct FlowDiscoverCmd {
+    /// Checkpoint spec: single (239615926), range (239615900..239615926), or list (239615900,239615910)
+    #[arg(long, conflicts_with = "latest")]
+    pub checkpoint: Option<String>,
+
+    /// Scan latest N checkpoints (auto-discovers tip)
+    #[arg(long, conflicts_with = "checkpoint")]
+    pub latest: Option<u64>,
+
+    /// Optional package filter (only include transactions touching this package)
+    #[arg(long = "package-id")]
+    pub package_id: Option<String>,
+
+    /// Include framework packages (0x1/0x2/0x3) in results
+    #[arg(long, default_value_t = false)]
+    pub include_framework: bool,
+
+    /// Max matching transactions to return
+    #[arg(long, default_value_t = 200)]
+    pub limit: usize,
+
+    #[command(flatten)]
+    pub walrus: WalrusEndpointArgs,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ReplayTargetArgs {
     /// Optional checkpoint override (recommended for walrus source)
     #[arg(long)]
     pub checkpoint: Option<u64>,
 
-    /// Auto-discover a digest from latest N checkpoints for --package-id
+    /// Auto-discover a digest from latest N checkpoints for replay target selection
     #[arg(long, conflicts_with_all = ["digest", "state_json", "checkpoint"])]
     pub discover_latest: Option<u64>,
 
-    /// Walrus archive network used for --discover-latest
+    /// Optional state JSON for deterministic custom replay input data
+    #[arg(long = "state-json")]
+    pub state_json: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct WalrusEndpointArgs {
+    /// Walrus archive network used for discovery
     #[arg(long, value_enum, default_value = "mainnet")]
     pub walrus_network: WalrusArchiveNetwork,
 
@@ -213,11 +238,10 @@ pub struct FlowRunCmd {
     /// Override Walrus aggregator endpoint (requires --walrus-caching-url)
     #[arg(long)]
     pub walrus_aggregator_url: Option<String>,
+}
 
-    /// Optional state JSON for deterministic custom replay input data
-    #[arg(long = "state-json")]
-    pub state_json: Option<PathBuf>,
-
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ReplayExecutionArgs {
     /// Replay hydration source
     #[arg(long, value_enum, default_value = "hybrid")]
     pub source: ReplaySource,
@@ -287,42 +311,7 @@ pub struct FlowRunCmd {
     pub strict: bool,
 }
 
-#[derive(Args, Debug)]
-pub struct FlowDiscoverCmd {
-    /// Checkpoint spec: single (239615926), range (239615900..239615926), or list (239615900,239615910)
-    #[arg(long, conflicts_with = "latest")]
-    pub checkpoint: Option<String>,
-
-    /// Scan latest N checkpoints (auto-discovers tip)
-    #[arg(long, conflicts_with = "checkpoint")]
-    pub latest: Option<u64>,
-
-    /// Optional package filter (only include transactions touching this package)
-    #[arg(long = "package-id")]
-    pub package_id: Option<String>,
-
-    /// Include framework packages (0x1/0x2/0x3) in results
-    #[arg(long, default_value_t = false)]
-    pub include_framework: bool,
-
-    /// Max matching transactions to return
-    #[arg(long, default_value_t = 200)]
-    pub limit: usize,
-
-    /// Walrus archive network for checkpoint discovery
-    #[arg(long, value_enum, default_value = "mainnet")]
-    pub walrus_network: WalrusArchiveNetwork,
-
-    /// Override Walrus caching endpoint (requires --walrus-aggregator-url too)
-    #[arg(long)]
-    pub walrus_caching_url: Option<String>,
-
-    /// Override Walrus aggregator endpoint (requires --walrus-caching-url too)
-    #[arg(long)]
-    pub walrus_aggregator_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum WalrusArchiveNetwork {
     Mainnet,
     Testnet,
@@ -339,30 +328,9 @@ impl From<WalrusArchiveNetwork> for CoreWalrusArchiveNetwork {
 
 type FlowDiscoverOutput = CoreDiscoverOutput;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FlowReplayRunOptions {
-    source: ReplaySource,
-    cache_dir: Option<PathBuf>,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    no_prefetch: bool,
-    auto_system_objects: bool,
-    profile: ReplayProfile,
-    fetch_strategy: FetchStrategy,
-    vm_only: bool,
-    strict: bool,
-    compare: bool,
-    analyze_only: bool,
-    reconcile_dynamic_fields: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    grpc_timeout_secs: u64,
-}
-
-impl FlowReplayRunOptions {
-    fn into_replay_cmd(
-        self,
+impl ReplayExecutionArgs {
+    fn to_replay_cmd(
+        &self,
         digest: Option<String>,
         checkpoint: Option<u64>,
         state_json: Option<PathBuf>,
@@ -371,7 +339,7 @@ impl FlowReplayRunOptions {
             digest,
             hydration: ReplayHydrationArgs {
                 source: self.source,
-                cache_dir: self.cache_dir,
+                cache_dir: self.cache_dir.clone(),
                 allow_fallback: self.allow_fallback,
                 prefetch_depth: self.prefetch_depth,
                 prefetch_limit: self.prefetch_limit,
@@ -397,54 +365,6 @@ impl FlowReplayRunOptions {
     }
 }
 
-impl From<&FlowReplayCmd> for FlowReplayRunOptions {
-    fn from(value: &FlowReplayCmd) -> Self {
-        Self {
-            source: value.source,
-            cache_dir: value.cache_dir.clone(),
-            allow_fallback: value.allow_fallback,
-            prefetch_depth: value.prefetch_depth,
-            prefetch_limit: value.prefetch_limit,
-            no_prefetch: value.no_prefetch,
-            auto_system_objects: value.auto_system_objects,
-            profile: value.profile,
-            fetch_strategy: value.fetch_strategy,
-            vm_only: value.vm_only,
-            strict: value.strict,
-            compare: value.compare,
-            analyze_only: value.analyze_only,
-            reconcile_dynamic_fields: value.reconcile_dynamic_fields,
-            synthesize_missing: value.synthesize_missing,
-            self_heal_dynamic_fields: value.self_heal_dynamic_fields,
-            grpc_timeout_secs: value.grpc_timeout_secs,
-        }
-    }
-}
-
-impl From<&FlowRunCmd> for FlowReplayRunOptions {
-    fn from(value: &FlowRunCmd) -> Self {
-        Self {
-            source: value.source,
-            cache_dir: value.cache_dir.clone(),
-            allow_fallback: value.allow_fallback,
-            prefetch_depth: value.prefetch_depth,
-            prefetch_limit: value.prefetch_limit,
-            no_prefetch: value.no_prefetch,
-            auto_system_objects: value.auto_system_objects,
-            profile: value.profile,
-            fetch_strategy: value.fetch_strategy,
-            vm_only: value.vm_only,
-            strict: value.strict,
-            compare: value.compare,
-            analyze_only: value.analyze_only,
-            reconcile_dynamic_fields: value.reconcile_dynamic_fields,
-            synthesize_missing: value.synthesize_missing,
-            self_heal_dynamic_fields: value.self_heal_dynamic_fields,
-            grpc_timeout_secs: value.grpc_timeout_secs,
-        }
-    }
-}
-
 impl FlowCli {
     pub async fn execute(
         &self,
@@ -453,11 +373,164 @@ impl FlowCli {
         verbose: bool,
     ) -> Result<()> {
         match &self.command {
+            FlowSubcommand::Bootstrap(cmd) => cmd.execute(state, json_output, verbose).await,
             FlowSubcommand::Prepare(cmd) => cmd.execute(state, json_output, verbose).await,
             FlowSubcommand::Replay(cmd) => cmd.execute(state, json_output, verbose).await,
             FlowSubcommand::Run(cmd) => cmd.execute(state, json_output, verbose).await,
             FlowSubcommand::Discover(cmd) => cmd.execute(json_output).await,
+            FlowSubcommand::HistoricalSeries(cmd) => cmd.execute(json_output).await,
         }
+    }
+}
+
+impl FlowBootstrapCmd {
+    async fn execute(
+        &self,
+        state: &mut SandboxState,
+        json_output: bool,
+        _verbose: bool,
+    ) -> Result<()> {
+        let explicit_roots: Vec<AccountAddress> = self
+            .package_ids
+            .iter()
+            .map(|raw| {
+                AccountAddress::from_hex_literal(raw)
+                    .with_context(|| format!("invalid --package-id value {}", raw))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let package_roots =
+            collect_required_package_roots_from_type_strings(&explicit_roots, &self.type_refs)?
+                .into_iter()
+                .collect::<Vec<_>>();
+
+        let mut object_requests = Vec::with_capacity(self.objects.len() + self.object_at.len());
+        for object_id in &self.objects {
+            validate_hex_address(object_id, "--object")?;
+            object_requests.push(MainnetObjectRequest {
+                object_id: object_id.clone(),
+                version: None,
+            });
+        }
+        for spec in &self.object_at {
+            object_requests.push(parse_object_at_spec(spec)?);
+        }
+
+        let sender = AccountAddress::from_hex_literal(&self.sender)
+            .with_context(|| format!("invalid --sender value {}", self.sender))?;
+        let finalize_plan = EnvironmentFinalizePlan {
+            dynamic_field_parents: self.dynamic_field_parents.clone(),
+            dynamic_field_limit: self.dynamic_field_limit,
+            configure_fetchers: self.configure_fetchers,
+        };
+        let bootstrapped = hydrate_build_and_finalize_mainnet_environment(
+            &MainnetHydrationPlan {
+                package_roots,
+                objects: object_requests,
+                historical_mode: self.historical_mode,
+                allow_latest_object_fallback: self.allow_latest_object_fallback,
+            },
+            &EnvironmentBuildPlan {
+                sender,
+                fail_on_object_load: self.fail_on_object_load,
+            },
+            &finalize_plan,
+        )
+        .await?;
+
+        let mut packages_loaded = 0usize;
+        for (addr, package) in &bootstrapped.hydration.packages {
+            state.add_package(*addr, package.modules.clone());
+            packages_loaded += 1;
+        }
+        let mut objects_loaded = 0usize;
+        let mut objects_skipped_missing_type_tag = 0usize;
+        for (object_id, (bytes, type_tag, version, is_shared)) in &bootstrapped.hydration.objects {
+            let Some(type_tag) = type_tag.as_deref() else {
+                objects_skipped_missing_type_tag += 1;
+                continue;
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            state.add_object_with_metadata(
+                object_id,
+                Some(type_tag),
+                &b64,
+                ObjectMetadata {
+                    version: *version,
+                    is_shared: *is_shared,
+                    ..Default::default()
+                },
+            )?;
+            objects_loaded += 1;
+        }
+
+        let registration = &bootstrapped.build.package_registration;
+        if !registration.failed.is_empty() {
+            let first = &registration.failed[0];
+            return Err(anyhow!(
+                "package registration failed for {} package(s); first failure: {} ({})",
+                registration.failed.len(),
+                first.0.to_hex_literal(),
+                first.1
+            ));
+        }
+
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "success": true,
+                    "provider_endpoint": bootstrapped.hydration.provider.grpc_endpoint(),
+                    "historical_mode": self.historical_mode,
+                    "packages_hydrated": bootstrapped.hydration.packages.len(),
+                    "objects_hydrated": bootstrapped.hydration.objects.len(),
+                    "packages_loaded_into_session": packages_loaded,
+                    "objects_loaded_into_session": objects_loaded,
+                    "objects_skipped_missing_type_tag": objects_skipped_missing_type_tag,
+                    "environment": {
+                        "sender": sender.to_hex_literal(),
+                        "package_registration": {
+                            "loaded": registration.loaded,
+                            "skipped_upgraded": registration.skipped_upgraded,
+                            "failed": registration.failed,
+                        },
+                        "objects_loaded": bootstrapped.build.objects_loaded,
+                        "dynamic_fields_loaded": bootstrapped.finalize.dynamic_fields_loaded,
+                        "fetchers_configured": bootstrapped.finalize.fetchers_configured,
+                    },
+                }))?
+            );
+        } else {
+            println!("Bootstrap complete:");
+            println!(
+                "  provider endpoint: {}",
+                bootstrapped.hydration.provider.grpc_endpoint()
+            );
+            println!(
+                "  packages hydrated: {}",
+                bootstrapped.hydration.packages.len()
+            );
+            println!(
+                "  objects hydrated: {}",
+                bootstrapped.hydration.objects.len()
+            );
+            println!(
+                "  package registration: loaded={}, skipped_upgraded={}, failed={}",
+                registration.loaded,
+                registration.skipped_upgraded,
+                registration.failed.len()
+            );
+            println!(
+                "  runtime finalize: dynamic_fields_loaded={}, fetchers_configured={}",
+                bootstrapped.finalize.dynamic_fields_loaded,
+                bootstrapped.finalize.fetchers_configured
+            );
+            println!(
+                "  session primed: packages={}, objects={} (skipped_missing_type_tag={})",
+                packages_loaded, objects_loaded, objects_skipped_missing_type_tag
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -539,18 +612,18 @@ impl FlowReplayCmd {
 
         let (effective_digest, effective_checkpoint) = resolve_replay_target(
             self.digest.as_deref(),
-            self.state_json.as_ref(),
-            self.checkpoint,
-            self.discover_latest,
+            self.target.state_json.as_ref(),
+            self.target.checkpoint,
+            self.target.discover_latest,
             prepared_package.as_ref().map(|(pkg, _)| pkg.as_str()),
-            self.walrus_network,
-            self.walrus_caching_url.as_deref(),
-            self.walrus_aggregator_url.as_deref(),
+            self.walrus.walrus_network,
+            self.walrus.walrus_caching_url.as_deref(),
+            self.walrus.walrus_aggregator_url.as_deref(),
         )?;
 
         if !json_output {
             if let (Some(window), Some(digest), Some(checkpoint)) = (
-                self.discover_latest,
+                self.target.discover_latest,
                 effective_digest.as_deref(),
                 effective_checkpoint,
             ) {
@@ -561,11 +634,10 @@ impl FlowReplayCmd {
             }
         }
 
-        let replay_options = FlowReplayRunOptions::from(self);
-        let replay = replay_options.into_replay_cmd(
+        let replay = self.execution.to_replay_cmd(
             effective_digest,
             effective_checkpoint,
-            self.state_json.clone(),
+            self.target.state_json.clone(),
         );
 
         replay.execute(state, json_output, verbose).await
@@ -581,13 +653,13 @@ impl FlowRunCmd {
     ) -> Result<()> {
         let (effective_digest, effective_checkpoint) = resolve_replay_target(
             self.digest.as_deref(),
-            self.state_json.as_ref(),
-            self.checkpoint,
-            self.discover_latest,
+            self.target.state_json.as_ref(),
+            self.target.checkpoint,
+            self.target.discover_latest,
             Some(self.package_id.as_str()),
-            self.walrus_network,
-            self.walrus_caching_url.as_deref(),
-            self.walrus_aggregator_url.as_deref(),
+            self.walrus.walrus_network,
+            self.walrus.walrus_caching_url.as_deref(),
+            self.walrus.walrus_aggregator_url.as_deref(),
         )?;
 
         let (context, packages_fetched) =
@@ -609,7 +681,7 @@ impl FlowRunCmd {
                 println!("Context written: {}", path);
             }
             if let (Some(window), Some(digest), Some(checkpoint)) = (
-                self.discover_latest,
+                self.target.discover_latest,
                 effective_digest.as_deref(),
                 effective_checkpoint,
             ) {
@@ -620,11 +692,10 @@ impl FlowRunCmd {
             }
         }
 
-        let replay_options = FlowReplayRunOptions::from(self);
-        let replay = replay_options.into_replay_cmd(
+        let replay = self.execution.to_replay_cmd(
             effective_digest,
             effective_checkpoint,
-            self.state_json.clone(),
+            self.target.state_json.clone(),
         );
 
         replay.execute(state, json_output, verbose).await
@@ -634,9 +705,9 @@ impl FlowRunCmd {
 impl FlowDiscoverCmd {
     pub(crate) async fn execute(&self, json_output: bool) -> Result<()> {
         let walrus = build_walrus_client(
-            self.walrus_network,
-            self.walrus_caching_url.as_deref(),
-            self.walrus_aggregator_url.as_deref(),
+            self.walrus.walrus_network,
+            self.walrus.walrus_caching_url.as_deref(),
+            self.walrus.walrus_aggregator_url.as_deref(),
         )?;
         let output = discover_flow_targets(
             &walrus,
@@ -757,11 +828,40 @@ fn build_walrus_client(
     })
 }
 
+fn parse_object_at_spec(spec: &str) -> Result<MainnetObjectRequest> {
+    let trimmed = spec.trim();
+    let (object_id, version_raw) = trimmed.rsplit_once('@').ok_or_else(|| {
+        anyhow!(
+            "invalid --object-at value `{}` (expected <OBJECT_ID>@<VERSION>)",
+            spec
+        )
+    })?;
+    validate_hex_address(object_id, "--object-at")?;
+    let version: u64 = version_raw.trim().parse().with_context(|| {
+        format!(
+            "invalid version `{}` in --object-at value `{}`",
+            version_raw, spec
+        )
+    })?;
+    Ok(MainnetObjectRequest {
+        object_id: object_id.trim().to_string(),
+        version: Some(version),
+    })
+}
+
+fn validate_hex_address(raw: &str, flag: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    AccountAddress::from_hex_literal(trimmed)
+        .with_context(|| format!("invalid {} value {}", flag, raw))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{build_walrus_client, parse_checkpoint_spec, FlowCli, WalrusArchiveNetwork};
     use super::{
-        FetchStrategy, FlowReplayCmd, FlowReplayRunOptions, FlowRunCmd, ReplayProfile, ReplaySource,
+        FetchStrategy, FlowReplayCmd, FlowRunCmd, ReplayExecutionArgs, ReplayProfile, ReplaySource,
+        ReplayTargetArgs, WalrusEndpointArgs,
     };
     use clap::Parser;
     use serde_json::json;
@@ -777,6 +877,27 @@ mod tests {
             "0x2",
             "--with-deps",
             "true",
+        ]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn parses_flow_bootstrap() {
+        let parsed = FlowCli::try_parse_from([
+            "flow",
+            "bootstrap",
+            "--package-id",
+            "0x2",
+            "--type-ref",
+            "0x2::sui::SUI",
+            "--object",
+            "0x6",
+            "--object-at",
+            "0x6@1",
+            "--dynamic-field-parent",
+            "0x6",
+            "--dynamic-field-limit",
+            "16",
         ]);
         assert!(parsed.is_ok());
     }
@@ -879,6 +1000,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_flow_historical_series() {
+        let parsed = FlowCli::try_parse_from([
+            "flow",
+            "historical-series",
+            "--request-file",
+            "examples/data/deepbook_margin_state/manager_state_request.json",
+            "--series-file",
+            "examples/data/deepbook_margin_state/position_b_daily_timeseries.json",
+        ]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
     fn rejects_partial_custom_walrus_endpoint_pair() {
         let err = build_walrus_client(
             WalrusArchiveNetwork::Mainnet,
@@ -921,6 +1055,13 @@ mod tests {
     fn rejects_inverted_checkpoint_range() {
         let err = parse_checkpoint_spec("20..10").expect_err("inverted range should fail");
         assert!(err.to_string().contains("end must be >= start"));
+    }
+
+    #[test]
+    fn parses_object_at_spec() {
+        let parsed = super::parse_object_at_spec("0x6@123").expect("object-at parse");
+        assert_eq!(parsed.object_id, "0x6");
+        assert_eq!(parsed.version, Some(123));
     }
 
     #[test]
@@ -991,29 +1132,35 @@ mod tests {
             context: Some(PathBuf::from("/tmp/context.json")),
             package_id: None,
             with_deps: true,
-            checkpoint: Some(239_615_926),
-            discover_latest: None,
-            walrus_network: WalrusArchiveNetwork::Mainnet,
-            walrus_caching_url: None,
-            walrus_aggregator_url: None,
-            state_json: Some(PathBuf::from("/tmp/state.json")),
-            source: ReplaySource::Walrus,
-            profile: ReplayProfile::Fast,
-            fetch_strategy: FetchStrategy::Eager,
-            allow_fallback: false,
-            prefetch_depth: 7,
-            prefetch_limit: 123,
-            no_prefetch: true,
-            auto_system_objects: false,
-            compare: true,
-            analyze_only: true,
-            vm_only: true,
-            reconcile_dynamic_fields: false,
-            synthesize_missing: true,
-            self_heal_dynamic_fields: true,
-            grpc_timeout_secs: 77,
-            cache_dir: Some(PathBuf::from("/tmp/cache")),
-            strict: true,
+            target: ReplayTargetArgs {
+                checkpoint: Some(239_615_926),
+                discover_latest: None,
+                state_json: Some(PathBuf::from("/tmp/state.json")),
+            },
+            walrus: WalrusEndpointArgs {
+                walrus_network: WalrusArchiveNetwork::Mainnet,
+                walrus_caching_url: None,
+                walrus_aggregator_url: None,
+            },
+            execution: ReplayExecutionArgs {
+                source: ReplaySource::Walrus,
+                profile: ReplayProfile::Fast,
+                fetch_strategy: FetchStrategy::Eager,
+                allow_fallback: false,
+                prefetch_depth: 7,
+                prefetch_limit: 123,
+                no_prefetch: true,
+                auto_system_objects: false,
+                compare: true,
+                analyze_only: true,
+                vm_only: true,
+                reconcile_dynamic_fields: false,
+                synthesize_missing: true,
+                self_heal_dynamic_fields: true,
+                grpc_timeout_secs: 77,
+                cache_dir: Some(PathBuf::from("/tmp/cache")),
+                strict: true,
+            },
         };
         let run = FlowRunCmd {
             package_id: "0x2".to_string(),
@@ -1021,33 +1168,12 @@ mod tests {
             with_deps: replay.with_deps,
             context_out: None,
             force: false,
-            checkpoint: replay.checkpoint,
-            discover_latest: replay.discover_latest,
-            walrus_network: replay.walrus_network,
-            walrus_caching_url: replay.walrus_caching_url.clone(),
-            walrus_aggregator_url: replay.walrus_aggregator_url.clone(),
-            state_json: replay.state_json.clone(),
-            source: replay.source,
-            profile: replay.profile,
-            fetch_strategy: replay.fetch_strategy,
-            allow_fallback: replay.allow_fallback,
-            prefetch_depth: replay.prefetch_depth,
-            prefetch_limit: replay.prefetch_limit,
-            no_prefetch: replay.no_prefetch,
-            auto_system_objects: replay.auto_system_objects,
-            compare: replay.compare,
-            analyze_only: replay.analyze_only,
-            vm_only: replay.vm_only,
-            reconcile_dynamic_fields: replay.reconcile_dynamic_fields,
-            synthesize_missing: replay.synthesize_missing,
-            self_heal_dynamic_fields: replay.self_heal_dynamic_fields,
-            grpc_timeout_secs: replay.grpc_timeout_secs,
-            cache_dir: replay.cache_dir.clone(),
-            strict: replay.strict,
+            target: replay.target.clone(),
+            walrus: replay.walrus.clone(),
+            execution: replay.execution.clone(),
         };
-
-        let from_replay = FlowReplayRunOptions::from(&replay);
-        let from_run = FlowReplayRunOptions::from(&run);
-        assert_eq!(from_replay, from_run);
+        assert_eq!(replay.target, run.target);
+        assert_eq!(replay.walrus, run.walrus);
+        assert_eq!(replay.execution, run.execution);
     }
 }

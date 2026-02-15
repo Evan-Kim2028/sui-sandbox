@@ -12,8 +12,10 @@ use sui_sandbox_core::adapter::{
     ProtocolAdapter as CoreProtocolAdapter,
 };
 
-use super::flow::{FlowDiscoverCmd, FlowPrepareCmd, FlowRunCmd, WalrusArchiveNetwork};
-use super::replay::{FetchStrategy, ReplayProfile, ReplaySource};
+use super::flow::{
+    FlowDiscoverCmd, FlowPrepareCmd, FlowRunCmd, ReplayExecutionArgs, ReplayTargetArgs,
+    WalrusEndpointArgs,
+};
 use super::SandboxState;
 
 #[derive(Parser, Debug)]
@@ -103,97 +105,14 @@ pub struct ProtocolRunCmd {
     #[arg(long, default_value_t = false)]
     pub force: bool,
 
-    /// Optional checkpoint override (recommended for walrus source)
-    #[arg(long)]
-    pub checkpoint: Option<u64>,
+    #[command(flatten)]
+    pub target: ReplayTargetArgs,
 
-    /// Auto-discover a digest from latest N checkpoints for this protocol package
-    #[arg(long, conflicts_with_all = ["digest", "state_json", "checkpoint"])]
-    pub discover_latest: Option<u64>,
+    #[command(flatten)]
+    pub walrus: WalrusEndpointArgs,
 
-    /// Optional state JSON for deterministic custom replay input data
-    #[arg(long = "state-json")]
-    pub state_json: Option<PathBuf>,
-
-    /// Replay hydration source
-    #[arg(long, value_enum, default_value = "hybrid")]
-    pub source: ReplaySource,
-
-    /// Runtime defaults profile (tunes fallback and transport behavior)
-    #[arg(long, value_enum, default_value = "balanced")]
-    pub profile: ReplayProfile,
-
-    /// Fetch strategy for dynamic field children during replay
-    #[arg(long, value_enum, default_value = "full")]
-    pub fetch_strategy: FetchStrategy,
-
-    /// Allow fallback hydration paths when data is missing
-    #[arg(long = "allow-fallback", default_value_t = true, action = ArgAction::Set)]
-    pub allow_fallback: bool,
-
-    /// Prefetch depth for dynamic fields
-    #[arg(long, default_value_t = 3)]
-    pub prefetch_depth: usize,
-
-    /// Prefetch limit per dynamic-field parent
-    #[arg(long, default_value_t = 200)]
-    pub prefetch_limit: usize,
-
-    /// Disable dynamic-field prefetch
-    #[arg(long, default_value_t = false)]
-    pub no_prefetch: bool,
-
-    /// Auto-inject system objects (Clock/Random) when missing
-    #[arg(long, default_value_t = true, action = ArgAction::Set)]
-    pub auto_system_objects: bool,
-
-    /// Compare local replay against on-chain effects
-    #[arg(long, default_value_t = false)]
-    pub compare: bool,
-
-    /// Hydration-only mode (skip VM execution and print replay-state summary)
-    #[arg(long, default_value_t = false)]
-    pub analyze_only: bool,
-
-    /// VM-only mode (disable fallback paths)
-    #[arg(long, default_value_t = false)]
-    pub vm_only: bool,
-
-    /// Reconcile dynamic-field effects when on-chain lists omit them
-    #[arg(long, default_value_t = true, action = ArgAction::Set)]
-    pub reconcile_dynamic_fields: bool,
-
-    /// Synthesize placeholder inputs when replay fails on missing objects
-    #[arg(long, default_value_t = false)]
-    pub synthesize_missing: bool,
-
-    /// Allow dynamic-field reads to synthesize placeholder values when missing
-    #[arg(long, default_value_t = false)]
-    pub self_heal_dynamic_fields: bool,
-
-    /// Timeout in seconds for gRPC object fetches
-    #[arg(long, default_value_t = 30)]
-    pub grpc_timeout_secs: u64,
-
-    /// Local replay cache path (used when --source local)
-    #[arg(long)]
-    pub cache_dir: Option<PathBuf>,
-
-    /// Fail command when replay output indicates mismatch/failure
-    #[arg(long, default_value_t = false)]
-    pub strict: bool,
-
-    /// Walrus archive network used for --discover-latest
-    #[arg(long, value_enum, default_value = "mainnet")]
-    pub walrus_network: WalrusArchiveNetwork,
-
-    /// Override Walrus caching endpoint (requires --walrus-aggregator-url)
-    #[arg(long)]
-    pub walrus_caching_url: Option<String>,
-
-    /// Override Walrus aggregator endpoint (requires --walrus-caching-url)
-    #[arg(long)]
-    pub walrus_aggregator_url: Option<String>,
+    #[command(flatten)]
+    pub execution: ReplayExecutionArgs,
 }
 
 #[derive(Args, Debug)]
@@ -222,17 +141,8 @@ pub struct ProtocolDiscoverCmd {
     #[arg(long, default_value_t = 200)]
     pub limit: usize,
 
-    /// Walrus archive network for checkpoint discovery
-    #[arg(long, value_enum, default_value = "mainnet")]
-    pub walrus_network: WalrusArchiveNetwork,
-
-    /// Override Walrus caching endpoint (requires --walrus-aggregator-url too)
-    #[arg(long)]
-    pub walrus_caching_url: Option<String>,
-
-    /// Override Walrus aggregator endpoint (requires --walrus-caching-url too)
-    #[arg(long)]
-    pub walrus_aggregator_url: Option<String>,
+    #[command(flatten)]
+    pub walrus: WalrusEndpointArgs,
 }
 
 impl ProtocolCli {
@@ -283,29 +193,9 @@ impl ProtocolRunCmd {
             with_deps: self.with_deps,
             context_out: self.context_out.clone(),
             force: self.force,
-            checkpoint: self.checkpoint,
-            discover_latest: self.discover_latest,
-            state_json: self.state_json.clone(),
-            source: self.source,
-            profile: self.profile,
-            fetch_strategy: self.fetch_strategy,
-            allow_fallback: self.allow_fallback,
-            prefetch_depth: self.prefetch_depth,
-            prefetch_limit: self.prefetch_limit,
-            no_prefetch: self.no_prefetch,
-            auto_system_objects: self.auto_system_objects,
-            compare: self.compare,
-            analyze_only: self.analyze_only,
-            vm_only: self.vm_only,
-            reconcile_dynamic_fields: self.reconcile_dynamic_fields,
-            synthesize_missing: self.synthesize_missing,
-            self_heal_dynamic_fields: self.self_heal_dynamic_fields,
-            grpc_timeout_secs: self.grpc_timeout_secs,
-            cache_dir: self.cache_dir.clone(),
-            strict: self.strict,
-            walrus_network: self.walrus_network,
-            walrus_caching_url: self.walrus_caching_url.clone(),
-            walrus_aggregator_url: self.walrus_aggregator_url.clone(),
+            target: self.target.clone(),
+            walrus: self.walrus.clone(),
+            execution: self.execution.clone(),
         }
         .execute(state, json_output, verbose)
         .await
@@ -322,9 +212,7 @@ impl ProtocolDiscoverCmd {
             package_id,
             include_framework: self.include_framework,
             limit: self.limit,
-            walrus_network: self.walrus_network,
-            walrus_caching_url: self.walrus_caching_url.clone(),
-            walrus_aggregator_url: self.walrus_aggregator_url.clone(),
+            walrus: self.walrus.clone(),
         }
         .execute(json_output)
         .await
