@@ -14,11 +14,13 @@ workflow spec and rely on Rust-side replay/analyze implementations for execution
    `crates/sui-sandbox-core/src/workflow.rs`
 2. **Template planners (core)**  
    `crates/sui-sandbox-core/src/workflow_adapter.rs`
-3. **Replay orchestration helpers (core)**  
+3. **Workflow planner helpers (core)**  
+   `crates/sui-sandbox-core/src/workflow_planner.rs`
+4. **Replay orchestration helpers (core)**  
    `crates/sui-sandbox-core/src/orchestrator.rs`
-4. **CLI adapter (execution/init)**  
+5. **CLI adapter (execution/init/auto)**  
    `src/bin/sandbox_cli/workflow.rs`
-5. **Existing engines (unchanged)**  
+6. **Existing engines (unchanged)**  
    `replay`, `analyze replay`, and other subcommands
 
 The workflow adapter resolves each typed step into a deterministic `sui-sandbox` argv
@@ -50,9 +52,9 @@ inferred from the output file extension.
 
 `pipeline auto --package-id <id>` adds a package-first draft adapter flow:
 
-- probes package modules via `analyze package` (when available),
+- probes package modules natively via GraphQL decoding,
 - infers template heuristically (or uses explicit override),
-- validates fetched package bytecode closure (fails closed on unresolved deps),
+- validates fetched package bytecode closure natively (fails closed on unresolved deps),
 - emits scaffold-only workflows when no digest is provided,
 - emits replay-capable drafts when digest/checkpoint are supplied.
 - supports generation-time replay seed discovery via

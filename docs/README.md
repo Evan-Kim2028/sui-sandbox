@@ -5,8 +5,11 @@ Use this file as the docs entrypoint.
 Canonical CLI naming used throughout docs:
 - `context` (alias: `flow`)
 - `adapter` (alias: `protocol`)
-- `script` (alias: `run-flow`)
 - `pipeline` (alias: `workflow`)
+
+Compatibility CLI naming:
+- `script` (alias: `run-flow`) for legacy YAML scripts
+- `init` for legacy script template scaffolding
 
 ## Start Here
 
@@ -58,6 +61,8 @@ Canonical CLI naming used throughout docs:
   - [architecture/PREFETCHING.md](architecture/PREFETCHING.md)
 - Typed workflow engine contract:
   - [architecture/WORKFLOW_ENGINE.md](architecture/WORKFLOW_ENGINE.md)
+- Unification target and integration gates:
+  - [architecture/UNIFICATION_TARGET.md](architecture/UNIFICATION_TARGET.md)
 - Consolidation notes:
   - [architecture/CONSOLIDATION_CANDIDATES.md](architecture/CONSOLIDATION_CANDIDATES.md)
 - Issue 26 implementation roadmap:

@@ -56,7 +56,7 @@ sui-sandbox replay '*' --source walrus --latest 5 --compare
 | Export offline replay state | `sui-sandbox replay <DIGEST> --source walrus --checkpoint <CP> --export-state state.json` |
 | Replay fully offline | `sui-sandbox replay <DIGEST> --state-json state.json` |
 | Package-first replay orchestration | `sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>` |
-| Protocol-first replay orchestration | `sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only` |
+| Protocol-first replay orchestration | `sui-sandbox adapter run --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --discover-latest 5 --analyze-only` |
 | Typed pipeline orchestration | `sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run` |
 | Import package | `sui-sandbox fetch package 0x2` |
 | Publish + run local package | `sui-sandbox publish ./my_package` then `sui-sandbox run 0x100::module::func --arg 42` |
@@ -67,8 +67,11 @@ Full command/flag reference: [docs/reference/CLI_REFERENCE.md](docs/reference/CL
 Canonical command families:
 - `context` (alias: `flow`)
 - `adapter` (alias: `protocol`)
-- `script` (alias: `run-flow`)
 - `pipeline` (alias: `workflow`)
+
+Compatibility commands:
+- `script` (alias: `run-flow`) for legacy YAML flow files
+- `init` for legacy flow template scaffolding
 
 ## Data Sources
 
@@ -85,6 +88,8 @@ Install:
 ```bash
 pip install sui-sandbox
 ```
+
+Published wheels run in Python directly; no Rust toolchain is needed at runtime.
 
 Minimal usage:
 
@@ -104,6 +109,9 @@ More:
 
 - Python API reference: [crates/sui-python/README.md](crates/sui-python/README.md)
 - Local wheel/build workflow: [docs/guides/PYTHON_BINDINGS.md](docs/guides/PYTHON_BINDINGS.md)
+- Session/snapshot lifecycle parity APIs are also available in Python:
+  `session_status`, `session_reset`, `session_clean`, `snapshot_save`, `snapshot_load`,
+  `snapshot_list`, `snapshot_delete`.
 
 ## Docs Map
 

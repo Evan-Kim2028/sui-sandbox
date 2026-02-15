@@ -73,8 +73,14 @@ sui-sandbox pipeline run --spec examples/data/workflow_walrus_multi_swap_flash_l
 
 ## Advanced Rust Examples
 
-These are intentionally deeper and larger than the core parity examples.
-Treat them as protocol-specific research workflows, not first-step onboarding.
+Some of these remain intentionally deep/protocol-specific, but not all.
+`deepbook_margin_state` is now a thin wrapper over generic first-class Rust
+historical-view orchestration helpers.
+`ReplayOrchestrator` also now exposes generic batch historical-view execution
+and reusable PTB return-value decoders used by advanced examples.
+`fork_state` and `deepbook_spot_offline_ptb` now share generic
+`environment_bootstrap` helpers for package/object hydration and local
+environment setup.
 
 ### Fork Mainnet State + Custom Contract
 

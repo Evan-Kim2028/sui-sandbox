@@ -13,18 +13,40 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sui_sandbox_core::orchestrator::ReplayOrchestrator;
-use sui_sandbox_core::utilities::unresolved_package_dependencies_for_modules;
-use sui_sandbox_core::workflow::{
-    normalize_command_args, WorkflowCommandStep, WorkflowDefaults, WorkflowSpec, WorkflowStep,
-    WorkflowStepAction,
+use sui_sandbox_core::checkpoint_discovery::{
+    build_walrus_client as core_build_walrus_client,
+    discover_checkpoint_targets as core_discover_checkpoint_targets,
+    WalrusArchiveNetwork as CoreWalrusArchiveNetwork,
 };
+use sui_sandbox_core::utilities::unresolved_package_dependencies_for_modules;
+use sui_sandbox_core::workflow::{WorkflowSpec, WorkflowStepAction};
 use sui_sandbox_core::workflow_adapter::{
     build_builtin_workflow, BuiltinWorkflowInput, BuiltinWorkflowTemplate,
+};
+use sui_sandbox_core::workflow_planner::{
+    infer_workflow_template_from_modules as core_infer_workflow_template_from_modules,
+    short_package_id as core_short_package_id,
+    summarize_failure_output as core_summarize_failure_output,
+    workflow_build_step_command as core_workflow_build_step_command,
+    workflow_step_kind as core_workflow_step_kind, workflow_step_label as core_workflow_step_label,
+    WorkflowTemplateInference as CoreWorkflowTemplateInference,
 };
 use sui_sandbox_core::workflow_runner::{
     run_prepared_workflow_steps, WorkflowPreparedStep, WorkflowRunReport, WorkflowStepExecution,
 };
+use sui_transport::decode_graphql_modules;
+use sui_transport::graphql::GraphQLClient;
+
+use super::fetch::{fetch_package_with_bytecodes_into_state, PackageInfo};
+use super::network::resolve_graphql_endpoint;
+use super::SandboxState;
+
+mod native_exec;
+#[cfg(feature = "analysis")]
+use native_exec::execute_workflow_analyze_step_native;
+use native_exec::execute_workflow_replay_step_native;
+#[cfg(test)]
+use native_exec::parse_replay_cli_from_workflow_argv;
 
 #[derive(Parser, Debug)]
 #[command(about = "Validate or run typed pipeline specs (workflow alias)")]
@@ -331,13 +353,7 @@ struct WorkflowAutoOutput {
     steps: usize,
 }
 
-#[derive(Debug, Clone)]
-struct TemplateInference {
-    template: WorkflowTemplateArg,
-    confidence: &'static str,
-    source: &'static str,
-    reason: Option<String>,
-}
+type TemplateInference = CoreWorkflowTemplateInference;
 
 #[derive(Debug, Deserialize)]
 struct AnalyzePackageProbeOutput {
@@ -346,36 +362,10 @@ struct AnalyzePackageProbeOutput {
     module_names: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct FetchPackageProbeOutput {
-    success: bool,
-    #[serde(default)]
-    packages_fetched: Vec<FetchPackageProbePackage>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FetchPackageProbePackage {
-    address: String,
-    modules: Vec<String>,
-    #[serde(default)]
-    bytecodes: Option<Vec<String>>,
-}
-
 #[derive(Debug, Clone)]
 struct DependencyClosureProbe {
     fetched_packages: usize,
     unresolved_dependencies: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FlowDiscoverProbeOutput {
-    success: bool,
-    #[serde(default)]
-    targets: Vec<FlowDiscoverProbeTarget>,
-    #[serde(default)]
-    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -680,15 +670,15 @@ impl WorkflowAutoCmd {
 
         let inference = if let Some(template) = self.template {
             TemplateInference {
-                template,
+                template: template.as_builtin(),
                 confidence: "manual",
                 source: "user",
                 reason: None,
             }
         } else {
-            infer_template_from_modules(&module_names)
+            core_infer_workflow_template_from_modules(&module_names)
         };
-        let template = inference.template.as_builtin();
+        let template = inference.template;
 
         let explicit_digest = self
             .digest
@@ -775,7 +765,7 @@ impl WorkflowAutoCmd {
             },
         )?;
 
-        let pkg_suffix = short_package_id(package_id);
+        let pkg_suffix = core_short_package_id(package_id);
         spec.name = Some(
             self.name
                 .clone()
@@ -913,8 +903,8 @@ impl WorkflowAutoCmd {
 
 #[allow(clippy::too_many_arguments)]
 fn probe_flow_discover_latest_target(
-    state_file: &Path,
-    rpc_url: &str,
+    _state_file: &Path,
+    _rpc_url: &str,
     package_id: &str,
     latest: u64,
     walrus_network: WorkflowWalrusNetwork,
@@ -941,105 +931,57 @@ fn probe_flow_discover_latest_target(
         _ => {}
     }
 
-    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("--state-file")
-        .arg(state_file)
-        .arg("--rpc-url")
-        .arg(rpc_url)
-        .arg("--json");
+    let network = CoreWalrusArchiveNetwork::parse(walrus_network.as_cli_value())
+        .with_context(|| format!("invalid walrus network {}", walrus_network.as_cli_value()))?;
+    let walrus = core_build_walrus_client(network, walrus_caching_url, walrus_aggregator_url)?;
+    let discovered =
+        core_discover_checkpoint_targets(&walrus, None, Some(latest), Some(package_id), false, 1)?;
     if verbose {
-        cmd.arg("--verbose");
+        eprintln!(
+            "[workflow-auto] discovery probe checkpoints={} txs={} candidates={} for package {}",
+            discovered.checkpoints_scanned,
+            discovered.transactions_scanned,
+            discovered.targets.len(),
+            package_id
+        );
     }
-    cmd.arg("context")
-        .arg("discover")
-        .arg("--latest")
-        .arg(latest.to_string())
-        .arg("--package-id")
-        .arg(package_id)
-        .arg("--limit")
-        .arg("1")
-        .arg("--walrus-network")
-        .arg(walrus_network.as_cli_value());
-
-    if let Some(caching) = walrus_caching_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        cmd.arg("--walrus-caching-url").arg(caching);
-    }
-    if let Some(aggregator) = walrus_aggregator_url
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        cmd.arg("--walrus-aggregator-url").arg(aggregator);
-    }
-
-    let output = cmd
-        .output()
-        .context("Failed to execute context discovery probe")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
-            "context discovery probe failed (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
-    }
-    let payload = serde_json::from_slice::<FlowDiscoverProbeOutput>(&output.stdout)
-        .context("Failed to parse flow discovery JSON output")?;
-    if !payload.success {
-        return Err(anyhow!(
-            "context discovery probe reported failure: {}",
-            payload
-                .error
-                .unwrap_or_else(|| "unknown discovery error".to_string())
-        ));
-    }
-    payload.targets.into_iter().next().ok_or_else(|| {
-        anyhow!(
-            "no candidate transactions discovered for package {} in latest {} checkpoint(s)",
-            package_id,
-            latest
-        )
-    })
+    discovered
+        .targets
+        .first()
+        .map(|target| FlowDiscoverProbeTarget {
+            checkpoint: target.checkpoint,
+            digest: target.digest.clone(),
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "no candidate transactions discovered for package {} in latest {} checkpoint(s)",
+                package_id,
+                latest
+            )
+        })
 }
 
 fn probe_package_modules(
-    state_file: &Path,
+    _state_file: &Path,
     rpc_url: &str,
     package_id: &str,
-    verbose: bool,
+    _verbose: bool,
 ) -> Result<AnalyzePackageProbeOutput> {
-    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("--state-file")
-        .arg(state_file)
-        .arg("--rpc-url")
-        .arg(rpc_url)
-        .arg("--json");
-    if verbose {
-        cmd.arg("--verbose");
-    }
-    cmd.arg("analyze")
-        .arg("package")
-        .arg("--package-id")
-        .arg(package_id)
-        .arg("--list-modules");
-
-    let output = cmd
-        .output()
-        .context("Failed to execute package analysis probe")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
-            "package analysis probe failed (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
-    }
-    serde_json::from_slice::<AnalyzePackageProbeOutput>(&output.stdout)
-        .context("Failed to parse package analysis JSON output")
+    let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
+    let graphql = GraphQLClient::new(&graphql_endpoint);
+    let pkg = graphql
+        .fetch_package(package_id)
+        .with_context(|| format!("fetch package {}", package_id))?;
+    let modules = decode_graphql_modules(package_id, &pkg.modules)?;
+    let mut module_names = modules
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    module_names.sort();
+    Ok(AnalyzePackageProbeOutput {
+        modules: module_names.len(),
+        module_names: Some(module_names),
+    })
 }
 
 fn probe_dependency_closure(
@@ -1048,12 +990,13 @@ fn probe_dependency_closure(
     package_id: &str,
     verbose: bool,
 ) -> Result<DependencyClosureProbe> {
-    let payload = run_fetch_package_probe(state_file, rpc_url, package_id, true, verbose)?;
+    let mut state = SandboxState::load_or_create(state_file, rpc_url)?;
+    let initial = fetch_package_with_bytecodes_into_state(&mut state, package_id, true, verbose)?;
 
     let mut decoded_packages: std::collections::BTreeMap<AccountAddress, Vec<(String, Vec<u8>)>> =
         std::collections::BTreeMap::new();
-    for pkg in &payload.packages_fetched {
-        let (id, modules) = decode_probe_package_modules(pkg)?;
+    for pkg in &initial.packages_fetched {
+        let (id, modules) = decode_fetched_package_modules(pkg)?;
         decoded_packages.insert(id, modules);
     }
 
@@ -1078,13 +1021,14 @@ fn probe_dependency_closure(
                 continue;
             }
             let dep_hex = dep.to_hex_literal();
-            let dep_probe =
-                match run_fetch_package_probe(state_file, rpc_url, &dep_hex, false, verbose) {
+            let dep_result =
+                match fetch_package_with_bytecodes_into_state(&mut state, &dep_hex, false, verbose)
+                {
                     Ok(value) => value,
                     Err(_) => continue,
                 };
-            for pkg in &dep_probe.packages_fetched {
-                let (id, modules) = decode_probe_package_modules(pkg)?;
+            for pkg in &dep_result.packages_fetched {
+                let (id, modules) = decode_fetched_package_modules(pkg)?;
                 if decoded_packages.insert(id, modules).is_none() {
                     fetched_any = true;
                 }
@@ -1095,18 +1039,25 @@ fn probe_dependency_closure(
         }
     }
 
-    Ok(DependencyClosureProbe {
+    let probe = DependencyClosureProbe {
         fetched_packages: decoded_packages.len(),
         unresolved_dependencies: unresolved
             .into_iter()
             .map(|address| address.to_hex_literal())
             .collect(),
-    })
+    };
+    state.save(state_file).with_context(|| {
+        format!(
+            "failed to persist workflow probe state {}",
+            state_file.display()
+        )
+    })?;
+    Ok(probe)
 }
 
 #[allow(clippy::type_complexity)]
-fn decode_probe_package_modules(
-    package: &FetchPackageProbePackage,
+fn decode_fetched_package_modules(
+    package: &PackageInfo,
 ) -> Result<(AccountAddress, Vec<(String, Vec<u8>)>)> {
     let package_id = AccountAddress::from_hex_literal(&package.address).with_context(|| {
         format!(
@@ -1141,143 +1092,6 @@ fn decode_probe_package_modules(
     Ok((package_id, modules))
 }
 
-fn run_fetch_package_probe(
-    state_file: &Path,
-    rpc_url: &str,
-    package_id: &str,
-    with_deps: bool,
-    verbose: bool,
-) -> Result<FetchPackageProbeOutput> {
-    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("--state-file")
-        .arg(state_file)
-        .arg("--rpc-url")
-        .arg(rpc_url)
-        .arg("--json");
-    if verbose {
-        cmd.arg("--verbose");
-    }
-    cmd.arg("fetch")
-        .arg("package")
-        .arg(package_id)
-        .arg("--bytecodes");
-    if with_deps {
-        cmd.arg("--with-deps");
-    }
-
-    let output = cmd.output().context(format!(
-        "Failed to execute fetch package probe for {}",
-        package_id
-    ))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!(
-            "fetch package probe failed for {} (exit {}): {}",
-            package_id,
-            output.status.code().unwrap_or(-1),
-            stderr.trim()
-        ));
-    }
-
-    let payload = serde_json::from_slice::<FetchPackageProbeOutput>(&output.stdout)
-        .context("Failed to parse fetch package JSON output")?;
-    if !payload.success {
-        return Err(anyhow!(
-            "fetch package probe reported failure for {}: {}",
-            package_id,
-            payload.error.unwrap_or_else(|| "unknown error".to_string())
-        ));
-    }
-    Ok(payload)
-}
-
-fn infer_template_from_modules(module_names: &[String]) -> TemplateInference {
-    if module_names.is_empty() {
-        return TemplateInference {
-            template: WorkflowTemplateArg::Generic,
-            confidence: "low",
-            source: "fallback",
-            reason: Some("no module names available from package analysis probe".to_string()),
-        };
-    }
-
-    let cetus_keywords = ["cetus", "clmm", "dlmm", "pool_script", "position_manager"];
-    let suilend_keywords = ["suilend", "lending", "reserve", "obligation", "liquidation"];
-    let scallop_keywords = ["scallop", "scoin", "spool", "collateral", "market"];
-
-    let mut cetus_score = 0usize;
-    let mut suilend_score = 0usize;
-    let mut scallop_score = 0usize;
-    for name in module_names.iter().map(|value| value.to_ascii_lowercase()) {
-        if cetus_keywords.iter().any(|kw| name.contains(kw)) {
-            cetus_score += 1;
-        }
-        if suilend_keywords.iter().any(|kw| name.contains(kw)) {
-            suilend_score += 1;
-        }
-        if scallop_keywords.iter().any(|kw| name.contains(kw)) {
-            scallop_score += 1;
-        }
-    }
-
-    let mut ranked = [
-        (WorkflowTemplateArg::Cetus, cetus_score),
-        (WorkflowTemplateArg::Suilend, suilend_score),
-        (WorkflowTemplateArg::Scallop, scallop_score),
-        (WorkflowTemplateArg::Generic, 0usize),
-    ];
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
-    let (top_template, top_score) = ranked[0];
-    let second_score = ranked[1].1;
-
-    if top_score == 0 {
-        return TemplateInference {
-            template: WorkflowTemplateArg::Generic,
-            confidence: "low",
-            source: "module_probe",
-            reason: Some("no template keyword matches found in module names".to_string()),
-        };
-    }
-    if top_score == second_score {
-        return TemplateInference {
-            template: WorkflowTemplateArg::Generic,
-            confidence: "low",
-            source: "module_probe",
-            reason: Some(format!(
-                "ambiguous module matches (cetus={}, suilend={}, scallop={})",
-                cetus_score, suilend_score, scallop_score
-            )),
-        };
-    }
-
-    let confidence = if top_score >= 4 {
-        "high"
-    } else if top_score >= 2 {
-        "medium"
-    } else {
-        "low"
-    };
-    TemplateInference {
-        template: top_template,
-        confidence,
-        source: "module_probe",
-        reason: Some(format!(
-            "module keyword matches: cetus={}, suilend={}, scallop={}",
-            cetus_score, suilend_score, scallop_score
-        )),
-    }
-}
-
-fn short_package_id(package_id: &str) -> String {
-    let trimmed = package_id.trim_start_matches("0x");
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.chars().take(12).collect()
-    }
-}
-
 impl WorkflowRunCmd {
     async fn execute(
         &self,
@@ -1306,17 +1120,13 @@ impl WorkflowRunCmd {
                 index: idx + 1,
                 id: step.id.clone(),
                 name: step.name.clone(),
-                kind: step_kind(&step.action).to_string(),
+                kind: core_workflow_step_kind(&step.action).to_string(),
                 continue_on_error: step.continue_on_error,
-                command: build_step_argv(&spec.defaults, step).map_err(|err| err.to_string()),
+                command: core_workflow_build_step_command(&spec.defaults, step)
+                    .map_err(|err| err.to_string()),
             })
             .collect::<Vec<_>>();
-
-        let executable = if self.dry_run {
-            None
-        } else {
-            Some(std::env::current_exe().context("Failed to resolve current executable")?)
-        };
+        let mut executable: Option<PathBuf> = None;
 
         let report = run_prepared_workflow_steps(
             self.spec.display().to_string(),
@@ -1326,17 +1136,60 @@ impl WorkflowRunCmd {
             self.continue_on_error,
             |step, prepared| {
                 if !json_output {
-                    let label = step_display_label(step, prepared.index);
+                    let label = core_workflow_step_label(step, prepared.index);
                     println!("[workflow:{label}] {}", prepared.command_display());
                 }
             },
-            |_step, prepared| {
+            |step, prepared| {
                 let argv = prepared.command.clone().map_err(anyhow::Error::msg)?;
                 let display_cmd = argv.join(" ");
-                let exe = executable
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("workflow executable path missing"))?;
-                let mut cmd = Command::new(exe);
+                if !json_output {
+                    match &step.action {
+                        WorkflowStepAction::Replay(_) => {
+                            return execute_workflow_replay_step_native(
+                                &argv,
+                                state_file,
+                                rpc_url,
+                                false,
+                                verbose,
+                                prepared.index,
+                            );
+                        }
+                        WorkflowStepAction::AnalyzeReplay(_) => {
+                            #[cfg(feature = "analysis")]
+                            {
+                                return execute_workflow_analyze_step_native(
+                                    &argv,
+                                    state_file,
+                                    rpc_url,
+                                    false,
+                                    verbose,
+                                    prepared.index,
+                                );
+                            }
+                            #[cfg(not(feature = "analysis"))]
+                            {
+                                return Ok(WorkflowStepExecution {
+                                    exit_code: 1,
+                                    output: None,
+                                    error: Some("workflow analyze_replay step requires the `analysis` feature".to_string()),
+                                });
+                            }
+                        }
+                        WorkflowStepAction::Command(_) => {}
+                    }
+                }
+
+                let executable = if let Some(path) = executable.as_ref() {
+                    path.clone()
+                } else {
+                    let path =
+                        std::env::current_exe().context("Failed to resolve current executable")?;
+                    executable = Some(path.clone());
+                    path
+                };
+
+                let mut cmd = Command::new(&executable);
                 cmd.arg("--state-file")
                     .arg(state_file)
                     .arg("--rpc-url")
@@ -1358,7 +1211,7 @@ impl WorkflowRunCmd {
                 let failure_summary = if ok {
                     None
                 } else {
-                    summarize_failure_output(&output.stdout, &output.stderr)
+                    core_summarize_failure_output(&output.stdout, &output.stderr)
                 };
 
                 if !json_output {
@@ -1426,76 +1279,6 @@ impl WorkflowRunCmd {
     }
 }
 
-fn step_kind(action: &WorkflowStepAction) -> &'static str {
-    match action {
-        WorkflowStepAction::Replay(_) => "replay",
-        WorkflowStepAction::AnalyzeReplay(_) => "analyze_replay",
-        WorkflowStepAction::Command(_) => "command",
-    }
-}
-
-fn step_display_label(step: &WorkflowStep, index: usize) -> String {
-    if let Some(id) = step.id.as_deref() {
-        if !id.trim().is_empty() {
-            return format!("{index}:{id}");
-        }
-    }
-    if let Some(name) = step.name.as_deref() {
-        if !name.trim().is_empty() {
-            return format!("{index}:{name}");
-        }
-    }
-    index.to_string()
-}
-
-fn summarize_failure_output(stdout: &[u8], stderr: &[u8]) -> Option<String> {
-    first_nonempty_output_line(stderr).or_else(|| first_nonempty_output_line(stdout))
-}
-
-fn first_nonempty_output_line(bytes: &[u8]) -> Option<String> {
-    const MAX_LEN: usize = 240;
-    let text = String::from_utf8_lossy(bytes);
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)?;
-
-    if line.chars().count() > MAX_LEN {
-        let truncated: String = line.chars().take(MAX_LEN).collect();
-        return Some(format!("{truncated}..."));
-    }
-    Some(line)
-}
-
-fn build_step_argv(defaults: &WorkflowDefaults, step: &WorkflowStep) -> Result<Vec<String>> {
-    match &step.action {
-        WorkflowStepAction::Replay(replay) => {
-            Ok(ReplayOrchestrator::build_replay_command(defaults, replay))
-        }
-        WorkflowStepAction::AnalyzeReplay(analyze) => {
-            #[cfg(not(feature = "analysis"))]
-            {
-                let _ = (defaults, analyze);
-                Err(anyhow!(
-                    "workflow step kind `analyze_replay` requires the `analysis` feature"
-                ))
-            }
-            #[cfg(feature = "analysis")]
-            {
-                Ok(ReplayOrchestrator::build_analyze_replay_command(
-                    defaults, analyze,
-                ))
-            }
-        }
-        WorkflowStepAction::Command(command) => build_command_argv(command),
-    }
-}
-
-fn build_command_argv(command: &WorkflowCommandStep) -> Result<Vec<String>> {
-    normalize_command_args(&command.args)
-}
-
 fn maybe_write_report(
     report_path: Option<&PathBuf>,
     report: &WorkflowRunReport,
@@ -1536,8 +1319,8 @@ mod tests {
             "clmm_math".to_string(),
             "position_manager".to_string(),
         ];
-        let inferred = infer_template_from_modules(&modules);
-        assert!(matches!(inferred.template, WorkflowTemplateArg::Cetus));
+        let inferred = core_infer_workflow_template_from_modules(&modules);
+        assert!(matches!(inferred.template, BuiltinWorkflowTemplate::Cetus));
     }
 
     #[test]
@@ -1548,26 +1331,29 @@ mod tests {
             "suilend_router".to_string(),
             "scallop_router".to_string(),
         ];
-        let inferred = infer_template_from_modules(&modules);
-        assert!(matches!(inferred.template, WorkflowTemplateArg::Generic));
+        let inferred = core_infer_workflow_template_from_modules(&modules);
+        assert!(matches!(
+            inferred.template,
+            BuiltinWorkflowTemplate::Generic
+        ));
     }
 
     #[test]
     fn package_suffix_is_trimmed_and_shortened() {
-        assert_eq!(short_package_id("0x1234567890abcdef"), "1234567890ab");
-        assert_eq!(short_package_id("0x"), "unknown");
+        assert_eq!(core_short_package_id("0x1234567890abcdef"), "1234567890ab");
+        assert_eq!(core_short_package_id("0x"), "unknown");
     }
 
     #[test]
     fn decodes_probe_package_modules_with_fallback_names() {
-        let pkg = FetchPackageProbePackage {
+        let pkg = PackageInfo {
             address: "0x1234".to_string(),
             modules: vec!["fallback_mod".to_string()],
             bytecodes: Some(vec![
                 base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3])
             ]),
         };
-        let (_, modules) = decode_probe_package_modules(&pkg).expect("decode probe package");
+        let (_, modules) = decode_fetched_package_modules(&pkg).expect("decode probe package");
         assert_eq!(modules.len(), 1);
         assert_eq!(modules[0].0, "fallback_mod");
         assert_eq!(modules[0].1, vec![1u8, 2, 3]);
@@ -1575,7 +1361,7 @@ mod tests {
 
     #[test]
     fn summarizes_failure_output_prefers_stderr() {
-        let summary = summarize_failure_output(
+        let summary = core_summarize_failure_output(
             b"stdout line",
             b"\n  meaningful stderr line  \nmore details\n",
         )
@@ -1585,8 +1371,25 @@ mod tests {
 
     #[test]
     fn summarizes_failure_output_falls_back_to_stdout() {
-        let summary =
-            summarize_failure_output(b"\nstdout failure\n", b"\n").expect("summary from stdout");
+        let summary = core_summarize_failure_output(b"\nstdout failure\n", b"\n")
+            .expect("summary from stdout");
         assert_eq!(summary, "stdout failure");
+    }
+
+    #[test]
+    fn parses_replay_cli_from_workflow_argv() {
+        let argv = vec![
+            "replay".to_string(),
+            "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2".to_string(),
+            "--source".to_string(),
+            "walrus".to_string(),
+            "--checkpoint".to_string(),
+            "239615926".to_string(),
+        ];
+        let parsed = parse_replay_cli_from_workflow_argv(&argv).expect("parse replay argv");
+        assert_eq!(
+            parsed.replay.digest.as_deref(),
+            Some("At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2")
+        );
     }
 }

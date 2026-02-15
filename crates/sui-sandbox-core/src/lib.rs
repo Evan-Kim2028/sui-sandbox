@@ -16,6 +16,7 @@
 //!
 //! - [`vm`]: VMHarness for executing Move functions
 //! - [`resolver`]: LocalModuleResolver for loading bytecode
+//! - [`bootstrap`]: Shared endpoint/bootstrap/hydration helpers
 //! - [`natives`]: Native function implementations
 //! - [`sandbox_runtime`]: Object storage and dynamic field support (default runtime)
 //! - [`sui_object_runtime`]: Sui native runtime integration (opt-in, 100% accuracy)
@@ -43,8 +44,12 @@
 #![allow(clippy::too_many_arguments)]
 
 // Core simulation modules
+pub mod adapter;
+pub mod bootstrap;
 pub mod checkpoint_discovery;
 pub mod constructor_map;
+pub mod context_contract;
+pub mod environment_bootstrap;
 pub mod error_context;
 pub mod errors;
 pub mod fetcher;
@@ -72,6 +77,7 @@ pub mod vm;
 pub mod well_known;
 pub mod workflow;
 pub mod workflow_adapter;
+pub mod workflow_planner;
 pub mod workflow_runner;
 
 // Package building and analysis (for creating mock contracts)
@@ -85,6 +91,9 @@ pub mod storage_log;
 pub mod fuzz;
 
 // Replay support (shared between CLI and Python bindings)
+pub mod health;
+pub mod historical_view;
+pub mod replay_reporting;
 pub mod replay_support;
 
 // Utilities for working around infrastructure limitations

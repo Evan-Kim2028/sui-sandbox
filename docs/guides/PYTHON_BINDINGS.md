@@ -35,6 +35,8 @@ import sui_sandbox
 print("sui_sandbox version:", sui_sandbox.__version__)
 print("has replay:", hasattr(sui_sandbox, "replay"))
 print("has extract_interface:", hasattr(sui_sandbox, "extract_interface"))
+print("has session_status:", hasattr(sui_sandbox, "session_status"))
+print("has snapshot_save:", hasattr(sui_sandbox, "snapshot_save"))
 PY
 ```
 
@@ -78,6 +80,8 @@ import sui_sandbox
 assert hasattr(sui_sandbox, "import_state")
 assert hasattr(sui_sandbox, "deserialize_transaction")
 assert hasattr(sui_sandbox, "deserialize_package")
+assert hasattr(sui_sandbox, "session_status")
+assert hasattr(sui_sandbox, "snapshot_save")
 assert isinstance(sui_sandbox.__version__, str)
 
 with tempfile.TemporaryDirectory() as td:
@@ -123,7 +127,7 @@ PY
 
 ## 4. When Editing Binding APIs
 
-When adding/removing/changing `#[pyfunction]` exports in `crates/sui-python/src/lib.rs`:
+When adding/removing/changing `#[pyfunction]` exports in `crates/sui-python/src/lib.rs` or split modules like `crates/sui-python/src/replay_api.rs`, `crates/sui-python/src/workflow_api.rs`, and `crates/sui-python/src/session_api.rs`:
 
 - Update `crates/sui-python/sui_sandbox.pyi`
 - Update `crates/sui-python/README.md` API docs/examples
@@ -144,6 +148,11 @@ PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p sui-python
 ## 5. Running CI From GitHub UI
 
 - Validation only (recommended): push your branch or open a PR to trigger the `ci` workflow.
-- Multi-platform wheel builds: open `python-publish` workflow and run `workflow_dispatch`.
+- Multi-platform wheel builds: open `python-publish` and run `workflow_dispatch`.
+  Keep `publish=false` for dry-run artifact verification.
+  Set `publish=true` only when you intend to publish to PyPI.
 
-Note: `python-publish` includes a PyPI publish step. Wheel/sdist artifacts are still uploaded during build jobs even if PyPI publish fails.
+`python-publish` now verifies artifacts before publish:
+- `twine check` on all wheel/sdist files
+- install/import smoke test from a built Linux wheel
+- builds wheel sets for Linux, macOS, and Windows

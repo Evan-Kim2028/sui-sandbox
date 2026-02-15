@@ -1,10 +1,15 @@
 # DeepBook Margin State Historical Replay Example
 
-This example demonstrates **historical state reconstruction** of DeepBook v3 margin positions on Sui, using a fully decentralized approach that combines:
+This example demonstrates **historical DeepBook v3 margin state replay**.
 
-1. **Snowflake** - Pre-compute object versions at historical checkpoints
-2. **Walrus** - Fetch checkpoint data from decentralized archival storage
-3. **Local Move VM** - Execute view functions locally without RPC calls
+`main.rs` is now intentionally thin and calls the first-class generic Rust helper:
+`sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_view_from_versions(...)`.
+
+That helper handles:
+1. versions snapshot loading
+2. historical object/package hydration
+3. local `manager_state` execution
+4. decoded margin output
 
 ## Overview
 
@@ -51,16 +56,15 @@ Traditional historical queries require:
 
 This approach uses:
 - **Snowflake** for efficient version lookup (your data warehouse)
-- **Walrus** for decentralized, verifiable checkpoint data
+- **Archive gRPC** for historical object/package hydration
 - **Local execution** for trustless computation
 
 ## Files in This Directory
 
 ```
 deepbook_margin_state/
-├── main.rs                              # Position A example (single snapshot)
+├── main.rs                              # Thin wrapper over first-class core helper
 ├── timeseries.rs                        # Position B example (8-day time series)
-├── common.rs                            # Shared utilities for examples
 ├── README.md                            # This file
 └── data/
     ├── deepbook_versions_240732600.json # Position A: Earlier snapshot
@@ -79,9 +83,10 @@ Query a margin position at a specific checkpoint:
 VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
   cargo run --example deepbook_margin_state
 
-# Fully decentralized (Walrus + no gRPC)
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240732600.json \
-  WALRUS_MODE=1 cargo run --example deepbook_margin_state
+# If archive endpoint misses runtime objects, use a historical gRPC endpoint
+SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
+VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+  cargo run --example deepbook_margin_state
 ```
 
 ### Position B: 8-Day Time Series (`deepbook_timeseries`)
@@ -91,9 +96,6 @@ Track margin position evolution across 8 consecutive daily snapshots:
 ```bash
 # Run with default time series file
 cargo run --example deepbook_timeseries
-
-# Fully decentralized mode
-WALRUS_MODE=1 cargo run --example deepbook_timeseries
 ```
 
 This example iterates through all 8 daily checkpoints and outputs a summary table showing:
@@ -149,20 +151,11 @@ Each JSON file contains pre-computed object versions from Snowflake:
 **Key fields:**
 - `checkpoint` - The target checkpoint for the query
 - `version` - The object's version at that checkpoint
-- `checkpoint_found` - The specific checkpoint where this version exists (for Walrus fetching)
+- `checkpoint_found` - The specific checkpoint where this version exists
 
 ## Usage
 
-### Mode 1: Snowflake + Walrus (Fully Decentralized)
-
-```bash
-# Use pre-computed versions, fetch from Walrus (no gRPC!)
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240732600.json \
-  WALRUS_MODE=1 \
-  cargo run --example deepbook_margin_state
-```
-
-### Mode 2: Snowflake + gRPC (Faster)
+### Mode 1: Snowflake + Archive gRPC (Recommended)
 
 ```bash
 # Use pre-computed versions, fetch from gRPC
@@ -170,11 +163,12 @@ VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_2
   cargo run --example deepbook_margin_state
 ```
 
-### Mode 3: Current State (No Historical)
+### Mode 2: Custom historical gRPC endpoint
 
 ```bash
-# Query current/latest state via gRPC
-cargo run --example deepbook_margin_state
+SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
+VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+  cargo run --example deepbook_margin_state
 ```
 
 ## How It Works
@@ -205,39 +199,12 @@ FROM (
 -- ... repeat for all objects
 ```
 
-### Step 2: Walrus Checkpoint Fetching
+### Step 2: Historical Hydration via Archive gRPC
 
-For each object, we fetch the checkpoint where that version exists:
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        WALRUS CHECKPOINT FETCHING                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-  Object: Margin_Manager
-  Version: 771531876
-  Checkpoint Found: 240732967
-                       │
-                       ▼
-  ┌────────────────────────────────────────────────────────────────┐
-  │ GET https://walrus-sui-archival.mainnet.walrus.space           │
-  │     /v1/checkpoint/full?checkpoint=240732967                   │
-  └────────────────────────────────────────────────────────────────┘
-                       │
-                       ▼
-  ┌────────────────────────────────────────────────────────────────┐
-  │ CheckpointData {                                               │
-  │   transactions: [                                              │
-  │     { effects: { changed_objects: [                            │
-  │         { object_id: 0xed7a3..., bcs: <bytes> }               │
-  │     ]}}                                                        │
-  │   ]                                                            │
-  │ }                                                              │
-  └────────────────────────────────────────────────────────────────┘
-                       │
-                       ▼
-  Extract BCS data for our object from the checkpoint
-```
+The versions manifest pins object versions per checkpoint. The helper then:
+- fetches required object bytes at those versions,
+- fetches package bytecode closure (root packages + dependencies),
+- executes the Move view call locally against that historical state.
 
 ### Step 3: Local PTB Execution
 
@@ -288,21 +255,18 @@ The `manager_state<B, Q>` function returns 14 values:
 
 ## Important Notes
 
-### Walrus Archival Lag
+### Historical Endpoint Requirements
 
-Walrus typically archives checkpoints with a delay of several days. Recent checkpoints may return 404 errors. The example will automatically fall back to gRPC for objects not yet archived.
+Historical replays require an archival-capable gRPC endpoint. By default, examples target:
+- `https://archive.mainnet.sui.io:443`
 
-Check if a checkpoint is archived:
-```bash
-curl "https://walrus-sui-archival.mainnet.walrus.space/v1/app_checkpoint?checkpoint=240733000"
-```
+If your environment still points at `https://fullnode.mainnet.sui.io:443`, the helpers auto-switch to the archive endpoint for historical mode.
 
 ### Required Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `VERSIONS_FILE` | Path to pre-computed JSON manifest | For historical mode |
-| `WALRUS_MODE` | Set to `1` for Walrus-only fetching | Optional |
 | `SUI_GRPC_ENDPOINT` | gRPC endpoint URL override | Optional (historical mode auto-selects archival default when unset) |
 | `SUI_GRPC_API_KEY` | gRPC API key | Recommended |
 
@@ -382,5 +346,5 @@ LIMIT 10;
 ## Related Resources
 
 - [DeepBook v3 SDK](https://github.com/MystenLabs/deepbook-v3)
-- [Sui Walrus Documentation](https://docs.walrus.space)
+- [Sui RPC / gRPC Documentation](https://docs.sui.io/references/sui-api)
 - [sui-sandbox Repository](https://github.com/your-org/sui-sandbox)

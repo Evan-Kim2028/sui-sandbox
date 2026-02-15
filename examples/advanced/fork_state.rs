@@ -29,13 +29,14 @@
 
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use sui_sandbox_core::ptb::Command;
+use sui_sandbox_core::environment_bootstrap::{
+    build_environment_from_hydrated_state, hydrate_mainnet_state, EnvironmentBuildPlan,
+    MainnetHydrationPlan, MainnetObjectRequest,
+};
+use sui_sandbox_core::orchestrator::ReplayOrchestrator;
 use sui_sandbox_core::simulation::SimulationEnvironment;
-use sui_transport::grpc::{GrpcClient, GrpcOwner};
 
 // DeepBook V3 - a real DeFi protocol we'll interact with
 const DEEPBOOK_PACKAGE: &str = "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809";
@@ -57,41 +58,40 @@ fn main() -> Result<()> {
     println!("STEP 1: Fetching real mainnet state via gRPC");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let endpoint = std::env::var("SUI_GRPC_ENDPOINT")
-        .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
-    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
-
-    let rt = tokio::runtime::Runtime::new()?;
-    let grpc = rt.block_on(async { GrpcClient::with_api_key(&endpoint, api_key).await })?;
-    println!("Connected to: {}\n", endpoint);
-
-    // Fetch the packages we need
-    let packages_to_fetch = [
+    let packages_to_fetch: [(&str, &str); 3] = [
         ("0x1", "Move Stdlib"),
         ("0x2", "Sui Framework"),
         (DEEPBOOK_PACKAGE, "DeepBook V3"),
     ];
+    let package_roots: Vec<AccountAddress> = packages_to_fetch
+        .iter()
+        .map(|(pkg_id, _)| AccountAddress::from_hex_literal(pkg_id))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let mut package_modules: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::new();
-    for (pkg_id, name) in &packages_to_fetch {
-        if let Ok(Some(obj)) = rt.block_on(async { grpc.get_object(pkg_id).await }) {
-            if let Some(modules) = obj.package_modules {
-                println!("  ✓ {} - {} modules fetched", name, modules.len());
-                package_modules.insert(pkg_id.to_string(), modules);
-            }
+    let rt = tokio::runtime::Runtime::new()?;
+    let hydration = rt.block_on(hydrate_mainnet_state(&MainnetHydrationPlan {
+        package_roots: package_roots.clone(),
+        objects: vec![MainnetObjectRequest {
+            object_id: DEEPBOOK_REGISTRY.to_string(),
+            version: None,
+        }],
+        historical_mode: false,
+        allow_latest_object_fallback: true,
+    }))?;
+    println!("Connected to: {}\n", hydration.provider.grpc_endpoint());
+
+    for (pkg_id, name) in packages_to_fetch {
+        let addr = AccountAddress::from_hex_literal(pkg_id)?;
+        if let Some(pkg) = hydration.packages.get(&addr) {
+            println!("  ✓ {} - {} modules fetched", name, pkg.modules.len());
         }
     }
 
-    // Fetch a shared object (DeepBook Registry) to show object state forking
-    let registry_obj = rt
-        .block_on(async { grpc.get_object(DEEPBOOK_REGISTRY).await })?
+    let registry_obj = hydration
+        .objects
+        .get(DEEPBOOK_REGISTRY)
         .ok_or_else(|| anyhow!("Registry not found"))?;
-    let registry_bcs = registry_obj.bcs.ok_or_else(|| anyhow!("No BCS data"))?;
-    let registry_is_shared = matches!(registry_obj.owner, GrpcOwner::Shared { .. });
-    println!(
-        "  ✓ DeepBook Registry object (version {})",
-        registry_obj.version
-    );
+    println!("  ✓ DeepBook Registry object (version {})", registry_obj.2);
 
     // =========================================================================
     // STEP 2: Create sandbox and load the forked state
@@ -103,31 +103,30 @@ fn main() -> Result<()> {
     println!("STEP 2: Loading state into local sandbox");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let mut env = SimulationEnvironment::new()?;
-
     // Set up a sender address (this would be your wallet in production)
     let sender = AccountAddress::from_hex_literal(
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     )?;
-    env.set_sender(sender);
+    let build = build_environment_from_hydrated_state(
+        &hydration,
+        &EnvironmentBuildPlan {
+            sender,
+            fail_on_object_load: true,
+        },
+    )?;
     println!("  Sender: 0x{:x}...", sender);
 
-    // Load all fetched packages into the sandbox
-    for (pkg_id, modules) in &package_modules {
-        env.deploy_package_at_address(pkg_id, modules.clone())?;
+    let registration = &build.package_registration;
+    if !registration.failed.is_empty() {
+        for (addr, err) in &registration.failed {
+            eprintln!("  ! failed package {}: {}", addr.to_hex_literal(), err);
+        }
+        return Err(anyhow!("failed to register one or more packages"));
     }
-    println!("  ✓ Loaded {} packages into sandbox", package_modules.len());
-
-    // Load the registry object
-    env.load_object_from_data(
-        DEEPBOOK_REGISTRY,
-        registry_bcs,
-        registry_obj.type_string.as_deref(),
-        registry_is_shared,
-        false,
-        registry_obj.version,
-    )?;
+    println!("  ✓ Loaded {} packages into sandbox", registration.loaded);
+    println!("  ✓ Loaded {} objects into sandbox", build.objects_loaded);
     println!("  ✓ Loaded DeepBook Registry object");
+    let mut env: SimulationEnvironment = build.env;
 
     // =========================================================================
     // STEP 3: Deploy YOUR custom contract into the sandbox
@@ -176,50 +175,45 @@ fn main() -> Result<()> {
     println!("  Calling REAL DeepBook protocol code (forked from mainnet):");
 
     let deepbook_addr = AccountAddress::from_hex_literal(DEEPBOOK_PACKAGE)?;
-    let result = env.execute_ptb(
-        vec![],
-        vec![Command::MoveCall {
-            package: deepbook_addr,
-            module: Identifier::new("balance_manager")?,
-            function: Identifier::new("new")?,
-            type_args: vec![],
-            args: vec![],
-        }],
-    );
+    let result = ReplayOrchestrator::execute_noarg_move_call(
+        &mut env,
+        deepbook_addr,
+        "balance_manager",
+        "new",
+    )?;
 
-    if result.success {
-        println!("    ✓ deepbook::balance_manager::new() succeeded");
-        if let Some(effects) = &result.effects {
-            println!("      Gas used: {} MIST", effects.gas_used);
-            println!("      Objects created: {}", effects.created.len());
+    match ReplayOrchestrator::ensure_execution_success("deepbook::balance_manager::new", &result) {
+        Ok(()) => {
+            println!("    ✓ deepbook::balance_manager::new() succeeded");
+            if let Some(effects) = &result.effects {
+                println!("      Gas used: {} MIST", effects.gas_used);
+                println!("      Objects created: {}", effects.created.len());
+            }
         }
-    } else {
-        println!("    ✗ Failed: {:?}", result.error);
+        Err(err) => {
+            println!("    ✗ Failed: {}", err);
+        }
     }
 
     // --- Call YOUR custom contract ---
     if let Some(pkg_id) = custom_pkg_id {
         println!("\n  Calling YOUR custom contract (sandbox-only):");
 
-        let result = env.execute_ptb(
-            vec![],
-            vec![Command::MoveCall {
-                package: pkg_id,
-                module: Identifier::new("manager")?,
-                function: Identifier::new("new")?,
-                type_args: vec![],
-                args: vec![],
-            }],
-        );
+        let result =
+            ReplayOrchestrator::execute_noarg_move_call(&mut env, pkg_id, "manager", "new")?;
 
-        if result.success {
-            println!("    ✓ balance_helper::manager::new() succeeded");
-            if let Some(effects) = &result.effects {
-                println!("      Gas used: {} MIST", effects.gas_used);
-                println!("      Objects created: {}", effects.created.len());
+        match ReplayOrchestrator::ensure_execution_success("balance_helper::manager::new", &result)
+        {
+            Ok(()) => {
+                println!("    ✓ balance_helper::manager::new() succeeded");
+                if let Some(effects) = &result.effects {
+                    println!("      Gas used: {} MIST", effects.gas_used);
+                    println!("      Objects created: {}", effects.created.len());
+                }
             }
-        } else {
-            println!("    ✗ Failed: {:?}", result.error);
+            Err(err) => {
+                println!("    ✗ Failed: {}", err);
+            }
         }
     }
 

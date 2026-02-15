@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 __version__: str
 
 
-class FlowSession:
+class OrchestrationSession:
     def __init__(self) -> None: ...
     def prepare(
         self,
@@ -47,7 +47,10 @@ class FlowSession:
     ) -> Dict[str, Any]: ...
 
 
-class ContextSession(FlowSession): ...
+class FlowSession(OrchestrationSession): ...
+
+
+class ContextSession(OrchestrationSession): ...
 
 
 def extract_interface(
@@ -62,6 +65,55 @@ def get_latest_checkpoint() -> int: ...
 
 
 def get_checkpoint(checkpoint: int) -> Dict[str, Any]: ...
+
+
+def doctor(
+    *,
+    rpc_url: str = ...,
+    state_file: Optional[str] = ...,
+    timeout_secs: int = ...,
+    include_toolchain_checks: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def session_status(
+    *,
+    state_file: Optional[str] = ...,
+    rpc_url: str = ...,
+) -> Dict[str, Any]: ...
+
+
+def session_reset(
+    *,
+    state_file: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def session_clean(
+    *,
+    state_file: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def snapshot_save(
+    name: str,
+    *,
+    description: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def snapshot_load(
+    name: str,
+    *,
+    state_file: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def snapshot_list() -> List[Dict[str, Any]]: ...
+
+
+def snapshot_delete(name: str) -> Dict[str, Any]: ...
 
 
 def ptb_universe(
@@ -360,12 +412,50 @@ def call_view_function(
 ) -> Dict[str, Any]: ...
 
 
-def deepbook_margin_state(
+def historical_view_from_versions(
     *,
-    versions_file: str = ...,
+    versions_file: str,
+    package_id: str,
+    module: str,
+    function: str,
+    required_objects: List[str],
+    type_args: List[str] = ...,
+    package_roots: List[str] = ...,
+    type_refs: List[str] = ...,
+    fetch_child_objects: bool = ...,
     grpc_endpoint: Optional[str] = ...,
     grpc_api_key: Optional[str] = ...,
 ) -> Dict[str, Any]: ...
+
+
+def historical_decode_return_u64(
+    result: Any,
+    *,
+    command_index: int = ...,
+    value_index: int,
+) -> Optional[int]: ...
+
+
+def historical_decode_return_u64s(
+    result: Any,
+    *,
+    command_index: int = ...,
+) -> Optional[List[Optional[int]]]: ...
+
+
+def historical_decode_returns_typed(
+    result: Any,
+    *,
+    command_index: int = ...,
+) -> Optional[List[Dict[str, Any]]]: ...
+
+
+def historical_decode_with_schema(
+    result: Any,
+    schema: List[Dict[str, Any]],
+    *,
+    command_index: int = ...,
+) -> Optional[Dict[str, Any]]: ...
 
 
 def fuzz_function(
@@ -437,6 +527,118 @@ def replay_transaction(
     analyze_only: bool = ...,
     synthesize_missing: bool = ...,
     self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def analyze_replay(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def replay_analyze(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def replay_effects(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def classify_replay_result(result: Any) -> Dict[str, Any]: ...
+
+
+def dynamic_field_diagnostics(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
     analyze_mm2: bool = ...,
     verbose: bool = ...,
 ) -> Dict[str, Any]: ...

@@ -21,7 +21,7 @@ sui-sandbox pipeline init --template cetus --output workflow.cetus.json
 sui-sandbox pipeline validate --spec examples/data/workflow_replay_analyze_demo.json
 sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --dry-run
 sui-sandbox pipeline run --spec examples/data/workflow_replay_analyze_demo.json --report out/workflow_report.json
-sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only
+sui-sandbox adapter run --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --discover-latest 5 --analyze-only
 sui-sandbox view module 0x2::coin             # Inspect interface
 sui-sandbox bridge publish ./my_package       # Generate real deploy command
 ```
@@ -42,13 +42,16 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs) |
 | `context` | Generic package/replay context flow (alias: `flow`) |
 | `adapter` | First-class protocol adapter flow (alias: `protocol`) |
-| `init` | Scaffold task-oriented workflow templates |
-| `script` | Execute deterministic YAML workflow files (alias: `run-flow`) |
+| `init` | Compatibility scaffold for legacy YAML flow templates |
+| `script` | Compatibility runner for legacy YAML flow files (alias: `run-flow`) |
 | `pipeline` | Validate/run typed workflow specs (alias: `workflow`) |
 | `snapshot` | Save/list/load/delete named session snapshots |
 | `reset` | Reset in-memory session state |
 | `status` | Show session state |
 | `clean` | Remove session state file |
+
+Primary orchestration surfaces are `context`, `adapter`, and `pipeline`.
+`init`/`script` remain for compatibility with older `run-flow` YAML usage.
 
 ---
 
@@ -625,17 +628,19 @@ sui-sandbox reset
 
 Use `clean` when you specifically want to remove the state file from disk.
 
-#### `init` - Scaffold Workflow
+#### `init` - Compatibility Scaffold
 
-Create a task-oriented flow template for reproducible local execution.
+Create a legacy task-oriented flow template for reproducible local execution.
+Prefer `pipeline init` for new workflows.
 
 ```bash
 sui-sandbox init --example quickstart --output-dir .
 ```
 
-#### `script` - Execute Workflow File
+#### `script` - Compatibility Workflow Runner
 
-Run deterministic YAML workflows where each step is one `sui-sandbox` argv list.
+Run legacy deterministic YAML workflows where each step is one `sui-sandbox` argv list.
+Prefer `pipeline run` for typed orchestration.
 
 ```bash
 sui-sandbox script flow.quickstart.yaml
@@ -692,7 +697,21 @@ sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_con
 | `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
 | `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
 | `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--profile <safe\|balanced\|fast>` | Replay runtime defaults profile | `balanced` |
+| `--fetch-strategy <eager\|full>` | Dynamic field fetch strategy | `full` |
+| `--allow-fallback <BOOL>` | Allow fallback hydration paths | `true` |
+| `--prefetch-depth <N>` | Dynamic field prefetch depth | `3` |
+| `--prefetch-limit <N>` | Dynamic field prefetch limit | `200` |
+| `--no-prefetch` | Disable dynamic field prefetch | `false` |
+| `--auto-system-objects <BOOL>` | Auto-inject Clock/Random when missing | `true` |
+| `--cache-dir <PATH>` | Local replay cache path (`--source local`) | - |
 | `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--compare` | Compare local execution with on-chain effects | `false` |
+| `--vm-only` | Disable fallback paths and force VM-only behavior | `false` |
+| `--reconcile-dynamic-fields <BOOL>` | Reconcile dynamic-field effects when omitted on-chain | `true` |
+| `--synthesize-missing` | Retry replay with synthesized missing inputs | `false` |
+| `--self-heal-dynamic-fields` | Enable dynamic-field self-healing during VM execution | `false` |
+| `--grpc-timeout-secs <N>` | gRPC object fetch timeout (seconds) | `30` |
 | `--strict` | Exit non-zero on replay failure/mismatch | `false` |
 
 `context run` flags:
@@ -709,7 +728,21 @@ sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_con
 | `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
 | `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
 | `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--profile <safe\|balanced\|fast>` | Replay runtime defaults profile | `balanced` |
+| `--fetch-strategy <eager\|full>` | Dynamic field fetch strategy | `full` |
+| `--allow-fallback <BOOL>` | Allow fallback hydration paths | `true` |
+| `--prefetch-depth <N>` | Dynamic field prefetch depth | `3` |
+| `--prefetch-limit <N>` | Dynamic field prefetch limit | `200` |
+| `--no-prefetch` | Disable dynamic field prefetch | `false` |
+| `--auto-system-objects <BOOL>` | Auto-inject Clock/Random when missing | `true` |
+| `--cache-dir <PATH>` | Local replay cache path (`--source local`) | - |
 | `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--compare` | Compare local execution with on-chain effects | `false` |
+| `--vm-only` | Disable fallback paths and force VM-only behavior | `false` |
+| `--reconcile-dynamic-fields <BOOL>` | Reconcile dynamic-field effects when omitted on-chain | `true` |
+| `--synthesize-missing` | Retry replay with synthesized missing inputs | `false` |
+| `--self-heal-dynamic-fields` | Enable dynamic-field self-healing during VM execution | `false` |
+| `--grpc-timeout-secs <N>` | gRPC object fetch timeout (seconds) | `30` |
 | `--strict` | Exit non-zero on replay failure/mismatch | `false` |
 
 `context discover` flags:
@@ -727,17 +760,17 @@ sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_con
 
 #### `adapter` - First-Class Protocol Adapter Flow
 
-Protocol-first wrapper around `context` runtime. It applies protocol package defaults
-when available and keeps protocol-specific runtime inputs explicit.
+Protocol-first wrapper around `context` runtime. Package selection is explicit
+(`--package-id`) for non-generic protocols, and runtime inputs remain explicit.
 
 ```bash
-# DeepBook defaults package id automatically
-sui-sandbox adapter prepare --protocol deepbook
-sui-sandbox adapter run --protocol deepbook --digest <DIGEST> --checkpoint <CP>
-sui-sandbox adapter run --protocol deepbook --discover-latest 5 --analyze-only
-sui-sandbox adapter discover --protocol deepbook --latest 5
+# Protocol adapters require explicit package ids (non-generic)
+sui-sandbox adapter prepare --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b
+sui-sandbox adapter run --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --digest <DIGEST> --checkpoint <CP>
+sui-sandbox adapter run --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --discover-latest 5 --analyze-only
+sui-sandbox adapter discover --protocol deepbook --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b --latest 5
 
-# Generic mode (explicit package id)
+# Generic mode (package-id optional for discover only)
 sui-sandbox adapter prepare --protocol generic --package-id 0x2
 sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
 ```
@@ -747,7 +780,7 @@ sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
-| `--package-id <ID>` | Package id override (required when protocol has no default package) | protocol-specific |
+| `--package-id <ID>` | Package id (required for non-generic protocols) | protocol-specific |
 | `--with-deps <BOOL>` | Fetch transitive package closure | `true` |
 | `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json` |
 | `--force` | Overwrite existing context file | `false` |
@@ -757,7 +790,7 @@ sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
-| `--package-id <ID>` | Package id override (required when protocol has no default package) | protocol-specific |
+| `--package-id <ID>` | Package id (required for non-generic protocols) | protocol-specific |
 | `--digest <DIGEST>` | Replay digest | - |
 | `--state-json <PATH>` | Replay from custom state snapshot | - |
 | `--discover-latest <N>` | Auto-discover digest/checkpoint from latest N checkpoints for protocol package | - |
@@ -766,7 +799,21 @@ sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --
 | `--walrus-caching-url <URL>` | Custom Walrus caching endpoint (requires aggregator URL) | - |
 | `--walrus-aggregator-url <URL>` | Custom Walrus aggregator endpoint (requires caching URL) | - |
 | `--source <hybrid\|grpc\|walrus\|local>` | Hydration source | `hybrid` |
+| `--profile <safe\|balanced\|fast>` | Replay runtime defaults profile | `balanced` |
+| `--fetch-strategy <eager\|full>` | Dynamic field fetch strategy | `full` |
+| `--allow-fallback <BOOL>` | Allow fallback hydration paths | `true` |
+| `--prefetch-depth <N>` | Dynamic field prefetch depth | `3` |
+| `--prefetch-limit <N>` | Dynamic field prefetch limit | `200` |
+| `--no-prefetch` | Disable dynamic field prefetch | `false` |
+| `--auto-system-objects <BOOL>` | Auto-inject Clock/Random when missing | `true` |
+| `--cache-dir <PATH>` | Local replay cache path (`--source local`) | - |
 | `--analyze-only` | Hydration-only mode (skip VM execution) | `false` |
+| `--compare` | Compare local execution with on-chain effects | `false` |
+| `--vm-only` | Disable fallback paths and force VM-only behavior | `false` |
+| `--reconcile-dynamic-fields <BOOL>` | Reconcile dynamic-field effects when omitted on-chain | `true` |
+| `--synthesize-missing` | Retry replay with synthesized missing inputs | `false` |
+| `--self-heal-dynamic-fields` | Enable dynamic-field self-healing during VM execution | `false` |
+| `--grpc-timeout-secs <N>` | gRPC object fetch timeout (seconds) | `30` |
 | `--strict` | Exit non-zero on replay failure/mismatch | `false` |
 
 `adapter discover` flags:
@@ -774,7 +821,7 @@ sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
-| `--package-id <ID>` | Package filter override | protocol-specific |
+| `--package-id <ID>` | Package filter (required for non-generic protocols) | protocol-specific |
 | `--checkpoint <SPEC>` | Checkpoint spec: single/range/list | - |
 | `--latest <N>` | Scan latest N checkpoints (auto tip discovery) | `1` |
 | `--limit <N>` | Max matching transactions to return | `200` |
@@ -812,6 +859,8 @@ Supported step kinds:
 By default, `pipeline auto` validates package bytecode dependency closure and
 fails closed with `AUTO_CLOSURE_INCOMPLETE` when unresolved packages remain.
 Use `--best-effort` to emit a scaffold anyway.
+Auto probes are executed natively (GraphQL + fetch + Walrus planner), without
+recursive `sui-sandbox` subprocess calls.
 
 | Flag | Description | Default |
 |------|-------------|---------|

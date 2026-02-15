@@ -51,13 +51,14 @@ use sandbox_cli::{
     bridge::BridgeCmd,
     doctor::DoctorCmd,
     fetch::FetchCmd,
-    flow::{FlowCli, InitCmd, RunFlowCmd},
+    flow::FlowCli,
     import::ImportCmd,
     protocol::ProtocolCli,
     ptb::PtbCmd,
     publish::PublishCmd,
     replay::ReplayCli,
     run::RunCmd,
+    script::{InitCmd, RunFlowCmd},
     snapshot::SnapshotCmd,
     test::TestCli,
     tools::ToolsCmd,
@@ -152,10 +153,10 @@ enum Commands {
     #[command(name = "adapter", visible_alias = "protocol")]
     Adapter(ProtocolCli),
 
-    /// Scaffold a task-oriented project/workflow template
+    /// Compatibility scaffold for legacy `run-flow` YAML templates
     Init(InitCmd),
 
-    /// Execute a YAML script file with deterministic step sequencing
+    /// Compatibility runner for legacy YAML scripts (`run-flow` alias)
     #[command(name = "script", visible_alias = "run-flow")]
     Script(RunFlowCmd),
 

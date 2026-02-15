@@ -47,18 +47,10 @@ impl Default for KeyValueSynthesizer {
 }
 
 impl KeyValueSynthesizer {
-    /// Create a new synthesizer with common phantom patterns.
+    /// Create a new synthesizer with no protocol-specific defaults.
     pub fn new() -> Self {
-        let mut known_phantom_patterns = HashSet::new();
-
-        // DeepBook patterns
-        known_phantom_patterns.insert("balance_manager::BalanceKey".to_string());
-
-        // Common Sui patterns for marker types
-        // These are typically phantom structs used as type-indexed keys
-
         Self {
-            known_phantom_patterns,
+            known_phantom_patterns: HashSet::new(),
         }
     }
 
@@ -224,7 +216,8 @@ mod tests {
 
     #[test]
     fn test_is_phantom_key_known_pattern() {
-        let synth = KeyValueSynthesizer::new();
+        let mut synth = KeyValueSynthesizer::new();
+        synth.register_phantom_pattern("balance_manager::BalanceKey");
 
         // Known pattern
         assert!(synth.is_phantom_key(

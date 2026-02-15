@@ -13,13 +13,11 @@
 //! DATA_FILE="./path/to/data.json" cargo run --example deepbook_json_bcs_only
 //! ```
 
-#[path = "../../common/mod.rs"]
-mod common;
-
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use serde::Deserialize;
 use std::collections::HashMap;
+use sui_sandbox_core::bootstrap::create_mainnet_provider;
 use sui_sandbox_core::utilities::collect_required_package_roots_from_type_strings;
 use sui_sandbox_core::utilities::json_to_bcs::JsonToBcsConverter;
 
@@ -102,7 +100,7 @@ fn main() -> Result<()> {
 
     // 2. Fetch bytecode and build converter
     let rt = tokio::runtime::Runtime::new()?;
-    let provider = rt.block_on(common::create_mainnet_provider(data.checkpoint.is_some()))?;
+    let provider = rt.block_on(create_mainnet_provider(data.checkpoint.is_some()))?;
     println!("Using gRPC endpoint: {}", provider.grpc_endpoint());
 
     let explicit_roots = vec![AccountAddress::from_hex_literal(MARGIN_PACKAGE)?];

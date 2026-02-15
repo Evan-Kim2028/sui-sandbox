@@ -7,6 +7,7 @@ use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use serde::Serialize;
 use std::path::Path;
+use sui_sandbox_core::bootstrap::archive_runtime_gap_hint;
 
 use super::SandboxState;
 use sui_sandbox_core::ptb::TransactionEffects;
@@ -432,11 +433,8 @@ pub fn default_diagnostic_hints(command: &str, error: &anyhow::Error) -> Vec<Str
                 .to_string(),
         );
     }
-    if looks_like_archive_runtime_gap(&message) {
-        hints.push(format!(
-            "Replay may be failing due to runtime-object gaps on archive endpoints (current: {}); try `SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443`",
-            effective_grpc_endpoint_for_hints()
-        ));
+    if let Some(hint) = archive_runtime_gap_hint(&message, None) {
+        hints.push(hint);
     }
     if message.contains("state file") {
         hints.push("Verify state-file path permissions, then retry the same command".to_string());
@@ -448,22 +446,6 @@ pub fn default_diagnostic_hints(command: &str, error: &anyhow::Error) -> Vec<Str
         hints.push("Retry with `--verbose` for additional execution details".to_string());
     }
     hints
-}
-
-fn effective_grpc_endpoint_for_hints() -> String {
-    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
-    std::env::var("SUI_GRPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string())
-}
-
-fn looks_like_archive_runtime_gap(message: &str) -> bool {
-    (message.contains("contractabort") && message.contains("abort_code: 1"))
-        || message.contains("unchanged_loaded_runtime_objects")
-        || message.contains("missing runtime object")
-        || message.contains("missing object input")
 }
 
 fn classify_error(error: &anyhow::Error) -> String {
@@ -516,7 +498,7 @@ mod tests {
         );
         let hints = default_diagnostic_hints("replay", &err);
         assert!(hints.iter().any(|hint| {
-            hint.contains("runtime-object gaps")
+            hint.contains("archive runtime-object gap")
                 && hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")
         }));
     }

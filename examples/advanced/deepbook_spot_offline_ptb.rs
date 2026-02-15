@@ -12,21 +12,25 @@
 //! cargo run --example deepbook_spot_offline_ptb
 //! ```
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::TypeTag;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use sui_sandbox_core::bootstrap::{
+    create_child_fetcher, load_fetched_objects_into_env, preload_dynamic_field_objects,
+};
+use sui_sandbox_core::environment_bootstrap::{
+    build_environment_from_hydrated_state, hydrate_mainnet_state, EnvironmentBuildPlan,
+    MainnetHydrationPlan, MainnetObjectRequest,
+};
 use sui_sandbox_core::fetcher::GrpcFetcher;
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectChange, ObjectInput};
+use sui_sandbox_core::orchestrator::ReplayOrchestrator;
+use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectChange};
 use sui_sandbox_core::simulation::{ExecutionResult, FetcherConfig, SimulationEnvironment};
 use sui_sandbox_core::utilities::collect_required_package_roots_from_type_strings;
-
-#[path = "../common/mod.rs"]
-mod common;
-use common::create_child_fetcher;
 
 const DEEPBOOK_PACKAGE_ROOT: &str =
     "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497";
@@ -61,9 +65,6 @@ fn main() -> Result<()> {
     println!("STEP 1: Fetch package graph + registry state");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let provider = rt.block_on(common::create_mainnet_provider(false))?;
-    println!("  ✓ gRPC endpoint: {}", provider.grpc_endpoint());
-
     let explicit_roots = vec![AccountAddress::from_hex_literal(DEEPBOOK_PACKAGE_ROOT)?];
     let type_roots = vec![
         SUI_TYPE.to_string(),
@@ -75,16 +76,23 @@ fn main() -> Result<()> {
             .into_iter()
             .collect();
 
-    let packages = rt.block_on(async {
-        provider
-            .fetch_packages_with_deps(&package_roots, None, None)
-            .await
-    })?;
+    let hydration = rt.block_on(hydrate_mainnet_state(&MainnetHydrationPlan {
+        package_roots,
+        objects: vec![MainnetObjectRequest {
+            object_id: DEEPBOOK_REGISTRY.to_string(),
+            version: None,
+        }],
+        historical_mode: false,
+        allow_latest_object_fallback: true,
+    }))?;
+    let provider = &hydration.provider;
+    let packages = &hydration.packages;
+    println!("  ✓ gRPC endpoint: {}", provider.grpc_endpoint());
     println!(
         "  ✓ fetched {} packages with dependency closure",
         packages.len()
     );
-    for (addr, pkg) in &packages {
+    for (addr, pkg) in packages {
         let orig = pkg
             .original_id
             .map(|v| v.to_hex_literal())
@@ -98,7 +106,9 @@ fn main() -> Result<()> {
         );
     }
 
-    let registry = common::fetch_object_data(&rt, provider.grpc(), DEEPBOOK_REGISTRY, None, false)
+    let registry = hydration
+        .objects
+        .get(DEEPBOOK_REGISTRY)
         .ok_or_else(|| anyhow!("failed to fetch DeepBook registry object"))?;
     println!(
         "  ✓ registry loaded at version {} (shared={})",
@@ -109,16 +119,20 @@ fn main() -> Result<()> {
     println!("STEP 2: Build local sandbox state");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let mut env = SimulationEnvironment::new()?;
     let sender = AccountAddress::from_hex_literal(
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     )?;
-    env.set_sender(sender);
+    let build = build_environment_from_hydrated_state(
+        &hydration,
+        &EnvironmentBuildPlan {
+            sender,
+            fail_on_object_load: true,
+        },
+    )?;
+    let mut env: SimulationEnvironment = build.env;
     println!("  ✓ sender set to {}", sender.to_hex_literal());
 
-    let registration_plan = common::build_package_registration_plan(&packages);
-    let registration =
-        common::register_packages_with_linkage_plan(&mut env, &packages, &registration_plan);
+    let registration = &build.package_registration;
     println!(
         "  ✓ package registration: loaded={}, skipped_upgraded={}, failed={}",
         registration.loaded,
@@ -156,27 +170,21 @@ fn main() -> Result<()> {
     }
     let pool_inner_version = query_current_pool_inner_version(&mut env)?;
     println!("  ✓ pool inner current_version: {}", pool_inner_version);
-
-    env.load_object_from_data(
-        DEEPBOOK_REGISTRY,
-        registry.0.clone(),
-        registry.1.as_deref(),
-        registry.3,
-        false,
-        registry.2,
-    )?;
-    println!("  ✓ registry object loaded into environment");
+    println!(
+        "  ✓ registry object loaded into environment (objects_loaded={})",
+        build.objects_loaded
+    );
 
     // Preload versioned dynamic-field wrappers under registry so pool creation can
     // read/write registry internals without missing child-object aborts.
-    let df_wrappers = common::preload_dynamic_field_objects(
+    let df_wrappers = preload_dynamic_field_objects(
         &rt,
         provider.graphql(),
         provider.grpc(),
         &[DEEPBOOK_REGISTRY],
         32,
     );
-    let df_loaded = common::load_fetched_objects_into_env(&mut env, &df_wrappers, false)?;
+    let df_loaded = load_fetched_objects_into_env(&mut env, &df_wrappers, false)?;
     println!(
         "  ✓ preloaded {} registry dynamic-field wrappers",
         df_loaded
@@ -227,11 +235,11 @@ fn main() -> Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let create_pool_inputs = vec![
-        shared_object_input(&env, DEEPBOOK_REGISTRY, true)?,
-        pure_input(TICK_SIZE)?,
-        pure_input(LOT_SIZE)?,
-        pure_input(MIN_SIZE)?,
-        owned_object_input(&env, &deep_coin_id.to_hex_literal())?,
+        ReplayOrchestrator::shared_object_input(&env, DEEPBOOK_REGISTRY, true)?,
+        ReplayOrchestrator::pure_input(TICK_SIZE)?,
+        ReplayOrchestrator::pure_input(LOT_SIZE)?,
+        ReplayOrchestrator::pure_input(MIN_SIZE)?,
+        ReplayOrchestrator::owned_object_input(&env, &deep_coin_id.to_hex_literal())?,
     ];
 
     let create_pool_cmds = vec![Command::MoveCall {
@@ -249,19 +257,34 @@ fn main() -> Result<()> {
     }];
 
     let create_pool_result = env.execute_ptb(create_pool_inputs, create_pool_cmds);
-    ensure_success("create_permissionless_pool", &create_pool_result)?;
-    let mut pool_id = decode_first_return_object_id(&create_pool_result)?;
+    ReplayOrchestrator::ensure_execution_success(
+        "create_permissionless_pool",
+        &create_pool_result,
+    )?;
+    let mut pool_id =
+        ReplayOrchestrator::decode_execution_command_return_object_id(&create_pool_result, 0, 0)?;
     if env.get_object(&pool_id).is_none() {
-        if let Ok(fallback_pool_id) = find_created_pool_id(&env, &create_pool_result) {
+        if let Ok(fallback_pool_id) = ReplayOrchestrator::find_created_object_id_by_struct_tag(
+            &env,
+            &create_pool_result,
+            "pool",
+            "Pool",
+        ) {
             println!(
                 "  ✓ return ID {} is logical pool_id; using created Pool object {}",
                 pool_id.to_hex_literal(),
                 fallback_pool_id.to_hex_literal()
             );
             pool_id = fallback_pool_id;
-        } else if let Ok(recovered_pool_id) =
-            recover_created_pool_object(&mut env, &create_pool_result)
-        {
+        } else if let Ok(recovered_pool_id) = ReplayOrchestrator::recover_created_object_into_env(
+            &mut env,
+            &create_pool_result,
+            "pool",
+            "Pool",
+            true,
+            false,
+            1,
+        ) {
             println!(
                 "  ✓ recovered pool object {} from PTB effects",
                 recovered_pool_id.to_hex_literal()
@@ -354,26 +377,26 @@ fn main() -> Result<()> {
     let expiry_ms = env.get_clock_timestamp_ms() + 86_400_000;
 
     let place_orders_inputs = vec![
-        shared_object_input(&env, &pool_id.to_hex_literal(), true)?, // 0 pool
-        InputValue::Object(env.get_clock_object()?),                 // 1 clock
-        owned_object_input(&env, &base_coin_id.to_hex_literal())?,   // 2 base coin
-        owned_object_input(&env, &quote_coin_id.to_hex_literal())?,  // 3 quote coin
-        pure_input(101u64)?,                                         // 4 bid client_order_id
-        pure_input(0u8)?,                                            // 5 no_restriction
-        pure_input(0u8)?,                                            // 6 self_matching_allowed
-        pure_input(1_000u64)?,                                       // 7 bid price
-        pure_input(1_000u64)?,                                       // 8 bid qty
-        pure_input(true)?,                                           // 9 is_bid
-        pure_input(false)?,                                          // 10 pay_with_deep
-        pure_input(expiry_ms)?,                                      // 11 expiry
-        pure_input(202u64)?,                                         // 12 ask client_order_id
-        pure_input(0u8)?,                                            // 13 no_restriction
-        pure_input(0u8)?,                                            // 14 self_matching_allowed
-        pure_input(2_000u64)?,                                       // 15 ask price
-        pure_input(1_000u64)?,                                       // 16 ask qty
-        pure_input(false)?,                                          // 17 is_bid (ask)
-        pure_input(false)?,                                          // 18 pay_with_deep
-        pure_input(expiry_ms)?,                                      // 19 expiry
+        ReplayOrchestrator::shared_object_input(&env, &pool_id.to_hex_literal(), true)?, // 0 pool
+        InputValue::Object(env.get_clock_object()?),                                     // 1 clock
+        ReplayOrchestrator::owned_object_input(&env, &base_coin_id.to_hex_literal())?, // 2 base coin
+        ReplayOrchestrator::owned_object_input(&env, &quote_coin_id.to_hex_literal())?, // 3 quote coin
+        ReplayOrchestrator::pure_input(101u64)?, // 4 bid client_order_id
+        ReplayOrchestrator::pure_input(0u8)?,    // 5 no_restriction
+        ReplayOrchestrator::pure_input(0u8)?,    // 6 self_matching_allowed
+        ReplayOrchestrator::pure_input(1_000u64)?, // 7 bid price
+        ReplayOrchestrator::pure_input(1_000u64)?, // 8 bid qty
+        ReplayOrchestrator::pure_input(true)?,   // 9 is_bid
+        ReplayOrchestrator::pure_input(false)?,  // 10 pay_with_deep
+        ReplayOrchestrator::pure_input(expiry_ms)?, // 11 expiry
+        ReplayOrchestrator::pure_input(202u64)?, // 12 ask client_order_id
+        ReplayOrchestrator::pure_input(0u8)?,    // 13 no_restriction
+        ReplayOrchestrator::pure_input(0u8)?,    // 14 self_matching_allowed
+        ReplayOrchestrator::pure_input(2_000u64)?, // 15 ask price
+        ReplayOrchestrator::pure_input(1_000u64)?, // 16 ask qty
+        ReplayOrchestrator::pure_input(false)?,  // 17 is_bid (ask)
+        ReplayOrchestrator::pure_input(false)?,  // 18 pay_with_deep
+        ReplayOrchestrator::pure_input(expiry_ms)?, // 19 expiry
     ];
 
     let place_orders_cmds = vec![
@@ -455,8 +478,13 @@ fn main() -> Result<()> {
     ];
 
     let place_orders_result = env.execute_ptb(place_orders_inputs, place_orders_cmds);
-    ensure_success("place_limit_order flow", &place_orders_result)?;
-    let manager_id = find_created_balance_manager_id(&env, &place_orders_result)?;
+    ReplayOrchestrator::ensure_execution_success("place_limit_order flow", &place_orders_result)?;
+    let manager_id = ReplayOrchestrator::find_created_object_id_by_struct_tag(
+        &env,
+        &place_orders_result,
+        "balance_manager",
+        "BalanceManager",
+    )?;
     println!("  ✓ manager id: {}", manager_id.to_hex_literal());
     if let Some(effects) = &place_orders_result.effects {
         println!("  ✓ gas used: {}", effects.gas_used);
@@ -468,8 +496,8 @@ fn main() -> Result<()> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let locked_query_inputs = vec![
-        shared_object_input(&env, &pool_id.to_hex_literal(), false)?,
-        imm_object_input(&env, &manager_id.to_hex_literal())?,
+        ReplayOrchestrator::shared_object_input(&env, &pool_id.to_hex_literal(), false)?,
+        ReplayOrchestrator::immutable_object_input(&env, &manager_id.to_hex_literal())?,
     ];
     let locked_query_cmds = vec![Command::MoveCall {
         package: AccountAddress::from_hex_literal(DEEPBOOK_RUNTIME_PACKAGE)?,
@@ -479,9 +507,10 @@ fn main() -> Result<()> {
         args: vec![Argument::Input(0), Argument::Input(1)],
     }];
     let locked_result = env.execute_ptb(locked_query_inputs, locked_query_cmds);
-    ensure_success("locked_balance", &locked_result)?;
+    ReplayOrchestrator::ensure_execution_success("locked_balance", &locked_result)?;
 
-    let (base_locked, quote_locked, deep_locked) = decode_first_return_u64_triplet(&locked_result)?;
+    let (base_locked, quote_locked, deep_locked) =
+        ReplayOrchestrator::decode_execution_command_return_u64_triplet(&locked_result, 0)?;
     println!("  ✓ locked base:  {}", base_locked);
     println!("  ✓ locked quote: {}", quote_locked);
     println!("  ✓ locked DEEP:  {}", deep_locked);
@@ -494,253 +523,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn pure_input<T: serde::Serialize>(value: T) -> Result<InputValue> {
-    Ok(InputValue::Pure(bcs::to_bytes(&value)?))
-}
-
-fn owned_object_input(env: &SimulationEnvironment, object_id: &str) -> Result<InputValue> {
-    Ok(InputValue::Object(
-        env.get_object_for_ptb_with_mode(object_id, Some("owned"))?,
-    ))
-}
-
-fn imm_object_input(env: &SimulationEnvironment, object_id: &str) -> Result<InputValue> {
-    Ok(InputValue::Object(env.get_object_for_ptb_with_mode(
-        object_id,
-        Some("immutable"),
-    )?))
-}
-
-fn shared_object_input(
-    env: &SimulationEnvironment,
-    object_id: &str,
-    mutable: bool,
-) -> Result<InputValue> {
-    let id = AccountAddress::from_hex_literal(object_id)
-        .with_context(|| format!("invalid object id: {object_id}"))?;
-    let obj = env
-        .get_object(&id)
-        .ok_or_else(|| anyhow!("object not found in env: {object_id}"))?;
-    Ok(InputValue::Object(ObjectInput::Shared {
-        id,
-        bytes: obj.bcs_bytes.clone(),
-        type_tag: Some(obj.type_tag.clone()),
-        version: Some(obj.version),
-        mutable,
-    }))
-}
-
-fn ensure_success(step: &str, result: &ExecutionResult) -> Result<()> {
-    if result.success {
-        return Ok(());
-    }
-
-    let mut msg = format!("{step} failed");
-    if let Some(err) = &result.error {
-        msg.push_str(&format!("; error={err}"));
-    }
-    if let Some(raw) = &result.raw_error {
-        msg.push_str(&format!("; raw={raw}"));
-    }
-    Err(anyhow!(msg))
-}
-
-fn decode_first_return_object_id(result: &ExecutionResult) -> Result<AccountAddress> {
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-    let id_bytes = effects
-        .return_values
-        .first()
-        .and_then(|values| values.first())
-        .ok_or_else(|| anyhow!("missing return value"))?;
-    if id_bytes.len() != 32 {
-        return Err(anyhow!(
-            "expected 32-byte object::ID return, got {} bytes",
-            id_bytes.len()
-        ));
-    }
-    let mut raw = [0u8; 32];
-    raw.copy_from_slice(id_bytes);
-    Ok(AccountAddress::new(raw))
-}
-
-fn decode_first_return_u64_triplet(result: &ExecutionResult) -> Result<(u64, u64, u64)> {
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-    let cmd_returns = effects
-        .return_values
-        .first()
-        .ok_or_else(|| anyhow!("missing return values for first command"))?;
-
-    let decode_u64 = |bytes: &[u8]| -> Result<u64> {
-        if bytes.len() < 8 {
-            return Err(anyhow!("expected u64 bytes len>=8, got {}", bytes.len()));
-        }
-        let arr: [u8; 8] = bytes[0..8]
-            .try_into()
-            .map_err(|_| anyhow!("invalid u64 bytes"))?;
-        Ok(u64::from_le_bytes(arr))
-    };
-
-    if cmd_returns.len() >= 3 {
-        return Ok((
-            decode_u64(&cmd_returns[0])?,
-            decode_u64(&cmd_returns[1])?,
-            decode_u64(&cmd_returns[2])?,
-        ));
-    }
-
-    let bytes = cmd_returns
-        .first()
-        .ok_or_else(|| anyhow!("missing return payload"))?;
-    if bytes.len() < 24 {
-        return Err(anyhow!(
-            "expected tuple payload >=24 bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let decode = |offset: usize| -> Result<u64> {
-        let slice = bytes
-            .get(offset..offset + 8)
-            .ok_or_else(|| anyhow!("missing bytes at offset {}", offset))?;
-        let arr: [u8; 8] = slice.try_into().map_err(|_| anyhow!("invalid u64 slice"))?;
-        Ok(u64::from_le_bytes(arr))
-    };
-    Ok((decode(0)?, decode(8)?, decode(16)?))
-}
-
 fn query_current_pool_inner_version(env: &mut SimulationEnvironment) -> Result<u64> {
-    let cmd = Command::MoveCall {
-        package: AccountAddress::from_hex_literal(DEEPBOOK_RUNTIME_PACKAGE)?,
-        module: Identifier::new("constants")?,
-        function: Identifier::new("current_version")?,
-        type_args: vec![],
-        args: vec![],
-    };
-    let result = env.execute_ptb(vec![], vec![cmd]);
-    ensure_success("constants::current_version", &result)?;
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-    let bytes = effects
-        .return_values
-        .first()
-        .and_then(|values| values.first())
-        .ok_or_else(|| anyhow!("missing current_version return"))?;
-    if bytes.len() < 8 {
-        return Err(anyhow!(
-            "invalid current_version return bytes len={}",
-            bytes.len()
-        ));
-    }
-    let arr: [u8; 8] = bytes[0..8]
-        .try_into()
-        .map_err(|_| anyhow!("invalid current_version bytes"))?;
-    Ok(u64::from_le_bytes(arr))
-}
-
-fn find_created_balance_manager_id(
-    env: &SimulationEnvironment,
-    result: &ExecutionResult,
-) -> Result<AccountAddress> {
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-    for object_id in &effects.created {
-        if let Some(obj) = env.get_object(object_id) {
-            if let TypeTag::Struct(s) = &obj.type_tag {
-                if s.module.as_ident_str().as_str() == "balance_manager"
-                    && s.name.as_ident_str().as_str() == "BalanceManager"
-                {
-                    return Ok(*object_id);
-                }
-            }
-        }
-    }
-
-    Err(anyhow!(
-        "could not find created balance_manager::BalanceManager object"
-    ))
-}
-
-fn find_created_pool_id(
-    env: &SimulationEnvironment,
-    result: &ExecutionResult,
-) -> Result<AccountAddress> {
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-    for object_id in &effects.created {
-        if let Some(obj) = env.get_object(object_id) {
-            if let TypeTag::Struct(s) = &obj.type_tag {
-                if s.module.as_ident_str().as_str() == "pool"
-                    && s.name.as_ident_str().as_str() == "Pool"
-                {
-                    return Ok(*object_id);
-                }
-            }
-        }
-    }
-
-    Err(anyhow!("could not find created pool::Pool object"))
-}
-
-fn recover_created_pool_object(
-    env: &mut SimulationEnvironment,
-    result: &ExecutionResult,
-) -> Result<AccountAddress> {
-    let effects = result
-        .effects
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing effects"))?;
-
-    for change in &effects.object_changes {
-        let (id, object_type) = match change {
-            ObjectChange::Created {
-                id,
-                object_type: Some(object_type),
-                ..
-            } => (id, object_type),
-            _ => continue,
-        };
-
-        let is_pool = match object_type {
-            TypeTag::Struct(s) => {
-                s.module.as_ident_str().as_str() == "pool"
-                    && s.name.as_ident_str().as_str() == "Pool"
-            }
-            _ => false,
-        };
-        if !is_pool {
-            continue;
-        }
-
-        let bytes = effects
-            .created_object_bytes
-            .get(id)
-            .ok_or_else(|| anyhow!("pool object bytes missing from created_object_bytes"))?;
-        let type_str = object_type.to_canonical_string(true);
-        env.load_object_from_data(
-            &id.to_hex_literal(),
-            bytes.clone(),
-            Some(&type_str),
-            true,
-            false,
-            1,
-        )?;
-        return Ok(*id);
-    }
-
-    Err(anyhow!(
-        "no pool::Pool entry found in object_changes for recovery"
-    ))
+    let result = ReplayOrchestrator::execute_noarg_move_call(
+        env,
+        AccountAddress::from_hex_literal(DEEPBOOK_RUNTIME_PACKAGE)?,
+        "constants",
+        "current_version",
+    )?;
+    ReplayOrchestrator::ensure_execution_success("constants::current_version", &result)?;
+    ReplayOrchestrator::decode_execution_command_return_u64(&result, 0, 0)
 }
 
 fn synthesize_pool_object_from_dynamic_field(

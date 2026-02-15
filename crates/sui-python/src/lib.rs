@@ -5,6 +5,9 @@
 //! - `extract_interface`: Extract full Move package interface from bytecode or GraphQL
 //! - `get_latest_checkpoint`: Get latest Walrus checkpoint number
 //! - `get_checkpoint`: Fetch and summarize a Walrus checkpoint
+//! - `doctor`: Run endpoint/environment preflight checks
+//! - `session_status` / `session_reset` / `session_clean`: CLI-parity session lifecycle APIs
+//! - `snapshot_save` / `snapshot_load` / `snapshot_list` / `snapshot_delete`: Snapshot lifecycle APIs
 //! - `ptb_universe`: Run checkpoint-source PTB universe generation/execution
 //! - `discover_checkpoint_targets`: Discover digest/package Move-call targets from checkpoints
 //! - `fetch_object_bcs`: Fetch object BCS (optionally at historical version) via gRPC
@@ -18,14 +21,20 @@
 //! - `pipeline_auto` / `workflow_auto`: Auto-generate package-first draft adapters
 //! - `pipeline_run` / `workflow_run`: Execute typed specs natively from Python
 //! - `pipeline_run_inline` / `workflow_run_inline`: Execute typed specs from in-memory Python objects
-//! - `FlowSession`: In-memory prepared context + replay helper for interactive workflows
+//! - `OrchestrationSession`: In-memory prepared context + replay helper for interactive workflows
 //! - `json_to_bcs`: Convert Sui object JSON to BCS bytes
 //! - `transaction_json_to_bcs`: Convert Snowflake/canonical TransactionData JSON to BCS bytes
 //! - `call_view_function`: Execute a Move view function in the local VM
-//! - `deepbook_margin_state`: One-call DeepBook manager_state historical replay helper
+//! - `historical_view_from_versions`: Generic historical view execution from versions snapshots
+//! - `historical_decode_returns_typed`: Decode historical command return values by type tags
+//! - `historical_decode_with_schema`: Decode historical command return values via named schema
 //! - `fuzz_function`: Fuzz a Move function with random inputs
 //! - `replay`: Replay historical transactions (with optional analysis-only mode)
 //! - `replay_transaction`: Opinionated replay helper with compact signature
+//! - `analyze_replay` / `replay_analyze`: Replay hydration/readiness analysis
+//! - `replay_effects`: Replay execution summary with effects-focused output
+//! - `classify_replay_result`: Structured replay failure classification and hints
+//! - `dynamic_field_diagnostics`: Compare hydration with/without DF prefetch and report gaps
 //! - `import_state`: Import replay data files into local cache
 //! - `deserialize_transaction`: Decode raw transaction BCS
 //! - `deserialize_package`: Decode raw package BCS
@@ -54,14 +63,27 @@ use sui_package_extractor::bytecode::{
 };
 use sui_package_extractor::extract_module_dependency_ids as extract_dependency_addrs;
 use sui_package_extractor::utils::is_framework_address;
+use sui_sandbox_core::adapter::{
+    resolve_discovery_package_filter as core_resolve_discovery_package_filter,
+    resolve_required_package_id as core_resolve_required_package_id,
+    ProtocolAdapter as CoreProtocolAdapter,
+};
 use sui_sandbox_core::checkpoint_discovery::{
     build_walrus_client as core_build_walrus_client,
     discover_checkpoint_targets as core_discover_checkpoint_targets,
-    normalize_package_id as core_normalize_package_id,
     resolve_replay_target_from_discovery as core_resolve_replay_target_from_discovery,
     WalrusArchiveNetwork as CoreWalrusArchiveNetwork,
 };
-use sui_sandbox_core::orchestrator::ReplayOrchestrator;
+use sui_sandbox_core::context_contract::{
+    context_packages_from_package_map, decode_context_package_modules, decode_context_packages,
+    parse_context_payload, ContextPackage, ContextPayloadV2,
+};
+use sui_sandbox_core::health::{run_doctor as core_run_doctor, DoctorConfig as CoreDoctorConfig};
+use sui_sandbox_core::historical_view::{
+    execute_historical_view_from_versions as core_execute_historical_view_from_versions,
+    HistoricalViewRequest as CoreHistoricalViewRequest,
+};
+use sui_sandbox_core::orchestrator::{ReplayOrchestrator, ReturnDecodeField};
 use sui_sandbox_core::ptb_universe::{
     run_with_args as core_run_ptb_universe, Args as CorePtbUniverseArgs,
     CheckpointSource as CoreCheckpointSource, DEFAULT_LATEST as CORE_PTB_UNIVERSE_DEFAULT_LATEST,
@@ -69,8 +91,19 @@ use sui_sandbox_core::ptb_universe::{
     DEFAULT_STREAM_TIMEOUT_SECS as CORE_PTB_UNIVERSE_DEFAULT_STREAM_TIMEOUT_SECS,
     DEFAULT_TOP_PACKAGES as CORE_PTB_UNIVERSE_DEFAULT_TOP_PACKAGES,
 };
+use sui_sandbox_core::replay_reporting::{
+    build_replay_analysis_summary as core_build_replay_analysis_summary,
+    build_replay_diagnostics as core_build_replay_diagnostics,
+    classify_replay_output as core_classify_replay_output,
+    missing_input_objects_from_state as core_missing_input_objects_from_state,
+    ReplayDiagnosticsOptions as CoreReplayDiagnosticsOptions,
+};
 use sui_sandbox_core::resolver::ModuleProvider;
+use sui_sandbox_core::simulation::{
+    CoinMetadata, PersistentState, StateMetadata, SUI_COIN_TYPE, SUI_DECIMALS, SUI_SYMBOL,
+};
 use sui_sandbox_core::utilities::unresolved_package_dependencies_for_modules;
+use sui_sandbox_core::vm::SimulationConfig;
 use sui_sandbox_core::workflow::{
     normalize_command_args, WorkflowAnalyzeReplayStep, WorkflowCommandStep, WorkflowDefaults,
     WorkflowFetchStrategy, WorkflowReplayProfile, WorkflowReplayStep, WorkflowSource, WorkflowSpec,
@@ -92,41 +125,26 @@ use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient, 
 use sui_transport::network::resolve_graphql_endpoint;
 use sui_transport::walrus::WalrusClient;
 
-const PROTOCOL_DEEPBOOK_MARGIN_PACKAGE: &str =
-    "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b";
-const DEEPBOOK_SPOT_PACKAGE: &str =
-    "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497";
-const DEEPBOOK_MARGIN_DEFAULT_VERSIONS_FILE: &str =
-    "examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json";
-const DEEPBOOK_MARGIN_REGISTRY: &str =
-    "0x0e40998b359a9ccbab22a98ed21bd4346abf19158bc7980c8291908086b3a742";
-const DEEPBOOK_MARGIN_TARGET_MANAGER: &str =
-    "0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80";
-const DEEPBOOK_MARGIN_POOL: &str =
-    "0xe05dafb5133bcffb8d59f4e12465dc0e9faeaa05e3e342a08fe135800e3e4407";
-const DEEPBOOK_MARGIN_BASE_POOL: &str =
-    "0x53041c6f86c4782aabbfc1d4fe234a6d37160310c7ee740c915f0a01b7127344";
-const DEEPBOOK_MARGIN_QUOTE_POOL: &str =
-    "0xba473d9ae278f10af75c50a8fa341e9c6a1c087dc91a3f23e8048baf67d0754f";
-const DEEPBOOK_MARGIN_CLOCK: &str = "0x6";
+mod replay_api;
+mod replay_core;
+mod replay_output;
+mod session_api;
+mod transport_helpers;
+mod workflow_api;
+mod workflow_native;
+use replay_api::*;
+use replay_core::*;
+use replay_output::{
+    build_analyze_replay_output, build_replay_output, classify_replay_output,
+    deserialize_package_inner, deserialize_transaction_inner, import_state_inner,
+    load_replay_state_from_file,
+};
+use session_api::*;
+use transport_helpers::*;
+use workflow_api::*;
+use workflow_native::*;
+
 const PTB_UNIVERSE_DEFAULT_OUT_DIR: &str = "examples/out/walrus_ptb_universe";
-const DEEPBOOK_MARGIN_SUI_PYTH_PRICE_INFO: &str =
-    "0x801dbc2f0053d34734814b2d6df491ce7807a725fe9a01ad74a07e9c51396c37";
-const DEEPBOOK_MARGIN_USDC_PYTH_PRICE_INFO: &str =
-    "0x5dec622733a204ca27f5a90d8c2fad453cc6665186fd5dff13a83d0b6c9027ab";
-const DEEPBOOK_MARGIN_SUI_TYPE: &str = "0x2::sui::SUI";
-const DEEPBOOK_MARGIN_USDC_TYPE: &str =
-    "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
-const DEEPBOOK_MARGIN_REQUIRED_OBJECTS: [&str; 8] = [
-    DEEPBOOK_MARGIN_TARGET_MANAGER,
-    DEEPBOOK_MARGIN_REGISTRY,
-    DEEPBOOK_MARGIN_SUI_PYTH_PRICE_INFO,
-    DEEPBOOK_MARGIN_USDC_PYTH_PRICE_INFO,
-    DEEPBOOK_MARGIN_POOL,
-    DEEPBOOK_MARGIN_BASE_POOL,
-    DEEPBOOK_MARGIN_QUOTE_POOL,
-    DEEPBOOK_MARGIN_CLOCK,
-];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,7 +154,7 @@ fn to_py_err(e: anyhow::Error) -> PyErr {
     PyRuntimeError::new_err(format!("{:#}", e))
 }
 
-fn default_local_cache_dir() -> PathBuf {
+fn sandbox_home_dir() -> PathBuf {
     std::env::var("SUI_SANDBOX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -144,8 +162,116 @@ fn default_local_cache_dir() -> PathBuf {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".sui-sandbox")
         })
-        .join("cache")
-        .join("local")
+}
+
+fn default_local_cache_dir() -> PathBuf {
+    sandbox_home_dir().join("cache").join("local")
+}
+
+fn default_state_file_path() -> PathBuf {
+    sandbox_home_dir().join("state.json")
+}
+
+fn default_snapshot_dir() -> PathBuf {
+    sandbox_home_dir().join("snapshots")
+}
+
+fn sanitize_snapshot_name(name: &str) -> String {
+    let filtered: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if filtered.is_empty() {
+        "snapshot".to_string()
+    } else {
+        filtered
+    }
+}
+
+fn snapshot_path(name: &str) -> PathBuf {
+    default_snapshot_dir().join(format!("{}.json", sanitize_snapshot_name(name)))
+}
+
+fn default_persistent_state() -> PersistentState {
+    let mut coin_registry = HashMap::new();
+    coin_registry.insert(
+        SUI_COIN_TYPE.to_string(),
+        CoinMetadata {
+            decimals: SUI_DECIMALS,
+            symbol: SUI_SYMBOL.to_string(),
+            name: "Sui".to_string(),
+            type_tag: SUI_COIN_TYPE.to_string(),
+        },
+    );
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    PersistentState {
+        version: PersistentState::CURRENT_VERSION,
+        objects: Vec::new(),
+        object_history: Vec::new(),
+        modules: Vec::new(),
+        packages: Vec::new(),
+        coin_registry,
+        sender: "0x0".to_string(),
+        id_counter: 0,
+        timestamp_ms: None,
+        dynamic_fields: Vec::new(),
+        pending_receives: Vec::new(),
+        config: Some(SimulationConfig::default()),
+        metadata: Some(StateMetadata {
+            description: None,
+            created_at: Some(now),
+            modified_at: None,
+            tags: Vec::new(),
+        }),
+        fetcher_config: None,
+    }
+}
+
+fn load_or_create_state(path: &Path) -> Result<PersistentState> {
+    if !path.exists() {
+        return Ok(default_persistent_state());
+    }
+    let raw = std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut state: PersistentState = serde_json::from_slice(&raw)
+        .with_context(|| format!("Failed to parse state file {}", path.display()))?;
+    if state.version > PersistentState::CURRENT_VERSION {
+        return Err(anyhow!(
+            "state file version {} is newer than supported {}",
+            state.version,
+            PersistentState::CURRENT_VERSION
+        ));
+    }
+    state.version = PersistentState::CURRENT_VERSION;
+    Ok(state)
+}
+
+fn save_state(path: &Path, state: &PersistentState) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+    }
+    let data = serde_json::to_string_pretty(state).context("Failed to serialize state")?;
+    std::fs::write(path, data).with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn normalize_address_like_cli(raw: &str) -> String {
+    match AccountAddress::from_hex_literal(raw) {
+        Ok(addr) => addr.to_hex_literal(),
+        Err(_) => raw.to_ascii_lowercase(),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SnapshotFile {
+    schema_version: u32,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    created_at: String,
+    state: PersistentState,
 }
 
 /// Convert a serde_json::Value to a Python object via JSON round-trip.
@@ -183,114 +309,42 @@ fn decode_package_module_bytes(value: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<V
     ))
 }
 
-fn inferred_module_name(bytes: &[u8], idx: usize) -> String {
-    CompiledModule::deserialize_with_defaults(bytes)
-        .ok()
-        .map(|module| module.self_id().name().to_string())
-        .unwrap_or_else(|| format!("module_{}", idx))
+fn context_packages_to_package_data(
+    packages: &[ContextPackage],
+) -> Result<HashMap<AccountAddress, PackageData>> {
+    let mut out = HashMap::new();
+    for package in packages {
+        let address = AccountAddress::from_hex_literal(&package.address).with_context(|| {
+            format!(
+                "invalid package address in context payload: {}",
+                package.address
+            )
+        })?;
+        let modules = decode_context_package_modules(package).with_context(|| {
+            format!(
+                "failed to decode package modules from context payload for {}",
+                package.address
+            )
+        })?;
+        out.insert(
+            address,
+            PackageData {
+                address,
+                version: 0,
+                modules,
+                linkage: HashMap::new(),
+                original_id: None,
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn decode_context_packages_value(
     value: &serde_json::Value,
 ) -> Result<HashMap<AccountAddress, PackageData>> {
-    let mut out = HashMap::new();
-    match value {
-        serde_json::Value::Null => return Ok(out),
-        serde_json::Value::Object(map) => {
-            // Python/native shape: {"packages": {"0x..": ["base64...", ...]}}
-            for (address, bytecodes_value) in map {
-                let addr = AccountAddress::from_hex_literal(address)
-                    .with_context(|| format!("invalid package address in context: {}", address))?;
-                let bytecodes = bytecodes_value.as_array().ok_or_else(|| {
-                    anyhow!("package {} in context must map to an array", address)
-                })?;
-                let mut modules = Vec::with_capacity(bytecodes.len());
-                for (idx, item) in bytecodes.iter().enumerate() {
-                    let encoded = item.as_str().ok_or_else(|| {
-                        anyhow!("package {} module #{} is not a base64 string", address, idx)
-                    })?;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(encoded)
-                        .with_context(|| {
-                            format!("invalid base64 for package {} module #{}", address, idx)
-                        })?;
-                    modules.push((inferred_module_name(&bytes, idx), bytes));
-                }
-                out.insert(
-                    addr,
-                    PackageData {
-                        address: addr,
-                        version: 0,
-                        modules,
-                        linkage: HashMap::new(),
-                        original_id: None,
-                    },
-                );
-            }
-        }
-        serde_json::Value::Array(items) => {
-            // CLI v2 shape: {"packages": [{"address":"0x..","modules":[...],"bytecodes":[...]}]}
-            for (pkg_idx, item) in items.iter().enumerate() {
-                let address = item
-                    .get("address")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| anyhow!("context package #{} missing `address`", pkg_idx))?;
-                let addr = AccountAddress::from_hex_literal(address)
-                    .with_context(|| format!("invalid package address in context: {}", address))?;
-                let encoded = item
-                    .get("bytecodes")
-                    .and_then(serde_json::Value::as_array)
-                    .ok_or_else(|| {
-                        anyhow!("context package {} missing `bytecodes` array", address)
-                    })?;
-                let module_names: Vec<String> = item
-                    .get("modules")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let mut modules = Vec::with_capacity(encoded.len());
-                for (idx, item) in encoded.iter().enumerate() {
-                    let encoded = item.as_str().ok_or_else(|| {
-                        anyhow!(
-                            "context package {} module #{} is not a string",
-                            address,
-                            idx
-                        )
-                    })?;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(encoded)
-                        .with_context(|| {
-                            format!("invalid base64 for package {} module #{}", address, idx)
-                        })?;
-                    let name = module_names
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| inferred_module_name(&bytes, idx));
-                    modules.push((name, bytes));
-                }
-                out.insert(
-                    addr,
-                    PackageData {
-                        address: addr,
-                        version: 0,
-                        modules,
-                        linkage: HashMap::new(),
-                        original_id: None,
-                    },
-                );
-            }
-        }
-        _ => {
-            return Err(anyhow!(
-                "unsupported context `packages` format (expected object or array)"
-            ));
-        }
-    }
-    Ok(out)
+    let packages = decode_context_packages(value)?;
+    context_packages_to_package_data(&packages)
 }
 
 fn load_context_packages_from_file(path: &Path) -> Result<HashMap<AccountAddress, PackageData>> {
@@ -298,1327 +352,10 @@ fn load_context_packages_from_file(path: &Path) -> Result<HashMap<AccountAddress
         .with_context(|| format!("Failed to read context file {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse context JSON {}", path.display()))?;
-    let packages_value = value.get("packages").cloned().unwrap_or_default();
-    decode_context_packages_value(&packages_value)
+    let parsed = parse_context_payload(&value)
+        .with_context(|| format!("Invalid context payload in {}", path.display()))?;
+    context_packages_to_package_data(&parsed.packages)
 }
-
-fn merge_context_packages(
-    replay_state: &mut ReplayState,
-    context_packages: &HashMap<AccountAddress, PackageData>,
-) -> usize {
-    let mut inserted = 0usize;
-    for (address, package) in context_packages {
-        if replay_state.packages.contains_key(address) {
-            continue;
-        }
-        replay_state.packages.insert(*address, package.clone());
-        inserted += 1;
-    }
-    inserted
-}
-
-fn write_temp_context_file(payload: &serde_json::Value) -> Result<PathBuf> {
-    let path = std::env::temp_dir().join(format!(
-        "sui_sandbox_flow_context_{}_{}.json",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    std::fs::write(&path, serde_json::to_string(payload)?)
-        .with_context(|| format!("Failed to write temp context file {}", path.display()))?;
-    Ok(path)
-}
-
-/// Fetch a package's modules via GraphQL, returning (module_name, bytecode_bytes) pairs.
-fn fetch_package_modules(
-    graphql: &GraphQLClient,
-    package_id: &str,
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let pkg = graphql
-        .fetch_package(package_id)
-        .with_context(|| format!("fetch package {}", package_id))?;
-    sui_transport::decode_graphql_modules(package_id, &pkg.modules)
-}
-
-/// Build a LocalModuleResolver with the Sui framework loaded, then fetch a target
-/// package and its transitive dependencies via GraphQL.
-fn build_resolver_with_deps(
-    package_id: &str,
-    extra_type_refs: &[String],
-) -> Result<(
-    sui_sandbox_core::resolver::LocalModuleResolver,
-    HashSet<AccountAddress>,
-)> {
-    let mut resolver = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
-    let mut loaded_packages = HashSet::new();
-    for fw in ["0x1", "0x2", "0x3"] {
-        loaded_packages.insert(AccountAddress::from_hex_literal(fw).unwrap());
-    }
-
-    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
-    let graphql = GraphQLClient::new(&graphql_endpoint);
-
-    let mut to_fetch: VecDeque<AccountAddress> = VecDeque::new();
-    let target_addr = AccountAddress::from_hex_literal(package_id)
-        .with_context(|| format!("invalid target package: {}", package_id))?;
-    if !loaded_packages.contains(&target_addr) {
-        to_fetch.push_back(target_addr);
-    }
-
-    // Also fetch packages referenced in type strings
-    for type_str in extra_type_refs {
-        for pkg_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_str) {
-            if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
-                if !loaded_packages.contains(&addr) && !is_framework_address(&addr) {
-                    to_fetch.push_back(addr);
-                }
-            }
-        }
-    }
-
-    // BFS fetch dependencies
-    const MAX_DEP_ROUNDS: usize = 8;
-    let mut visited = loaded_packages.clone();
-    let mut rounds = 0;
-    while let Some(addr) = to_fetch.pop_front() {
-        if visited.contains(&addr) || is_framework_address(&addr) {
-            continue;
-        }
-        rounds += 1;
-        if rounds > MAX_DEP_ROUNDS {
-            eprintln!(
-                "Warning: dependency resolution hit max depth ({} packages fetched), \
-                 stopping. Some transitive deps may be missing.",
-                MAX_DEP_ROUNDS
-            );
-            break;
-        }
-        visited.insert(addr);
-
-        let hex = addr.to_hex_literal();
-        match fetch_package_modules(&graphql, &hex) {
-            Ok(modules) => {
-                let dep_addrs = extract_dependency_addrs(&modules);
-                resolver.load_package_at(modules, addr)?;
-                loaded_packages.insert(addr);
-
-                for dep_addr in dep_addrs {
-                    if !visited.contains(&dep_addr) && !is_framework_address(&dep_addr) {
-                        to_fetch.push_back(dep_addr);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to fetch package {}: {:#}", hex, e);
-            }
-        }
-    }
-
-    Ok((resolver, loaded_packages))
-}
-
-fn synthesize_missing_inputs_py(
-    missing: &[sui_sandbox_core::tx_replay::MissingInputObject],
-    cached_objects: &mut HashMap<String, String>,
-    version_map: &mut HashMap<String, u64>,
-    resolver: &sui_sandbox_core::resolver::LocalModuleResolver,
-    aliases: &HashMap<AccountAddress, AccountAddress>,
-    graphql: &GraphQLClient,
-    verbose: bool,
-) -> Result<Vec<String>> {
-    if missing.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-    if modules.is_empty() {
-        return Err(anyhow!("no modules loaded for synthesis"));
-    }
-    let type_model = sui_sandbox_core::mm2::TypeModel::from_modules(modules)
-        .map_err(|e| anyhow!("failed to build type model: {}", e))?;
-    let mut synthesizer = sui_sandbox_core::mm2::TypeSynthesizer::new(&type_model);
-
-    let mut logs = Vec::new();
-    for entry in missing {
-        let object_id = entry.object_id.as_str();
-        let version = entry.version;
-        let mut type_string = graphql
-            .fetch_object_at_version(object_id, version)
-            .ok()
-            .and_then(|obj| obj.type_string)
-            .or_else(|| {
-                graphql
-                    .fetch_object(object_id)
-                    .ok()
-                    .and_then(|obj| obj.type_string)
-            });
-
-        let Some(type_str) = type_string.take() else {
-            if verbose {
-                logs.push(format!(
-                    "missing_type object={} version={} (skipped)",
-                    object_id, version
-                ));
-            }
-            continue;
-        };
-
-        let mut synth_type = type_str.clone();
-        if let Ok(tag) = sui_sandbox_core::types::parse_type_tag(&type_str) {
-            let rewritten = sui_sandbox_core::utilities::rewrite_type_tag(tag, aliases);
-            synth_type = sui_sandbox_core::types::format_type_tag(&rewritten);
-        }
-
-        let mut result = synthesizer.synthesize_with_fallback(&synth_type);
-        if let Ok(id) = AccountAddress::from_hex_literal(object_id) {
-            if result.bytes.len() >= 32 {
-                result.bytes[..32].copy_from_slice(id.as_ref());
-            }
-        }
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&result.bytes);
-        let normalized = sui_sandbox_core::utilities::normalize_address(object_id);
-        cached_objects.insert(normalized.clone(), encoded.clone());
-        cached_objects.insert(object_id.to_string(), encoded.clone());
-        if let Some(short) = sui_sandbox_core::types::normalize_address_short(object_id) {
-            cached_objects.insert(short, encoded.clone());
-        }
-        version_map.insert(normalized.clone(), version);
-
-        logs.push(format!(
-            "synthesized object={} version={} type={} stub={} ({})",
-            normalized, version, synth_type, result.is_stub, result.description
-        ));
-    }
-
-    Ok(logs)
-}
-
-fn build_mm2_summary_from_modules(
-    modules: Vec<CompiledModule>,
-    verbose: bool,
-) -> (Option<bool>, Option<String>) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        sui_sandbox_core::mm2::TypeModel::from_modules(modules)
-    }));
-    match result {
-        Ok(Ok(_)) => (Some(true), None),
-        Ok(Err(err)) => {
-            if verbose {
-                eprintln!("[mm2] type model build failed: {}", err);
-            }
-            (Some(false), Some(err.to_string()))
-        }
-        Err(payload) => {
-            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic payload".to_string()
-            };
-            if verbose {
-                eprintln!("[mm2] type model panicked: {}", msg);
-            }
-            (Some(false), Some(format!("mm2 panic: {}", msg)))
-        }
-    }
-}
-
-fn attach_mm2_summary_fields(
-    output: &mut serde_json::Value,
-    modules: Vec<CompiledModule>,
-    verbose: bool,
-) {
-    let (mm2_ok, mm2_error) = build_mm2_summary_from_modules(modules, verbose);
-    if let Some(analysis) = output
-        .get_mut("analysis")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        analysis.insert("mm2_model_ok".to_string(), serde_json::json!(mm2_ok));
-        analysis.insert("mm2_error".to_string(), serde_json::json!(mm2_error));
-    }
-    if let Some(object) = output.as_object_mut() {
-        object.insert("mm2_model_ok".to_string(), serde_json::json!(mm2_ok));
-        object.insert("mm2_error".to_string(), serde_json::json!(mm2_error));
-    }
-}
-
-fn enable_self_heal_fetchers(
-    harness: &mut sui_sandbox_core::vm::VMHarness,
-    graphql: &GraphQLClient,
-    checkpoint: Option<u64>,
-    max_version: u64,
-    aliases: &HashMap<AccountAddress, AccountAddress>,
-    modules: &[CompiledModule],
-) {
-    let graphql_for_versioned = graphql.clone();
-    harness.set_versioned_child_fetcher(Box::new(move |_parent, child_id| {
-        let child_hex = child_id.to_hex_literal();
-        let object = checkpoint
-            .and_then(|cp| {
-                graphql_for_versioned
-                    .fetch_object_at_checkpoint(&child_hex, cp)
-                    .ok()
-            })
-            .or_else(|| graphql_for_versioned.fetch_object(&child_hex).ok())?;
-
-        if object.version > max_version {
-            return None;
-        }
-        let (type_str, bcs_b64) = (object.type_string?, object.bcs_base64?);
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(bcs_b64.as_bytes())
-            .ok()?;
-        let tag = sui_sandbox_core::types::parse_type_tag(&type_str).ok()?;
-        Some((tag, bytes, object.version))
-    }));
-
-    let graphql_for_key = graphql.clone();
-    let aliases_for_key = aliases.clone();
-    let modules_for_synth = Arc::new(modules.to_vec());
-    harness.set_key_based_child_fetcher(Box::new(
-        move |parent, _child_id, _key_type, key_bytes| {
-            let parent_hex = parent.to_hex_literal();
-            let field = graphql_for_key
-                .find_dynamic_field_by_bcs(&parent_hex, key_bytes, checkpoint, 1000)
-                .ok()
-                .flatten()?;
-
-            let value_type = field.value_type?;
-            let parsed = sui_sandbox_core::types::parse_type_tag(&value_type).ok()?;
-            let rewritten = sui_sandbox_core::utilities::rewrite_type_tag(parsed, &aliases_for_key);
-
-            if let Some(bcs_b64) = field.value_bcs.as_deref() {
-                if let Ok(bytes) =
-                    base64::engine::general_purpose::STANDARD.decode(bcs_b64.as_bytes())
-                {
-                    return Some((rewritten, bytes));
-                }
-            }
-
-            let synth_type = sui_sandbox_core::types::format_type_tag(&rewritten);
-            let type_model =
-                sui_sandbox_core::mm2::TypeModel::from_modules(modules_for_synth.as_ref().clone())
-                    .ok()?;
-            let mut synthesizer = sui_sandbox_core::mm2::TypeSynthesizer::new(&type_model);
-            let mut result = synthesizer.synthesize_with_fallback(&synth_type);
-            if let Some(obj_id) = field
-                .object_id
-                .as_deref()
-                .and_then(|id| AccountAddress::from_hex_literal(id).ok())
-            {
-                if result.bytes.len() >= 32 {
-                    result.bytes[..32].copy_from_slice(obj_id.as_ref());
-                }
-            }
-            Some((rewritten, result.bytes))
-        },
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// extract_interface (native)
-// ---------------------------------------------------------------------------
-
-fn extract_interface_inner(
-    package_id: Option<&str>,
-    bytecode_dir: Option<&str>,
-    rpc_url: &str,
-) -> Result<serde_json::Value> {
-    if package_id.is_none() && bytecode_dir.is_none() {
-        return Err(anyhow!(
-            "Either package_id or bytecode_dir must be provided"
-        ));
-    }
-    if package_id.is_some() && bytecode_dir.is_some() {
-        return Err(anyhow!(
-            "Provide either package_id or bytecode_dir, not both"
-        ));
-    }
-
-    if let Some(dir) = bytecode_dir {
-        let dir_path = PathBuf::from(dir);
-        let compiled = read_local_compiled_modules(&dir_path)?;
-        let pkg_id = resolve_local_package_id(&dir_path)?;
-        let (_, interface_value) =
-            build_bytecode_interface_value_from_compiled_modules(&pkg_id, &compiled)?;
-        return Ok(interface_value);
-    }
-
-    let pkg_id_str = package_id.unwrap();
-    let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-    let graphql = GraphQLClient::new(&graphql_endpoint);
-    let pkg = graphql
-        .fetch_package(pkg_id_str)
-        .with_context(|| format!("fetch package {}", pkg_id_str))?;
-
-    let raw_modules = sui_transport::decode_graphql_modules(pkg_id_str, &pkg.modules)?;
-    let compiled_modules: Vec<CompiledModule> = raw_modules
-        .into_iter()
-        .map(|(name, bytes)| {
-            CompiledModule::deserialize_with_defaults(&bytes)
-                .map_err(|e| anyhow!("deserialize {}::{}: {:?}", pkg_id_str, name, e))
-        })
-        .collect::<Result<_>>()?;
-
-    let (_, interface_value) =
-        build_bytecode_interface_value_from_compiled_modules(pkg_id_str, &compiled_modules)?;
-    Ok(interface_value)
-}
-
-// ---------------------------------------------------------------------------
-// replay (native — unified analyze + execute)
-// ---------------------------------------------------------------------------
-
-fn replay_inner(
-    digest: &str,
-    rpc_url: &str,
-    source: &str,
-    checkpoint: Option<u64>,
-    context_packages: Option<&HashMap<AccountAddress, PackageData>>,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    vm_only: bool,
-    compare: bool,
-    analyze_only: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    use sui_sandbox_core::replay_support;
-    use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy};
-
-    // ---------------------------------------------------------------
-    // 1. Fetch ReplayState
-    // ---------------------------------------------------------------
-    let mut replay_state: ReplayState;
-    let graphql_client: GraphQLClient;
-    let effective_source: String;
-
-    if let Some(cp) = checkpoint {
-        // Walrus path — no API key needed
-        if verbose {
-            eprintln!("[walrus] fetching checkpoint {} for digest {}", cp, digest);
-        }
-        let checkpoint_data = WalrusClient::mainnet()
-            .get_checkpoint(cp)
-            .context("Failed to fetch checkpoint from Walrus")?;
-        replay_state = checkpoint_to_replay_state(&checkpoint_data, digest)
-            .context("Failed to convert checkpoint to replay state")?;
-        let gql_endpoint = resolve_graphql_endpoint(rpc_url);
-        graphql_client = GraphQLClient::new(&gql_endpoint);
-        effective_source = "walrus".to_string();
-    } else {
-        // gRPC/hybrid path — requires API key
-        let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-
-        let gql_endpoint = resolve_graphql_endpoint(rpc_url);
-        graphql_client = GraphQLClient::new(&gql_endpoint);
-
-        let (grpc_endpoint, api_key) =
-            sui_transport::grpc::historical_endpoint_and_api_key_from_env();
-
-        let provider = rt.block_on(async {
-            let grpc = sui_transport::grpc::GrpcClient::with_api_key(&grpc_endpoint, api_key)
-                .await
-                .context("Failed to create gRPC client")?;
-            let mut provider = HistoricalStateProvider::with_clients(grpc, graphql_client.clone());
-
-            // Enable Walrus for hybrid/walrus sources
-            if source == "walrus" || source == "hybrid" {
-                provider = provider
-                    .with_walrus_from_env()
-                    .with_local_object_store_from_env();
-            }
-
-            Ok::<HistoricalStateProvider, anyhow::Error>(provider)
-        })?;
-
-        let prefetch_dynamic_fields = !no_prefetch;
-        replay_state = rt.block_on(async {
-            provider
-                .replay_state_builder()
-                .with_config(sui_state_fetcher::ReplayStateConfig {
-                    prefetch_dynamic_fields,
-                    df_depth: prefetch_depth,
-                    df_limit: prefetch_limit,
-                    auto_system_objects,
-                })
-                .build(digest)
-                .await
-                .context("Failed to fetch replay state")
-        })?;
-        effective_source = source.to_string();
-    }
-
-    if let Some(context_packages) = context_packages {
-        let merged = merge_context_packages(&mut replay_state, context_packages);
-        if verbose && merged > 0 {
-            eprintln!(
-                "[context] merged {} package(s) from prepared context before replay",
-                merged
-            );
-        }
-    }
-
-    if verbose {
-        eprintln!(
-            "  Sender: {}",
-            replay_state.transaction.sender.to_hex_literal()
-        );
-        eprintln!("  Commands: {}", replay_state.transaction.commands.len());
-        eprintln!("  Inputs: {}", replay_state.transaction.inputs.len());
-        eprintln!(
-            "  Objects: {}, Packages: {}",
-            replay_state.objects.len(),
-            replay_state.packages.len()
-        );
-    }
-
-    // ---------------------------------------------------------------
-    // 2. Analyze-only: return state summary without VM execution
-    // ---------------------------------------------------------------
-    if analyze_only {
-        let mut output = build_analyze_replay_output(
-            &replay_state,
-            source,
-            &effective_source,
-            vm_only,
-            allow_fallback,
-            auto_system_objects,
-            !no_prefetch,
-            prefetch_depth,
-            prefetch_limit,
-            verbose,
-        )?;
-        if analyze_mm2 {
-            let pkg_aliases = build_aliases(&replay_state.packages, None, replay_state.checkpoint);
-            let mut resolver = replay_support::hydrate_resolver_from_replay_state(
-                &replay_state,
-                &pkg_aliases.linkage_upgrades,
-                &pkg_aliases.aliases,
-            )?;
-            let _ = replay_support::fetch_dependency_closure(
-                &mut resolver,
-                &graphql_client,
-                replay_state.checkpoint,
-                verbose,
-            );
-            let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-            attach_mm2_summary_fields(&mut output, modules, verbose);
-        }
-        return Ok(output);
-    }
-
-    // ---------------------------------------------------------------
-    // 3. Full replay: build resolver, fetch deps, execute VM
-    // ---------------------------------------------------------------
-    let pkg_aliases = build_aliases(
-        &replay_state.packages,
-        None, // no provider ref needed for PyO3 path
-        replay_state.checkpoint,
-    );
-
-    let mut resolver = replay_support::hydrate_resolver_from_replay_state(
-        &replay_state,
-        &pkg_aliases.linkage_upgrades,
-        &pkg_aliases.aliases,
-    )?;
-
-    let fetched_deps = replay_support::fetch_dependency_closure(
-        &mut resolver,
-        &graphql_client,
-        replay_state.checkpoint,
-        verbose,
-    )
-    .unwrap_or(0);
-    if verbose && fetched_deps > 0 {
-        eprintln!("[deps] fetched {} dependency packages", fetched_deps);
-    }
-
-    let mut maps = replay_support::build_replay_object_maps(&replay_state, &pkg_aliases.versions);
-    replay_support::maybe_patch_replay_objects(
-        &resolver,
-        &replay_state,
-        &pkg_aliases.versions,
-        &pkg_aliases.aliases,
-        &mut maps,
-        verbose,
-    );
-
-    let config = replay_support::build_simulation_config(&replay_state);
-    let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
-    harness
-        .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), maps.versions_str.clone());
-    if self_heal_dynamic_fields {
-        let max_version = maps.version_map.values().copied().max().unwrap_or(0);
-        let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-        if !modules.is_empty() {
-            let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-            let graphql = GraphQLClient::new(&graphql_endpoint);
-            enable_self_heal_fetchers(
-                &mut harness,
-                &graphql,
-                replay_state.checkpoint,
-                max_version,
-                &pkg_aliases.aliases,
-                &modules,
-            );
-        }
-    }
-    if self_heal_dynamic_fields {
-        let max_version = maps.version_map.values().copied().max().unwrap_or(0);
-        let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-        if !modules.is_empty() {
-            enable_self_heal_fetchers(
-                &mut harness,
-                &graphql_client,
-                replay_state.checkpoint,
-                max_version,
-                &pkg_aliases.aliases,
-                &modules,
-            );
-        }
-    }
-
-    let reconcile_policy = EffectsReconcilePolicy::Strict;
-    let mut replay_result = tx_replay::replay_with_version_tracking_with_policy_with_effects(
-        &replay_state.transaction,
-        &mut harness,
-        &maps.cached_objects,
-        &pkg_aliases.aliases,
-        Some(&maps.versions_str),
-        reconcile_policy,
-    );
-    let mut synthetic_inputs = 0usize;
-    if synthesize_missing
-        && replay_result
-            .as_ref()
-            .map(|result| !result.result.local_success)
-            .unwrap_or(true)
-    {
-        let missing =
-            tx_replay::find_missing_input_objects(&replay_state.transaction, &maps.cached_objects);
-        if !missing.is_empty() {
-            match synthesize_missing_inputs_py(
-                &missing,
-                &mut maps.cached_objects,
-                &mut maps.version_map,
-                &resolver,
-                &pkg_aliases.aliases,
-                &graphql_client,
-                verbose,
-            ) {
-                Ok(logs) => {
-                    synthetic_inputs = logs.len();
-                    if verbose && synthetic_inputs > 0 {
-                        eprintln!(
-                            "[replay_fallback] synthesized {} missing input object(s)",
-                            synthetic_inputs
-                        );
-                    }
-                    if synthetic_inputs > 0 {
-                        replay_result =
-                            tx_replay::replay_with_version_tracking_with_policy_with_effects(
-                                &replay_state.transaction,
-                                &mut harness,
-                                &maps.cached_objects,
-                                &pkg_aliases.aliases,
-                                Some(&maps.versions_str),
-                                reconcile_policy,
-                            );
-                    }
-                }
-                Err(err) => {
-                    if verbose {
-                        eprintln!("[replay_fallback] synthesis failed: {}", err);
-                    }
-                }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // 4. Build output JSON
-    // ---------------------------------------------------------------
-    build_replay_output(
-        &replay_state,
-        replay_result,
-        source,
-        &effective_source,
-        vm_only,
-        allow_fallback,
-        auto_system_objects,
-        !no_prefetch,
-        prefetch_depth,
-        prefetch_limit,
-        "graphql_dependency_closure",
-        fetched_deps,
-        synthetic_inputs,
-        compare,
-    )
-}
-
-fn replay_loaded_state_inner(
-    mut replay_state: ReplayState,
-    requested_source: &str,
-    effective_source: &str,
-    context_packages: Option<&HashMap<AccountAddress, PackageData>>,
-    allow_fallback: bool,
-    auto_system_objects: bool,
-    self_heal_dynamic_fields: bool,
-    vm_only: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    analyze_mm2: bool,
-    rpc_url: &str,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    use sui_sandbox_core::replay_support;
-    use sui_sandbox_core::tx_replay::{self, EffectsReconcilePolicy};
-
-    if let Some(context_packages) = context_packages {
-        let merged = merge_context_packages(&mut replay_state, context_packages);
-        if verbose && merged > 0 {
-            eprintln!(
-                "[context] merged {} package(s) from prepared context before replay",
-                merged
-            );
-        }
-    }
-
-    if analyze_only {
-        let mut output = build_analyze_replay_output(
-            &replay_state,
-            requested_source,
-            effective_source,
-            vm_only,
-            allow_fallback,
-            auto_system_objects,
-            false,
-            0,
-            0,
-            verbose,
-        )?;
-        if analyze_mm2 {
-            let pkg_aliases = build_aliases(&replay_state.packages, None, replay_state.checkpoint);
-            let resolver = replay_support::hydrate_resolver_from_replay_state(
-                &replay_state,
-                &pkg_aliases.linkage_upgrades,
-                &pkg_aliases.aliases,
-            )?;
-            let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-            attach_mm2_summary_fields(&mut output, modules, verbose);
-        }
-        return Ok(output);
-    }
-
-    let pkg_aliases = build_aliases(&replay_state.packages, None, replay_state.checkpoint);
-    let resolver = replay_support::hydrate_resolver_from_replay_state(
-        &replay_state,
-        &pkg_aliases.linkage_upgrades,
-        &pkg_aliases.aliases,
-    )?;
-
-    let mut maps = replay_support::build_replay_object_maps(&replay_state, &pkg_aliases.versions);
-    replay_support::maybe_patch_replay_objects(
-        &resolver,
-        &replay_state,
-        &pkg_aliases.versions,
-        &pkg_aliases.aliases,
-        &mut maps,
-        verbose,
-    );
-
-    let config = replay_support::build_simulation_config(&replay_state);
-    let mut harness = sui_sandbox_core::vm::VMHarness::with_config(&resolver, false, config)?;
-    harness
-        .set_address_aliases_with_versions(pkg_aliases.aliases.clone(), maps.versions_str.clone());
-    if self_heal_dynamic_fields {
-        let max_version = maps.version_map.values().copied().max().unwrap_or(0);
-        let modules: Vec<CompiledModule> = resolver.iter_modules().cloned().collect();
-        if !modules.is_empty() {
-            let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-            let graphql = GraphQLClient::new(&graphql_endpoint);
-            enable_self_heal_fetchers(
-                &mut harness,
-                &graphql,
-                replay_state.checkpoint,
-                max_version,
-                &pkg_aliases.aliases,
-                &modules,
-            );
-        }
-    }
-
-    let mut replay_result = tx_replay::replay_with_version_tracking_with_policy_with_effects(
-        &replay_state.transaction,
-        &mut harness,
-        &maps.cached_objects,
-        &pkg_aliases.aliases,
-        Some(&maps.versions_str),
-        EffectsReconcilePolicy::Strict,
-    );
-    let mut synthetic_inputs = 0usize;
-    if synthesize_missing
-        && replay_result
-            .as_ref()
-            .map(|result| !result.result.local_success)
-            .unwrap_or(true)
-    {
-        let missing =
-            tx_replay::find_missing_input_objects(&replay_state.transaction, &maps.cached_objects);
-        if !missing.is_empty() {
-            let graphql_endpoint = resolve_graphql_endpoint(rpc_url);
-            let graphql = GraphQLClient::new(&graphql_endpoint);
-            match synthesize_missing_inputs_py(
-                &missing,
-                &mut maps.cached_objects,
-                &mut maps.version_map,
-                &resolver,
-                &pkg_aliases.aliases,
-                &graphql,
-                verbose,
-            ) {
-                Ok(logs) => {
-                    synthetic_inputs = logs.len();
-                    if verbose && synthetic_inputs > 0 {
-                        eprintln!(
-                            "[replay_fallback] synthesized {} missing input object(s)",
-                            synthetic_inputs
-                        );
-                    }
-                    if synthetic_inputs > 0 {
-                        replay_result =
-                            tx_replay::replay_with_version_tracking_with_policy_with_effects(
-                                &replay_state.transaction,
-                                &mut harness,
-                                &maps.cached_objects,
-                                &pkg_aliases.aliases,
-                                Some(&maps.versions_str),
-                                EffectsReconcilePolicy::Strict,
-                            );
-                    }
-                }
-                Err(err) => {
-                    if verbose {
-                        eprintln!("[replay_fallback] synthesis failed: {}", err);
-                    }
-                }
-            }
-        }
-    }
-
-    build_replay_output(
-        &replay_state,
-        replay_result,
-        requested_source,
-        effective_source,
-        vm_only,
-        allow_fallback,
-        auto_system_objects,
-        false,
-        0,
-        0,
-        effective_source,
-        0,
-        synthetic_inputs,
-        compare,
-    )
-}
-
-fn load_replay_state_from_file(path: &Path, digest: Option<&str>) -> Result<ReplayState> {
-    let states = parse_replay_states_file(path)?;
-    if states.is_empty() {
-        return Err(anyhow!(
-            "Replay state file '{}' did not contain any states",
-            path.display()
-        ));
-    }
-    if states.len() == 1 {
-        return Ok(states.into_iter().next().expect("single replay state"));
-    }
-    let digest = digest.ok_or_else(|| {
-        anyhow!(
-            "Replay state file '{}' contains multiple states; provide digest",
-            path.display()
-        )
-    })?;
-    states
-        .into_iter()
-        .find(|state| state.transaction.digest.0 == digest)
-        .ok_or_else(|| {
-            anyhow!(
-                "Replay state file '{}' does not contain digest '{}'",
-                path.display(),
-                digest
-            )
-        })
-}
-
-fn import_state_inner(
-    state: Option<&str>,
-    transactions: Option<&str>,
-    objects: Option<&str>,
-    packages: Option<&str>,
-    cache_dir: Option<&str>,
-) -> Result<serde_json::Value> {
-    let cache_dir = cache_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(default_local_cache_dir);
-
-    let spec = ImportSpec {
-        state: state.map(PathBuf::from),
-        transactions: transactions.map(PathBuf::from),
-        objects: objects.map(PathBuf::from),
-        packages: packages.map(PathBuf::from),
-    };
-    let summary = import_replay_states(&cache_dir, &spec)?;
-    Ok(serde_json::json!({
-        "cache_dir": summary.cache_dir,
-        "states_imported": summary.states_imported,
-        "objects_imported": summary.objects_imported,
-        "packages_imported": summary.packages_imported,
-        "digests": summary.digests,
-    }))
-}
-
-fn deserialize_transaction_inner(raw_bcs: &[u8]) -> Result<serde_json::Value> {
-    let decoded = bcs_codec::deserialize_transaction(raw_bcs, "decoded_tx", None, None, None)?;
-    serde_json::to_value(decoded).context("Failed to serialize decoded transaction")
-}
-
-fn deserialize_package_inner(raw_bcs: &[u8]) -> Result<serde_json::Value> {
-    let decoded = bcs_codec::deserialize_package(raw_bcs)?;
-    serde_json::to_value(decoded).context("Failed to serialize decoded package")
-}
-
-/// Build JSON output for analyze-only mode (no VM execution).
-fn build_analyze_output(
-    replay_state: &sui_state_fetcher::ReplayState,
-    source: &str,
-    allow_fallback: bool,
-    auto_system_objects: bool,
-    dynamic_field_prefetch: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    let mut modules_total = 0usize;
-    for pkg in replay_state.packages.values() {
-        modules_total += pkg.modules.len();
-    }
-
-    let package_ids: Vec<String> = replay_state
-        .packages
-        .keys()
-        .map(|id| id.to_hex_literal())
-        .collect();
-    let object_ids: Vec<String> = replay_state
-        .objects
-        .keys()
-        .map(|id| id.to_hex_literal())
-        .collect();
-
-    // Summarize commands
-    let command_summaries: Vec<serde_json::Value> = replay_state
-        .transaction
-        .commands
-        .iter()
-        .map(|cmd| {
-            use sui_sandbox_types::PtbCommand;
-            match cmd {
-                PtbCommand::MoveCall {
-                    package,
-                    module,
-                    function,
-                    type_arguments,
-                    arguments,
-                } => serde_json::json!({
-                    "kind": "MoveCall",
-                    "target": format!("{}::{}::{}", package, module, function),
-                    "type_args": type_arguments.len(),
-                    "args": arguments.len(),
-                }),
-                PtbCommand::SplitCoins { amounts, .. } => serde_json::json!({
-                    "kind": "SplitCoins",
-                    "args": 1 + amounts.len(),
-                }),
-                PtbCommand::MergeCoins { sources, .. } => serde_json::json!({
-                    "kind": "MergeCoins",
-                    "args": 1 + sources.len(),
-                }),
-                PtbCommand::TransferObjects { objects, .. } => serde_json::json!({
-                    "kind": "TransferObjects",
-                    "args": 1 + objects.len(),
-                }),
-                PtbCommand::MakeMoveVec { elements, .. } => serde_json::json!({
-                    "kind": "MakeMoveVec",
-                    "args": elements.len(),
-                }),
-                PtbCommand::Publish { dependencies, .. } => serde_json::json!({
-                    "kind": "Publish",
-                    "args": dependencies.len(),
-                }),
-                PtbCommand::Upgrade { package, .. } => serde_json::json!({
-                    "kind": "Upgrade",
-                    "target": package,
-                }),
-            }
-        })
-        .collect();
-
-    // Summarize inputs
-    let mut pure = 0usize;
-    let mut owned = 0usize;
-    let mut shared_mutable = 0usize;
-    let mut shared_immutable = 0usize;
-    let mut immutable = 0usize;
-    let mut receiving = 0usize;
-
-    for input in &replay_state.transaction.inputs {
-        use sui_sandbox_types::TransactionInput;
-        match input {
-            TransactionInput::Pure { .. } => pure += 1,
-            TransactionInput::Object { .. } => owned += 1,
-            TransactionInput::SharedObject { mutable, .. } => {
-                if *mutable {
-                    shared_mutable += 1;
-                } else {
-                    shared_immutable += 1;
-                }
-            }
-            TransactionInput::ImmutableObject { .. } => immutable += 1,
-            TransactionInput::Receiving { .. } => receiving += 1,
-        }
-    }
-
-    let mut result = serde_json::json!({
-        "digest": replay_state.transaction.digest.0,
-        "sender": replay_state.transaction.sender.to_hex_literal(),
-        "commands": replay_state.transaction.commands.len(),
-        "inputs": replay_state.transaction.inputs.len(),
-        "objects": replay_state.objects.len(),
-        "packages": replay_state.packages.len(),
-        "modules": modules_total,
-        "input_summary": {
-            "total": replay_state.transaction.inputs.len(),
-            "pure": pure,
-            "owned": owned,
-            "shared_mutable": shared_mutable,
-            "shared_immutable": shared_immutable,
-            "immutable": immutable,
-            "receiving": receiving,
-        },
-        "command_summaries": command_summaries,
-        "hydration": {
-            "source": source,
-            "allow_fallback": allow_fallback,
-            "auto_system_objects": auto_system_objects,
-            "dynamic_field_prefetch": dynamic_field_prefetch,
-            "prefetch_depth": prefetch_depth,
-            "prefetch_limit": prefetch_limit,
-        },
-        "epoch": replay_state.epoch,
-        "protocol_version": replay_state.protocol_version,
-    });
-
-    if let Some(cp) = replay_state.checkpoint {
-        result["checkpoint"] = serde_json::json!(cp);
-    }
-    if let Some(rgp) = replay_state.reference_gas_price {
-        result["reference_gas_price"] = serde_json::json!(rgp);
-    }
-    if verbose {
-        result["package_ids"] = serde_json::json!(package_ids);
-        result["object_ids"] = serde_json::json!(object_ids);
-    }
-
-    Ok(result)
-}
-
-/// Build envelope JSON for analyze-only replay mode.
-///
-/// This mirrors CLI replay shape (`local_success`, `execution_path`, `analysis`) while
-/// retaining top-level summary keys for backwards compatibility.
-fn build_analyze_replay_output(
-    replay_state: &ReplayState,
-    requested_source: &str,
-    effective_source: &str,
-    vm_only: bool,
-    allow_fallback: bool,
-    auto_system_objects: bool,
-    dynamic_field_prefetch: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    let analysis = build_analyze_output(
-        replay_state,
-        effective_source,
-        allow_fallback,
-        auto_system_objects,
-        dynamic_field_prefetch,
-        prefetch_depth,
-        prefetch_limit,
-        verbose,
-    )?;
-
-    let execution_path = serde_json::json!({
-        "requested_source": requested_source,
-        "effective_source": effective_source,
-        "vm_only": vm_only,
-        "allow_fallback": allow_fallback,
-        "auto_system_objects": auto_system_objects,
-        "fallback_used": false,
-        "dynamic_field_prefetch": dynamic_field_prefetch,
-        "prefetch_depth": prefetch_depth,
-        "prefetch_limit": prefetch_limit,
-        "dependency_fetch_mode": "hydration_only",
-        "dependency_packages_fetched": 0,
-        "synthetic_inputs": 0,
-    });
-
-    let mut output = serde_json::json!({
-        "digest": replay_state.transaction.digest.0,
-        "local_success": true,
-        "execution_path": execution_path,
-        "analysis": analysis.clone(),
-        "commands_executed": 0,
-    });
-
-    // Backwards-compatible access for existing scripts:
-    // expose summary fields at the top level in addition to `analysis`.
-    if let Some(summary) = analysis.as_object() {
-        for (key, value) in summary {
-            if output.get(key).is_none() {
-                output[key] = value.clone();
-            }
-        }
-    }
-
-    Ok(output)
-}
-
-/// Build JSON output for full replay (VM execution results).
-fn build_replay_diagnostics_py(replay_state: &ReplayState) -> Option<serde_json::Value> {
-    use std::collections::BTreeSet;
-    use sui_sandbox_types::TransactionInput;
-
-    let mut missing_inputs = Vec::new();
-    for input in &replay_state.transaction.inputs {
-        let object_id = match input {
-            TransactionInput::Object { object_id, .. } => Some(object_id),
-            TransactionInput::SharedObject { object_id, .. } => Some(object_id),
-            TransactionInput::ImmutableObject { object_id, .. } => Some(object_id),
-            TransactionInput::Receiving { object_id, .. } => Some(object_id),
-            TransactionInput::Pure { .. } => None,
-        };
-        if let Some(object_id) = object_id {
-            if let Ok(address) = AccountAddress::from_hex_literal(object_id) {
-                if !replay_state.objects.contains_key(&address) {
-                    missing_inputs.push(address.to_hex_literal());
-                }
-            } else {
-                missing_inputs.push(object_id.clone());
-            }
-        }
-    }
-
-    let mut required_packages: BTreeSet<AccountAddress> = BTreeSet::new();
-    for cmd in &replay_state.transaction.commands {
-        use sui_sandbox_types::PtbCommand;
-        match cmd {
-            PtbCommand::MoveCall {
-                package,
-                type_arguments,
-                ..
-            } => {
-                if let Ok(address) = AccountAddress::from_hex_literal(package) {
-                    required_packages.insert(address);
-                }
-                for ty in type_arguments {
-                    for pkg in sui_sandbox_core::utilities::extract_package_ids_from_type(ty) {
-                        if let Ok(address) = AccountAddress::from_hex_literal(&pkg) {
-                            required_packages.insert(address);
-                        }
-                    }
-                }
-            }
-            PtbCommand::Upgrade { package, .. } => {
-                if let Ok(address) = AccountAddress::from_hex_literal(package) {
-                    required_packages.insert(address);
-                }
-            }
-            PtbCommand::Publish { dependencies, .. } => {
-                for dep in dependencies {
-                    if let Ok(address) = AccountAddress::from_hex_literal(dep) {
-                        required_packages.insert(address);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let missing_packages = required_packages
-        .into_iter()
-        .filter(|address| !replay_state.packages.contains_key(address))
-        .map(|address| address.to_hex_literal())
-        .collect::<Vec<_>>();
-
-    let mut suggestions = Vec::new();
-    if !missing_inputs.is_empty() {
-        suggestions.push(
-            "Missing input objects detected; provide full object state via state_file or better hydration source."
-                .to_string(),
-        );
-    }
-    if !missing_packages.is_empty() {
-        suggestions.push(
-            "Missing package bytecode detected; prepare a package context and replay with context_path."
-                .to_string(),
-        );
-    }
-
-    if missing_inputs.is_empty() && missing_packages.is_empty() && suggestions.is_empty() {
-        None
-    } else {
-        Some(serde_json::json!({
-            "missing_input_objects": missing_inputs,
-            "missing_packages": missing_packages,
-            "suggestions": suggestions,
-        }))
-    }
-}
-
-fn build_replay_output(
-    replay_state: &sui_state_fetcher::ReplayState,
-    replay_result: Result<sui_sandbox_core::tx_replay::ReplayExecution>,
-    requested_source: &str,
-    effective_source: &str,
-    vm_only: bool,
-    allow_fallback: bool,
-    auto_system_objects: bool,
-    dynamic_field_prefetch: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    dependency_fetch_mode: &str,
-    dependency_packages_fetched: usize,
-    synthetic_inputs: usize,
-    compare: bool,
-) -> Result<serde_json::Value> {
-    let execution_path = serde_json::json!({
-        "requested_source": requested_source,
-        "effective_source": effective_source,
-        "vm_only": vm_only,
-        "allow_fallback": allow_fallback,
-        "auto_system_objects": auto_system_objects,
-        "fallback_used": false,
-        "dynamic_field_prefetch": dynamic_field_prefetch,
-        "prefetch_depth": prefetch_depth,
-        "prefetch_limit": prefetch_limit,
-        "dependency_fetch_mode": dependency_fetch_mode,
-        "dependency_packages_fetched": dependency_packages_fetched,
-        "synthetic_inputs": synthetic_inputs,
-    });
-
-    match replay_result {
-        Ok(execution) => {
-            let result = execution.result;
-            let effects = &execution.effects;
-            let diagnostics = if result.local_success {
-                None
-            } else {
-                build_replay_diagnostics_py(replay_state)
-            };
-
-            let effects_summary = serde_json::json!({
-                "success": effects.success,
-                "error": effects.error,
-                "gas_used": effects.gas_used,
-                "created": effects.created.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "mutated": effects.mutated.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "deleted": effects.deleted.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "wrapped": effects.wrapped.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "unwrapped": effects.unwrapped.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "transferred": effects.transferred.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "received": effects.received.iter().map(|id| id.to_hex_literal()).collect::<Vec<_>>(),
-                "events_count": effects.events.len(),
-                "failed_command_index": effects.failed_command_index,
-                "failed_command_description": effects.failed_command_description,
-                "commands_succeeded": effects.commands_succeeded,
-                "return_values": effects.return_values.iter().map(|v| v.len()).collect::<Vec<_>>(),
-            });
-
-            let comparison = if compare {
-                result.comparison.map(|c| {
-                    serde_json::json!({
-                        "status_match": c.status_match,
-                        "created_match": c.created_count_match,
-                        "mutated_match": c.mutated_count_match,
-                        "deleted_match": c.deleted_count_match,
-                        "on_chain_status": if c.status_match && result.local_success {
-                            "success"
-                        } else if c.status_match && !result.local_success {
-                            "failed"
-                        } else {
-                            "unknown"
-                        },
-                        "local_status": if result.local_success { "success" } else { "failed" },
-                        "notes": c.notes,
-                    })
-                })
-            } else {
-                None
-            };
-
-            let mut output = serde_json::json!({
-                "digest": replay_state.transaction.digest.0,
-                "local_success": result.local_success,
-                "execution_path": execution_path,
-                "effects": effects_summary,
-                "commands_executed": result.commands_executed,
-            });
-
-            if let Some(err) = &result.local_error {
-                output["local_error"] = serde_json::json!(err);
-            }
-            if let Some(diagnostics) = diagnostics {
-                output["diagnostics"] = diagnostics;
-            }
-            if let Some(cmp) = comparison {
-                output["comparison"] = cmp;
-            }
-
-            Ok(output)
-        }
-        Err(e) => {
-            let mut output = serde_json::json!({
-                "digest": replay_state.transaction.digest.0,
-                "local_success": false,
-                "local_error": e.to_string(),
-                "execution_path": execution_path,
-                "commands_executed": 0,
-            });
-            if let Some(diagnostics) = build_replay_diagnostics_py(replay_state) {
-                output["diagnostics"] = diagnostics;
-            }
-            Ok(output)
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// get_latest_checkpoint (native — Walrus)
-// ---------------------------------------------------------------------------
 
 fn get_latest_checkpoint_inner() -> Result<u64> {
     WalrusClient::mainnet().get_latest_checkpoint()
@@ -1672,77 +409,6 @@ fn get_checkpoint_inner(checkpoint_num: u64) -> Result<serde_json::Value> {
     }))
 }
 
-fn parse_walrus_archive_network(network: &str) -> Result<CoreWalrusArchiveNetwork> {
-    CoreWalrusArchiveNetwork::parse(network)
-}
-
-fn build_walrus_client(
-    network: CoreWalrusArchiveNetwork,
-    caching_url: Option<&str>,
-    aggregator_url: Option<&str>,
-) -> Result<WalrusClient> {
-    core_build_walrus_client(network, caching_url, aggregator_url)
-}
-
-fn normalize_package_id(package: &str) -> Result<String> {
-    core_normalize_package_id(package)
-}
-
-fn normalize_protocol_name(protocol: &str) -> Result<String> {
-    let normalized = protocol.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "generic" | "deepbook" | "cetus" | "suilend" | "scallop" => Ok(normalized),
-        _ => Err(anyhow!(
-            "invalid protocol '{}': expected one of generic, deepbook, cetus, suilend, scallop",
-            protocol
-        )),
-    }
-}
-
-fn protocol_default_package_id(protocol: &str) -> Option<&'static str> {
-    match protocol {
-        "deepbook" => Some(PROTOCOL_DEEPBOOK_MARGIN_PACKAGE),
-        _ => None,
-    }
-}
-
-fn resolve_protocol_package_id(protocol: &str, package_id: Option<&str>) -> Result<String> {
-    let normalized = normalize_protocol_name(protocol)?;
-    let raw = match package_id {
-        Some(value) => value,
-        None => protocol_default_package_id(&normalized).ok_or_else(|| {
-            anyhow!(
-                "protocol '{}' has no default package id; provide package_id",
-                normalized
-            )
-        })?,
-    };
-    normalize_package_id(raw)
-}
-
-fn resolve_protocol_discovery_package_filter(
-    protocol: &str,
-    package_id: Option<&str>,
-) -> Result<Option<String>> {
-    if let Some(raw) = package_id {
-        return normalize_package_id(raw).map(Some);
-    }
-    let normalized = normalize_protocol_name(protocol)?;
-    if normalized == "generic" {
-        return Ok(None);
-    }
-    protocol_default_package_id(&normalized)
-        .map(normalize_package_id)
-        .transpose()?
-        .ok_or_else(|| {
-            anyhow!(
-                "protocol '{}' has no default package id; provide package_id",
-                normalized
-            )
-        })
-        .map(Some)
-}
-
 #[derive(Debug, Clone, Copy)]
 enum WorkflowOutputFormat {
     Json,
@@ -1772,1363 +438,6 @@ impl WorkflowOutputFormat {
             Self::Yaml => "yaml",
         }
     }
-}
-
-fn parse_workflow_template(template: &str) -> Result<BuiltinWorkflowTemplate> {
-    match template.trim().to_ascii_lowercase().as_str() {
-        "generic" => Ok(BuiltinWorkflowTemplate::Generic),
-        "cetus" => Ok(BuiltinWorkflowTemplate::Cetus),
-        "suilend" => Ok(BuiltinWorkflowTemplate::Suilend),
-        "scallop" => Ok(BuiltinWorkflowTemplate::Scallop),
-        other => Err(anyhow!(
-            "invalid template '{}': expected one of generic, cetus, suilend, scallop",
-            other
-        )),
-    }
-}
-
-fn parse_workflow_output_format(format: Option<&str>) -> Result<Option<WorkflowOutputFormat>> {
-    let Some(format) = format else {
-        return Ok(None);
-    };
-    match format.trim().to_ascii_lowercase().as_str() {
-        "json" => Ok(Some(WorkflowOutputFormat::Json)),
-        "yaml" | "yml" => Ok(Some(WorkflowOutputFormat::Yaml)),
-        other => Err(anyhow!(
-            "invalid format '{}': expected 'json' or 'yaml'",
-            other
-        )),
-    }
-}
-
-fn short_package_id(package_id: &str) -> String {
-    let trimmed = package_id.trim_start_matches("0x");
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.chars().take(12).collect()
-    }
-}
-
-fn write_workflow_spec(
-    path: &Path,
-    spec: &WorkflowSpec,
-    format: WorkflowOutputFormat,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create workflow output directory {}",
-                    parent.display()
-                )
-            })?;
-        }
-    }
-    let serialized = match format {
-        WorkflowOutputFormat::Json => serde_json::to_string_pretty(spec)?,
-        WorkflowOutputFormat::Yaml => serde_yaml::to_string(spec)?,
-    };
-    std::fs::write(path, serialized)
-        .with_context(|| format!("Failed to write workflow spec {}", path.display()))?;
-    Ok(())
-}
-
-fn probe_package_modules_for_workflow(package_id: &str) -> Result<(usize, Vec<String>)> {
-    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
-    let graphql = GraphQLClient::new(&graphql_endpoint);
-    let modules = fetch_package_modules(&graphql, package_id)?;
-    let names = modules
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect::<Vec<_>>();
-    Ok((names.len(), names))
-}
-
-fn probe_dependency_closure_for_workflow(package_id: &str) -> Result<(usize, Vec<String>)> {
-    let fetched = fetch_package_bytecodes_inner(package_id, true)?;
-    let packages_value = fetched
-        .get("packages")
-        .ok_or_else(|| anyhow!("fetch package probe output missing `packages` field"))?;
-    let decoded = decode_context_packages_value(packages_value)?;
-    let unresolved = unresolved_package_dependencies_for_modules(
-        decoded
-            .iter()
-            .map(|(id, pkg)| (*id, pkg.modules.clone()))
-            .collect(),
-    )?;
-    Ok((
-        decoded.len(),
-        unresolved
-            .into_iter()
-            .map(|address| address.to_hex_literal())
-            .collect(),
-    ))
-}
-
-#[derive(Debug, Clone)]
-struct WorkflowTemplateInference {
-    template: BuiltinWorkflowTemplate,
-    confidence: &'static str,
-    source: &'static str,
-    reason: Option<String>,
-}
-
-fn infer_workflow_template_from_modules(module_names: &[String]) -> WorkflowTemplateInference {
-    if module_names.is_empty() {
-        return WorkflowTemplateInference {
-            template: BuiltinWorkflowTemplate::Generic,
-            confidence: "low",
-            source: "fallback",
-            reason: Some("no module names available from package probe".to_string()),
-        };
-    }
-
-    let cetus_keywords = ["cetus", "clmm", "dlmm", "pool_script", "position_manager"];
-    let suilend_keywords = ["suilend", "lending", "reserve", "obligation", "liquidation"];
-    let scallop_keywords = ["scallop", "scoin", "spool", "collateral", "market"];
-
-    let mut cetus_score = 0usize;
-    let mut suilend_score = 0usize;
-    let mut scallop_score = 0usize;
-    for name in module_names.iter().map(|value| value.to_ascii_lowercase()) {
-        if cetus_keywords.iter().any(|kw| name.contains(kw)) {
-            cetus_score += 1;
-        }
-        if suilend_keywords.iter().any(|kw| name.contains(kw)) {
-            suilend_score += 1;
-        }
-        if scallop_keywords.iter().any(|kw| name.contains(kw)) {
-            scallop_score += 1;
-        }
-    }
-
-    let mut ranked = vec![
-        (BuiltinWorkflowTemplate::Cetus, cetus_score),
-        (BuiltinWorkflowTemplate::Suilend, suilend_score),
-        (BuiltinWorkflowTemplate::Scallop, scallop_score),
-        (BuiltinWorkflowTemplate::Generic, 0usize),
-    ];
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
-    let (top_template, top_score) = ranked[0];
-    let second_score = ranked[1].1;
-
-    if top_score == 0 {
-        return WorkflowTemplateInference {
-            template: BuiltinWorkflowTemplate::Generic,
-            confidence: "low",
-            source: "module_probe",
-            reason: Some("no template keyword matches found in module names".to_string()),
-        };
-    }
-    if top_score == second_score {
-        return WorkflowTemplateInference {
-            template: BuiltinWorkflowTemplate::Generic,
-            confidence: "low",
-            source: "module_probe",
-            reason: Some(format!(
-                "ambiguous module matches (cetus={}, suilend={}, scallop={})",
-                cetus_score, suilend_score, scallop_score
-            )),
-        };
-    }
-
-    let confidence = if top_score >= 4 {
-        "high"
-    } else if top_score >= 2 {
-        "medium"
-    } else {
-        "low"
-    };
-    WorkflowTemplateInference {
-        template: top_template,
-        confidence,
-        source: "module_probe",
-        reason: Some(format!(
-            "module keyword matches: cetus={}, suilend={}, scallop={}",
-            cetus_score, suilend_score, scallop_score
-        )),
-    }
-}
-
-#[derive(Debug, Clone)]
-struct WorkflowDiscoveryTarget {
-    digest: String,
-    checkpoint: u64,
-}
-
-fn discover_latest_target_for_workflow(
-    package_id: &str,
-    latest: u64,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> Result<WorkflowDiscoveryTarget> {
-    if latest == 0 {
-        return Err(anyhow!("discover_latest must be greater than zero"));
-    }
-    let discovered = discover_checkpoint_targets_inner(
-        None,
-        Some(latest),
-        Some(package_id),
-        false,
-        1,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-    )?;
-    let target = discovered
-        .get("targets")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|targets| targets.first())
-        .ok_or_else(|| {
-            anyhow!(
-                "no candidate transactions discovered for package {} in latest {} checkpoint(s)",
-                package_id,
-                latest
-            )
-        })?;
-    let digest = target
-        .get("digest")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow!("discovery target missing digest"))?
-        .to_string();
-    let checkpoint = target
-        .get("checkpoint")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("discovery target missing checkpoint"))?;
-    Ok(WorkflowDiscoveryTarget { digest, checkpoint })
-}
-
-#[derive(Debug, Clone)]
-struct WorkflowRunStepExecution {
-    exit_code: i32,
-    output: serde_json::Value,
-}
-
-fn workflow_step_kind(action: &WorkflowStepAction) -> &'static str {
-    match action {
-        WorkflowStepAction::Replay(_) => "replay",
-        WorkflowStepAction::AnalyzeReplay(_) => "analyze_replay",
-        WorkflowStepAction::Command(_) => "command",
-    }
-}
-
-fn workflow_step_label(step: &WorkflowStep, index: usize) -> String {
-    if let Some(id) = step.id.as_deref() {
-        if !id.trim().is_empty() {
-            return format!("{index}:{id}");
-        }
-    }
-    if let Some(name) = step.name.as_deref() {
-        if !name.trim().is_empty() {
-            return format!("{index}:{name}");
-        }
-    }
-    index.to_string()
-}
-
-fn workflow_first_nonempty_output_line(bytes: &[u8]) -> Option<String> {
-    const MAX_LEN: usize = 240;
-    let text = String::from_utf8_lossy(bytes);
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(ToOwned::to_owned)?;
-
-    if line.chars().count() > MAX_LEN {
-        let truncated: String = line.chars().take(MAX_LEN).collect();
-        return Some(format!("{truncated}..."));
-    }
-    Some(line)
-}
-
-fn workflow_summarize_failure_output(stdout: &[u8], stderr: &[u8]) -> Option<String> {
-    workflow_first_nonempty_output_line(stderr)
-        .or_else(|| workflow_first_nonempty_output_line(stdout))
-}
-
-fn workflow_build_step_command(
-    defaults: &WorkflowDefaults,
-    step: &WorkflowStep,
-) -> Result<Vec<String>> {
-    match &step.action {
-        WorkflowStepAction::Replay(replay) => Ok(workflow_build_replay_command(defaults, replay)),
-        WorkflowStepAction::AnalyzeReplay(analyze) => {
-            Ok(workflow_build_analyze_replay_command(defaults, analyze))
-        }
-        WorkflowStepAction::Command(command) => normalize_command_args(&command.args),
-    }
-}
-
-fn workflow_build_replay_command(
-    defaults: &WorkflowDefaults,
-    replay: &WorkflowReplayStep,
-) -> Vec<String> {
-    ReplayOrchestrator::build_replay_command(defaults, replay)
-}
-
-fn workflow_build_analyze_replay_command(
-    defaults: &WorkflowDefaults,
-    analyze: &WorkflowAnalyzeReplayStep,
-) -> Vec<String> {
-    ReplayOrchestrator::build_analyze_replay_command(defaults, analyze)
-}
-
-fn workflow_discover_target_for_replay(
-    checkpoint: Option<&str>,
-    latest: Option<u64>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> Result<WorkflowDiscoveryTarget> {
-    let discovered = discover_checkpoint_targets_inner(
-        checkpoint,
-        latest,
-        None,
-        false,
-        1,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-    )?;
-    let target = discovered
-        .get("targets")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|targets| targets.first())
-        .ok_or_else(|| anyhow!("workflow replay step discovery returned no targets"))?;
-    let digest = target
-        .get("digest")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow!("workflow replay step discovery target missing digest"))?
-        .to_string();
-    let checkpoint = target
-        .get("checkpoint")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("workflow replay step discovery target missing checkpoint"))?;
-    Ok(WorkflowDiscoveryTarget { digest, checkpoint })
-}
-
-fn parse_inline_workflow_spec(py: Python<'_>, spec_obj: &Bound<'_, PyAny>) -> Result<WorkflowSpec> {
-    let json_mod = py.import("json")?;
-    let dumped = json_mod
-        .call_method1("dumps", (spec_obj,))
-        .context("failed to serialize inline workflow spec to JSON")?
-        .extract::<String>()
-        .context("failed to extract inline workflow JSON string")?;
-    let spec: WorkflowSpec =
-        serde_json::from_str(&dumped).context("invalid inline workflow spec JSON payload")?;
-    spec.validate()?;
-    Ok(spec)
-}
-
-fn workflow_parse_flag_value(args: &[String], flag: &str) -> Option<String> {
-    for (idx, arg) in args.iter().enumerate() {
-        if arg == flag {
-            return args.get(idx + 1).cloned();
-        }
-        let prefix = format!("{flag}=");
-        if let Some(value) = arg.strip_prefix(&prefix) {
-            return Some(value.to_string());
-        }
-    }
-    None
-}
-
-fn workflow_extract_interface_module_names(interface: &serde_json::Value) -> Vec<String> {
-    let mut names = interface
-        .get("modules")
-        .and_then(serde_json::Value::as_object)
-        .map(|modules| modules.keys().cloned().collect::<Vec<_>>())
-        .or_else(|| {
-            interface
-                .as_object()
-                .map(|modules| modules.keys().cloned().collect::<Vec<_>>())
-        })
-        .unwrap_or_default();
-    names.sort();
-    names
-}
-
-fn workflow_has_comparison_mismatch(replay_output: &serde_json::Value) -> bool {
-    let Some(comparison) = replay_output.get("comparison") else {
-        return false;
-    };
-    let read = |key: &str| comparison.get(key).and_then(serde_json::Value::as_bool);
-    [
-        read("status_match"),
-        read("created_match"),
-        read("mutated_match"),
-        read("deleted_match"),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|value| !value)
-}
-
-struct WorkflowEnvGuard {
-    previous: Vec<(String, Option<String>)>,
-}
-
-impl Drop for WorkflowEnvGuard {
-    fn drop(&mut self) {
-        for (key, value) in self.previous.drain(..) {
-            if let Some(value) = value {
-                std::env::set_var(key, value);
-            } else {
-                std::env::remove_var(key);
-            }
-        }
-    }
-}
-
-fn workflow_profile_env_defaults(
-    profile: WorkflowReplayProfile,
-) -> &'static [(&'static str, &'static str)] {
-    match profile {
-        WorkflowReplayProfile::Safe => &[
-            ("SUI_CHECKPOINT_LOOKUP_GRAPHQL", "1"),
-            ("SUI_PACKAGE_LOOKUP_GRAPHQL", "1"),
-            ("SUI_OBJECT_FETCH_CONCURRENCY", "8"),
-            ("SUI_PACKAGE_FETCH_CONCURRENCY", "4"),
-            ("SUI_PACKAGE_FETCH_PARALLEL", "1"),
-        ],
-        WorkflowReplayProfile::Balanced => &[],
-        WorkflowReplayProfile::Fast => &[
-            ("SUI_CHECKPOINT_LOOKUP_GRAPHQL", "0"),
-            ("SUI_PACKAGE_LOOKUP_GRAPHQL", "0"),
-            ("SUI_OBJECT_FETCH_CONCURRENCY", "32"),
-            ("SUI_PACKAGE_FETCH_CONCURRENCY", "16"),
-            ("SUI_PACKAGE_FETCH_PARALLEL", "1"),
-        ],
-    }
-}
-
-fn workflow_apply_profile_env(profile: WorkflowReplayProfile) -> WorkflowEnvGuard {
-    let mut previous = Vec::new();
-    for (key, value) in workflow_profile_env_defaults(profile) {
-        if std::env::var(key).is_err() {
-            previous.push(((*key).to_string(), None));
-            std::env::set_var(key, value);
-        }
-    }
-    WorkflowEnvGuard { previous }
-}
-
-fn parse_replay_profile(value: Option<&str>) -> Result<WorkflowReplayProfile> {
-    let Some(raw) = value.map(str::trim).filter(|raw| !raw.is_empty()) else {
-        return Ok(WorkflowReplayProfile::Balanced);
-    };
-    match raw.to_ascii_lowercase().as_str() {
-        "safe" => Ok(WorkflowReplayProfile::Safe),
-        "balanced" => Ok(WorkflowReplayProfile::Balanced),
-        "fast" => Ok(WorkflowReplayProfile::Fast),
-        other => Err(anyhow!(
-            "invalid profile `{}` (expected one of: safe, balanced, fast)",
-            other
-        )),
-    }
-}
-
-fn parse_replay_fetch_strategy(value: Option<&str>) -> Result<WorkflowFetchStrategy> {
-    let Some(raw) = value.map(str::trim).filter(|raw| !raw.is_empty()) else {
-        return Ok(WorkflowFetchStrategy::Full);
-    };
-    match raw.to_ascii_lowercase().as_str() {
-        "eager" => Ok(WorkflowFetchStrategy::Eager),
-        "full" => Ok(WorkflowFetchStrategy::Full),
-        other => Err(anyhow!(
-            "invalid fetch_strategy `{}` (expected one of: eager, full)",
-            other
-        )),
-    }
-}
-
-fn workflow_execute_command_step(
-    command: &WorkflowCommandStep,
-    rpc_url: &str,
-) -> Result<WorkflowRunStepExecution> {
-    let normalized = normalize_command_args(&command.args)?;
-    let Some(program) = normalized.first() else {
-        return Err(anyhow!("command step args cannot be empty"));
-    };
-
-    if program == "status" {
-        return Ok(WorkflowRunStepExecution {
-            exit_code: 0,
-            output: serde_json::json!({
-                "success": true,
-                "mode": "python_native",
-                "status": "ready",
-            }),
-        });
-    }
-
-    if program == "analyze" && normalized.get(1).is_some_and(|value| value == "package") {
-        let package_id = workflow_parse_flag_value(&normalized, "--package-id")
-            .ok_or_else(|| anyhow!("`analyze package` requires --package-id"))?;
-        let interface = extract_interface_inner(Some(&package_id), None, rpc_url)?;
-        let module_names = workflow_extract_interface_module_names(&interface);
-        let list_modules = normalized.iter().any(|value| value == "--list-modules");
-        return Ok(WorkflowRunStepExecution {
-            exit_code: 0,
-            output: serde_json::json!({
-                "success": true,
-                "package_id": package_id,
-                "modules": module_names.len(),
-                "module_names": if list_modules { Some(module_names) } else { None },
-            }),
-        });
-    }
-
-    if program == "view" && normalized.get(1).is_some_and(|value| value == "object") {
-        let object_id = normalized
-            .get(2)
-            .cloned()
-            .ok_or_else(|| anyhow!("`view object` requires an object id argument"))?;
-        let version = workflow_parse_flag_value(&normalized, "--version")
-            .map(|raw| raw.parse::<u64>())
-            .transpose()
-            .map_err(|_| anyhow!("`view object --version` must be a u64"))?;
-        let object = fetch_object_bcs_inner(&object_id, version, None, None)?;
-        let bcs_bytes = object
-            .get("bcs_base64")
-            .and_then(serde_json::Value::as_str)
-            .map(|value| value.len())
-            .unwrap_or(0);
-        return Ok(WorkflowRunStepExecution {
-            exit_code: 0,
-            output: serde_json::json!({
-                "success": true,
-                "object_id": object_id,
-                "version": object.get("version").cloned().unwrap_or(serde_json::Value::Null),
-                "type_tag": object.get("type_tag").cloned().unwrap_or(serde_json::Value::Null),
-                "bcs_base64_len": bcs_bytes,
-            }),
-        });
-    }
-
-    let output = Command::new(program)
-        .args(&normalized[1..])
-        .output()
-        .with_context(|| format!("failed to execute command step program `{}`", program))?;
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let success = output.status.success();
-    let mut payload = serde_json::json!({
-        "success": success,
-        "program": program,
-        "stdout": stdout,
-        "stderr": stderr,
-    });
-    if !success {
-        let summary = workflow_summarize_failure_output(&output.stdout, &output.stderr)
-            .unwrap_or_else(|| {
-                format!("command `{}` failed with exit code {}", program, exit_code)
-            });
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("error".to_string(), serde_json::json!(summary));
-        }
-    }
-
-    Ok(WorkflowRunStepExecution {
-        exit_code,
-        output: payload,
-    })
-}
-
-fn workflow_execute_replay_step(
-    defaults: &WorkflowDefaults,
-    replay: &WorkflowReplayStep,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> Result<WorkflowRunStepExecution> {
-    let profile = replay
-        .profile
-        .or(defaults.profile)
-        .unwrap_or(WorkflowReplayProfile::Balanced);
-    let _profile_env = workflow_apply_profile_env(profile);
-    let fetch_strategy = replay
-        .fetch_strategy
-        .or(defaults.fetch_strategy)
-        .unwrap_or(WorkflowFetchStrategy::Full);
-    let vm_only = replay.vm_only.or(defaults.vm_only).unwrap_or(false);
-    let synthesize_missing = replay
-        .synthesize_missing
-        .or(defaults.synthesize_missing)
-        .unwrap_or(false);
-    let self_heal_dynamic_fields = replay
-        .self_heal_dynamic_fields
-        .or(defaults.self_heal_dynamic_fields)
-        .unwrap_or(false);
-
-    let source = replay
-        .source
-        .or(defaults.source)
-        .unwrap_or(WorkflowSource::Hybrid);
-
-    let mut allow_fallback = replay
-        .allow_fallback
-        .or(defaults.allow_fallback)
-        .unwrap_or(true);
-    if vm_only {
-        allow_fallback = false;
-    }
-    let auto_system_objects = replay
-        .auto_system_objects
-        .or(defaults.auto_system_objects)
-        .unwrap_or(true);
-    let no_prefetch_requested = replay.no_prefetch.or(defaults.no_prefetch).unwrap_or(false);
-    let no_prefetch = no_prefetch_requested || fetch_strategy == WorkflowFetchStrategy::Eager;
-    let prefetch_depth = replay
-        .prefetch_depth
-        .or(defaults.prefetch_depth)
-        .unwrap_or(3);
-    let prefetch_limit = replay
-        .prefetch_limit
-        .or(defaults.prefetch_limit)
-        .unwrap_or(200);
-    let compare = replay.compare.or(defaults.compare).unwrap_or(false);
-    let strict = replay.strict.or(defaults.strict).unwrap_or(false);
-
-    let mut digest = replay
-        .digest
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    if replay.latest.is_some() && digest.is_some() {
-        return Err(anyhow!(
-            "workflow replay cannot combine `digest` and `latest` in python native mode"
-        ));
-    }
-
-    let mut checkpoint = None;
-    if let Some(checkpoint_raw) = replay
-        .checkpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if let Ok(parsed) = checkpoint_raw.parse::<u64>() {
-            checkpoint = Some(parsed);
-        } else if digest.is_some() {
-            return Err(anyhow!(
-                "workflow replay checkpoint `{}` must be numeric when digest is provided in python native mode",
-                checkpoint_raw
-            ));
-        } else {
-            let discovered = workflow_discover_target_for_replay(
-                Some(checkpoint_raw),
-                None,
-                walrus_network,
-                walrus_caching_url,
-                walrus_aggregator_url,
-            )?;
-            digest = Some(discovered.digest);
-            checkpoint = Some(discovered.checkpoint);
-        }
-    }
-    if let Some(latest) = replay.latest {
-        if latest == 0 {
-            return Err(anyhow!("workflow replay latest must be >= 1"));
-        }
-        let discovered = workflow_discover_target_for_replay(
-            None,
-            Some(latest),
-            walrus_network,
-            walrus_caching_url,
-            walrus_aggregator_url,
-        )?;
-        digest = Some(discovered.digest);
-        checkpoint = Some(discovered.checkpoint);
-    }
-    if digest.is_none() && replay.state_json.is_none() {
-        return Err(anyhow!(
-            "workflow replay requires digest or state_json in python native mode"
-        ));
-    }
-
-    let source_str = source.as_cli_value();
-    let mut output = if let Some(state_json) = replay.state_json.as_ref() {
-        let replay_state = load_replay_state_from_file(state_json, digest.as_deref())?;
-        replay_loaded_state_inner(
-            replay_state,
-            source_str,
-            "state_json",
-            None,
-            allow_fallback,
-            auto_system_objects,
-            self_heal_dynamic_fields,
-            vm_only,
-            compare,
-            false,
-            synthesize_missing,
-            false,
-            rpc_url,
-            verbose,
-        )?
-    } else if source == WorkflowSource::Local {
-        let digest = digest
-            .as_deref()
-            .ok_or_else(|| anyhow!("workflow replay missing digest for local source"))?;
-        let cache_dir = default_local_cache_dir();
-        let provider = FileStateProvider::new(&cache_dir).with_context(|| {
-            format!(
-                "failed to open workflow local replay cache {}",
-                cache_dir.display()
-            )
-        })?;
-        let replay_state = provider.get_state(digest)?;
-        replay_loaded_state_inner(
-            replay_state,
-            source_str,
-            "local_cache",
-            None,
-            allow_fallback,
-            auto_system_objects,
-            self_heal_dynamic_fields,
-            vm_only,
-            compare,
-            false,
-            synthesize_missing,
-            false,
-            rpc_url,
-            verbose,
-        )?
-    } else {
-        replay_inner(
-            digest
-                .as_deref()
-                .ok_or_else(|| anyhow!("workflow replay missing digest"))?,
-            rpc_url,
-            source_str,
-            checkpoint,
-            None,
-            allow_fallback,
-            prefetch_depth,
-            prefetch_limit,
-            auto_system_objects,
-            no_prefetch,
-            synthesize_missing,
-            self_heal_dynamic_fields,
-            vm_only,
-            compare,
-            false,
-            false,
-            verbose,
-        )?
-    };
-
-    let local_success = output
-        .get("local_success")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let mut exit_code = if local_success { 0 } else { 1 };
-    if strict && local_success && compare && workflow_has_comparison_mismatch(&output) {
-        exit_code = 1;
-        if let Some(object) = output.as_object_mut() {
-            object.insert(
-                "strict_error".to_string(),
-                serde_json::json!("comparison mismatch under strict replay"),
-            );
-        }
-    }
-    if let Some(object) = output.as_object_mut() {
-        object.insert(
-            "workflow_source".to_string(),
-            serde_json::json!(source.as_cli_value()),
-        );
-        object.insert(
-            "workflow_profile".to_string(),
-            serde_json::json!(profile.as_cli_value()),
-        );
-        object.insert(
-            "workflow_fetch_strategy".to_string(),
-            serde_json::json!(fetch_strategy.as_cli_value()),
-        );
-    }
-    if let Some(execution_path) = output
-        .get_mut("execution_path")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        execution_path.insert("vm_only".to_string(), serde_json::json!(vm_only));
-        execution_path.insert(
-            "allow_fallback".to_string(),
-            serde_json::json!(allow_fallback),
-        );
-        execution_path.insert(
-            "dynamic_field_prefetch".to_string(),
-            serde_json::json!(!no_prefetch),
-        );
-        execution_path.insert(
-            "self_heal_dynamic_fields".to_string(),
-            serde_json::json!(self_heal_dynamic_fields),
-        );
-    }
-
-    Ok(WorkflowRunStepExecution { exit_code, output })
-}
-
-fn workflow_execute_analyze_replay_step(
-    defaults: &WorkflowDefaults,
-    analyze: &WorkflowAnalyzeReplayStep,
-    rpc_url: &str,
-    verbose: bool,
-) -> Result<WorkflowRunStepExecution> {
-    let mm2_enabled = analyze.mm2.or(defaults.mm2).unwrap_or(false);
-    let digest = analyze.digest.trim();
-    if digest.is_empty() {
-        return Err(anyhow!("workflow analyze_replay digest cannot be empty"));
-    }
-    let profile = defaults.profile.unwrap_or(WorkflowReplayProfile::Balanced);
-    let _profile_env = workflow_apply_profile_env(profile);
-    let source = analyze
-        .source
-        .or(defaults.source)
-        .unwrap_or(WorkflowSource::Hybrid);
-    let allow_fallback = analyze
-        .allow_fallback
-        .or(defaults.allow_fallback)
-        .unwrap_or(true);
-    let auto_system_objects = analyze
-        .auto_system_objects
-        .or(defaults.auto_system_objects)
-        .unwrap_or(true);
-    let no_prefetch = analyze
-        .no_prefetch
-        .or(defaults.no_prefetch)
-        .unwrap_or(false);
-    let prefetch_depth = analyze
-        .prefetch_depth
-        .or(defaults.prefetch_depth)
-        .unwrap_or(3);
-    let prefetch_limit = analyze
-        .prefetch_limit
-        .or(defaults.prefetch_limit)
-        .unwrap_or(200);
-    let mut output = if source == WorkflowSource::Local {
-        let cache_dir = default_local_cache_dir();
-        let provider = FileStateProvider::new(&cache_dir).with_context(|| {
-            format!(
-                "failed to open workflow local replay cache {}",
-                cache_dir.display()
-            )
-        })?;
-        let replay_state = provider.get_state(digest)?;
-        replay_loaded_state_inner(
-            replay_state,
-            source.as_cli_value(),
-            "local_cache",
-            None,
-            allow_fallback,
-            auto_system_objects,
-            false,
-            false,
-            false,
-            true,
-            false,
-            mm2_enabled,
-            rpc_url,
-            verbose,
-        )?
-    } else {
-        replay_inner(
-            digest,
-            rpc_url,
-            source.as_cli_value(),
-            analyze.checkpoint,
-            None,
-            allow_fallback,
-            prefetch_depth,
-            prefetch_limit,
-            auto_system_objects,
-            no_prefetch,
-            false,
-            false,
-            false,
-            false,
-            true,
-            mm2_enabled,
-            verbose,
-        )?
-    };
-    let local_success = output
-        .get("local_success")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let exit_code = if local_success { 0 } else { 1 };
-    if let Some(object) = output.as_object_mut() {
-        object.insert(
-            "workflow_source".to_string(),
-            serde_json::json!(source.as_cli_value()),
-        );
-        object.insert(
-            "workflow_profile".to_string(),
-            serde_json::json!(profile.as_cli_value()),
-        );
-    }
-    Ok(WorkflowRunStepExecution { exit_code, output })
-}
-
-fn write_workflow_run_report(path: &Path, report: &serde_json::Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create workflow report output directory {}",
-                    parent.display()
-                )
-            })?;
-        }
-    }
-    let payload = serde_json::to_string_pretty(report)?;
-    std::fs::write(path, payload)
-        .with_context(|| format!("Failed to write workflow report {}", path.display()))?;
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn workflow_run_spec_inner(
-    spec: WorkflowSpec,
-    spec_label: String,
-    dry_run: bool,
-    continue_on_error: bool,
-    report_path: Option<String>,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> Result<serde_json::Value> {
-    let prepared_steps = spec
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(idx, step)| WorkflowPreparedStep {
-            index: idx + 1,
-            id: step.id.clone(),
-            name: step.name.clone(),
-            kind: workflow_step_kind(&step.action).to_string(),
-            continue_on_error: step.continue_on_error,
-            command: workflow_build_step_command(&spec.defaults, step)
-                .map_err(|err| err.to_string()),
-        })
-        .collect::<Vec<_>>();
-
-    let report_struct = run_prepared_workflow_steps(
-        spec_label,
-        &spec,
-        prepared_steps,
-        dry_run,
-        continue_on_error,
-        |step, prepared| {
-            if verbose {
-                eprintln!(
-                    "[workflow:{}] {}",
-                    workflow_step_label(step, prepared.index),
-                    prepared.command_display()
-                );
-            }
-        },
-        |step, _prepared| {
-            let step_output = match &step.action {
-                WorkflowStepAction::Replay(replay) => workflow_execute_replay_step(
-                    &spec.defaults,
-                    replay,
-                    rpc_url,
-                    walrus_network,
-                    walrus_caching_url,
-                    walrus_aggregator_url,
-                    verbose,
-                )?,
-                WorkflowStepAction::AnalyzeReplay(analyze) => {
-                    workflow_execute_analyze_replay_step(&spec.defaults, analyze, rpc_url, verbose)?
-                }
-                WorkflowStepAction::Command(command_step) => {
-                    workflow_execute_command_step(command_step, rpc_url)?
-                }
-            };
-
-            let error = if step_output.exit_code == 0 {
-                None
-            } else {
-                step_output
-                    .output
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .or_else(|| {
-                        step_output
-                            .output
-                            .get("local_error")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToOwned::to_owned)
-                    })
-            };
-
-            Ok(WorkflowStepExecution {
-                exit_code: step_output.exit_code,
-                output: Some(step_output.output),
-                error,
-            })
-        },
-    );
-
-    let mut report = serde_json::to_value(&report_struct)?;
-
-    if let Some(path) = report_path.as_deref() {
-        let report_path = PathBuf::from(path);
-        write_workflow_run_report(&report_path, &report)?;
-        if let Some(object) = report.as_object_mut() {
-            object.insert(
-                "report_file".to_string(),
-                serde_json::json!(report_path.display().to_string()),
-            );
-        }
-    }
-
-    Ok(report)
-}
-
-fn discover_checkpoint_targets_inner(
-    checkpoint: Option<&str>,
-    latest: Option<u64>,
-    package_id: Option<&str>,
-    include_framework: bool,
-    limit: usize,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> Result<serde_json::Value> {
-    let network = parse_walrus_archive_network(walrus_network)?;
-    let walrus = build_walrus_client(network, walrus_caching_url, walrus_aggregator_url)?;
-    let output = core_discover_checkpoint_targets(
-        &walrus,
-        checkpoint,
-        latest,
-        package_id,
-        include_framework,
-        limit,
-    )?;
-    serde_json::to_value(output).context("failed to serialize checkpoint discovery output")
-}
-
-fn resolve_replay_target_from_discovery(
-    digest: Option<&str>,
-    checkpoint: Option<u64>,
-    state_file: Option<&str>,
-    discover_latest: Option<u64>,
-    discover_package_id: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> Result<(Option<String>, Option<u64>)> {
-    let network = parse_walrus_archive_network(walrus_network)?;
-    let walrus = build_walrus_client(network, walrus_caching_url, walrus_aggregator_url)?;
-    core_resolve_replay_target_from_discovery(
-        digest,
-        checkpoint,
-        state_file.is_some(),
-        discover_latest,
-        discover_package_id,
-        &walrus,
-    )
-}
-
-fn resolve_grpc_endpoint_and_key(
-    endpoint: Option<&str>,
-    api_key: Option<&str>,
-) -> (String, Option<String>) {
-    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
-    let endpoint_explicit = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some();
-    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
-    let mut resolved_endpoint = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or(default_endpoint);
-    if resolved_endpoint
-        .to_ascii_lowercase()
-        .contains("fullnode.mainnet.sui.io")
-    {
-        resolved_endpoint = MAINNET_ARCHIVE_GRPC.to_string();
-    }
-    let explicit_api_key = api_key
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let sui_api_key = std::env::var("SUI_GRPC_API_KEY")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let resolved_api_key = if endpoint_explicit {
-        // Keep explicit endpoint behavior predictable:
-        // explicit arg > SUI_GRPC_API_KEY > no key.
-        explicit_api_key.or(sui_api_key)
-    } else {
-        explicit_api_key.or(default_api_key)
-    };
-    (resolved_endpoint, resolved_api_key)
-}
-
-fn load_deepbook_versions_snapshot(path: &Path) -> Result<(u64, HashMap<String, u64>)> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read DeepBook versions file {}", path.display()))?;
-    let json: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("Invalid JSON in versions file {}", path.display()))?;
-
-    let checkpoint = json
-        .get("checkpoint")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("versions file missing numeric `checkpoint`"))?;
-    let objects = json
-        .get("objects")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| anyhow!("versions file missing `objects` map"))?;
-
-    let mut versions = HashMap::new();
-    for (object_id, meta) in objects {
-        let version = meta
-            .get("version")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| anyhow!("object {} missing numeric `version`", object_id))?;
-        versions.insert(object_id.to_string(), version);
-    }
-
-    Ok((checkpoint, versions))
-}
-
-fn parse_string_map_field(
-    payload: &serde_json::Value,
-    field: &str,
-) -> Result<HashMap<String, String>> {
-    let Some(value) = payload.get(field) else {
-        return Ok(HashMap::new());
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow!("historical package payload `{}` must be a map", field))?;
-    let mut out = HashMap::new();
-    for (k, v) in object {
-        let val = v.as_str().ok_or_else(|| {
-            anyhow!(
-                "historical package payload `{}` entry `{}` is not a string",
-                field,
-                k
-            )
-        })?;
-        out.insert(k.clone(), val.to_string());
-    }
-    Ok(out)
-}
-
-fn parse_u64_map_field(payload: &serde_json::Value, field: &str) -> Result<HashMap<String, u64>> {
-    let Some(value) = payload.get(field) else {
-        return Ok(HashMap::new());
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow!("historical package payload `{}` must be a map", field))?;
-    let mut out = HashMap::new();
-    for (k, v) in object {
-        let val = v.as_u64().ok_or_else(|| {
-            anyhow!(
-                "historical package payload `{}` entry `{}` is not a u64",
-                field,
-                k
-            )
-        })?;
-        out.insert(k.clone(), val);
-    }
-    Ok(out)
-}
-
-fn parse_nested_string_map_field(
-    payload: &serde_json::Value,
-    field: &str,
-) -> Result<HashMap<String, HashMap<String, String>>> {
-    let Some(value) = payload.get(field) else {
-        return Ok(HashMap::new());
-    };
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow!("historical package payload `{}` must be a map", field))?;
-    let mut out = HashMap::new();
-    for (k, v) in object {
-        let nested_obj = v.as_object().ok_or_else(|| {
-            anyhow!(
-                "historical package payload `{}` entry `{}` is not a map",
-                field,
-                k
-            )
-        })?;
-        let mut nested = HashMap::new();
-        for (nk, nv) in nested_obj {
-            let nval = nv.as_str().ok_or_else(|| {
-                anyhow!(
-                    "historical package payload `{}` entry `{}.{}` is not a string",
-                    field,
-                    k,
-                    nk
-                )
-            })?;
-            nested.insert(nk.clone(), nval.to_string());
-        }
-        out.insert(k.clone(), nested);
-    }
-    Ok(out)
-}
-
-#[allow(clippy::type_complexity)]
-fn parse_historical_package_payload(
-    payload: &serde_json::Value,
-) -> Result<(
-    HashMap<String, Vec<Vec<u8>>>,
-    HashMap<String, String>,
-    HashMap<String, String>,
-    HashMap<String, String>,
-    HashMap<String, HashMap<String, String>>,
-    HashMap<String, u64>,
-)> {
-    let packages_obj = payload
-        .get("packages")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| anyhow!("historical package payload missing `packages` map"))?;
-    let mut package_bytecodes: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
-    for (package_id, modules) in packages_obj {
-        let modules_array = modules.as_array().ok_or_else(|| {
-            anyhow!(
-                "historical package `{}` modules is not an array",
-                package_id
-            )
-        })?;
-        let mut decoded_modules = Vec::with_capacity(modules_array.len());
-        for (idx, module_b64) in modules_array.iter().enumerate() {
-            let encoded = module_b64.as_str().ok_or_else(|| {
-                anyhow!(
-                    "historical package `{}` module {} is not base64 string",
-                    package_id,
-                    idx
-                )
-            })?;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(encoded.as_bytes())
-                .with_context(|| {
-                    format!(
-                        "invalid base64 module payload for package {} module {}",
-                        package_id, idx
-                    )
-                })?;
-            decoded_modules.push(bytes);
-        }
-        package_bytecodes.insert(package_id.clone(), decoded_modules);
-    }
-
-    let aliases = parse_string_map_field(payload, "aliases")?;
-    let linkage_upgrades = parse_string_map_field(payload, "linkage_upgrades")?;
-    let package_runtime_ids = parse_string_map_field(payload, "package_runtime_ids")?;
-    let package_linkage = parse_nested_string_map_field(payload, "package_linkage")?;
-    let package_versions = parse_u64_map_field(payload, "package_versions")?;
-
-    Ok((
-        package_bytecodes,
-        aliases,
-        linkage_upgrades,
-        package_runtime_ids,
-        package_linkage,
-        package_versions,
-    ))
-}
-
-fn decode_u64_le(bytes: &[u8]) -> u64 {
-    let mut buf = [0u8; 8];
-    if bytes.len() < 8 {
-        return 0;
-    }
-    buf.copy_from_slice(&bytes[..8]);
-    u64::from_le_bytes(buf)
-}
-
-fn decode_deepbook_margin_state(result: &serde_json::Value) -> Result<Option<serde_json::Value>> {
-    if !result
-        .get("success")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
-    let return_values = match result
-        .get("return_values")
-        .and_then(serde_json::Value::as_array)
-    {
-        Some(values) => values,
-        None => return Ok(None),
-    };
-    let Some(first_command_values) = return_values.first().and_then(serde_json::Value::as_array)
-    else {
-        return Ok(None);
-    };
-    if first_command_values.len() < 12 {
-        return Ok(None);
-    }
-
-    let mut decoded = Vec::with_capacity(first_command_values.len());
-    for (idx, value) in first_command_values.iter().enumerate() {
-        let encoded = value
-            .as_str()
-            .ok_or_else(|| anyhow!("manager_state return value {} is not base64 string", idx))?;
-        decoded.push(
-            base64::engine::general_purpose::STANDARD
-                .decode(encoded.as_bytes())
-                .with_context(|| format!("invalid base64 manager_state return value {}", idx))?,
-        );
-    }
-
-    let risk_ratio = decode_u64_le(&decoded[2]);
-    let base_asset = decode_u64_le(&decoded[3]);
-    let quote_asset = decode_u64_le(&decoded[4]);
-    let base_debt = decode_u64_le(&decoded[5]);
-    let quote_debt = decode_u64_le(&decoded[6]);
-    let current_price = decode_u64_le(&decoded[11]);
-
-    Ok(Some(serde_json::json!({
-        "risk_ratio_pct": risk_ratio as f64 / 1e9_f64 * 100.0_f64,
-        "base_asset_sui": base_asset as f64 / 1e9_f64,
-        "quote_asset_usdc": quote_asset as f64 / 1e6_f64,
-        "base_debt_sui": base_debt as f64 / 1e9_f64,
-        "quote_debt_usdc": quote_debt as f64 / 1e6_f64,
-        "current_price": current_price as f64 / 1e6_f64,
-    })))
-}
-
-fn deepbook_archive_hint(error: &str, endpoint: &str) -> Option<String> {
-    let lower = error.to_ascii_lowercase();
-    let looks_like_archive_gap = (lower.contains("contractabort") && lower.contains("abort_code"))
-        || (lower.contains("major_status: aborted") && lower.contains("dynamic_field"));
-    if !looks_like_archive_gap {
-        return None;
-    }
-
-    let endpoint_lower = endpoint.to_ascii_lowercase();
-    if endpoint_lower.contains("archive.mainnet.sui.io")
-        || endpoint_lower.contains("fullnode.mainnet.sui.io")
-    {
-        return Some(
-            "Likely archive runtime-object gap; retry with \
-SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443"
-                .to_string(),
-        );
-    }
-    None
 }
 
 fn fetch_object_bcs_inner(
@@ -3833,14 +1142,15 @@ fn prepare_package_context_inner(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let mut payload = serde_json::json!({
-        "version": 1,
-        "package_id": package_id,
-        "resolve_deps": resolve_deps,
-        "generated_at_ms": generated_at_ms,
-        "packages": fetched.get("packages").cloned().unwrap_or_else(|| serde_json::json!({})),
-        "count": fetched.get("count").cloned().unwrap_or_else(|| serde_json::json!(0)),
-    });
+    let packages_map = fetched
+        .get("packages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("fetch package output missing `packages` map"))?;
+    let packages = context_packages_from_package_map(packages_map)
+        .context("failed to convert package map into context package payload")?;
+    let context_payload =
+        ContextPayloadV2::new(package_id, resolve_deps, generated_at_ms, None, packages);
+    let mut payload = serde_json::to_value(context_payload)?;
 
     if let Some(path) = output_path {
         let path_buf = PathBuf::from(path);
@@ -4122,7 +1432,7 @@ fn discover_checkpoint_targets(
 
 /// Protocol-first replay-target discovery from checkpoints.
 ///
-/// Applies protocol package defaults when available, with optional override.
+/// Non-generic protocols require `package_id` so package selection stays explicit.
 #[pyfunction]
 #[pyo3(signature = (
     *,
@@ -4249,702 +1559,6 @@ fn adapter_discover(
         walrus_network,
         walrus_caching_url,
         walrus_aggregator_url,
-    )
-}
-
-/// Validate a typed workflow spec (JSON or YAML) and return step counts.
-#[pyfunction]
-fn workflow_validate(py: Python<'_>, spec_path: &str) -> PyResult<PyObject> {
-    let spec_path_owned = spec_path.to_string();
-    let value = py
-        .allow_threads(move || {
-            let path = PathBuf::from(&spec_path_owned);
-            let spec = WorkflowSpec::load_from_path(&path)?;
-            let mut replay_steps = 0usize;
-            let mut analyze_replay_steps = 0usize;
-            let mut command_steps = 0usize;
-            for step in &spec.steps {
-                match step.action {
-                    WorkflowStepAction::Replay(_) => replay_steps += 1,
-                    WorkflowStepAction::AnalyzeReplay(_) => analyze_replay_steps += 1,
-                    WorkflowStepAction::Command(_) => command_steps += 1,
-                }
-            }
-
-            Ok(serde_json::json!({
-                "spec_file": path.display().to_string(),
-                "version": spec.version,
-                "name": spec.name,
-                "steps": spec.steps.len(),
-                "replay_steps": replay_steps,
-                "analyze_replay_steps": analyze_replay_steps,
-                "command_steps": command_steps,
-            }))
-        })
-        .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Generate a typed workflow spec from a built-in template.
-#[pyfunction]
-#[pyo3(signature = (
-    *,
-    template="generic",
-    output_path=None,
-    format=None,
-    digest=None,
-    checkpoint=None,
-    include_analyze_step=true,
-    strict_replay=true,
-    name=None,
-    package_id=None,
-    view_objects=vec![],
-    force=false,
-))]
-fn workflow_init(
-    py: Python<'_>,
-    template: &str,
-    output_path: Option<&str>,
-    format: Option<&str>,
-    digest: Option<&str>,
-    checkpoint: Option<u64>,
-    include_analyze_step: bool,
-    strict_replay: bool,
-    name: Option<&str>,
-    package_id: Option<&str>,
-    view_objects: Vec<String>,
-    force: bool,
-) -> PyResult<PyObject> {
-    let template_owned = template.to_string();
-    let output_path_owned = output_path.map(ToOwned::to_owned);
-    let format_owned = format.map(ToOwned::to_owned);
-    let digest_owned = digest.map(ToOwned::to_owned);
-    let name_owned = name.map(ToOwned::to_owned);
-    let package_id_owned = package_id.map(ToOwned::to_owned);
-
-    let value = py
-        .allow_threads(move || {
-            let template = parse_workflow_template(&template_owned)?;
-            let digest = digest_owned
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| template.default_digest().to_string());
-            let checkpoint = checkpoint.unwrap_or(template.default_checkpoint());
-
-            let mut spec = build_builtin_workflow(
-                template,
-                &BuiltinWorkflowInput {
-                    digest: Some(digest.clone()),
-                    checkpoint: Some(checkpoint),
-                    include_analyze_step,
-                    include_replay_step: true,
-                    strict_replay,
-                    package_id: package_id_owned
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned),
-                    view_objects: view_objects.clone(),
-                },
-            )?;
-            if let Some(name) = name_owned
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                spec.name = Some(name.to_string());
-            }
-            spec.validate()?;
-
-            let parsed_format = parse_workflow_output_format(format_owned.as_deref())?;
-            let format_hint = parsed_format.unwrap_or(WorkflowOutputFormat::Json);
-            let output_path = output_path_owned
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(format!(
-                        "workflow.{}.{}",
-                        template.key(),
-                        format_hint.extension()
-                    ))
-                });
-            let output_format = parsed_format
-                .or_else(|| WorkflowOutputFormat::from_path(&output_path))
-                .unwrap_or(format_hint);
-
-            if output_path.exists() && !force {
-                return Err(anyhow!(
-                    "Refusing to overwrite existing workflow spec at {} (pass force=True)",
-                    output_path.display()
-                ));
-            }
-
-            write_workflow_spec(&output_path, &spec, output_format)?;
-
-            Ok(serde_json::json!({
-                "template": template.key(),
-                "output_file": output_path.display().to_string(),
-                "format": output_format.as_str(),
-                "digest": digest,
-                "checkpoint": checkpoint,
-                "include_analyze_step": include_analyze_step,
-                "strict_replay": strict_replay,
-                "package_id": package_id_owned,
-                "view_objects": view_objects.len(),
-                "workflow_name": spec.name,
-                "steps": spec.steps.len(),
-            }))
-        })
-        .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Auto-generate a draft adapter workflow from a package id.
-///
-/// This mirrors CLI `workflow auto` behavior:
-/// - dependency closure validation (fail closed unless `best_effort=True`)
-/// - template inference from module names (or explicit override)
-/// - scaffold-only output when replay seed is unavailable
-/// - replay-capable output with `digest` or `discover_latest`
-#[pyfunction]
-#[pyo3(signature = (
-    package_id,
-    *,
-    template=None,
-    output_path=None,
-    format=None,
-    digest=None,
-    discover_latest=None,
-    checkpoint=None,
-    name=None,
-    best_effort=false,
-    force=false,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-))]
-fn workflow_auto(
-    py: Python<'_>,
-    package_id: &str,
-    template: Option<&str>,
-    output_path: Option<&str>,
-    format: Option<&str>,
-    digest: Option<&str>,
-    discover_latest: Option<u64>,
-    checkpoint: Option<u64>,
-    name: Option<&str>,
-    best_effort: bool,
-    force: bool,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> PyResult<PyObject> {
-    let package_id_owned = package_id.to_string();
-    let template_owned = template.map(ToOwned::to_owned);
-    let output_path_owned = output_path.map(ToOwned::to_owned);
-    let format_owned = format.map(ToOwned::to_owned);
-    let digest_owned = digest.map(ToOwned::to_owned);
-    let name_owned = name.map(ToOwned::to_owned);
-    let walrus_network_owned = walrus_network.to_string();
-    let walrus_caching_owned = walrus_caching_url.map(ToOwned::to_owned);
-    let walrus_aggregator_owned = walrus_aggregator_url.map(ToOwned::to_owned);
-
-    let value = py
-        .allow_threads(move || {
-            let package_id = package_id_owned.trim();
-            if package_id.is_empty() {
-                return Err(anyhow!("package_id cannot be empty"));
-            }
-
-            let mut dependency_packages_fetched = None;
-            let mut unresolved_dependencies = Vec::new();
-            let mut dependency_probe_error = None;
-            match probe_dependency_closure_for_workflow(package_id) {
-                Ok((fetched_packages, unresolved)) => {
-                    dependency_packages_fetched = Some(fetched_packages);
-                    unresolved_dependencies = unresolved;
-                }
-                Err(err) => {
-                    if best_effort {
-                        dependency_probe_error = Some(err.to_string());
-                    } else {
-                        return Err(anyhow!(
-                            "AUTO_CLOSURE_INCOMPLETE: dependency closure probe failed for package {}: {}\nHint: resolve package fetch issues, or rerun with best_effort=True to emit scaffold output.",
-                            package_id,
-                            err
-                        ));
-                    }
-                }
-            }
-            if !unresolved_dependencies.is_empty() && !best_effort {
-                return Err(anyhow!(
-                    "AUTO_CLOSURE_INCOMPLETE: unresolved package dependencies after closure fetch for package {}: {}\nHint: ensure transitive package bytecode is available, or rerun with best_effort=True to emit scaffold output.",
-                    package_id,
-                    unresolved_dependencies.join(", ")
-                ));
-            }
-
-            let mut package_module_count = None;
-            let mut module_names = Vec::new();
-            let mut package_module_probe_error = None;
-            match probe_package_modules_for_workflow(package_id) {
-                Ok((count, names)) => {
-                    package_module_count = Some(count);
-                    module_names = names;
-                }
-                Err(err) => {
-                    package_module_probe_error = Some(err.to_string());
-                }
-            }
-
-            let inference = if let Some(template_raw) = template_owned.as_deref() {
-                WorkflowTemplateInference {
-                    template: parse_workflow_template(template_raw)?,
-                    confidence: "manual",
-                    source: "user",
-                    reason: None,
-                }
-            } else {
-                infer_workflow_template_from_modules(&module_names)
-            };
-            let template = inference.template;
-
-            let explicit_digest = digest_owned
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            let mut discovery_probe_error = None;
-            let discovered_target = if let Some(latest) = discover_latest {
-                match discover_latest_target_for_workflow(
-                    package_id,
-                    latest,
-                    &walrus_network_owned,
-                    walrus_caching_owned.as_deref(),
-                    walrus_aggregator_owned.as_deref(),
-                ) {
-                    Ok(target) => Some(target),
-                    Err(err) => {
-                        if best_effort {
-                            discovery_probe_error = Some(err.to_string());
-                            None
-                        } else {
-                            return Err(anyhow!(
-                                "AUTO_DISCOVERY_EMPTY: failed to auto-discover replay target for package {}: {}\nHint: rerun with a larger discover_latest window, provide digest explicitly, or use best_effort=True for scaffold-only output.",
-                                package_id,
-                                err
-                            ));
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-
-            let digest = explicit_digest
-                .clone()
-                .or_else(|| discovered_target.as_ref().map(|target| target.digest.clone()));
-            let include_replay = digest.is_some();
-            let checkpoint = if include_replay {
-                if let Some(target) = discovered_target.as_ref() {
-                    Some(target.checkpoint)
-                } else {
-                    Some(checkpoint.unwrap_or(template.default_checkpoint()))
-                }
-            } else {
-                None
-            };
-            let replay_seed_source = if explicit_digest.is_some() {
-                "digest"
-            } else if discovered_target.is_some() {
-                "discover_latest"
-            } else {
-                "none"
-            };
-
-            let mut missing_inputs = Vec::new();
-            if !include_replay {
-                if discover_latest.is_some() {
-                    missing_inputs.push(
-                        "auto-discovery target (rerun with larger discover_latest window)"
-                            .to_string(),
-                    );
-                } else {
-                    missing_inputs.push("digest".to_string());
-                    missing_inputs
-                        .push("checkpoint (optional; default inferred per template)".to_string());
-                }
-            }
-
-            let mut spec = build_builtin_workflow(
-                template,
-                &BuiltinWorkflowInput {
-                    digest,
-                    checkpoint,
-                    include_analyze_step: include_replay,
-                    include_replay_step: include_replay,
-                    strict_replay: true,
-                    package_id: Some(package_id.to_string()),
-                    view_objects: Vec::new(),
-                },
-            )?;
-
-            let pkg_suffix = short_package_id(package_id);
-            spec.name = Some(name_owned.unwrap_or_else(|| {
-                format!("auto_{}_{}", template.key(), pkg_suffix)
-            }));
-            spec.description = Some(format!(
-                "Auto draft adapter generated from package {} (template: {}).",
-                package_id,
-                template.key()
-            ));
-            spec.validate()?;
-
-            let parsed_format = parse_workflow_output_format(format_owned.as_deref())?;
-            let format_hint = parsed_format.unwrap_or(WorkflowOutputFormat::Json);
-            let output_path = output_path_owned
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    PathBuf::from(format!(
-                        "workflow.auto.{}.{}.{}",
-                        template.key(),
-                        pkg_suffix,
-                        format_hint.extension()
-                    ))
-                });
-            let output_format = parsed_format
-                .or_else(|| WorkflowOutputFormat::from_path(&output_path))
-                .unwrap_or(format_hint);
-
-            if output_path.exists() && !force {
-                return Err(anyhow!(
-                    "Refusing to overwrite existing workflow spec at {} (pass force=True)",
-                    output_path.display()
-                ));
-            }
-            write_workflow_spec(&output_path, &spec, output_format)?;
-
-            Ok(serde_json::json!({
-                "package_id": package_id,
-                "template": template.key(),
-                "inference_source": inference.source,
-                "inference_confidence": inference.confidence,
-                "inference_reason": inference.reason,
-                "output_file": output_path.display().to_string(),
-                "format": output_format.as_str(),
-                "replay_steps_included": include_replay,
-                "replay_seed_source": replay_seed_source,
-                "discover_latest": discover_latest,
-                "discovered_checkpoint": discovered_target.as_ref().map(|target| target.checkpoint),
-                "discovery_probe_error": discovery_probe_error,
-                "missing_inputs": missing_inputs,
-                "package_module_count": package_module_count,
-                "package_module_probe_error": package_module_probe_error,
-                "dependency_packages_fetched": dependency_packages_fetched,
-                "unresolved_dependencies": unresolved_dependencies,
-                "dependency_probe_error": dependency_probe_error,
-                "steps": spec.steps.len(),
-            }))
-        })
-        .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Run a typed workflow spec natively via Python bindings.
-///
-/// Supports replay, analyze_replay, and command steps without shelling out to
-/// `sui-sandbox workflow run`.
-#[pyfunction]
-#[pyo3(signature = (
-    spec_path,
-    *,
-    dry_run=false,
-    continue_on_error=false,
-    report_path=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    verbose=false,
-))]
-fn workflow_run(
-    py: Python<'_>,
-    spec_path: &str,
-    dry_run: bool,
-    continue_on_error: bool,
-    report_path: Option<&str>,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let spec_path_owned = spec_path.to_string();
-    let report_path_owned = report_path.map(ToOwned::to_owned);
-    let rpc_url_owned = rpc_url.to_string();
-    let walrus_network_owned = walrus_network.to_string();
-    let walrus_caching_owned = walrus_caching_url.map(ToOwned::to_owned);
-    let walrus_aggregator_owned = walrus_aggregator_url.map(ToOwned::to_owned);
-
-    let value = py
-        .allow_threads(move || {
-            let spec_path = PathBuf::from(&spec_path_owned);
-            let spec = WorkflowSpec::load_from_path(&spec_path)?;
-            workflow_run_spec_inner(
-                spec,
-                spec_path.display().to_string(),
-                dry_run,
-                continue_on_error,
-                report_path_owned,
-                &rpc_url_owned,
-                &walrus_network_owned,
-                walrus_caching_owned.as_deref(),
-                walrus_aggregator_owned.as_deref(),
-                verbose,
-            )
-        })
-        .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Run a typed workflow spec directly from an in-memory Python object (dict/list).
-///
-/// This avoids writing temporary spec files for ad-hoc or notebook workflows.
-#[pyfunction]
-#[pyo3(signature = (
-    spec,
-    *,
-    dry_run=false,
-    continue_on_error=false,
-    report_path=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    verbose=false,
-))]
-fn workflow_run_inline(
-    py: Python<'_>,
-    spec: &Bound<'_, PyAny>,
-    dry_run: bool,
-    continue_on_error: bool,
-    report_path: Option<&str>,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let inline_spec = parse_inline_workflow_spec(py, spec).map_err(to_py_err)?;
-    let report_path_owned = report_path.map(ToOwned::to_owned);
-    let rpc_url_owned = rpc_url.to_string();
-    let walrus_network_owned = walrus_network.to_string();
-    let walrus_caching_owned = walrus_caching_url.map(ToOwned::to_owned);
-    let walrus_aggregator_owned = walrus_aggregator_url.map(ToOwned::to_owned);
-
-    let value = py
-        .allow_threads(move || {
-            workflow_run_spec_inner(
-                inline_spec,
-                "<inline>".to_string(),
-                dry_run,
-                continue_on_error,
-                report_path_owned,
-                &rpc_url_owned,
-                &walrus_network_owned,
-                walrus_caching_owned.as_deref(),
-                walrus_aggregator_owned.as_deref(),
-                verbose,
-            )
-        })
-        .map_err(to_py_err)?;
-    json_value_to_py(py, &value)
-}
-
-/// Canonical alias for `workflow_validate`.
-#[pyfunction]
-fn pipeline_validate(py: Python<'_>, spec_path: &str) -> PyResult<PyObject> {
-    workflow_validate(py, spec_path)
-}
-
-/// Canonical alias for `workflow_init`.
-#[pyfunction]
-#[pyo3(signature = (
-    *,
-    template="generic",
-    output_path=None,
-    format=None,
-    digest=None,
-    checkpoint=None,
-    include_analyze_step=true,
-    strict_replay=true,
-    name=None,
-    package_id=None,
-    view_objects=vec![],
-    force=false,
-))]
-fn pipeline_init(
-    py: Python<'_>,
-    template: &str,
-    output_path: Option<&str>,
-    format: Option<&str>,
-    digest: Option<&str>,
-    checkpoint: Option<u64>,
-    include_analyze_step: bool,
-    strict_replay: bool,
-    name: Option<&str>,
-    package_id: Option<&str>,
-    view_objects: Vec<String>,
-    force: bool,
-) -> PyResult<PyObject> {
-    workflow_init(
-        py,
-        template,
-        output_path,
-        format,
-        digest,
-        checkpoint,
-        include_analyze_step,
-        strict_replay,
-        name,
-        package_id,
-        view_objects,
-        force,
-    )
-}
-
-/// Canonical alias for `workflow_auto`.
-#[pyfunction]
-#[pyo3(signature = (
-    package_id,
-    *,
-    template=None,
-    output_path=None,
-    format=None,
-    digest=None,
-    discover_latest=None,
-    checkpoint=None,
-    name=None,
-    best_effort=false,
-    force=false,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-))]
-fn pipeline_auto(
-    py: Python<'_>,
-    package_id: &str,
-    template: Option<&str>,
-    output_path: Option<&str>,
-    format: Option<&str>,
-    digest: Option<&str>,
-    discover_latest: Option<u64>,
-    checkpoint: Option<u64>,
-    name: Option<&str>,
-    best_effort: bool,
-    force: bool,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-) -> PyResult<PyObject> {
-    workflow_auto(
-        py,
-        package_id,
-        template,
-        output_path,
-        format,
-        digest,
-        discover_latest,
-        checkpoint,
-        name,
-        best_effort,
-        force,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-    )
-}
-
-/// Canonical alias for `workflow_run`.
-#[pyfunction]
-#[pyo3(signature = (
-    spec_path,
-    *,
-    dry_run=false,
-    continue_on_error=false,
-    report_path=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    verbose=false,
-))]
-fn pipeline_run(
-    py: Python<'_>,
-    spec_path: &str,
-    dry_run: bool,
-    continue_on_error: bool,
-    report_path: Option<&str>,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    workflow_run(
-        py,
-        spec_path,
-        dry_run,
-        continue_on_error,
-        report_path,
-        rpc_url,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        verbose,
-    )
-}
-
-/// Canonical alias for `workflow_run_inline`.
-#[pyfunction]
-#[pyo3(signature = (
-    spec,
-    *,
-    dry_run=false,
-    continue_on_error=false,
-    report_path=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    verbose=false,
-))]
-fn pipeline_run_inline(
-    py: Python<'_>,
-    spec: &Bound<'_, PyAny>,
-    dry_run: bool,
-    continue_on_error: bool,
-    report_path: Option<&str>,
-    rpc_url: &str,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    workflow_run_inline(
-        py,
-        spec,
-        dry_run,
-        continue_on_error,
-        report_path,
-        rpc_url,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        verbose,
     )
 }
 
@@ -5549,164 +2163,180 @@ fn call_view_function(
     json_value_to_py(py, &value)
 }
 
-/// Execute DeepBook `margin_manager::manager_state` from a versions snapshot.
+/// Execute a generic historical Move view function from a versions snapshot.
 ///
-/// Native convenience API that mirrors the Rust historical margin example:
-/// - load versions/checkpoint JSON
-/// - fetch required object BCS at historical versions
-/// - fetch checkpoint-pinned package closure
-/// - execute `manager_state` in local VM and decode key fields
+/// Protocol-specific logic (object selection, type args, decoding) should be
+/// authored by callers on top of this generic primitive.
 #[pyfunction]
 #[pyo3(signature = (
     *,
-    versions_file=DEEPBOOK_MARGIN_DEFAULT_VERSIONS_FILE,
+    versions_file,
+    package_id,
+    module,
+    function,
+    required_objects,
+    type_args=vec![],
+    package_roots=vec![],
+    type_refs=vec![],
+    fetch_child_objects=true,
     grpc_endpoint=None,
     grpc_api_key=None,
 ))]
-fn deepbook_margin_state(
+fn historical_view_from_versions(
     py: Python<'_>,
     versions_file: &str,
+    package_id: &str,
+    module: &str,
+    function: &str,
+    required_objects: Vec<String>,
+    type_args: Vec<String>,
+    package_roots: Vec<String>,
+    type_refs: Vec<String>,
+    fetch_child_objects: bool,
     grpc_endpoint: Option<&str>,
     grpc_api_key: Option<&str>,
 ) -> PyResult<PyObject> {
     let versions_file_owned = versions_file.to_string();
+    let package_id_owned = package_id.to_string();
+    let module_owned = module.to_string();
+    let function_owned = function.to_string();
     let endpoint_owned = grpc_endpoint.map(ToOwned::to_owned);
     let api_key_owned = grpc_api_key.map(ToOwned::to_owned);
 
     let value = py
         .allow_threads(move || {
             let versions_path = PathBuf::from(&versions_file_owned);
-            let (checkpoint, historical_versions) = load_deepbook_versions_snapshot(&versions_path)?;
-
-            let (resolved_endpoint, resolved_api_key) = resolve_grpc_endpoint_and_key(
+            let request = CoreHistoricalViewRequest {
+                package_id: package_id_owned,
+                module: module_owned,
+                function: function_owned,
+                type_args,
+                required_objects,
+                package_roots,
+                type_refs,
+                fetch_child_objects,
+            };
+            let output = core_execute_historical_view_from_versions(
+                &versions_path,
+                &request,
                 endpoint_owned.as_deref(),
                 api_key_owned.as_deref(),
-            );
-            let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-            let object_inputs = rt.block_on(async {
-                let grpc = GrpcClient::with_api_key(&resolved_endpoint, resolved_api_key.clone())
-                    .await
-                    .context("Failed to create gRPC client")?;
-                let mut inputs: Vec<(String, Vec<u8>, String, bool, bool)> =
-                    Vec::with_capacity(DEEPBOOK_MARGIN_REQUIRED_OBJECTS.len());
-                for object_id in DEEPBOOK_MARGIN_REQUIRED_OBJECTS {
-                    let version = historical_versions.get(object_id).copied().ok_or_else(|| {
-                        anyhow!(
-                            "versions file missing required object version for {}",
-                            object_id
-                        )
-                    })?;
-                    let fetched = grpc
-                        .get_object_at_version(object_id, Some(version))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to fetch object {} at version {} via gRPC",
-                                object_id, version
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "object {} not found at version {}",
-                                object_id,
-                                version
-                            )
-                        })?;
-                    let bcs = fetched
-                        .bcs
-                        .ok_or_else(|| anyhow!("object {} missing BCS payload", object_id))?;
-                    let type_tag = fetched.type_string.clone().ok_or_else(|| {
-                        anyhow!(
-                            "object {} missing type string; cannot build view input",
-                            object_id
-                        )
-                    })?;
-                    let is_shared = matches!(fetched.owner, GrpcOwner::Shared { .. });
-                    inputs.push((object_id.to_string(), bcs, type_tag, is_shared, false));
-                }
-                Ok::<_, anyhow::Error>(inputs)
-            })?;
-
-            let package_payload = fetch_historical_package_bytecodes_inner(
-                &vec![
-                    PROTOCOL_DEEPBOOK_MARGIN_PACKAGE.to_string(),
-                    DEEPBOOK_SPOT_PACKAGE.to_string(),
-                ],
-                &vec![
-                    DEEPBOOK_MARGIN_SUI_TYPE.to_string(),
-                    DEEPBOOK_MARGIN_USDC_TYPE.to_string(),
-                ],
-                Some(checkpoint),
-                Some(&resolved_endpoint),
-                resolved_api_key.as_deref(),
             )?;
-            let (
-                package_bytecodes,
-                aliases,
-                linkage_upgrades,
-                package_runtime_ids,
-                package_linkage,
-                package_versions,
-            ) = parse_historical_package_payload(&package_payload)?;
-
-            let result = call_view_function_inner(
-                PROTOCOL_DEEPBOOK_MARGIN_PACKAGE,
-                "margin_manager",
-                "manager_state",
-                vec![
-                    DEEPBOOK_MARGIN_SUI_TYPE.to_string(),
-                    DEEPBOOK_MARGIN_USDC_TYPE.to_string(),
-                ],
-                object_inputs,
-                Vec::new(),
-                HashMap::new(),
-                historical_versions.clone(),
-                true,
-                Some(resolved_endpoint.clone()),
-                resolved_api_key.clone(),
-                package_bytecodes,
-                aliases,
-                linkage_upgrades,
-                package_runtime_ids,
-                package_linkage,
-                package_versions,
-                false,
-            )?;
-
-            let decoded = decode_deepbook_margin_state(&result)?;
-            let mut output = serde_json::json!({
-                "versions_file": versions_path.display().to_string(),
-                "checkpoint": checkpoint,
-                "grpc_endpoint": resolved_endpoint,
-                "success": result.get("success").and_then(serde_json::Value::as_bool).unwrap_or(false),
-                "gas_used": result.get("gas_used").and_then(serde_json::Value::as_u64),
-                "error": result.get("error").cloned(),
-                "decoded_margin_state": decoded,
-                "raw": result,
-            });
-
-            let error_for_hint = output
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned);
-            let endpoint_for_hint = output
-                .get("grpc_endpoint")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if let Some(err) = error_for_hint.as_deref() {
-                if let Some(hint) = deepbook_archive_hint(err, &endpoint_for_hint) {
-                    if let Some(obj) = output.as_object_mut() {
-                        obj.insert("hint".to_string(), serde_json::json!(hint));
-                    }
-                }
-            }
-
-            Ok(output)
+            serde_json::to_value(output).context("Failed to serialize historical view output")
         })
         .map_err(to_py_err)?;
 
     json_value_to_py(py, &value)
+}
+
+fn py_json_value(py: Python<'_>, value: &Bound<'_, PyAny>) -> Result<serde_json::Value> {
+    let json_mod = py
+        .import("json")
+        .context("failed to import python json module")?;
+    let dumped_obj = json_mod
+        .call_method1("dumps", (value,))
+        .context("failed to serialize python object to JSON string")?;
+    let dumped: String = dumped_obj
+        .extract()
+        .context("failed to extract serialized JSON string")?;
+    serde_json::from_str(&dumped).context("invalid JSON payload")
+}
+
+/// Decode one u64 return value from `historical_view_from_versions` output.
+///
+/// Returns `None` when the execution failed or the return index is missing.
+#[pyfunction]
+#[pyo3(signature = (result, *, command_index=0, value_index))]
+fn historical_decode_return_u64(
+    py: Python<'_>,
+    result: &Bound<'_, PyAny>,
+    command_index: usize,
+    value_index: usize,
+) -> PyResult<Option<u64>> {
+    let raw = py_json_value(py, result).map_err(to_py_err)?;
+    ReplayOrchestrator::decode_command_return_u64(&raw, command_index, value_index)
+        .map_err(to_py_err)
+}
+
+/// Decode all return values from a command into `u64` values where possible.
+///
+/// Returns `None` when the execution failed or command return values are missing.
+#[pyfunction]
+#[pyo3(signature = (result, *, command_index=0))]
+fn historical_decode_return_u64s(
+    py: Python<'_>,
+    result: &Bound<'_, PyAny>,
+    command_index: usize,
+) -> PyResult<Option<Vec<Option<u64>>>> {
+    let raw = py_json_value(py, result).map_err(to_py_err)?;
+    let decoded = ReplayOrchestrator::decode_command_return_values(&raw, command_index)
+        .map_err(to_py_err)?
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|bytes| {
+                    if bytes.len() < 8 {
+                        return None;
+                    }
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(&bytes[..8]);
+                    Some(u64::from_le_bytes(buf))
+                })
+                .collect::<Vec<_>>()
+        });
+    Ok(decoded)
+}
+
+/// Decode all return values from a historical-view command into typed JSON values.
+///
+/// Returns `None` when execution failed or command return values are missing.
+#[pyfunction]
+#[pyo3(signature = (result, *, command_index=0))]
+fn historical_decode_returns_typed(
+    py: Python<'_>,
+    result: &Bound<'_, PyAny>,
+    command_index: usize,
+) -> PyResult<Option<PyObject>> {
+    let raw = py_json_value(py, result).map_err(to_py_err)?;
+    let decoded = ReplayOrchestrator::decode_command_return_values_typed(&raw, command_index)
+        .map_err(to_py_err)?;
+    match decoded {
+        Some(values) => {
+            let value = serde_json::to_value(values).map_err(|e| {
+                to_py_err(anyhow!(
+                    "failed to serialize typed return decode output: {}",
+                    e
+                ))
+            })?;
+            json_value_to_py(py, &value).map(Some)
+        }
+        None => Ok(None),
+    }
+}
+
+/// Decode historical-view return values into a named object with field schema.
+///
+/// `schema` must be a JSON-serializable list of:
+/// `{ "index": int, "name": str, "type_hint": str|None, "scale": float|None }`.
+#[pyfunction]
+#[pyo3(signature = (result, schema, *, command_index=0))]
+fn historical_decode_with_schema(
+    py: Python<'_>,
+    result: &Bound<'_, PyAny>,
+    schema: &Bound<'_, PyAny>,
+    command_index: usize,
+) -> PyResult<Option<PyObject>> {
+    let raw = py_json_value(py, result).map_err(to_py_err)?;
+    let schema_json = py_json_value(py, schema).map_err(to_py_err)?;
+    let fields: Vec<ReturnDecodeField> = serde_json::from_value(schema_json)
+        .map_err(|e| to_py_err(anyhow!("invalid return decode schema: {}", e)))?;
+
+    let decoded = ReplayOrchestrator::decode_command_return_schema(&raw, command_index, &fields)
+        .map_err(to_py_err)?;
+    match decoded {
+        Some(map) => json_value_to_py(py, &serde_json::Value::Object(map)).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Fetch historical package bytecodes with transitive dependency resolution.
@@ -5813,7 +2443,7 @@ fn prepare_package_context(
 
 /// Protocol-first package-context preparation.
 ///
-/// Resolves a protocol default package id when `package_id` is omitted.
+/// `package_id` is required for all non-generic protocols.
 #[pyfunction]
 #[pyo3(signature = (
     *,
@@ -5873,566 +2503,17 @@ fn adapter_prepare(
     protocol_prepare(py, protocol, package_id, resolve_deps, output_path)
 }
 
-/// Replay a transaction with opinionated defaults for a compact native API.
-///
-/// Args:
-///     digest: Transaction digest (optional when state_file contains a single transaction)
-///     checkpoint: Optional checkpoint (if provided and source is omitted, source defaults to walrus)
-///     discover_latest: Auto-discover digest from latest N checkpoints (requires discover_package_id)
-///     discover_package_id: Package filter used for discovery when discover_latest is set
-///     source: "hybrid", "grpc", or "walrus" (default: inferred)
-///     state_file: Optional replay-state JSON for deterministic local input data
-///     context_path: Optional prepared package context JSON to pre-seed package bytecode
-///     cache_dir: Optional local replay cache when source="local"
-///     walrus_network: Walrus network for discovery ("mainnet" or "testnet")
-///     walrus_caching_url: Optional custom Walrus caching endpoint (requires walrus_aggregator_url)
-///     walrus_aggregator_url: Optional custom Walrus aggregator endpoint (requires walrus_caching_url)
-///     rpc_url: Sui RPC endpoint
-///     allow_fallback: Allow fallback hydration paths
-///     profile: Runtime defaults profile ("safe"|"balanced"|"fast")
-///     fetch_strategy: Dynamic-field fetch strategy ("eager"|"full")
-///     vm_only: Disable fallback paths and force VM-only behavior
-///     prefetch_depth: Dynamic field prefetch depth
-///     prefetch_limit: Dynamic field prefetch limit
-///     auto_system_objects: Auto inject Clock/Random if missing
-///     no_prefetch: Disable prefetch
-///     compare: Compare local execution with on-chain effects
-///     analyze_only: Hydration-only mode
-///     synthesize_missing: Retry with synthetic object bytes when inputs are missing
-///     self_heal_dynamic_fields: Enable dynamic field self-healing during VM execution
-///     analyze_mm2: Build MM2 diagnostics (analyze-only mode)
-///     verbose: Verbose replay logging
-///
-/// Returns: Replay result dict
-#[pyfunction]
-#[pyo3(signature = (
-    digest=None,
-    *,
-    checkpoint=None,
-    discover_latest=None,
-    discover_package_id=None,
-    source=None,
-    state_file=None,
-    context_path=None,
-    cache_dir=None,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    profile=None,
-    fetch_strategy=None,
-    vm_only=false,
-    allow_fallback=true,
-    prefetch_depth=3,
-    prefetch_limit=200,
-    auto_system_objects=true,
-    no_prefetch=false,
-    compare=false,
-    analyze_only=false,
-    synthesize_missing=false,
-    self_heal_dynamic_fields=false,
-    analyze_mm2=false,
-    verbose=false,
-))]
-fn replay_transaction(
-    py: Python<'_>,
-    digest: Option<&str>,
-    checkpoint: Option<u64>,
-    discover_latest: Option<u64>,
-    discover_package_id: Option<&str>,
-    source: Option<&str>,
-    state_file: Option<&str>,
-    context_path: Option<&str>,
-    cache_dir: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    rpc_url: &str,
-    profile: Option<&str>,
-    fetch_strategy: Option<&str>,
-    vm_only: bool,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let (effective_digest, effective_checkpoint) = resolve_replay_target_from_discovery(
-        digest,
-        checkpoint,
-        state_file,
-        discover_latest,
-        discover_package_id,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-    )
-    .map_err(to_py_err)?;
-
-    let source_owned = source.map(|s| s.to_string()).unwrap_or_else(|| {
-        if effective_checkpoint.is_some() {
-            "walrus".to_string()
-        } else {
-            "hybrid".to_string()
-        }
-    });
-    replay(
-        py,
-        effective_digest.as_deref(),
-        rpc_url,
-        &source_owned,
-        effective_checkpoint,
-        state_file,
-        context_path,
-        cache_dir,
-        profile,
-        fetch_strategy,
-        vm_only,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        compare,
-        analyze_only,
-        synthesize_missing,
-        self_heal_dynamic_fields,
-        analyze_mm2,
-        verbose,
-    )
-}
-
-/// Protocol-first run path: prepare context + replay in one call.
-///
-/// Protocol defaults are applied only for package selection. Runtime inputs
-/// (objects, type args, historical choices) stay explicit by design.
-#[pyfunction]
-#[pyo3(signature = (
-    digest=None,
-    *,
-    protocol="generic",
-    package_id=None,
-    resolve_deps=true,
-    context_path=None,
-    checkpoint=None,
-    discover_latest=None,
-    source=None,
-    state_file=None,
-    cache_dir=None,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    profile=None,
-    fetch_strategy=None,
-    vm_only=false,
-    allow_fallback=true,
-    prefetch_depth=3,
-    prefetch_limit=200,
-    auto_system_objects=true,
-    no_prefetch=false,
-    compare=false,
-    analyze_only=false,
-    synthesize_missing=false,
-    self_heal_dynamic_fields=false,
-    analyze_mm2=false,
-    verbose=false,
-))]
-fn protocol_run(
-    py: Python<'_>,
-    digest: Option<&str>,
-    protocol: &str,
-    package_id: Option<&str>,
-    resolve_deps: bool,
-    context_path: Option<&str>,
-    checkpoint: Option<u64>,
-    discover_latest: Option<u64>,
-    source: Option<&str>,
-    state_file: Option<&str>,
-    cache_dir: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    rpc_url: &str,
-    profile: Option<&str>,
-    fetch_strategy: Option<&str>,
-    vm_only: bool,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    let protocol_owned = protocol.to_string();
-    let resolved_package_id =
-        resolve_protocol_package_id(&protocol_owned, package_id).map_err(to_py_err)?;
-    let context_path_owned = context_path.map(ToOwned::to_owned);
-    let prepared = py
-        .allow_threads(move || {
-            prepare_package_context_inner(
-                &resolved_package_id,
-                resolve_deps,
-                context_path_owned.as_deref(),
-            )
-        })
-        .map_err(to_py_err)?;
-
-    let context_tmp = if context_path.is_some() {
-        None
-    } else {
-        Some(write_temp_context_file(&prepared).map_err(to_py_err)?)
-    };
-    let effective_context = context_path
-        .map(ToOwned::to_owned)
-        .or_else(|| context_tmp.as_ref().map(|p| p.display().to_string()));
-
-    let result = replay_transaction(
-        py,
-        digest,
-        checkpoint,
-        discover_latest,
-        if discover_latest.is_some() {
-            prepared
-                .get("package_id")
-                .and_then(serde_json::Value::as_str)
-        } else {
-            None
-        },
-        source,
-        state_file,
-        effective_context.as_deref(),
-        cache_dir,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        rpc_url,
-        profile,
-        fetch_strategy,
-        vm_only,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        compare,
-        analyze_only,
-        synthesize_missing,
-        self_heal_dynamic_fields,
-        analyze_mm2,
-        verbose,
-    );
-    if let Some(path) = context_tmp {
-        let _ = std::fs::remove_file(path);
-    }
-    result
-}
-
-/// Canonical alias for replaying against a prepared context.
-#[pyfunction]
-#[pyo3(signature = (
-    digest=None,
-    *,
-    checkpoint=None,
-    discover_latest=None,
-    discover_package_id=None,
-    source=None,
-    state_file=None,
-    context_path=None,
-    cache_dir=None,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    profile=None,
-    fetch_strategy=None,
-    vm_only=false,
-    allow_fallback=true,
-    prefetch_depth=3,
-    prefetch_limit=200,
-    auto_system_objects=true,
-    no_prefetch=false,
-    compare=false,
-    analyze_only=false,
-    synthesize_missing=false,
-    self_heal_dynamic_fields=false,
-    analyze_mm2=false,
-    verbose=false,
-))]
-fn context_replay(
-    py: Python<'_>,
-    digest: Option<&str>,
-    checkpoint: Option<u64>,
-    discover_latest: Option<u64>,
-    discover_package_id: Option<&str>,
-    source: Option<&str>,
-    state_file: Option<&str>,
-    context_path: Option<&str>,
-    cache_dir: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    rpc_url: &str,
-    profile: Option<&str>,
-    fetch_strategy: Option<&str>,
-    vm_only: bool,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    replay_transaction(
-        py,
-        digest,
-        checkpoint,
-        discover_latest,
-        discover_package_id,
-        source,
-        state_file,
-        context_path,
-        cache_dir,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        rpc_url,
-        profile,
-        fetch_strategy,
-        vm_only,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        compare,
-        analyze_only,
-        synthesize_missing,
-        self_heal_dynamic_fields,
-        analyze_mm2,
-        verbose,
-    )
-}
-
-/// Canonical alias for `protocol_run`.
-#[pyfunction]
-#[pyo3(signature = (
-    digest=None,
-    *,
-    protocol="generic",
-    package_id=None,
-    resolve_deps=true,
-    context_path=None,
-    checkpoint=None,
-    discover_latest=None,
-    source=None,
-    state_file=None,
-    cache_dir=None,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    profile=None,
-    fetch_strategy=None,
-    vm_only=false,
-    allow_fallback=true,
-    prefetch_depth=3,
-    prefetch_limit=200,
-    auto_system_objects=true,
-    no_prefetch=false,
-    compare=false,
-    analyze_only=false,
-    synthesize_missing=false,
-    self_heal_dynamic_fields=false,
-    analyze_mm2=false,
-    verbose=false,
-))]
-fn adapter_run(
-    py: Python<'_>,
-    digest: Option<&str>,
-    protocol: &str,
-    package_id: Option<&str>,
-    resolve_deps: bool,
-    context_path: Option<&str>,
-    checkpoint: Option<u64>,
-    discover_latest: Option<u64>,
-    source: Option<&str>,
-    state_file: Option<&str>,
-    cache_dir: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    rpc_url: &str,
-    profile: Option<&str>,
-    fetch_strategy: Option<&str>,
-    vm_only: bool,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    protocol_run(
-        py,
-        digest,
-        protocol,
-        package_id,
-        resolve_deps,
-        context_path,
-        checkpoint,
-        discover_latest,
-        source,
-        state_file,
-        cache_dir,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        rpc_url,
-        profile,
-        fetch_strategy,
-        vm_only,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        compare,
-        analyze_only,
-        synthesize_missing,
-        self_heal_dynamic_fields,
-        analyze_mm2,
-        verbose,
-    )
-}
-
-/// Canonical context run wrapper: prepare context + replay in one call.
-#[pyfunction]
-#[pyo3(signature = (
-    package_id,
-    digest=None,
-    *,
-    resolve_deps=true,
-    context_path=None,
-    checkpoint=None,
-    discover_latest=None,
-    source=None,
-    state_file=None,
-    cache_dir=None,
-    walrus_network="mainnet",
-    walrus_caching_url=None,
-    walrus_aggregator_url=None,
-    rpc_url="https://fullnode.mainnet.sui.io:443",
-    profile=None,
-    fetch_strategy=None,
-    vm_only=false,
-    allow_fallback=true,
-    prefetch_depth=3,
-    prefetch_limit=200,
-    auto_system_objects=true,
-    no_prefetch=false,
-    compare=false,
-    analyze_only=false,
-    synthesize_missing=false,
-    self_heal_dynamic_fields=false,
-    analyze_mm2=false,
-    verbose=false,
-))]
-fn context_run(
-    py: Python<'_>,
-    package_id: &str,
-    digest: Option<&str>,
-    resolve_deps: bool,
-    context_path: Option<&str>,
-    checkpoint: Option<u64>,
-    discover_latest: Option<u64>,
-    source: Option<&str>,
-    state_file: Option<&str>,
-    cache_dir: Option<&str>,
-    walrus_network: &str,
-    walrus_caching_url: Option<&str>,
-    walrus_aggregator_url: Option<&str>,
-    rpc_url: &str,
-    profile: Option<&str>,
-    fetch_strategy: Option<&str>,
-    vm_only: bool,
-    allow_fallback: bool,
-    prefetch_depth: usize,
-    prefetch_limit: usize,
-    auto_system_objects: bool,
-    no_prefetch: bool,
-    compare: bool,
-    analyze_only: bool,
-    synthesize_missing: bool,
-    self_heal_dynamic_fields: bool,
-    analyze_mm2: bool,
-    verbose: bool,
-) -> PyResult<PyObject> {
-    protocol_run(
-        py,
-        digest,
-        "generic",
-        Some(package_id),
-        resolve_deps,
-        context_path,
-        checkpoint,
-        discover_latest,
-        source,
-        state_file,
-        cache_dir,
-        walrus_network,
-        walrus_caching_url,
-        walrus_aggregator_url,
-        rpc_url,
-        profile,
-        fetch_strategy,
-        vm_only,
-        allow_fallback,
-        prefetch_depth,
-        prefetch_limit,
-        auto_system_objects,
-        no_prefetch,
-        compare,
-        analyze_only,
-        synthesize_missing,
-        self_heal_dynamic_fields,
-        analyze_mm2,
-        verbose,
-    )
-}
-
 /// Interactive two-step flow helper for Python.
 ///
 /// Keeps prepared package context in memory and reuses it across replays.
-#[pyclass(module = "sui_sandbox")]
-struct FlowSession {
+#[pyclass(name = "OrchestrationSession", module = "sui_sandbox")]
+struct OrchestrationSession {
     context: Option<serde_json::Value>,
     package_id: Option<String>,
 }
 
 #[pymethods]
-impl FlowSession {
+impl OrchestrationSession {
     #[new]
     fn new() -> Self {
         Self {
@@ -6483,7 +2564,9 @@ impl FlowSession {
 
     fn save_context(&self, context_path: &str) -> PyResult<()> {
         let value = self.context.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("FlowSession has no context; call prepare() or load_context()")
+            PyRuntimeError::new_err(
+                "OrchestrationSession has no context; call prepare() or load_context()",
+            )
         })?;
         let path = PathBuf::from(context_path);
         if let Some(parent) = path.parent() {
@@ -6865,6 +2948,198 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_validate_alias_matches_workflow_validate() {
+        Python::with_gil(|py| {
+            let spec = fixture_path("examples/data/workflow_replay_analyze_demo.json");
+            let spec_str = spec.to_str().expect("utf8 spec path");
+
+            let workflow = workflow_validate(py, spec_str).expect("workflow validate");
+            let pipeline = pipeline_validate(py, spec_str).expect("pipeline validate");
+
+            let workflow_json =
+                py_json_value(py, workflow.bind(py).as_any()).expect("workflow json");
+            let pipeline_json =
+                py_json_value(py, pipeline.bind(py).as_any()).expect("pipeline json");
+
+            assert_eq!(workflow_json, pipeline_json);
+        });
+    }
+
+    #[test]
+    fn pipeline_run_inline_alias_matches_workflow_run_inline() {
+        Python::with_gil(|py| {
+            let spec = serde_json::json!({
+                "version": 1,
+                "name": "alias_parity",
+                "steps": [
+                    { "id": "status", "kind": "command", "args": ["status"] }
+                ]
+            });
+            let spec_obj = json_value_to_py(py, &spec).expect("spec object");
+
+            let workflow = workflow_run_inline(
+                py,
+                spec_obj.bind(py).as_any(),
+                true,
+                false,
+                None,
+                "https://archive.mainnet.sui.io:443",
+                "mainnet",
+                None,
+                None,
+                false,
+            )
+            .expect("workflow run inline");
+            let pipeline = pipeline_run_inline(
+                py,
+                spec_obj.bind(py).as_any(),
+                true,
+                false,
+                None,
+                "https://archive.mainnet.sui.io:443",
+                "mainnet",
+                None,
+                None,
+                false,
+            )
+            .expect("pipeline run inline");
+
+            let workflow_json =
+                py_json_value(py, workflow.bind(py).as_any()).expect("workflow json");
+            let pipeline_json =
+                py_json_value(py, pipeline.bind(py).as_any()).expect("pipeline json");
+
+            assert_eq!(
+                workflow_json.get("total_steps"),
+                pipeline_json.get("total_steps")
+            );
+            assert_eq!(
+                workflow_json.get("succeeded_steps"),
+                pipeline_json.get("succeeded_steps")
+            );
+            assert_eq!(
+                workflow_json.get("failed_steps"),
+                pipeline_json.get("failed_steps")
+            );
+            assert_eq!(workflow_json.get("steps"), pipeline_json.get("steps"));
+        });
+    }
+
+    #[test]
+    fn adapter_prepare_alias_matches_protocol_prepare_error_shape() {
+        Python::with_gil(|py| {
+            let protocol = "generic";
+            let protocol_err = protocol_prepare(py, protocol, None, true, None)
+                .expect_err("protocol_prepare should require package id")
+                .to_string();
+            let adapter_err = adapter_prepare(py, protocol, None, true, None)
+                .expect_err("adapter_prepare should require package id")
+                .to_string();
+
+            assert_eq!(protocol_err, adapter_err);
+            assert!(protocol_err.contains("requires package_id"));
+        });
+    }
+
+    #[test]
+    fn adapter_run_alias_matches_protocol_run_error_shape() {
+        Python::with_gil(|py| {
+            let protocol = "generic";
+            let protocol_err = protocol_run(
+                py,
+                None,
+                protocol,
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "mainnet",
+                None,
+                None,
+                "https://archive.mainnet.sui.io:443",
+                None,
+                None,
+                false,
+                true,
+                3,
+                200,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            )
+            .expect_err("protocol_run should require package id")
+            .to_string();
+
+            let adapter_err = adapter_run(
+                py,
+                None,
+                protocol,
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "mainnet",
+                None,
+                None,
+                "https://archive.mainnet.sui.io:443",
+                None,
+                None,
+                false,
+                true,
+                3,
+                200,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            )
+            .expect_err("adapter_run should require package id")
+            .to_string();
+
+            assert_eq!(protocol_err, adapter_err);
+            assert!(protocol_err.contains("requires package_id"));
+        });
+    }
+
+    #[test]
+    fn classify_replay_output_matches_core_classifier() {
+        let raw = json!({
+            "local_success": false,
+            "local_error": "historical object not found in archive",
+            "diagnostics": {
+                "missing_input_objects": [],
+                "missing_packages": [],
+                "suggestions": []
+            },
+            "effects": {
+                "failed_command_index": 1,
+                "failed_command_description": "MoveCall 1"
+            }
+        });
+        let binding_output = classify_replay_output(&raw);
+        let core_output =
+            serde_json::to_value(core_classify_replay_output(&raw)).expect("core classification");
+        assert_eq!(binding_output, core_output);
+    }
+
+    #[test]
     fn workflow_execute_replay_step_supports_local_cache_source() {
         let _guard = env_lock().lock().expect("env lock poisoned");
         let state_file = synthetic_state_fixture();
@@ -7010,49 +3285,79 @@ mod tests {
     }
 
     #[test]
-    fn load_deepbook_versions_snapshot_reads_fixture() {
+    fn load_versions_snapshot_reads_fixture() {
         let path = fixture_path(
             "examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json",
         );
         let (checkpoint, versions) =
-            load_deepbook_versions_snapshot(&path).expect("load deepbook versions fixture");
+            sui_sandbox_core::historical_view::load_versions_snapshot(&path)
+                .expect("load versions fixture");
         assert_eq!(checkpoint, 240733000);
-        assert!(versions.contains_key(DEEPBOOK_MARGIN_TARGET_MANAGER));
-        assert!(versions.contains_key(DEEPBOOK_MARGIN_CLOCK));
+        assert!(versions
+            .contains_key("0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80"));
+        assert!(versions.contains_key("0x6"));
     }
 
     #[test]
-    fn decode_deepbook_margin_state_decodes_expected_fields() {
-        use base64::Engine as _;
-        let enc =
-            |value: u64| base64::engine::general_purpose::STANDARD.encode(value.to_le_bytes());
-        let result = serde_json::json!({
-            "success": true,
-            "return_values": [[
-                enc(0),
-                enc(0),
-                enc(250_000_000),   // risk_ratio
-                enc(3_000_000_000), // base_asset
-                enc(5_000_000),     // quote_asset
-                enc(1_000_000_000), // base_debt
-                enc(2_000_000),     // quote_debt
-                enc(0),
-                enc(0),
-                enc(0),
-                enc(0),
-                enc(1_500_000),     // current_price
-            ]]
+    fn load_context_packages_accepts_cli_v2_wrapper() {
+        let tmp = std::env::temp_dir().join(format!(
+            "sui_python_context_v2_{}_{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let payload = json!({
+            "version": 2,
+            "package_id": "0x2",
+            "with_deps": true,
+            "packages": [
+                {
+                    "address": "0x2",
+                    "modules": ["test_mod"],
+                    "bytecodes": ["AQIDBA=="]
+                }
+            ]
         });
-        let decoded = decode_deepbook_margin_state(&result)
-            .expect("decode succeeds")
-            .expect("decoded payload");
+        fs::write(
+            &tmp,
+            serde_json::to_string(&payload).expect("serialize payload"),
+        )
+        .expect("write payload");
+        let parsed = load_context_packages_from_file(&tmp).expect("parse v2 context");
+        let key = AccountAddress::from_hex_literal("0x2").expect("address");
+        assert!(parsed.contains_key(&key));
+        let _ = fs::remove_file(&tmp);
+    }
 
-        assert_eq!(decoded["risk_ratio_pct"].as_f64().unwrap(), 25.0);
-        assert_eq!(decoded["base_asset_sui"].as_f64().unwrap(), 3.0);
-        assert_eq!(decoded["quote_asset_usdc"].as_f64().unwrap(), 5.0);
-        assert_eq!(decoded["base_debt_sui"].as_f64().unwrap(), 1.0);
-        assert_eq!(decoded["quote_debt_usdc"].as_f64().unwrap(), 2.0);
-        assert_eq!(decoded["current_price"].as_f64().unwrap(), 1.5);
+    #[test]
+    fn load_context_packages_accepts_legacy_map_wrapper() {
+        let tmp = std::env::temp_dir().join(format!(
+            "sui_python_context_v1_{}_{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let payload = json!({
+            "version": 1,
+            "package_id": "0x2",
+            "resolve_deps": true,
+            "packages": {
+                "0x2": ["AQIDBA=="]
+            }
+        });
+        fs::write(
+            &tmp,
+            serde_json::to_string(&payload).expect("serialize payload"),
+        )
+        .expect("write payload");
+        let parsed = load_context_packages_from_file(&tmp).expect("parse v1 context");
+        let key = AccountAddress::from_hex_literal("0x2").expect("address");
+        assert!(parsed.contains_key(&key));
+        let _ = fs::remove_file(&tmp);
     }
 }
 
@@ -7067,6 +3372,14 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
     m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(doctor, m)?)?;
+    m.add_function(wrap_pyfunction!(session_status, m)?)?;
+    m.add_function(wrap_pyfunction!(session_reset, m)?)?;
+    m.add_function(wrap_pyfunction!(session_clean, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_save, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_load, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_list, m)?)?;
+    m.add_function(wrap_pyfunction!(snapshot_delete, m)?)?;
     m.add_function(wrap_pyfunction!(ptb_universe, m)?)?;
     m.add_function(wrap_pyfunction!(discover_checkpoint_targets, m)?)?;
     m.add_function(wrap_pyfunction!(context_discover, m)?)?;
@@ -7095,16 +3408,26 @@ fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(transaction_json_to_bcs, m)?)?;
     m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
-    m.add_function(wrap_pyfunction!(deepbook_margin_state, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_view_from_versions, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_decode_return_u64, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_decode_return_u64s, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_decode_returns_typed, m)?)?;
+    m.add_function(wrap_pyfunction!(historical_decode_with_schema, m)?)?;
     m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
     m.add_function(wrap_pyfunction!(replay, m)?)?;
     m.add_function(wrap_pyfunction!(replay_transaction, m)?)?;
+    m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
+    m.add_function(wrap_pyfunction!(replay_analyze, m)?)?;
+    m.add_function(wrap_pyfunction!(replay_effects, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_replay_result, m)?)?;
+    m.add_function(wrap_pyfunction!(dynamic_field_diagnostics, m)?)?;
     m.add_function(wrap_pyfunction!(context_replay, m)?)?;
     m.add_function(wrap_pyfunction!(context_run, m)?)?;
     m.add_function(wrap_pyfunction!(protocol_run, m)?)?;
     m.add_function(wrap_pyfunction!(adapter_run, m)?)?;
-    m.add_class::<FlowSession>()?;
-    let flow_session = m.getattr("FlowSession")?;
-    m.add("ContextSession", flow_session)?;
+    m.add_class::<OrchestrationSession>()?;
+    let orchestration_session = m.getattr("OrchestrationSession")?;
+    m.add("FlowSession", orchestration_session.clone())?;
+    m.add("ContextSession", orchestration_session)?;
     Ok(())
 }

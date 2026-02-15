@@ -6163,10 +6163,12 @@ version = "0.20.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "move-binary-format",
  "move-core-types",
  "pyo3",
+ "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "sui-package-extractor",

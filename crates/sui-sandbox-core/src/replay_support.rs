@@ -10,19 +10,26 @@
 //! - Simulation config construction from replay state
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_core_types::account_address::AccountAddress;
 
-use sui_state_fetcher::{PackageData, ReplayState};
+use sui_state_fetcher::{
+    build_address_aliases, parse_replay_states_file, PackageData, ReplayState,
+};
 use sui_transport::decode_graphql_modules;
 use sui_transport::graphql::GraphQLClient;
 
 use crate::resolver::LocalModuleResolver;
+use crate::tx_replay::{
+    replay_with_version_tracking_with_policy_with_effects, EffectsReconcilePolicy, ReplayExecution,
+};
 use crate::utilities::historical_state::HistoricalStateReconstructor;
 use crate::vm::SimulationConfig;
+use crate::VMHarness;
 
 // ---------------------------------------------------------------------------
 // Resolver hydration
@@ -294,4 +301,120 @@ pub fn build_simulation_config(replay_state: &ReplayState) -> SimulationConfig {
         config = config.with_tx_hash(digest.into_inner());
     }
     config
+}
+
+// ---------------------------------------------------------------------------
+// Offline replay orchestration
+// ---------------------------------------------------------------------------
+
+/// Full offline replay result from a replay-state JSON file.
+pub struct OfflineReplayExecution {
+    /// Selected replay state input.
+    pub replay_state: ReplayState,
+    /// Local execution output (including effects).
+    pub execution: ReplayExecution,
+}
+
+/// Select a replay state from parsed state JSON payloads.
+///
+/// Rules:
+/// - one state + no digest => select that state
+/// - many states + digest => select matching digest
+/// - many states + no digest => error
+pub fn select_replay_state(states: Vec<ReplayState>, digest: Option<&str>) -> Result<ReplayState> {
+    if states.is_empty() {
+        return Err(anyhow!("replay state file did not contain any states"));
+    }
+    if states.len() == 1 {
+        let state = states
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("replay state file did not contain any states"))?;
+        if let Some(requested) = digest {
+            if !requested.is_empty() && state.transaction.digest.0 != requested {
+                return Err(anyhow!(
+                    "digest '{}' does not match replay state digest '{}'",
+                    requested,
+                    state.transaction.digest.0
+                ));
+            }
+        }
+        return Ok(state);
+    }
+
+    let requested = digest
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("replay state file contains multiple states; provide a digest selector")
+        })?;
+
+    states
+        .into_iter()
+        .find(|state| state.transaction.digest.0 == requested)
+        .ok_or_else(|| anyhow!("replay state file does not contain digest '{}'", requested))
+}
+
+/// Replay a transaction fully offline from a replay-state JSON file.
+///
+/// This helper encapsulates the full orchestration path:
+/// parse state JSON -> hydrate resolver -> patch historical objects -> execute replay.
+pub fn replay_state_json_offline(
+    state_json: &Path,
+    digest: Option<&str>,
+    verbose: bool,
+) -> Result<OfflineReplayExecution> {
+    let states = parse_replay_states_file(state_json).with_context(|| {
+        format!(
+            "failed to parse replay states from {}",
+            state_json.display()
+        )
+    })?;
+    let replay_state = select_replay_state(states, digest)?;
+
+    let mut linkage_upgrades: HashMap<AccountAddress, AccountAddress> = HashMap::new();
+    for package in replay_state.packages.values() {
+        for (original, upgraded) in &package.linkage {
+            if original != upgraded {
+                linkage_upgrades.insert(*original, *upgraded);
+            }
+        }
+    }
+
+    let aliases = build_address_aliases(&replay_state);
+    let resolver = hydrate_resolver_from_replay_state(&replay_state, &linkage_upgrades, &aliases)?;
+
+    let package_versions: HashMap<AccountAddress, u64> = replay_state
+        .packages
+        .iter()
+        .map(|(id, package)| (*id, package.version))
+        .collect();
+
+    let mut object_maps = build_replay_object_maps(&replay_state, &package_versions);
+    maybe_patch_replay_objects(
+        &resolver,
+        &replay_state,
+        &package_versions,
+        &aliases,
+        &mut object_maps,
+        verbose,
+    );
+
+    let config = build_simulation_config(&replay_state);
+    let mut harness = VMHarness::with_config(&resolver, false, config)
+        .context("failed to create VM harness for replay")?;
+
+    let execution = replay_with_version_tracking_with_policy_with_effects(
+        &replay_state.transaction,
+        &mut harness,
+        &object_maps.cached_objects,
+        &aliases,
+        Some(&object_maps.version_map),
+        EffectsReconcilePolicy::DynamicFields,
+    )?;
+
+    Ok(OfflineReplayExecution {
+        replay_state,
+        execution,
+    })
 }

@@ -78,6 +78,13 @@ Out of scope (fullnode/validator responsibilities):
 | `LocalModuleResolver` | `crates/sui-sandbox-core/src/resolver.rs` | Package loading and address aliasing |
 | `tx_replay` | `crates/sui-sandbox-core/src/tx_replay.rs` | Transaction replay orchestration |
 | `WorkflowSpec` | `crates/sui-sandbox-core/src/workflow.rs` | Typed replay/analyze workflow contract |
+| `checkpoint_discovery` | `crates/sui-sandbox-core/src/checkpoint_discovery.rs` | Shared digest/checkpoint target discovery planner |
+| `workflow_planner` | `crates/sui-sandbox-core/src/workflow_planner.rs` | Shared workflow auto-inference, command planning, and profile parsing |
+| `context_contract` | `crates/sui-sandbox-core/src/context_contract.rs` | Portable context JSON contract used by CLI + Python |
+| `replay_support` | `crates/sui-sandbox-core/src/replay_support.rs` | Shared replay hydration/runtime wiring used by CLI + Python |
+| `replay_reporting` | `crates/sui-sandbox-core/src/replay_reporting.rs` | Shared replay analysis, diagnostics, classification |
+| `health` | `crates/sui-sandbox-core/src/health.rs` | Shared doctor checks + endpoint preflight logic |
+| `environment_bootstrap` | `crates/sui-sandbox-core/src/environment_bootstrap.rs` | Generic package/object hydration + local environment initialization |
 
 ## PTB Control Flow (Function-Level)
 
@@ -158,12 +165,25 @@ Design goal: keep default replay/analyze paths dependency-light and deterministi
 Legacy igloo integration source remains in-repo for internal use and future extraction work:
 `src/bin/sandbox_cli/replay/igloo.rs`.
 
+## Unified Orchestration Surfaces
+
+Canonical user-facing orchestration commands are:
+
+- `context` (alias: `flow`) for package-context prepare + replay execution.
+- `adapter` (alias: `protocol`) for protocol-labeled wrappers over generic context flows.
+- `pipeline` (alias: `workflow`) for typed multi-step replay/analyze automation.
+
+All three surfaces consume shared core modules (planner/hydration/reporting) so Rust CLI and Python bindings stay behaviorally aligned.
+
 ## Typed Workflow Layer
 
 `sui-sandbox pipeline` (alias: `workflow`) adds a typed orchestration layer above direct CLI invocations:
 
 - Spec schema and validation live in `crates/sui-sandbox-core/src/workflow.rs`.
-- Execution adapter lives in `src/bin/sandbox_cli/workflow.rs`.
+- Step execution/report loop lives in `crates/sui-sandbox-core/src/workflow_runner.rs`.
+- Shared auto-planner helpers (template inference, replay profile/fetch parsing, command shaping) live in `crates/sui-sandbox-core/src/workflow_planner.rs`.
+- CLI adapter lives in `src/bin/sandbox_cli/workflow.rs`.
+- Native Python adapter lives in `crates/sui-python/src/lib.rs` with focused helper modules (for example `workflow_native.rs`, `workflow_api.rs`, `session_api.rs`, `transport_helpers.rs`, `replay_output.rs`, `replay_api.rs`, `replay_core.rs`) and no shell passthrough.
 - Step kinds currently supported: `replay`, `analyze_replay`, and `command`.
 
 Design intent:

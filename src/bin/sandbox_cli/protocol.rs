@@ -3,17 +3,18 @@
 //! This surface keeps protocol-specific runtime inputs explicit while reusing
 //! the generic flow runtime for package preparation and replay execution.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use move_core_types::account_address::AccountAddress;
 use std::path::PathBuf;
+use sui_sandbox_core::adapter::{
+    resolve_discovery_package_filter as core_resolve_discovery_package_filter,
+    resolve_required_package_id as core_resolve_required_package_id,
+    ProtocolAdapter as CoreProtocolAdapter,
+};
 
 use super::flow::{FlowDiscoverCmd, FlowPrepareCmd, FlowRunCmd, WalrusArchiveNetwork};
-use super::replay::ReplaySource;
+use super::replay::{FetchStrategy, ReplayProfile, ReplaySource};
 use super::SandboxState;
-
-const DEEPBOOK_MARGIN_PACKAGE: &str =
-    "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b";
 
 #[derive(Parser, Debug)]
 #[command(about = "Protocol-first adapter entrypoint")]
@@ -42,20 +43,13 @@ pub enum ProtocolName {
 }
 
 impl ProtocolName {
-    fn as_str(self) -> &'static str {
+    fn as_core(self) -> CoreProtocolAdapter {
         match self {
-            Self::Generic => "generic",
-            Self::Deepbook => "deepbook",
-            Self::Cetus => "cetus",
-            Self::Suilend => "suilend",
-            Self::Scallop => "scallop",
-        }
-    }
-
-    fn default_package_id(self) -> Option<&'static str> {
-        match self {
-            Self::Deepbook => Some(DEEPBOOK_MARGIN_PACKAGE),
-            _ => None,
+            Self::Generic => CoreProtocolAdapter::Generic,
+            Self::Deepbook => CoreProtocolAdapter::Deepbook,
+            Self::Cetus => CoreProtocolAdapter::Cetus,
+            Self::Suilend => CoreProtocolAdapter::Suilend,
+            Self::Scallop => CoreProtocolAdapter::Scallop,
         }
     }
 }
@@ -66,7 +60,7 @@ pub struct ProtocolPrepareCmd {
     #[arg(long, value_enum, default_value = "generic")]
     pub protocol: ProtocolName,
 
-    /// Root package id override (required when protocol has no default package)
+    /// Root package id (required for all non-generic protocol adapters)
     #[arg(long = "package-id")]
     pub package_id: Option<String>,
 
@@ -89,7 +83,7 @@ pub struct ProtocolRunCmd {
     #[arg(long, value_enum, default_value = "generic")]
     pub protocol: ProtocolName,
 
-    /// Root package id override (required when protocol has no default package)
+    /// Root package id (required for all non-generic protocol adapters)
     #[arg(long = "package-id")]
     pub package_id: Option<String>,
 
@@ -125,6 +119,14 @@ pub struct ProtocolRunCmd {
     #[arg(long, value_enum, default_value = "hybrid")]
     pub source: ReplaySource,
 
+    /// Runtime defaults profile (tunes fallback and transport behavior)
+    #[arg(long, value_enum, default_value = "balanced")]
+    pub profile: ReplayProfile,
+
+    /// Fetch strategy for dynamic field children during replay
+    #[arg(long, value_enum, default_value = "full")]
+    pub fetch_strategy: FetchStrategy,
+
     /// Allow fallback hydration paths when data is missing
     #[arg(long = "allow-fallback", default_value_t = true, action = ArgAction::Set)]
     pub allow_fallback: bool,
@@ -157,6 +159,26 @@ pub struct ProtocolRunCmd {
     #[arg(long, default_value_t = false)]
     pub vm_only: bool,
 
+    /// Reconcile dynamic-field effects when on-chain lists omit them
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub reconcile_dynamic_fields: bool,
+
+    /// Synthesize placeholder inputs when replay fails on missing objects
+    #[arg(long, default_value_t = false)]
+    pub synthesize_missing: bool,
+
+    /// Allow dynamic-field reads to synthesize placeholder values when missing
+    #[arg(long, default_value_t = false)]
+    pub self_heal_dynamic_fields: bool,
+
+    /// Timeout in seconds for gRPC object fetches
+    #[arg(long, default_value_t = 30)]
+    pub grpc_timeout_secs: u64,
+
+    /// Local replay cache path (used when --source local)
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
+
     /// Fail command when replay output indicates mismatch/failure
     #[arg(long, default_value_t = false)]
     pub strict: bool,
@@ -180,7 +202,7 @@ pub struct ProtocolDiscoverCmd {
     #[arg(long, value_enum, default_value = "generic")]
     pub protocol: ProtocolName,
 
-    /// Package filter override (defaults to protocol package when available)
+    /// Package filter override (required for non-generic protocol adapters)
     #[arg(long = "package-id")]
     pub package_id: Option<String>,
 
@@ -265,6 +287,8 @@ impl ProtocolRunCmd {
             discover_latest: self.discover_latest,
             state_json: self.state_json.clone(),
             source: self.source,
+            profile: self.profile,
+            fetch_strategy: self.fetch_strategy,
             allow_fallback: self.allow_fallback,
             prefetch_depth: self.prefetch_depth,
             prefetch_limit: self.prefetch_limit,
@@ -273,6 +297,11 @@ impl ProtocolRunCmd {
             compare: self.compare,
             analyze_only: self.analyze_only,
             vm_only: self.vm_only,
+            reconcile_dynamic_fields: self.reconcile_dynamic_fields,
+            synthesize_missing: self.synthesize_missing,
+            self_heal_dynamic_fields: self.self_heal_dynamic_fields,
+            grpc_timeout_secs: self.grpc_timeout_secs,
+            cache_dir: self.cache_dir.clone(),
             strict: self.strict,
             walrus_network: self.walrus_network,
             walrus_caching_url: self.walrus_caching_url.clone(),
@@ -303,45 +332,34 @@ impl ProtocolDiscoverCmd {
 }
 
 fn resolve_required_package_id(protocol: ProtocolName, package_id: Option<&str>) -> Result<String> {
-    let raw = match package_id {
-        Some(value) => value,
-        None => protocol.default_package_id().ok_or_else(|| {
+    core_resolve_required_package_id(protocol.as_core(), package_id).map_err(|err| {
+        let message = err.to_string();
+        if message.contains("requires package_id") {
             anyhow!(
-                "protocol `{}` has no default package id; provide --package-id",
-                protocol.as_str()
+                "protocol `{}` requires --package-id (no built-in protocol package defaults)",
+                protocol.as_core().as_str()
             )
-        })?,
-    };
-    normalize_package_id(raw)
+        } else {
+            err
+        }
+    })
 }
 
 fn resolve_discovery_package_filter(
     protocol: ProtocolName,
     package_id: Option<&str>,
 ) -> Result<Option<String>> {
-    if let Some(raw) = package_id {
-        return normalize_package_id(raw).map(Some);
-    }
-    if protocol == ProtocolName::Generic {
-        return Ok(None);
-    }
-    protocol
-        .default_package_id()
-        .map(normalize_package_id)
-        .transpose()?
-        .ok_or_else(|| {
+    core_resolve_discovery_package_filter(protocol.as_core(), package_id).map_err(|err| {
+        let message = err.to_string();
+        if message.contains("requires package_id") {
             anyhow!(
-                "protocol `{}` has no default package id; provide --package-id",
-                protocol.as_str()
+                "protocol `{}` requires --package-id (no built-in protocol package defaults)",
+                protocol.as_core().as_str()
             )
-        })
-        .map(Some)
-}
-
-fn normalize_package_id(package: &str) -> Result<String> {
-    AccountAddress::from_hex_literal(package)
-        .map(|address| address.to_hex_literal())
-        .with_context(|| format!("invalid package id: {}", package))
+        } else {
+            err
+        }
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +374,8 @@ mod tests {
             "run",
             "--protocol",
             "deepbook",
+            "--package-id",
+            "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
             "--digest",
             "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
             "--checkpoint",
@@ -373,19 +393,14 @@ mod tests {
             "run",
             "--protocol",
             "deepbook",
+            "--package-id",
+            "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
             "--discover-latest",
             "5",
             "--source",
             "walrus",
         ]);
         assert!(parsed.is_ok());
-    }
-
-    #[test]
-    fn resolves_deepbook_default_package_id() {
-        let package = resolve_required_package_id(super::ProtocolName::Deepbook, None)
-            .expect("deepbook has default package");
-        assert!(package.starts_with("0x"));
     }
 
     #[test]
@@ -396,9 +411,9 @@ mod tests {
     }
 
     #[test]
-    fn non_generic_without_default_requires_package_override() {
-        let err = resolve_required_package_id(super::ProtocolName::Cetus, None)
-            .expect_err("cetus has no default package");
-        assert!(err.to_string().contains("provide --package-id"));
+    fn non_generic_requires_package_override() {
+        let err = resolve_required_package_id(super::ProtocolName::Deepbook, None)
+            .expect_err("non-generic adapters should require package id");
+        assert!(err.to_string().contains("requires --package-id"));
     }
 }

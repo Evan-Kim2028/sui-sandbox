@@ -6,8 +6,11 @@ four examples total.
 Canonical CLI names are:
 - `context` (alias: `flow`)
 - `adapter` (alias: `protocol`)
-- `script` (alias: `run-flow`)
 - `pipeline` (alias: `workflow`)
+
+Compatibility CLI commands:
+- `script` (alias: `run-flow`) for legacy YAML flow files
+- `init` for legacy flow template scaffolding
 
 ## Core Set
 
@@ -37,7 +40,9 @@ sui-sandbox --json analyze package --package-id 0x2 --list-modules
 Python:
 
 ```bash
-python3 python_sui_sandbox/examples/02_extract_interface.py --package-id 0x2
+python3 python_sui_sandbox/examples/02_extract_interface.py
+# Optional override:
+# BYTECODE_DIR=tests/fixture/build/fixture python3 python_sui_sandbox/examples/02_extract_interface.py
 ```
 
 ### 3) Context replay flow
@@ -58,7 +63,9 @@ cargo run --example state_json_offline_replay
 Python:
 
 ```bash
-python3 python_sui_sandbox/examples/03_context_replay_native.py --package-id 0x2 --discover-latest 1 --analyze-only
+python3 python_sui_sandbox/examples/03_context_replay_native.py
+# Optional overrides:
+# PACKAGE_ID=0x2 DIGEST=<DIGEST> CHECKPOINT=<CP> python3 python_sui_sandbox/examples/03_context_replay_native.py
 ```
 
 ### 4) DeepBook margin state
@@ -68,6 +75,8 @@ Rust:
 ```bash
 cargo run --example deepbook_margin_state
 ```
+
+Core API: `sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_view_from_versions(...)`
 
 Python:
 

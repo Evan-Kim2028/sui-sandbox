@@ -10,6 +10,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  python-version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify Rust/Python version sync
+        run: python scripts/check_python_versions.py
+
   docs-links:
     runs-on: ubuntu-latest
     steps:
@@ -169,3 +179,41 @@ jobs:
                   f"{script} should use extract_interface(...) where package extraction is needed"
               )
           PY
+
+  unification-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install maturin
+        run: python -m pip install --upgrade pip maturin
+
+      - name: Build and install Python wheel
+        run: |
+          maturin build --manifest-path crates/sui-python/Cargo.toml --release -o dist
+          python -m pip install dist/sui_sandbox-*.whl
+
+      - name: Core unification checks
+        run: |
+          cargo check -p sui-sandbox-core
+          cargo check -p sui-sandbox
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p sui-python --tests
+
+      - name: Unification test gates
+        run: |
+          cargo test -p sui-sandbox workflow -- --test-threads=1
+          cargo test -p sui-sandbox-core workflow_planner -- --test-threads=1
+
+      - name: Unification smoke gates
+        run: |
+          ./scripts/rust_examples_smoke.sh
+          ./scripts/python_examples_smoke.sh

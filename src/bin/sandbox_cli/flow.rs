@@ -1,23 +1,13 @@
-//! Task-oriented workflow commands.
+//! Generic package->replay context commands.
 //!
-//! - `init`: scaffold reproducible flow templates
-//! - `script` (`run-flow` alias): execute YAML-defined command steps deterministically
-//! - `context` (`flow` alias): generic package->replay UX
+//! Canonical command: `context` (alias: `flow`).
 
 use anyhow::{anyhow, Context, Result};
-use base64::Engine;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use move_binary_format::CompiledModule;
-use move_core_types::account_address::AccountAddress;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
-use super::fetch::{fetch_package_into_state, fetch_package_with_bytecodes_into_state};
-use super::network::sandbox_home;
+use super::fetch::fetch_package_into_state;
 use super::replay::{FetchStrategy, ReplayCmd, ReplayHydrationArgs, ReplayProfile, ReplaySource};
 use super::SandboxState;
 use sui_sandbox_core::checkpoint_discovery::{
@@ -27,6 +17,12 @@ use sui_sandbox_core::checkpoint_discovery::{
     DiscoverOutput as CoreDiscoverOutput, WalrusArchiveNetwork as CoreWalrusArchiveNetwork,
 };
 use sui_transport::walrus::WalrusClient;
+
+mod context_io;
+use context_io::{
+    default_flow_context_path, load_context_file_into_state, prepare_context_data,
+    write_context_file,
+};
 
 #[derive(Parser, Debug)]
 #[command(about = "Generic two-step package/replay context flow (flow alias)")]
@@ -111,6 +107,14 @@ pub struct FlowReplayCmd {
     #[arg(long, value_enum, default_value = "hybrid")]
     pub source: ReplaySource,
 
+    /// Runtime defaults profile (tunes fallback and transport behavior)
+    #[arg(long, value_enum, default_value = "balanced")]
+    pub profile: ReplayProfile,
+
+    /// Fetch strategy for dynamic field children during replay
+    #[arg(long, value_enum, default_value = "full")]
+    pub fetch_strategy: FetchStrategy,
+
     /// Allow fallback hydration paths when data is missing
     #[arg(long = "allow-fallback", default_value_t = true, action = ArgAction::Set)]
     pub allow_fallback: bool,
@@ -142,6 +146,26 @@ pub struct FlowReplayCmd {
     /// VM-only mode (disable fallback paths)
     #[arg(long, default_value_t = false)]
     pub vm_only: bool,
+
+    /// Reconcile dynamic-field effects when on-chain lists omit them
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub reconcile_dynamic_fields: bool,
+
+    /// Synthesize placeholder inputs when replay fails on missing objects
+    #[arg(long, default_value_t = false)]
+    pub synthesize_missing: bool,
+
+    /// Allow dynamic-field reads to synthesize placeholder values when missing
+    #[arg(long, default_value_t = false)]
+    pub self_heal_dynamic_fields: bool,
+
+    /// Timeout in seconds for gRPC object fetches
+    #[arg(long, default_value_t = 30)]
+    pub grpc_timeout_secs: u64,
+
+    /// Local replay cache path (used when --source local)
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
 
     /// Fail command when replay output indicates mismatch/failure
     #[arg(long, default_value_t = false)]
@@ -198,6 +222,14 @@ pub struct FlowRunCmd {
     #[arg(long, value_enum, default_value = "hybrid")]
     pub source: ReplaySource,
 
+    /// Runtime defaults profile (tunes fallback and transport behavior)
+    #[arg(long, value_enum, default_value = "balanced")]
+    pub profile: ReplayProfile,
+
+    /// Fetch strategy for dynamic field children during replay
+    #[arg(long, value_enum, default_value = "full")]
+    pub fetch_strategy: FetchStrategy,
+
     /// Allow fallback hydration paths when data is missing
     #[arg(long = "allow-fallback", default_value_t = true, action = ArgAction::Set)]
     pub allow_fallback: bool,
@@ -229,6 +261,26 @@ pub struct FlowRunCmd {
     /// VM-only mode (disable fallback paths)
     #[arg(long, default_value_t = false)]
     pub vm_only: bool,
+
+    /// Reconcile dynamic-field effects when on-chain lists omit them
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    pub reconcile_dynamic_fields: bool,
+
+    /// Synthesize placeholder inputs when replay fails on missing objects
+    #[arg(long, default_value_t = false)]
+    pub synthesize_missing: bool,
+
+    /// Allow dynamic-field reads to synthesize placeholder values when missing
+    #[arg(long, default_value_t = false)]
+    pub self_heal_dynamic_fields: bool,
+
+    /// Timeout in seconds for gRPC object fetches
+    #[arg(long, default_value_t = 30)]
+    pub grpc_timeout_secs: u64,
+
+    /// Local replay cache path (used when --source local)
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
 
     /// Fail command when replay output indicates mismatch/failure
     #[arg(long, default_value_t = false)]
@@ -285,29 +337,113 @@ impl From<WalrusArchiveNetwork> for CoreWalrusArchiveNetwork {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct FlowContextFile {
-    version: u32,
-    package_id: String,
-    with_deps: bool,
-    rpc_url: String,
-    generated_at_ms: u64,
-    #[serde(default)]
-    packages_fetched: Vec<String>,
-    #[serde(default)]
-    packages: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct FlowContextPackage {
-    address: String,
-    #[serde(default)]
-    modules: Vec<String>,
-    #[serde(default)]
-    bytecodes: Vec<String>,
-}
-
 type FlowDiscoverOutput = CoreDiscoverOutput;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlowReplayRunOptions {
+    source: ReplaySource,
+    cache_dir: Option<PathBuf>,
+    allow_fallback: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
+    no_prefetch: bool,
+    auto_system_objects: bool,
+    profile: ReplayProfile,
+    fetch_strategy: FetchStrategy,
+    vm_only: bool,
+    strict: bool,
+    compare: bool,
+    analyze_only: bool,
+    reconcile_dynamic_fields: bool,
+    synthesize_missing: bool,
+    self_heal_dynamic_fields: bool,
+    grpc_timeout_secs: u64,
+}
+
+impl FlowReplayRunOptions {
+    fn into_replay_cmd(
+        self,
+        digest: Option<String>,
+        checkpoint: Option<u64>,
+        state_json: Option<PathBuf>,
+    ) -> ReplayCmd {
+        ReplayCmd {
+            digest,
+            hydration: ReplayHydrationArgs {
+                source: self.source,
+                cache_dir: self.cache_dir,
+                allow_fallback: self.allow_fallback,
+                prefetch_depth: self.prefetch_depth,
+                prefetch_limit: self.prefetch_limit,
+                no_prefetch: self.no_prefetch,
+                auto_system_objects: self.auto_system_objects,
+            },
+            profile: self.profile,
+            vm_only: self.vm_only,
+            strict: self.strict,
+            compare: self.compare,
+            analyze_only: self.analyze_only,
+            verbose: false,
+            fetch_strategy: self.fetch_strategy,
+            reconcile_dynamic_fields: self.reconcile_dynamic_fields,
+            synthesize_missing: self.synthesize_missing,
+            self_heal_dynamic_fields: self.self_heal_dynamic_fields,
+            grpc_timeout_secs: self.grpc_timeout_secs,
+            checkpoint: checkpoint.map(|value| value.to_string()),
+            state_json,
+            export_state: None,
+            latest: None,
+        }
+    }
+}
+
+impl From<&FlowReplayCmd> for FlowReplayRunOptions {
+    fn from(value: &FlowReplayCmd) -> Self {
+        Self {
+            source: value.source,
+            cache_dir: value.cache_dir.clone(),
+            allow_fallback: value.allow_fallback,
+            prefetch_depth: value.prefetch_depth,
+            prefetch_limit: value.prefetch_limit,
+            no_prefetch: value.no_prefetch,
+            auto_system_objects: value.auto_system_objects,
+            profile: value.profile,
+            fetch_strategy: value.fetch_strategy,
+            vm_only: value.vm_only,
+            strict: value.strict,
+            compare: value.compare,
+            analyze_only: value.analyze_only,
+            reconcile_dynamic_fields: value.reconcile_dynamic_fields,
+            synthesize_missing: value.synthesize_missing,
+            self_heal_dynamic_fields: value.self_heal_dynamic_fields,
+            grpc_timeout_secs: value.grpc_timeout_secs,
+        }
+    }
+}
+
+impl From<&FlowRunCmd> for FlowReplayRunOptions {
+    fn from(value: &FlowRunCmd) -> Self {
+        Self {
+            source: value.source,
+            cache_dir: value.cache_dir.clone(),
+            allow_fallback: value.allow_fallback,
+            prefetch_depth: value.prefetch_depth,
+            prefetch_limit: value.prefetch_limit,
+            no_prefetch: value.no_prefetch,
+            auto_system_objects: value.auto_system_objects,
+            profile: value.profile,
+            fetch_strategy: value.fetch_strategy,
+            vm_only: value.vm_only,
+            strict: value.strict,
+            compare: value.compare,
+            analyze_only: value.analyze_only,
+            reconcile_dynamic_fields: value.reconcile_dynamic_fields,
+            synthesize_missing: value.synthesize_missing,
+            self_heal_dynamic_fields: value.self_heal_dynamic_fields,
+            grpc_timeout_secs: value.grpc_timeout_secs,
+        }
+    }
+}
 
 impl FlowCli {
     pub async fn execute(
@@ -425,33 +561,12 @@ impl FlowReplayCmd {
             }
         }
 
-        let replay = ReplayCmd {
-            digest: effective_digest,
-            hydration: ReplayHydrationArgs {
-                source: self.source,
-                cache_dir: None,
-                allow_fallback: self.allow_fallback,
-                prefetch_depth: self.prefetch_depth,
-                prefetch_limit: self.prefetch_limit,
-                no_prefetch: self.no_prefetch,
-                auto_system_objects: self.auto_system_objects,
-            },
-            profile: ReplayProfile::Balanced,
-            vm_only: self.vm_only,
-            strict: self.strict,
-            compare: self.compare,
-            analyze_only: self.analyze_only,
-            verbose: false,
-            fetch_strategy: FetchStrategy::Full,
-            reconcile_dynamic_fields: true,
-            synthesize_missing: false,
-            self_heal_dynamic_fields: false,
-            grpc_timeout_secs: 30,
-            checkpoint: effective_checkpoint.map(|v| v.to_string()),
-            state_json: self.state_json.clone(),
-            export_state: None,
-            latest: None,
-        };
+        let replay_options = FlowReplayRunOptions::from(self);
+        let replay = replay_options.into_replay_cmd(
+            effective_digest,
+            effective_checkpoint,
+            self.state_json.clone(),
+        );
 
         replay.execute(state, json_output, verbose).await
     }
@@ -505,33 +620,12 @@ impl FlowRunCmd {
             }
         }
 
-        let replay = ReplayCmd {
-            digest: effective_digest,
-            hydration: ReplayHydrationArgs {
-                source: self.source,
-                cache_dir: None,
-                allow_fallback: self.allow_fallback,
-                prefetch_depth: self.prefetch_depth,
-                prefetch_limit: self.prefetch_limit,
-                no_prefetch: self.no_prefetch,
-                auto_system_objects: self.auto_system_objects,
-            },
-            profile: ReplayProfile::Balanced,
-            vm_only: self.vm_only,
-            strict: self.strict,
-            compare: self.compare,
-            analyze_only: self.analyze_only,
-            verbose: false,
-            fetch_strategy: FetchStrategy::Full,
-            reconcile_dynamic_fields: true,
-            synthesize_missing: false,
-            self_heal_dynamic_fields: false,
-            grpc_timeout_secs: 30,
-            checkpoint: effective_checkpoint.map(|v| v.to_string()),
-            state_json: self.state_json.clone(),
-            export_state: None,
-            latest: None,
-        };
+        let replay_options = FlowReplayRunOptions::from(self);
+        let replay = replay_options.into_replay_cmd(
+            effective_digest,
+            effective_checkpoint,
+            self.state_json.clone(),
+        );
 
         replay.execute(state, json_output, verbose).await
     }
@@ -663,638 +757,16 @@ fn build_walrus_client(
     })
 }
 
-#[derive(Parser, Debug)]
-#[command(about = "Scaffold a task-oriented script template")]
-pub struct InitCmd {
-    /// Template name (currently: quickstart)
-    #[arg(long, default_value = "quickstart")]
-    pub example: String,
-
-    /// Output directory for generated files
-    #[arg(long, default_value = ".")]
-    pub output_dir: PathBuf,
-
-    /// Overwrite existing files
-    #[arg(long, default_value_t = false)]
-    pub force: bool,
-}
-
-#[derive(Parser, Debug)]
-#[command(about = "Execute a YAML script file (run-flow alias)")]
-pub struct RunFlowCmd {
-    /// Path to flow YAML file
-    pub flow_file: PathBuf,
-
-    /// Print commands without executing
-    #[arg(long, default_value_t = false)]
-    pub dry_run: bool,
-
-    /// Continue executing later steps even when one fails
-    #[arg(long, default_value_t = false)]
-    pub continue_on_error: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct FlowFile {
-    version: u32,
-    name: Option<String>,
-    description: Option<String>,
-    steps: Vec<FlowStep>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FlowStep {
-    name: Option<String>,
-    command: Vec<String>,
-    #[serde(default)]
-    continue_on_error: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct FlowRunReport {
-    flow_file: String,
-    name: Option<String>,
-    description: Option<String>,
-    dry_run: bool,
-    total_steps: usize,
-    succeeded_steps: usize,
-    failed_steps: usize,
-    elapsed_ms: u128,
-    steps: Vec<FlowStepReport>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct FlowStepReport {
-    index: usize,
-    name: Option<String>,
-    command: Vec<String>,
-    success: bool,
-    exit_code: i32,
-    elapsed_ms: u128,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl InitCmd {
-    pub async fn execute(&self) -> Result<()> {
-        if self.example != "quickstart" {
-            return Err(anyhow!(
-                "Unknown template '{}'. Supported templates: quickstart",
-                self.example
-            ));
-        }
-
-        fs::create_dir_all(&self.output_dir).with_context(|| {
-            format!(
-                "Failed to create output directory {}",
-                self.output_dir.display()
-            )
-        })?;
-
-        let flow_path = self.output_dir.join("flow.quickstart.yaml");
-        let readme_path = self.output_dir.join("FLOW_README.md");
-
-        write_template(
-            &flow_path,
-            QUICKSTART_FLOW_TEMPLATE,
-            self.force,
-            "flow template",
-        )?;
-        write_template(
-            &readme_path,
-            QUICKSTART_FLOW_README,
-            self.force,
-            "flow guide",
-        )?;
-
-        println!(
-            "Initialized script template at {}",
-            self.output_dir.display()
-        );
-        println!("  - {}", flow_path.display());
-        println!("  - {}", readme_path.display());
-        println!("\nRun with:\n  sui-sandbox script {}", flow_path.display());
-
-        Ok(())
-    }
-}
-
-impl RunFlowCmd {
-    pub async fn execute(
-        &self,
-        state_file: &Path,
-        rpc_url: &str,
-        json_output: bool,
-        verbose: bool,
-    ) -> Result<()> {
-        let raw = fs::read_to_string(&self.flow_file)
-            .with_context(|| format!("Failed to read flow file {}", self.flow_file.display()))?;
-        let flow: FlowFile = serde_yaml::from_str(&raw)
-            .with_context(|| format!("Invalid flow YAML in {}", self.flow_file.display()))?;
-
-        if flow.version != 1 {
-            return Err(anyhow!(
-                "Unsupported flow version {} (expected 1)",
-                flow.version
-            ));
-        }
-        if flow.steps.is_empty() {
-            return Err(anyhow!("Flow has no steps"));
-        }
-
-        if let Some(name) = flow.name.as_deref() {
-            println!("Flow: {name}");
-        }
-        if let Some(description) = flow.description.as_deref() {
-            println!("Description: {description}");
-        }
-
-        let start = Instant::now();
-        let mut reports = Vec::with_capacity(flow.steps.len());
-
-        for (idx, step) in flow.steps.iter().enumerate() {
-            let step_name = step.name.clone();
-            if step.command.is_empty() {
-                return Err(anyhow!("Step {} has empty command", idx + 1));
-            }
-            if step.command.first().is_some_and(|c| c == "run-flow") {
-                return Err(anyhow!(
-                    "Step {} uses run-flow recursively; this is not allowed",
-                    idx + 1
-                ));
-            }
-
-            let step_start = Instant::now();
-            let display_cmd = step.command.join(" ");
-            if !json_output {
-                match step_name.as_deref() {
-                    Some(name) => println!("[flow:{}:{}] {}", idx + 1, name, display_cmd),
-                    None => println!("[flow:{}] {}", idx + 1, display_cmd),
-                }
-            }
-
-            if self.dry_run {
-                reports.push(FlowStepReport {
-                    index: idx + 1,
-                    name: step_name.clone(),
-                    command: step.command.clone(),
-                    success: true,
-                    exit_code: 0,
-                    elapsed_ms: step_start.elapsed().as_millis(),
-                    error: None,
-                });
-                continue;
-            }
-
-            let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-            let mut cmd = Command::new(exe);
-            cmd.arg("--state-file")
-                .arg(state_file)
-                .arg("--rpc-url")
-                .arg(rpc_url);
-            if verbose {
-                cmd.arg("--verbose");
-            }
-            cmd.args(&step.command);
-
-            let output = cmd
-                .output()
-                .with_context(|| format!("Failed to execute step {}", idx + 1))?;
-
-            let ok = output.status.success();
-            let code = output.status.code().unwrap_or(-1);
-            if !json_output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stdout.trim().is_empty() {
-                    print!("{}", stdout);
-                }
-                if !stderr.trim().is_empty() {
-                    eprint!("{}", stderr);
-                }
-            }
-
-            let err = if ok {
-                None
-            } else {
-                Some(format!("step {} failed with exit code {}", idx + 1, code))
-            };
-            reports.push(FlowStepReport {
-                index: idx + 1,
-                name: step_name.clone(),
-                command: step.command.clone(),
-                success: ok,
-                exit_code: code,
-                elapsed_ms: step_start.elapsed().as_millis(),
-                error: err.clone(),
-            });
-
-            if !(ok || self.continue_on_error || step.continue_on_error) {
-                let report = build_report(
-                    &self.flow_file,
-                    &flow,
-                    self.dry_run,
-                    &reports,
-                    start.elapsed(),
-                );
-                if json_output {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
-                } else {
-                    println!(
-                        "Flow stopped at step {} (use --continue-on-error to continue)",
-                        idx + 1
-                    );
-                }
-                return Err(anyhow!(
-                    "flow execution failed at step {} ({})",
-                    idx + 1,
-                    display_cmd
-                ));
-            }
-        }
-
-        let report = build_report(
-            &self.flow_file,
-            &flow,
-            self.dry_run,
-            &reports,
-            start.elapsed(),
-        );
-        if json_output {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            println!(
-                "Flow complete: {}/{} succeeded ({} failed)",
-                report.succeeded_steps, report.total_steps, report.failed_steps
-            );
-        }
-
-        if report.failed_steps > 0 {
-            Err(anyhow!(
-                "flow completed with {} failed step(s)",
-                report.failed_steps
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn build_report(
-    flow_file: &Path,
-    flow: &FlowFile,
-    dry_run: bool,
-    reports: &[FlowStepReport],
-    elapsed: std::time::Duration,
-) -> FlowRunReport {
-    let succeeded = reports.iter().filter(|r| r.success).count();
-    let failed = reports.len().saturating_sub(succeeded);
-    FlowRunReport {
-        flow_file: flow_file.display().to_string(),
-        name: flow.name.clone(),
-        description: flow.description.clone(),
-        dry_run,
-        total_steps: reports.len(),
-        succeeded_steps: succeeded,
-        failed_steps: failed,
-        elapsed_ms: elapsed.as_millis(),
-        steps: reports.to_vec(),
-    }
-}
-
-struct LoadedFlowContext {
-    package_id: String,
-    packages_count: usize,
-}
-
-#[derive(Debug)]
-struct ParsedFlowContext {
-    package_id: Option<String>,
-    with_deps: bool,
-    packages: serde_json::Value,
-}
-
-fn prepare_context_data(
-    state: &mut SandboxState,
-    package_id: &str,
-    with_deps: bool,
-    verbose: bool,
-) -> Result<(FlowContextFile, Vec<String>)> {
-    let fetched = fetch_package_with_bytecodes_into_state(state, package_id, with_deps, verbose)
-        .with_context(|| format!("Failed to prepare package context for {}", package_id))?;
-    let packages: Vec<FlowContextPackage> = fetched
-        .packages_fetched
-        .iter()
-        .map(|pkg| FlowContextPackage {
-            address: pkg.address.clone(),
-            modules: pkg.modules.clone(),
-            bytecodes: pkg.bytecodes.clone().unwrap_or_default(),
-        })
-        .collect();
-    let packages_fetched: Vec<String> = packages.iter().map(|pkg| pkg.address.clone()).collect();
-    let context = FlowContextFile {
-        version: 2,
-        package_id: package_id.to_string(),
-        with_deps,
-        rpc_url: state.rpc_url.clone(),
-        generated_at_ms: now_ms(),
-        packages_fetched: packages_fetched.clone(),
-        packages: serde_json::to_value(packages)?,
-    };
-    Ok((context, packages_fetched))
-}
-
-fn write_context_file(path: &Path, context: &FlowContextFile, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        return Err(anyhow!(
-            "Refusing to overwrite existing context at {} (pass --force)",
-            path.display()
-        ));
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create context directory {}", parent.display()))?;
-    }
-    fs::write(path, serde_json::to_string_pretty(context)?)
-        .with_context(|| format!("Failed to write context {}", path.display()))?;
-    Ok(())
-}
-
-fn load_context_file_into_state(
-    state: &mut SandboxState,
-    path: &Path,
-    verbose: bool,
-) -> Result<LoadedFlowContext> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read context file {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("Invalid context JSON in {}", path.display()))?;
-    let parsed = parse_flow_context_value(&value).with_context(|| {
-        format!(
-            "Invalid context payload in {} (expected flow context wrapper or package map)",
-            path.display()
-        )
-    })?;
-    let context_packages = decode_context_packages(&parsed.packages).with_context(|| {
-        format!(
-            "Failed to decode package payload in context {}",
-            path.display()
-        )
-    })?;
-
-    let mut loaded_count = 0usize;
-    if !context_packages.is_empty() {
-        loaded_count = load_context_packages_into_state(state, &context_packages)?;
-        if verbose {
-            eprintln!(
-                "[flow] loaded {} packages directly from context {}",
-                loaded_count,
-                path.display()
-            );
-        }
-    }
-
-    if loaded_count == 0 {
-        let package_id = parsed.package_id.as_deref().ok_or_else(|| {
-            anyhow!(
-                "Context {} has no portable bytecodes and no `package_id` for network refresh",
-                path.display()
-            )
-        })?;
-        let fetched = fetch_package_into_state(state, package_id, parsed.with_deps, verbose)
-            .with_context(|| {
-                format!(
-                    "Failed to refresh prepared package context for {}",
-                    package_id
-                )
-            })?;
-        loaded_count = fetched.packages_fetched.len();
-        if verbose {
-            eprintln!(
-                "[flow] context had no portable package bytes; refreshed {} package(s) from network",
-                loaded_count
-            );
-        }
-    }
-
-    Ok(LoadedFlowContext {
-        package_id: parsed
-            .package_id
-            .unwrap_or_else(|| "<context-packages>".to_string()),
-        packages_count: loaded_count,
-    })
-}
-
-fn parse_flow_context_value(value: &serde_json::Value) -> Result<ParsedFlowContext> {
-    match value {
-        serde_json::Value::Object(map) => {
-            if let Some(packages) = map.get("packages") {
-                let package_id = map
-                    .get("package_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string);
-                let with_deps = map
-                    .get("with_deps")
-                    .and_then(serde_json::Value::as_bool)
-                    .or_else(|| map.get("resolve_deps").and_then(serde_json::Value::as_bool))
-                    .unwrap_or(true);
-                return Ok(ParsedFlowContext {
-                    package_id,
-                    with_deps,
-                    packages: packages.clone(),
-                });
-            }
-
-            if looks_like_package_map(map) {
-                return Ok(ParsedFlowContext {
-                    package_id: None,
-                    with_deps: true,
-                    packages: value.clone(),
-                });
-            }
-
-            Err(anyhow!("missing `packages` field"))
-        }
-        serde_json::Value::Array(_) => Ok(ParsedFlowContext {
-            package_id: None,
-            with_deps: true,
-            packages: value.clone(),
-        }),
-        _ => Err(anyhow!(
-            "unsupported context JSON type (expected object or array)"
-        )),
-    }
-}
-
-fn looks_like_package_map(map: &serde_json::Map<String, serde_json::Value>) -> bool {
-    !map.is_empty() && map.keys().all(|key| key.starts_with("0x"))
-}
-
-fn decode_context_packages(value: &serde_json::Value) -> Result<Vec<FlowContextPackage>> {
-    match value {
-        serde_json::Value::Null => Ok(Vec::new()),
-        serde_json::Value::Array(_) => {
-            serde_json::from_value::<Vec<FlowContextPackage>>(value.clone())
-                .context("array `packages` payload is invalid")
-        }
-        serde_json::Value::Object(map) => {
-            // Package map shape: {"0x..": ["base64..."]}.
-            let mut out = Vec::with_capacity(map.len());
-            for (address, encoded_modules) in map {
-                let entries = encoded_modules.as_array().ok_or_else(|| {
-                    anyhow!("package {} in map payload must be an array", address)
-                })?;
-                let mut modules = Vec::with_capacity(entries.len());
-                let mut bytecodes = Vec::with_capacity(entries.len());
-                for (idx, value) in entries.iter().enumerate() {
-                    let b64 = value.as_str().ok_or_else(|| {
-                        anyhow!("package {} module #{} is not a string", address, idx)
-                    })?;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .with_context(|| {
-                            format!(
-                                "invalid base64 bytecode in package {} module #{}",
-                                address, idx
-                            )
-                        })?;
-                    let name = inferred_module_name(&bytes, idx);
-                    modules.push(name);
-                    bytecodes.push(b64.to_string());
-                }
-                out.push(FlowContextPackage {
-                    address: address.clone(),
-                    modules,
-                    bytecodes,
-                });
-            }
-            Ok(out)
-        }
-        _ => Err(anyhow!(
-            "unsupported `packages` payload type in flow context"
-        )),
-    }
-}
-
-fn load_context_packages_into_state(
-    state: &mut SandboxState,
-    packages: &[FlowContextPackage],
-) -> Result<usize> {
-    let mut loaded = 0usize;
-    for package in packages {
-        if package.bytecodes.is_empty() {
-            continue;
-        }
-        let address = AccountAddress::from_hex_literal(&package.address)
-            .with_context(|| format!("invalid package address in context: {}", package.address))?;
-        let mut decoded_modules = Vec::with_capacity(package.bytecodes.len());
-        for (idx, encoded) in package.bytecodes.iter().enumerate() {
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .with_context(|| {
-                    format!(
-                        "invalid base64 bytecode for {} module #{} in context",
-                        package.address, idx
-                    )
-                })?;
-            let name = package
-                .modules
-                .get(idx)
-                .cloned()
-                .unwrap_or_else(|| inferred_module_name(&bytes, idx));
-            decoded_modules.push((name, bytes));
-        }
-        if decoded_modules.is_empty() {
-            continue;
-        }
-        state.add_package(address, decoded_modules);
-        loaded += 1;
-    }
-    Ok(loaded)
-}
-
-fn inferred_module_name(bytes: &[u8], idx: usize) -> String {
-    CompiledModule::deserialize_with_defaults(bytes)
-        .ok()
-        .map(|module| module.self_id().name().to_string())
-        .unwrap_or_else(|| format!("module_{}", idx))
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn default_flow_context_path(package_id: &str) -> PathBuf {
-    let trimmed = package_id.trim();
-    let no_prefix = trimmed.strip_prefix("0x").unwrap_or(trimmed);
-    let short = if no_prefix.is_empty() {
-        "package".to_string()
-    } else {
-        no_prefix.chars().take(20).collect::<String>()
-    };
-    sandbox_home()
-        .join("flow_contexts")
-        .join(format!("flow_context.{short}.json"))
-}
-
-fn write_template(path: &Path, contents: &str, force: bool, label: &str) -> Result<()> {
-    if path.exists() && !force {
-        return Err(anyhow!(
-            "Refusing to overwrite existing {} at {} (pass --force)",
-            label,
-            path.display()
-        ));
-    }
-    fs::write(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
-}
-
-const QUICKSTART_FLOW_TEMPLATE: &str = r#"version: 1
-name: quickstart
-steps:
-  - name: show-status
-    command: ["status"]
-  - name: publish-fixture
-    command:
-      [
-        "publish",
-        "tests/fixture/build/fixture",
-        "--bytecode-only",
-        "--address",
-        "fixture=0x100",
-      ]
-  - name: list-packages
-    command: ["view", "packages"]
-"#;
-
-const QUICKSTART_FLOW_README: &str = r#"# Flow Quickstart
-
-This directory was scaffolded by `sui-sandbox init --example quickstart`.
-
-## Run
-
-```bash
-sui-sandbox script flow.quickstart.yaml
-```
-
-## Notes
-
-- Flow version is pinned to `version: 1`.
-- Each step executes exactly one `sui-sandbox` command.
-- `command` is a YAML string array (argv style), not shell text.
-"#;
-
 #[cfg(test)]
 mod tests {
+    use super::{build_walrus_client, parse_checkpoint_spec, FlowCli, WalrusArchiveNetwork};
     use super::{
-        build_walrus_client, parse_checkpoint_spec, parse_flow_context_value, FlowCli,
-        WalrusArchiveNetwork,
+        FetchStrategy, FlowReplayCmd, FlowReplayRunOptions, FlowRunCmd, ReplayProfile, ReplaySource,
     };
     use clap::Parser;
     use serde_json::json;
+    use std::path::PathBuf;
+    use sui_sandbox_core::context_contract::parse_context_payload;
 
     #[test]
     fn parses_flow_prepare() {
@@ -1462,10 +934,33 @@ mod tests {
                 "0x2": []
             }
         });
-        let parsed = parse_flow_context_value(&value).expect("python context should parse");
+        let parsed = parse_context_payload(&value).expect("python context should parse");
         assert_eq!(parsed.package_id.as_deref(), Some("0x2"));
         assert!(parsed.with_deps);
-        assert!(parsed.packages.get("0x2").is_some());
+        assert_eq!(parsed.packages.len(), 1);
+        assert_eq!(parsed.packages[0].address, "0x2");
+    }
+
+    #[test]
+    fn parses_python_v2_context_wrapper() {
+        let value = json!({
+            "version": 2,
+            "package_id": "0x2",
+            "with_deps": true,
+            "generated_at_ms": 0,
+            "packages": [
+                {
+                    "address": "0x2",
+                    "modules": [],
+                    "bytecodes": []
+                }
+            ]
+        });
+        let parsed = parse_context_payload(&value).expect("python v2 context should parse");
+        assert_eq!(parsed.package_id.as_deref(), Some("0x2"));
+        assert!(parsed.with_deps);
+        assert_eq!(parsed.packages.len(), 1);
+        assert_eq!(parsed.packages[0].address, "0x2");
     }
 
     #[test]
@@ -1473,10 +968,11 @@ mod tests {
         let value = json!({
             "0x2": []
         });
-        let parsed = parse_flow_context_value(&value).expect("package map context should parse");
+        let parsed = parse_context_payload(&value).expect("package map context should parse");
         assert_eq!(parsed.package_id, None);
         assert!(parsed.with_deps);
-        assert!(parsed.packages.get("0x2").is_some());
+        assert_eq!(parsed.packages.len(), 1);
+        assert_eq!(parsed.packages[0].address, "0x2");
     }
 
     #[test]
@@ -1484,7 +980,74 @@ mod tests {
         let value = json!({
             "version": 1
         });
-        let err = parse_flow_context_value(&value).expect_err("invalid object should fail");
+        let err = parse_context_payload(&value).expect_err("invalid object should fail");
         assert!(err.to_string().contains("missing `packages` field"));
+    }
+
+    #[test]
+    fn replay_and_run_map_identical_replay_options() {
+        let replay = FlowReplayCmd {
+            digest: Some("At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2".to_string()),
+            context: Some(PathBuf::from("/tmp/context.json")),
+            package_id: None,
+            with_deps: true,
+            checkpoint: Some(239_615_926),
+            discover_latest: None,
+            walrus_network: WalrusArchiveNetwork::Mainnet,
+            walrus_caching_url: None,
+            walrus_aggregator_url: None,
+            state_json: Some(PathBuf::from("/tmp/state.json")),
+            source: ReplaySource::Walrus,
+            profile: ReplayProfile::Fast,
+            fetch_strategy: FetchStrategy::Eager,
+            allow_fallback: false,
+            prefetch_depth: 7,
+            prefetch_limit: 123,
+            no_prefetch: true,
+            auto_system_objects: false,
+            compare: true,
+            analyze_only: true,
+            vm_only: true,
+            reconcile_dynamic_fields: false,
+            synthesize_missing: true,
+            self_heal_dynamic_fields: true,
+            grpc_timeout_secs: 77,
+            cache_dir: Some(PathBuf::from("/tmp/cache")),
+            strict: true,
+        };
+        let run = FlowRunCmd {
+            package_id: "0x2".to_string(),
+            digest: replay.digest.clone(),
+            with_deps: replay.with_deps,
+            context_out: None,
+            force: false,
+            checkpoint: replay.checkpoint,
+            discover_latest: replay.discover_latest,
+            walrus_network: replay.walrus_network,
+            walrus_caching_url: replay.walrus_caching_url.clone(),
+            walrus_aggregator_url: replay.walrus_aggregator_url.clone(),
+            state_json: replay.state_json.clone(),
+            source: replay.source,
+            profile: replay.profile,
+            fetch_strategy: replay.fetch_strategy,
+            allow_fallback: replay.allow_fallback,
+            prefetch_depth: replay.prefetch_depth,
+            prefetch_limit: replay.prefetch_limit,
+            no_prefetch: replay.no_prefetch,
+            auto_system_objects: replay.auto_system_objects,
+            compare: replay.compare,
+            analyze_only: replay.analyze_only,
+            vm_only: replay.vm_only,
+            reconcile_dynamic_fields: replay.reconcile_dynamic_fields,
+            synthesize_missing: replay.synthesize_missing,
+            self_heal_dynamic_fields: replay.self_heal_dynamic_fields,
+            grpc_timeout_secs: replay.grpc_timeout_secs,
+            cache_dir: replay.cache_dir.clone(),
+            strict: replay.strict,
+        };
+
+        let from_replay = FlowReplayRunOptions::from(&replay);
+        let from_run = FlowReplayRunOptions::from(&run);
+        assert_eq!(from_replay, from_run);
     }
 }

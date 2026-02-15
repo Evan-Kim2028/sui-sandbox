@@ -775,29 +775,17 @@ pub fn parse_type_tag_with_aliases(
 // Framework Type Detection
 // =============================================================================
 
-/// Well-known system package addresses (includes DeepBook).
+/// Well-known system package addresses (framework only).
 ///
-/// This includes the standard framework addresses plus DeepBook (0xdee9).
-/// For just the standard framework addresses (0x1, 0x2, 0x3), use
-/// [`sui_resolver::FRAMEWORK_ADDRESSES`] instead.
-pub const SYSTEM_PACKAGE_ADDRESSES: [&str; 4] = ["0x1", "0x2", "0x3", "0xdee9"];
+/// For canonical framework detection, use
+/// [`sui_resolver::is_framework_account_address`] directly.
+pub const SYSTEM_PACKAGE_ADDRESSES: [&str; 3] = ["0x1", "0x2", "0x3"];
 
-/// DeepBook package address (0xdee9).
-pub const DEEPBOOK_ADDRESS: &str = "0xdee9";
-
-/// Check if an address is a system package address (framework + DeepBook).
+/// Check if an address is a framework system package address.
 ///
-/// This returns true for 0x1, 0x2, 0x3 (standard framework) and 0xdee9 (DeepBook).
-/// For checking just the standard framework addresses (0x1, 0x2, 0x3),
-/// use [`sui_resolver::is_framework_account_address`] instead.
+/// This returns true for framework package addresses (for example 0x1, 0x2, 0x3).
 pub fn is_system_package_address(addr: &AccountAddress) -> bool {
-    // Check standard framework addresses via sui_resolver
-    if sui_resolver::is_framework_account_address(addr) {
-        return true;
-    }
-    // Also check DeepBook
-    let short = sui_resolver::normalize_address_short(&addr.to_hex_literal());
-    short == DEEPBOOK_ADDRESS
+    sui_resolver::is_framework_account_address(addr)
 }
 
 /// Check if a TypeTag is a Sui Coin type.

@@ -2,7 +2,7 @@
 
 Python bindings for Sui Move package analysis, transaction replay, view function execution, and Move function fuzzing.
 
-Built on [sui-sandbox](../../README.md) — runs the real Sui Move VM locally via PyO3. **All functions are standalone** — `pip install sui-sandbox` is all you need.
+Built on [sui-sandbox](../../README.md) — runs the real Sui Move VM locally via PyO3. **All functions are standalone** and execute in-process from Python (no CLI subprocess passthrough). With published wheels, `pip install sui-sandbox` is all you need.
 
 ## Installation
 
@@ -100,6 +100,47 @@ for tx in data["transactions"]:
     print(f"  {tx['digest']}: {tx['commands']} commands, {tx['input_objects']} inputs")
 ```
 
+#### `doctor(*, rpc_url="https://archive.mainnet.sui.io:443", state_file=None, timeout_secs=20, include_toolchain_checks=False)`
+
+Run native preflight checks (CLI parity for `sui-sandbox doctor`) and return a structured report.
+
+```python
+report = sui_sandbox.doctor(timeout_secs=15)
+print(report["ok"], report["passed"], report["failed"])
+for check in report["checks"]:
+    print(check["id"], check["passed"], check["detail"])
+```
+
+#### `session_status(*, state_file=None, rpc_url="https://archive.mainnet.sui.io:443")`
+
+Return local sandbox session status (CLI parity for `sui-sandbox status`).
+
+```python
+status = sui_sandbox.session_status()
+print(status["packages_loaded"], status["objects_loaded"], status["state_file"])
+```
+
+#### `session_reset(*, state_file=None)` / `session_clean(*, state_file=None)`
+
+- `session_reset`: reset to a clean baseline state file (CLI parity for `reset`)
+- `session_clean`: remove the state file (CLI parity for `clean`)
+
+```python
+sui_sandbox.session_reset()
+sui_sandbox.session_clean()
+```
+
+#### `snapshot_save(name, *, description=None, state_file=None)` / `snapshot_load(name, *, state_file=None)` / `snapshot_list()` / `snapshot_delete(name)`
+
+Snapshot lifecycle APIs with CLI parity for `sui-sandbox snapshot save|load|list|delete`.
+
+```python
+sui_sandbox.snapshot_save("pre_test", description="before risky replay")
+print(sui_sandbox.snapshot_list())
+sui_sandbox.snapshot_load("pre_test")
+sui_sandbox.snapshot_delete("pre_test")
+```
+
 #### `ptb_universe(*, source="walrus", latest=10, top_packages=8, max_ptbs=20, out_dir=None, grpc_endpoint=None, stream_timeout_secs=120)`
 
 Run the checkpoint-source PTB universe engine from Python (same core engine as
@@ -152,11 +193,15 @@ targets_testnet = sui_sandbox.discover_checkpoint_targets(
 #### `adapter_discover(*, protocol="generic", package_id=None, checkpoint=None, latest=None, include_framework=False, limit=200, walrus_network="mainnet", walrus_caching_url=None, walrus_aggregator_url=None)` (alias: `protocol_discover`)
 
 Protocol-first discovery wrapper:
-- applies protocol default package filter when available (`deepbook` currently)
-- keeps explicit `package_id` override available
+- requires `package_id` for non-generic protocols
 
 ```python
-targets = sui_sandbox.adapter_discover(protocol="deepbook", latest=5, limit=20)
+targets = sui_sandbox.adapter_discover(
+    protocol="deepbook",
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+    latest=5,
+    limit=20,
+)
 print(targets["matches"])
 ```
 
@@ -202,7 +247,7 @@ draft_replay = sui_sandbox.pipeline_auto(
 print(draft_replay["replay_seed_source"], draft_replay["discovered_checkpoint"])
 ```
 
-#### `pipeline_run(spec_path, *, dry_run=False, continue_on_error=False, report_path=None, rpc_url="https://fullnode.mainnet.sui.io:443", walrus_network="mainnet", walrus_caching_url=None, walrus_aggregator_url=None, verbose=False)` (alias: `workflow_run`)
+#### `pipeline_run(spec_path, *, dry_run=False, continue_on_error=False, report_path=None, rpc_url="https://archive.mainnet.sui.io:443", walrus_network="mainnet", walrus_caching_url=None, walrus_aggregator_url=None, verbose=False)` (alias: `workflow_run`)
 
 Execute a typed pipeline spec natively from Python (no CLI passthrough).
 
@@ -214,7 +259,7 @@ report = sui_sandbox.pipeline_run(
 print(report["succeeded_steps"], report["failed_steps"])
 ```
 
-#### `pipeline_run_inline(spec, *, dry_run=False, continue_on_error=False, report_path=None, rpc_url="https://fullnode.mainnet.sui.io:443", walrus_network="mainnet", walrus_caching_url=None, walrus_aggregator_url=None, verbose=False)` (alias: `workflow_run_inline`)
+#### `pipeline_run_inline(spec, *, dry_run=False, continue_on_error=False, report_path=None, rpc_url="https://archive.mainnet.sui.io:443", walrus_network="mainnet", walrus_caching_url=None, walrus_aggregator_url=None, verbose=False)` (alias: `workflow_run_inline`)
 
 Execute a typed pipeline from an in-memory Python object (no temp spec file).
 
@@ -296,8 +341,12 @@ print(f"Fetched {pkgs['count']} packages")
 Prepare a portable package context payload for replay workflows.
 
 **Returns:** `dict` with:
-- `package_id`, `resolve_deps`, `generated_at_ms`
-- `packages` (package -> module bytecodes)
+- `version`, `package_id`, `with_deps` (plus compatibility mirror `resolve_deps`)
+- `generated_at_ms`, `packages_fetched`, `count`
+- `packages` as a v2 array of:
+  - `address`
+  - `modules`
+  - `bytecodes` (base64)
 - `count`
 
 ```python
@@ -307,10 +356,14 @@ print(ctx["count"])
 
 #### `adapter_prepare(*, protocol="generic", package_id=None, resolve_deps=True, output_path=None)` (alias: `protocol_prepare`)
 
-Protocol-first prepare wrapper with package defaults:
+Protocol-first prepare wrapper (non-generic protocols require `package_id`):
 
 ```python
-ctx = sui_sandbox.adapter_prepare(protocol="deepbook", output_path="flow_context.deepbook.json")
+ctx = sui_sandbox.adapter_prepare(
+    protocol="deepbook",
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+    output_path="flow_context.deepbook.json",
+)
 print(ctx["package_id"], ctx["count"])
 ```
 
@@ -370,23 +423,82 @@ result = sui_sandbox.call_view_function(
 )
 ```
 
-#### `deepbook_margin_state(*, versions_file="examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json", grpc_endpoint=None, grpc_api_key=None)`
+#### `historical_view_from_versions(*, versions_file, package_id, module, function, required_objects, type_args=[], package_roots=[], type_refs=[], fetch_child_objects=True, grpc_endpoint=None, grpc_api_key=None)`
 
-One-call DeepBook margin helper using native bindings only:
+Generic historical view execution helper.
+
 - loads object versions/checkpoint from snapshot JSON
 - hydrates required historical objects via gRPC
 - hydrates checkpoint-pinned package closure
-- executes `margin_manager::manager_state` locally and decodes key values
+- executes the specified Move function locally
 
 ```python
-out = sui_sandbox.deepbook_margin_state(
-    versions_file="examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json"
+out = sui_sandbox.historical_view_from_versions(
+    versions_file="examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json",
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+    module="margin_manager",
+    function="manager_state",
+    required_objects=[...],
+    type_args=["0x2::sui::SUI", "<USDC_TYPE>"],
 )
 print(out["success"], out["gas_used"])
-print(out.get("decoded_margin_state"))
+print(out["raw"]["return_values"])
 ```
 
 When archive endpoints miss runtime objects, the result includes a retry `hint`.
+
+#### `historical_decode_return_u64(result, *, command_index=0, value_index)`
+
+Decode a single little-endian `u64` return value from `historical_view_from_versions` output.
+
+Returns `None` when execution failed or index is missing.
+
+```python
+risk_ratio = sui_sandbox.historical_decode_return_u64(out, value_index=2)
+current_px = sui_sandbox.historical_decode_return_u64(out, value_index=11)
+```
+
+#### `historical_decode_return_u64s(result, *, command_index=0)`
+
+Decode all command return values into `u64` slots where possible.
+
+Returns `None` when execution failed or no command return values are available.
+
+```python
+vals = sui_sandbox.historical_decode_return_u64s(out) or []
+print(vals[2], vals[11])  # risk_ratio, current_price
+```
+
+#### `historical_decode_returns_typed(result, *, command_index=0)`
+
+Decode command return values into typed JSON using `return_type_tags` when available.
+
+Returns `None` when execution failed or no command return values are available.
+
+```python
+typed = sui_sandbox.historical_decode_returns_typed(out) or []
+for item in typed:
+    print(item["index"], item["type_tag"], item["value"])
+```
+
+#### `historical_decode_with_schema(result, schema, *, command_index=0)`
+
+Decode command return values into a named object using a field schema:
+- `index`: return tuple index
+- `name`: output key
+- `type_hint`: optional decode override (`u64`, `address`, `vector<u8>`, `utf8`, `hex`, `base64`, ...)
+- `scale`: optional numeric divisor
+
+Returns `None` when execution failed or no command return values are available.
+
+```python
+schema = [
+    {"index": 2, "name": "risk_ratio_pct", "type_hint": "u64", "scale": 1e7},
+    {"index": 11, "name": "current_price", "type_hint": "u64", "scale": 1e6},
+]
+decoded = sui_sandbox.historical_decode_with_schema(out, schema) or {}
+print(decoded.get("risk_ratio_pct"), decoded.get("current_price"))
+```
 
 #### `fuzz_function(package_id, module, function, *, iterations=100, seed=None, sender="0x0", gas_budget=50_000_000_000, type_args=[], fail_fast=False, max_vector_len=32, dry_run=False, fetch_deps=True)`
 
@@ -483,6 +595,61 @@ if result.get("comparison"):
     print(f"Status match: {result['comparison']['status_match']}")
 ```
 
+#### `analyze_replay(...)` (alias: `replay_analyze(...)`)
+
+First-class hydration/readiness analysis wrapper (equivalent to `replay_transaction(..., analyze_only=True)`).
+
+```python
+analysis = sui_sandbox.analyze_replay(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+    analyze_mm2=True,
+)
+print(analysis["analysis"]["missing_inputs"])
+print(analysis["analysis"]["suggestions"])
+```
+
+#### `replay_effects(...)`
+
+Execution-focused replay wrapper that returns effects/comparison/diagnostics plus a classification summary.
+
+```python
+out = sui_sandbox.replay_effects(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+    compare=True,
+)
+print(out["local_success"], out["effects"]["gas_used"])
+print(out["classification"]["category"])
+```
+
+#### `classify_replay_result(result)`
+
+Classify replay output into structured categories (`missing_input_objects`, `archive_data_gap`, `move_abort`, ...).
+
+```python
+result = sui_sandbox.replay("DigestHere...", checkpoint=239615926)
+classification = sui_sandbox.classify_replay_result(result)
+print(classification["category"], classification["retryable"])
+```
+
+#### `dynamic_field_diagnostics(...)`
+
+Analyze hydration-only replay twice (baseline `no_prefetch=True` vs prefetch-enabled)
+for the same digest/checkpoint and report dynamic-field related deltas.
+
+```python
+diag = sui_sandbox.dynamic_field_diagnostics(
+    "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+    checkpoint=239615926,
+    prefetch_depth=3,
+    prefetch_limit=200,
+)
+print(diag["likely_dynamic_field_dependency"])
+print(diag["delta"]["objects_added_by_prefetch"])
+print(diag["recommendations"])
+```
+
 #### `context_replay(digest=None, *, checkpoint=None, discover_latest=None, discover_package_id=None, source=None, state_file=None, context_path=None, cache_dir=None, walrus_network="mainnet", ..., profile=None, fetch_strategy=None, vm_only=False, analyze_only=False, synthesize_missing=False, self_heal_dynamic_fields=False, analyze_mm2=False, rpc_url=...)` (alias: `replay_transaction`)
 
 Compact replay helper with source inference:
@@ -516,6 +683,7 @@ One-call protocol flow: prepare context + replay.
 out = sui_sandbox.adapter_run(
     digest="At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
     protocol="deepbook",
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
     checkpoint=239615926,
     analyze_only=True,
 )
@@ -524,13 +692,14 @@ print(out["local_success"], out["analysis"]["commands"])
 # Protocol-first auto-discovery + replay
 out = sui_sandbox.adapter_run(
     protocol="deepbook",
+    package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
     discover_latest=5,
     analyze_only=True,
 )
 print(out["digest"], out["analysis"]["commands"])
 ```
 
-#### `FlowSession` (alias: `ContextSession`)
+#### `OrchestrationSession` (aliases: `FlowSession`, `ContextSession`)
 
 In-memory two-step context helper for interactive usage:
 - `prepare(...)`
@@ -538,7 +707,7 @@ In-memory two-step context helper for interactive usage:
 - `load_context(...)` / `save_context(...)`
 
 ```python
-session = sui_sandbox.FlowSession()
+session = sui_sandbox.OrchestrationSession()
 session.prepare("0x2")
 out = session.replay(
     "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
@@ -558,6 +727,7 @@ Pre-built wheels are available for:
 - Linux aarch64 (glibc 2.17+)
 - macOS x86_64 (10.12+)
 - macOS aarch64 (11.0+)
+- Windows x86_64 (MSVC)
 
 Building from source requires Rust 1.80+ and Python 3.9+.
 

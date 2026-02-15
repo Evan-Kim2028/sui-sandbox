@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Result};
+use sui_sandbox_core::bootstrap::archive_runtime_gap_hint;
 
 use crate::sandbox_cli::output::format_effects;
 
 use super::ReplayOutput;
-
-const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
 
 pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, verbose: bool) {
     println!("\x1b[1mTransaction Replay: {}\x1b[0m\n", result.digest);
@@ -22,7 +21,7 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
         println!("\x1b[31m✗ Local execution failed\x1b[0m");
         if let Some(err) = &result.local_error {
             println!("  Error: {}", err);
-            if let Some(hint) = archive_runtime_hint(err) {
+            if let Some(hint) = archive_runtime_gap_hint(err, None) {
                 println!("  Hint: {}", hint);
             }
         }
@@ -208,7 +207,7 @@ fn replay_hints_from_output(output: &ReplayOutput) -> Vec<String> {
         hints.extend(diagnostics.suggestions.iter().cloned());
     }
     if let Some(err) = output.local_error.as_deref() {
-        if let Some(hint) = archive_runtime_hint(err) {
+        if let Some(hint) = archive_runtime_gap_hint(err, None) {
             hints.push(hint);
         }
     }
@@ -228,33 +227,6 @@ fn replay_hints_from_output(output: &ReplayOutput) -> Vec<String> {
         hints.push("Retry with --verbose and review failed command details above".to_string());
     }
     hints
-}
-
-fn archive_runtime_hint(error_message: &str) -> Option<String> {
-    if !looks_like_archive_runtime_gap(error_message) {
-        return None;
-    }
-
-    Some(format!(
-        "Likely missing runtime objects from archive replay (current endpoint: {}). Retry with `SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443`.",
-        effective_grpc_endpoint_for_hint()
-    ))
-}
-
-fn effective_grpc_endpoint_for_hint() -> String {
-    std::env::var("SUI_GRPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| MAINNET_ARCHIVE_GRPC.to_string())
-}
-
-fn looks_like_archive_runtime_gap(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    (lower.contains("contractabort") && lower.contains("abort_code: 1"))
-        || lower.contains("unchanged_loaded_runtime_objects")
-        || lower.contains("missing runtime object")
-        || lower.contains("missing object input")
 }
 
 pub(super) fn enforce_strict(output: &ReplayOutput) -> Result<()> {

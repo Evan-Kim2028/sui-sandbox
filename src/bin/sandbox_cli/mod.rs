@@ -16,6 +16,7 @@ pub mod ptb_spec;
 pub mod publish;
 pub mod replay;
 pub mod run;
+pub mod script;
 pub mod snapshot;
 pub mod state;
 pub mod test;
