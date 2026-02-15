@@ -13,7 +13,8 @@ use sui_state_fetcher::{HistoricalStateProvider, PackageData};
 use sui_transport::grpc::GrpcOwner;
 
 use crate::bootstrap::{
-    build_package_registration_plan, create_mainnet_provider, load_fetched_objects_into_env,
+    build_package_registration_plan, configure_environment_mainnet_fetchers,
+    create_mainnet_provider, load_fetched_objects_into_env, preload_dynamic_field_objects,
     register_packages_with_linkage_plan, BootstrapFetchedObjectData,
 };
 use crate::simulation::SimulationEnvironment;
@@ -70,6 +71,58 @@ pub struct EnvironmentBuildResult {
     pub env: SimulationEnvironment,
     pub package_registration: crate::bootstrap::PackageRegistrationResult,
     pub objects_loaded: usize,
+}
+
+/// Optional runtime hydration/fetcher wiring controls applied after build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentFinalizePlan {
+    /// Parent object IDs whose dynamic-field wrappers should be preloaded.
+    #[serde(default)]
+    pub dynamic_field_parents: Vec<String>,
+    /// Per-parent dynamic-field scan limit.
+    #[serde(default = "default_dynamic_field_limit")]
+    pub dynamic_field_limit: usize,
+    /// Whether to wire on-demand gRPC fetchers into the environment.
+    #[serde(default = "default_configure_fetchers")]
+    pub configure_fetchers: bool,
+}
+
+fn default_dynamic_field_limit() -> usize {
+    32
+}
+
+fn default_configure_fetchers() -> bool {
+    true
+}
+
+impl Default for EnvironmentFinalizePlan {
+    fn default() -> Self {
+        Self {
+            dynamic_field_parents: Vec::new(),
+            dynamic_field_limit: default_dynamic_field_limit(),
+            configure_fetchers: default_configure_fetchers(),
+        }
+    }
+}
+
+/// Finalize result emitted after optional dynamic-field preload/fetcher wiring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentFinalizeResult {
+    pub dynamic_fields_loaded: usize,
+    pub fetchers_configured: bool,
+}
+
+/// Combined result for a hydrate + build flow.
+pub struct HydratedEnvironmentResult {
+    pub hydration: MainnetHydrationResult,
+    pub build: EnvironmentBuildResult,
+}
+
+/// Combined result for hydrate + build + finalize flow.
+pub struct FinalizedHydratedEnvironmentResult {
+    pub hydration: MainnetHydrationResult,
+    pub build: EnvironmentBuildResult,
+    pub finalize: EnvironmentFinalizeResult,
 }
 
 /// Fetch package closure and requested objects from mainnet.
@@ -153,5 +206,91 @@ pub fn build_environment_from_hydrated_state(
         env,
         package_registration,
         objects_loaded,
+    })
+}
+
+/// Apply optional runtime support after environment build:
+/// - dynamic-field wrapper preloading under selected parents
+/// - on-demand gRPC object/child fetcher wiring
+pub fn finalize_environment_runtime_support(
+    hydration: &MainnetHydrationResult,
+    env: &mut SimulationEnvironment,
+    plan: &EnvironmentFinalizePlan,
+) -> Result<EnvironmentFinalizeResult> {
+    let mut dynamic_fields_loaded = 0usize;
+    let endpoint = hydration.provider.grpc_endpoint().to_string();
+
+    if !plan.dynamic_field_parents.is_empty() && plan.dynamic_field_limit > 0 {
+        dynamic_fields_loaded = run_with_runtime(|rt| {
+            let parent_refs: Vec<&str> = plan
+                .dynamic_field_parents
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let wrappers = preload_dynamic_field_objects(
+                rt,
+                hydration.provider.graphql(),
+                hydration.provider.grpc(),
+                &parent_refs,
+                plan.dynamic_field_limit,
+            );
+            load_fetched_objects_into_env(env, &wrappers, false)
+        })?;
+    }
+
+    if plan.configure_fetchers {
+        run_with_runtime(|rt| {
+            rt.block_on(configure_environment_mainnet_fetchers(
+                env,
+                &endpoint,
+                HashMap::new(),
+                None,
+                true,
+            ))?;
+            Ok(())
+        })?;
+    }
+
+    Ok(EnvironmentFinalizeResult {
+        dynamic_fields_loaded,
+        fetchers_configured: plan.configure_fetchers,
+    })
+}
+
+fn run_with_runtime<T>(operation: impl FnOnce(&tokio::runtime::Runtime) -> Result<T>) -> Result<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| {
+            let runtime = tokio::runtime::Runtime::new()?;
+            operation(&runtime)
+        })
+    } else {
+        let runtime = tokio::runtime::Runtime::new()?;
+        operation(&runtime)
+    }
+}
+
+/// Convenience helper: hydrate state from mainnet and build a local environment.
+pub async fn hydrate_and_build_mainnet_environment(
+    hydration_plan: &MainnetHydrationPlan,
+    build_plan: &EnvironmentBuildPlan,
+) -> Result<HydratedEnvironmentResult> {
+    let hydration = hydrate_mainnet_state(hydration_plan).await?;
+    let build = build_environment_from_hydrated_state(&hydration, build_plan)?;
+    Ok(HydratedEnvironmentResult { hydration, build })
+}
+
+/// Convenience helper: hydrate, build, then finalize runtime support.
+pub async fn hydrate_build_and_finalize_mainnet_environment(
+    hydration_plan: &MainnetHydrationPlan,
+    build_plan: &EnvironmentBuildPlan,
+    finalize_plan: &EnvironmentFinalizePlan,
+) -> Result<FinalizedHydratedEnvironmentResult> {
+    let hydration = hydrate_mainnet_state(hydration_plan).await?;
+    let mut build = build_environment_from_hydrated_state(&hydration, build_plan)?;
+    let finalize = finalize_environment_runtime_support(&hydration, &mut build.env, finalize_plan)?;
+    Ok(FinalizedHydratedEnvironmentResult {
+        hydration,
+        build,
+        finalize,
     })
 }

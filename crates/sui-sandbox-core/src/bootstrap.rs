@@ -17,8 +17,9 @@ use sui_transport::graphql::GraphQLClient;
 use sui_transport::grpc::{GrpcClient, GrpcOwner, GrpcTransaction};
 use sui_types::digests::TransactionDigest as SuiTransactionDigest;
 
+use crate::fetcher::GrpcFetcher;
 use crate::sandbox_runtime::ChildFetcherFn;
-use crate::simulation::SimulationEnvironment;
+use crate::simulation::{FetcherConfig, SimulationEnvironment};
 use crate::utilities::{parse_type_tag, GenericObjectPatcher};
 use crate::vm::{SimulationConfig, DEFAULT_PROTOCOL_VERSION};
 
@@ -229,6 +230,9 @@ pub fn is_likely_runtime_object_gap_error(message: &str) -> bool {
         || lower.contains("unchanged_loaded_runtime_objects")
         || lower.contains("missing runtime object")
         || lower.contains("missing object input")
+        || (lower.contains("dynamic_field")
+            && lower.contains("major_status: aborted")
+            && lower.contains("sub_status: some(2)"))
 }
 
 /// Build an actionable runtime-gap hint when replay likely failed due to archive data limits.
@@ -257,6 +261,41 @@ pub fn maybe_print_archive_runtime_hint(error_message: &str) {
     if let Some(hint) = archive_runtime_gap_hint(error_message, None) {
         println!("\n  INFO: {}", hint);
     }
+}
+
+/// Configure an environment to fetch missing objects from a mainnet endpoint.
+///
+/// This wires both:
+/// - a top-level object fetcher (`GrpcFetcher`) for missing object inputs, and
+/// - a child fetcher for dynamic-field/child-object lookups inside VM execution.
+pub async fn configure_environment_mainnet_fetchers(
+    env: &mut SimulationEnvironment,
+    grpc_endpoint: &str,
+    historical_versions: HashMap<String, u64>,
+    patcher: Option<GenericObjectPatcher>,
+    use_archive: bool,
+) -> Result<()> {
+    let endpoint = grpc_endpoint.trim();
+    if endpoint.is_empty() {
+        return Err(anyhow!("grpc endpoint must not be empty"));
+    }
+
+    env.set_fetcher(Box::new(GrpcFetcher::custom(endpoint)));
+    env.set_fetcher_config(FetcherConfig {
+        enabled: true,
+        network: Some("mainnet".to_string()),
+        endpoint: Some(endpoint.to_string()),
+        use_archive,
+    });
+
+    let api_key = std::env::var("SUI_GRPC_API_KEY").ok();
+    let child_grpc = GrpcClient::with_api_key(endpoint, api_key).await?;
+    env.set_child_fetcher(create_child_fetcher(
+        child_grpc,
+        historical_versions,
+        patcher,
+    ));
+    Ok(())
 }
 
 /// Derived package-linkage metadata used to register packages in a simulation environment.
@@ -348,6 +387,43 @@ pub fn register_packages_with_linkage_plan(
     result
 }
 
+/// Validate package registration and return a readable error on failure.
+pub fn ensure_package_registration_success(registration: &PackageRegistrationResult) -> Result<()> {
+    if registration.failed.is_empty() {
+        return Ok(());
+    }
+
+    let mut details = String::new();
+    for (addr, err) in &registration.failed {
+        if !details.is_empty() {
+            details.push_str("; ");
+        }
+        details.push_str(&format!("{}: {}", addr.to_hex_literal(), err));
+    }
+    Err(anyhow!(
+        "package registration failed ({} errors): {}",
+        registration.failed.len(),
+        details
+    ))
+}
+
+/// Deploy package modules from one package id at a target package address.
+///
+/// Returns `Ok(true)` when source package modules were found and deployed.
+/// Returns `Ok(false)` when the source package is not present in `packages`.
+pub fn deploy_package_alias_if_present(
+    env: &mut SimulationEnvironment,
+    packages: &HashMap<AccountAddress, PackageData>,
+    source: AccountAddress,
+    target: &str,
+) -> Result<bool> {
+    let Some(pkg) = packages.get(&source) else {
+        return Ok(false);
+    };
+    env.deploy_package_at_address(target, pkg.modules.clone())?;
+    Ok(true)
+}
+
 /// Build a replay config directly from a gRPC transaction, resolving epoch metadata
 /// via the gRPC client if needed.
 pub fn build_replay_config_from_grpc(
@@ -428,7 +504,10 @@ pub fn build_replay_config_from_grpc(
 
 #[cfg(test)]
 mod tests {
-    use super::archive_runtime_gap_hint;
+    use super::{
+        archive_runtime_gap_hint, ensure_package_registration_success, PackageRegistrationResult,
+    };
+    use move_core_types::account_address::AccountAddress;
 
     #[test]
     fn archive_runtime_hint_triggers_on_archive_endpoint() {
@@ -447,5 +526,30 @@ mod tests {
             Some("https://grpc.custom-provider.example"),
         );
         assert!(hint.is_none());
+    }
+
+    #[test]
+    fn archive_runtime_hint_detects_dynamic_field_abort_pattern() {
+        let hint = archive_runtime_gap_hint(
+            "execution failed: VMError { major_status: ABORTED, sub_status: Some(2), location: Module(ModuleId { name: Identifier(\"dynamic_field\") }) }",
+            Some("https://archive.mainnet.sui.io:443"),
+        )
+        .expect("dynamic-field archive hint should exist");
+        assert!(hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443"));
+    }
+
+    #[test]
+    fn ensure_package_registration_success_reports_failures() {
+        let mut registration = PackageRegistrationResult::default();
+        registration.failed.push((
+            AccountAddress::from_hex_literal("0x2").expect("valid"),
+            "load error".to_string(),
+        ));
+        let err = ensure_package_registration_success(&registration)
+            .expect_err("registration should fail");
+        let message = err.to_string();
+        assert!(message.contains("package registration failed"));
+        assert!(message.contains("0x2"));
+        assert!(message.contains("load error"));
     }
 }

@@ -60,7 +60,11 @@ pub mod version_utils;
 // Re-export commonly used items
 pub use address::{is_framework_package, normalize_address};
 pub use generic_patcher::{FieldPatchRule, GenericObjectPatcher, PatchAction, PatchCondition};
-pub use json_to_bcs::JsonToBcsConverter;
+pub use json_to_bcs::{
+    validate_json_bcs_reconstruction, JsonBcsValidationEntry, JsonBcsValidationObject,
+    JsonBcsValidationPlan, JsonBcsValidationReport, JsonBcsValidationStatus,
+    JsonBcsValidationSummary, JsonToBcsConverter,
+};
 pub use package_roots::{
     collect_required_package_roots_from_type_strings,
     collect_required_package_roots_from_type_tags, unresolved_package_dependencies_for_modules,

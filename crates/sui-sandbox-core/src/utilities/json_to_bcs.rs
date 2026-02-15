@@ -22,6 +22,7 @@ use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use move_binary_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use super::generic_patcher::{BcsEncoder, DynamicValue, LayoutRegistry, MoveType, StructLayout};
@@ -814,6 +815,213 @@ pub fn format_move_type(move_type: &MoveType) -> String {
         }
         MoveType::TypeParameter(idx) => format!("T{}", idx),
     }
+}
+
+/// One object reconstruction input row used by generic JSON->BCS validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonBcsValidationObject {
+    pub object_id: String,
+    pub version: u64,
+    pub object_type: String,
+    pub object_json: JsonValue,
+}
+
+/// Validation plan for reconstructing object JSON and comparing to historical BCS.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct JsonBcsValidationPlan {
+    #[serde(default)]
+    pub package_roots: Vec<AccountAddress>,
+    #[serde(default)]
+    pub type_refs: Vec<String>,
+    #[serde(default)]
+    pub objects: Vec<JsonBcsValidationObject>,
+    #[serde(default)]
+    pub historical_mode: bool,
+}
+
+/// Validation status for one object row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonBcsValidationStatus {
+    Match,
+    Mismatch,
+    MissingBaseline,
+    ConversionError,
+}
+
+/// Per-object validation output row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JsonBcsValidationEntry {
+    pub object_id: String,
+    pub object_type: String,
+    pub status: JsonBcsValidationStatus,
+    pub reconstructed_len: Option<usize>,
+    pub baseline_len: Option<usize>,
+    pub mismatch_offset: Option<usize>,
+    pub error: Option<String>,
+}
+
+/// Aggregate validation counters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct JsonBcsValidationSummary {
+    pub total: usize,
+    pub matched: usize,
+    pub mismatched: usize,
+    pub missing_baseline: usize,
+    pub conversion_errors: usize,
+}
+
+/// Output report for a full JSON->BCS validation pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonBcsValidationReport {
+    pub grpc_endpoint: String,
+    pub resolved_package_roots: usize,
+    pub package_count: usize,
+    pub module_count: usize,
+    pub entries: Vec<JsonBcsValidationEntry>,
+    pub summary: JsonBcsValidationSummary,
+}
+
+/// Reconstruct object JSON into BCS and compare with historical on-chain BCS.
+///
+/// This is generic and protocol-agnostic: callers provide package roots/type refs
+/// plus object rows `{id, version, type, object_json}`.
+pub async fn validate_json_bcs_reconstruction(
+    plan: &JsonBcsValidationPlan,
+) -> Result<JsonBcsValidationReport> {
+    if plan.objects.is_empty() {
+        return Err(anyhow!("json bcs validation plan has no objects"));
+    }
+
+    let provider = crate::bootstrap::create_mainnet_provider(plan.historical_mode).await?;
+    let endpoint = provider.grpc_endpoint().to_string();
+
+    let mut type_refs = plan.type_refs.clone();
+    if type_refs.is_empty() {
+        type_refs = plan
+            .objects
+            .iter()
+            .map(|object| object.object_type.clone())
+            .collect();
+    }
+    let package_roots: Vec<AccountAddress> =
+        super::package_roots::collect_required_package_roots_from_type_strings(
+            &plan.package_roots,
+            &type_refs,
+        )?
+        .into_iter()
+        .collect();
+    if package_roots.is_empty() {
+        return Err(anyhow!(
+            "no package roots resolved for json bcs validation; provide package_roots and/or type_refs"
+        ));
+    }
+
+    let packages = provider
+        .fetch_packages_with_deps(&package_roots, None, None)
+        .await
+        .context("failed to fetch package closure for json bcs validation")?;
+
+    let mut converter = JsonToBcsConverter::new();
+    let mut module_count = 0usize;
+    for pkg in packages.values() {
+        let bytecode: Vec<Vec<u8>> = pkg.modules.iter().map(|(_, bytes)| bytes.clone()).collect();
+        converter.add_modules_from_bytes(&bytecode)?;
+        module_count += bytecode.len();
+    }
+
+    let grpc = provider.grpc();
+    let mut entries = Vec::with_capacity(plan.objects.len());
+    for object in &plan.objects {
+        let baseline = grpc
+            .get_object_at_version(&object.object_id, Some(object.version))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|obj| obj.bcs);
+
+        match converter.convert(&object.object_type, &object.object_json) {
+            Ok(reconstructed) => {
+                if let Some(expected) = baseline.as_ref() {
+                    if reconstructed == *expected {
+                        entries.push(JsonBcsValidationEntry {
+                            object_id: object.object_id.clone(),
+                            object_type: object.object_type.clone(),
+                            status: JsonBcsValidationStatus::Match,
+                            reconstructed_len: Some(reconstructed.len()),
+                            baseline_len: Some(expected.len()),
+                            mismatch_offset: None,
+                            error: None,
+                        });
+                    } else {
+                        let mismatch_offset = reconstructed
+                            .iter()
+                            .zip(expected.iter())
+                            .position(|(left, right)| left != right)
+                            .or_else(|| {
+                                if reconstructed.len() != expected.len() {
+                                    Some(reconstructed.len().min(expected.len()))
+                                } else {
+                                    None
+                                }
+                            });
+                        entries.push(JsonBcsValidationEntry {
+                            object_id: object.object_id.clone(),
+                            object_type: object.object_type.clone(),
+                            status: JsonBcsValidationStatus::Mismatch,
+                            reconstructed_len: Some(reconstructed.len()),
+                            baseline_len: Some(expected.len()),
+                            mismatch_offset,
+                            error: None,
+                        });
+                    }
+                } else {
+                    entries.push(JsonBcsValidationEntry {
+                        object_id: object.object_id.clone(),
+                        object_type: object.object_type.clone(),
+                        status: JsonBcsValidationStatus::MissingBaseline,
+                        reconstructed_len: Some(reconstructed.len()),
+                        baseline_len: None,
+                        mismatch_offset: None,
+                        error: None,
+                    });
+                }
+            }
+            Err(err) => {
+                entries.push(JsonBcsValidationEntry {
+                    object_id: object.object_id.clone(),
+                    object_type: object.object_type.clone(),
+                    status: JsonBcsValidationStatus::ConversionError,
+                    reconstructed_len: None,
+                    baseline_len: baseline.as_ref().map(Vec::len),
+                    mismatch_offset: None,
+                    error: Some(err.to_string()),
+                });
+            }
+        }
+    }
+
+    let summary = entries
+        .iter()
+        .fold(JsonBcsValidationSummary::default(), |mut summary, entry| {
+            summary.total += 1;
+            match entry.status {
+                JsonBcsValidationStatus::Match => summary.matched += 1,
+                JsonBcsValidationStatus::Mismatch => summary.mismatched += 1,
+                JsonBcsValidationStatus::MissingBaseline => summary.missing_baseline += 1,
+                JsonBcsValidationStatus::ConversionError => summary.conversion_errors += 1,
+            }
+            summary
+        });
+
+    Ok(JsonBcsValidationReport {
+        grpc_endpoint: endpoint,
+        resolved_package_roots: package_roots.len(),
+        package_count: packages.len(),
+        module_count,
+        entries,
+        summary,
+    })
 }
 
 #[cfg(test)]

@@ -5547,6 +5547,13 @@ impl PTBBuilder {
         Argument::Input(idx as u16)
     }
 
+    /// Add any raw PTB input value.
+    pub fn add_input_value(&mut self, input: InputValue) -> Argument {
+        let idx = self.inputs.len();
+        self.inputs.push(input);
+        Argument::Input(idx as u16)
+    }
+
     /// Add an owned object input.
     pub fn object_owned(&mut self, id: ObjectID, bytes: Vec<u8>) -> Argument {
         let idx = self.inputs.len();
@@ -5601,6 +5608,13 @@ impl PTBBuilder {
             args,
         });
         Ok(Argument::Result(cmd_idx as u16))
+    }
+
+    /// Add a pre-built PTB command and return its result argument.
+    pub fn add_command(&mut self, command: Command) -> Argument {
+        let cmd_idx = self.commands.len();
+        self.commands.push(command);
+        Argument::Result(cmd_idx as u16)
     }
 
     /// Add a SplitCoins command.
