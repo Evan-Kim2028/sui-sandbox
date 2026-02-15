@@ -2490,6 +2490,7 @@ fn maybe_patch_replay_objects(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_replay_analysis_summary(
     replay_state: &ReplayState,
     source: &str,
@@ -2624,6 +2625,7 @@ fn build_replay_analysis_summary(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_analyze_replay_output(
     cmd: &ReplayCmd,
     replay_state: &ReplayState,

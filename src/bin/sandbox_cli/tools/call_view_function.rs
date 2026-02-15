@@ -284,6 +284,7 @@ fn parse_string_map_field(
     Ok(out)
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_historical_package_payload_file(
     path: &PathBuf,
 ) -> Result<(HashMap<String, Vec<Vec<u8>>>, HashMap<String, String>)> {

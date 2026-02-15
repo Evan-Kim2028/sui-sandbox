@@ -587,6 +587,7 @@ impl FlowDiscoverCmd {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_replay_target(
     digest: Option<&str>,
     state_json: Option<&PathBuf>,

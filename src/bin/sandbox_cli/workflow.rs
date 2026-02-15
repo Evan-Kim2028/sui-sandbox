@@ -564,7 +564,7 @@ impl WorkflowInitCmd {
             checkpoint,
             include_analyze_step,
             strict_replay,
-            package_id: package_id,
+            package_id,
             view_objects: view_objects.len(),
             workflow_name: spec.name.clone(),
             steps: spec.steps.len(),
@@ -911,6 +911,7 @@ impl WorkflowAutoCmd {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn probe_flow_discover_latest_target(
     state_file: &Path,
     rpc_url: &str,
@@ -1103,6 +1104,7 @@ fn probe_dependency_closure(
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn decode_probe_package_modules(
     package: &FetchPackageProbePackage,
 ) -> Result<(AccountAddress, Vec<(String, Vec<u8>)>)> {
@@ -1219,7 +1221,7 @@ fn infer_template_from_modules(module_names: &[String]) -> TemplateInference {
         }
     }
 
-    let mut ranked = vec![
+    let mut ranked = [
         (WorkflowTemplateArg::Cetus, cetus_score),
         (WorkflowTemplateArg::Suilend, suilend_score),
         (WorkflowTemplateArg::Scallop, scallop_score),
