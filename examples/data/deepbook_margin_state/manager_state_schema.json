@@ -1,0 +1,50 @@
+[
+  {
+    "index": 2,
+    "name": "risk_ratio_pct",
+    "type_hint": "u64",
+    "scale": 10000000.0
+  },
+  {
+    "index": 3,
+    "name": "base_asset_sui",
+    "type_hint": "u64",
+    "scale": 1000000000.0
+  },
+  {
+    "index": 4,
+    "name": "quote_asset_usdc",
+    "type_hint": "u64",
+    "scale": 1000000.0
+  },
+  {
+    "index": 5,
+    "name": "base_debt_sui",
+    "type_hint": "u64",
+    "scale": 1000000000.0
+  },
+  {
+    "index": 6,
+    "name": "quote_debt_usdc",
+    "type_hint": "u64",
+    "scale": 1000000.0
+  },
+  {
+    "index": 7,
+    "name": "base_pyth_price_usd",
+    "type_hint": "u64",
+    "scale": 100000000.0
+  },
+  {
+    "index": 9,
+    "name": "quote_pyth_price_usd",
+    "type_hint": "u64",
+    "scale": 100000000.0
+  },
+  {
+    "index": 11,
+    "name": "current_price_usdc",
+    "type_hint": "u64",
+    "scale": 1000000.0
+  }
+]

@@ -31,9 +31,10 @@ use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use std::path::{Path, PathBuf};
 
+use sui_sandbox_core::bootstrap::ensure_package_registration_success;
 use sui_sandbox_core::environment_bootstrap::{
-    build_environment_from_hydrated_state, hydrate_mainnet_state, EnvironmentBuildPlan,
-    MainnetHydrationPlan, MainnetObjectRequest,
+    hydrate_and_build_mainnet_environment, EnvironmentBuildPlan, MainnetHydrationPlan,
+    MainnetObjectRequest,
 };
 use sui_sandbox_core::orchestrator::ReplayOrchestrator;
 use sui_sandbox_core::simulation::SimulationEnvironment;
@@ -69,25 +70,38 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    let hydration = rt.block_on(hydrate_mainnet_state(&MainnetHydrationPlan {
-        package_roots: package_roots.clone(),
-        objects: vec![MainnetObjectRequest {
-            object_id: DEEPBOOK_REGISTRY.to_string(),
-            version: None,
-        }],
-        historical_mode: false,
-        allow_latest_object_fallback: true,
-    }))?;
-    println!("Connected to: {}\n", hydration.provider.grpc_endpoint());
+    let sender = AccountAddress::from_hex_literal(
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    )?;
+    let bootstrap = rt.block_on(hydrate_and_build_mainnet_environment(
+        &MainnetHydrationPlan {
+            package_roots: package_roots.clone(),
+            objects: vec![MainnetObjectRequest {
+                object_id: DEEPBOOK_REGISTRY.to_string(),
+                version: None,
+            }],
+            historical_mode: false,
+            allow_latest_object_fallback: true,
+        },
+        &EnvironmentBuildPlan {
+            sender,
+            fail_on_object_load: true,
+        },
+    ))?;
+    println!(
+        "Connected to: {}\n",
+        bootstrap.hydration.provider.grpc_endpoint()
+    );
 
     for (pkg_id, name) in packages_to_fetch {
         let addr = AccountAddress::from_hex_literal(pkg_id)?;
-        if let Some(pkg) = hydration.packages.get(&addr) {
+        if let Some(pkg) = bootstrap.hydration.packages.get(&addr) {
             println!("  ✓ {} - {} modules fetched", name, pkg.modules.len());
         }
     }
 
-    let registry_obj = hydration
+    let registry_obj = bootstrap
+        .hydration
         .objects
         .get(DEEPBOOK_REGISTRY)
         .ok_or_else(|| anyhow!("Registry not found"))?;
@@ -103,26 +117,11 @@ fn main() -> Result<()> {
     println!("STEP 2: Loading state into local sandbox");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Set up a sender address (this would be your wallet in production)
-    let sender = AccountAddress::from_hex_literal(
-        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-    )?;
-    let build = build_environment_from_hydrated_state(
-        &hydration,
-        &EnvironmentBuildPlan {
-            sender,
-            fail_on_object_load: true,
-        },
-    )?;
+    let build = bootstrap.build;
     println!("  Sender: 0x{:x}...", sender);
 
     let registration = &build.package_registration;
-    if !registration.failed.is_empty() {
-        for (addr, err) in &registration.failed {
-            eprintln!("  ! failed package {}: {}", addr.to_hex_literal(), err);
-        }
-        return Err(anyhow!("failed to register one or more packages"));
-    }
+    ensure_package_registration_success(registration)?;
     println!("  ✓ Loaded {} packages into sandbox", registration.loaded);
     println!("  ✓ Loaded {} objects into sandbox", build.objects_loaded);
     println!("  ✓ Loaded DeepBook Registry object");
@@ -175,20 +174,17 @@ fn main() -> Result<()> {
     println!("  Calling REAL DeepBook protocol code (forked from mainnet):");
 
     let deepbook_addr = AccountAddress::from_hex_literal(DEEPBOOK_PACKAGE)?;
-    let result = ReplayOrchestrator::execute_noarg_move_call(
+    match ReplayOrchestrator::execute_noarg_move_call_with_summary(
         &mut env,
         deepbook_addr,
         "balance_manager",
         "new",
-    )?;
-
-    match ReplayOrchestrator::ensure_execution_success("deepbook::balance_manager::new", &result) {
-        Ok(()) => {
+        "deepbook::balance_manager::new",
+    ) {
+        Ok(summary) => {
             println!("    ✓ deepbook::balance_manager::new() succeeded");
-            if let Some(effects) = &result.effects {
-                println!("      Gas used: {} MIST", effects.gas_used);
-                println!("      Objects created: {}", effects.created.len());
-            }
+            println!("      Gas used: {} MIST", summary.gas_used);
+            println!("      Objects created: {}", summary.created_objects);
         }
         Err(err) => {
             println!("    ✗ Failed: {}", err);
@@ -199,17 +195,17 @@ fn main() -> Result<()> {
     if let Some(pkg_id) = custom_pkg_id {
         println!("\n  Calling YOUR custom contract (sandbox-only):");
 
-        let result =
-            ReplayOrchestrator::execute_noarg_move_call(&mut env, pkg_id, "manager", "new")?;
-
-        match ReplayOrchestrator::ensure_execution_success("balance_helper::manager::new", &result)
-        {
-            Ok(()) => {
+        match ReplayOrchestrator::execute_noarg_move_call_with_summary(
+            &mut env,
+            pkg_id,
+            "manager",
+            "new",
+            "balance_helper::manager::new",
+        ) {
+            Ok(summary) => {
                 println!("    ✓ balance_helper::manager::new() succeeded");
-                if let Some(effects) = &result.effects {
-                    println!("      Gas used: {} MIST", effects.gas_used);
-                    println!("      Objects created: {}", effects.created.len());
-                }
+                println!("      Gas used: {} MIST", summary.gas_used);
+                println!("      Objects created: {}", summary.created_objects);
             }
             Err(err) => {
                 println!("    ✗ Failed: {}", err);

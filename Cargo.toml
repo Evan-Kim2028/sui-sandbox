@@ -172,11 +172,11 @@ path = "examples/advanced/fork_state.rs"
 
 [[example]]
 name = "deepbook_margin_state"
-path = "examples/advanced/deepbook_margin_state/main.rs"
+path = "examples/deepbook_margin_state.rs"
 
 [[example]]
 name = "deepbook_timeseries"
-path = "examples/advanced/deepbook_margin_state/timeseries.rs"
+path = "examples/deepbook_timeseries.rs"
 
 [[example]]
 name = "deepbook_json_bcs_only"
@@ -184,7 +184,7 @@ path = "examples/advanced/deepbook_margin_state/json_bcs_only.rs"
 
 [[example]]
 name = "deepbook_spot_offline_ptb"
-path = "examples/advanced/deepbook_spot_offline_ptb.rs"
+path = "examples/deepbook_spot_offline_ptb.rs"
 
 [[example]]
 name = "walrus_ptb_universe"

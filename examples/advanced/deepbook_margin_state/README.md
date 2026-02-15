@@ -1,8 +1,12 @@
 # DeepBook Margin State Historical Replay Example
 
-This example demonstrates **historical DeepBook v3 margin state replay**.
+This workflow demonstrates **historical DeepBook v3 margin state replay**.
 
-`main.rs` is now intentionally thin and calls the first-class generic Rust helper:
+The runnable Rust examples now live in the regular examples directory:
+- `examples/deepbook_margin_state.rs`
+- `examples/deepbook_timeseries.rs`
+
+`deepbook_margin_state.rs` is intentionally thin and calls the first-class generic Rust helper:
 `sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_view_from_versions(...)`.
 
 That helper handles:
@@ -59,17 +63,16 @@ This approach uses:
 - **Archive gRPC** for historical object/package hydration
 - **Local execution** for trustless computation
 
-## Files in This Directory
+## Files and Data
 
 ```
-deepbook_margin_state/
-├── main.rs                              # Thin wrapper over first-class core helper
-├── timeseries.rs                        # Position B example (8-day time series)
-├── README.md                            # This file
-└── data/
-    ├── deepbook_versions_240732600.json # Position A: Earlier snapshot
-    ├── deepbook_versions_240733000.json # Position A: Later snapshot
-    └── position_b_daily_timeseries.json # Position B: 8 daily snapshots (Days 1-8)
+examples/
+├── deepbook_margin_state.rs                         # Position A snapshot query
+├── deepbook_timeseries.rs                           # Position B 8-day series query
+└── data/deepbook_margin_state/
+    ├── deepbook_versions_240732600.json             # Position A: earlier snapshot
+    ├── deepbook_versions_240733000.json             # Position A: later snapshot
+    └── position_b_daily_timeseries.json             # Position B: 8 daily snapshots
 ```
 
 ## Examples
@@ -80,12 +83,12 @@ Query a margin position at a specific checkpoint:
 
 ```bash
 # Use pre-computed versions from Snowflake
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
   cargo run --example deepbook_margin_state
 
 # If archive endpoint misses runtime objects, use a historical gRPC endpoint
 SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
   cargo run --example deepbook_margin_state
 ```
 
@@ -159,7 +162,7 @@ Each JSON file contains pre-computed object versions from Snowflake:
 
 ```bash
 # Use pre-computed versions, fetch from gRPC
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
   cargo run --example deepbook_margin_state
 ```
 
@@ -167,7 +170,7 @@ VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_2
 
 ```bash
 SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
-VERSIONS_FILE=./examples/advanced/deepbook_margin_state/data/deepbook_versions_240733000.json \
+VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
   cargo run --example deepbook_margin_state
 ```
 

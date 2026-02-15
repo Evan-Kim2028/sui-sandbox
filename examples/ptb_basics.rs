@@ -12,10 +12,9 @@
 
 use anyhow::Result;
 use move_core_types::account_address::AccountAddress;
-use move_core_types::identifier::Identifier;
-use move_core_types::language_storage::TypeTag;
 
-use sui_sandbox_core::ptb::{Argument, Command, InputValue, ObjectInput};
+use sui_sandbox_core::orchestrator::ReplayOrchestrator;
+use sui_sandbox_core::ptb::Command;
 use sui_sandbox_core::simulation::SimulationEnvironment;
 
 fn main() -> Result<()> {
@@ -71,50 +70,19 @@ fn main() -> Result<()> {
 
     println!("\nStep 3: Building PTB to transfer 1 SUI...\n");
 
-    // Get the coin object we created
-    let coin_obj = env
-        .get_object(&coin_id)
-        .ok_or_else(|| anyhow::anyhow!("Coin not found"))?;
-
-    // Parse the SUI coin type
-    let sui_type: TypeTag = "0x2::sui::SUI".parse()?;
-    let coin_type = TypeTag::Struct(Box::new(move_core_types::language_storage::StructTag {
-        address: AccountAddress::from_hex_literal("0x2")?,
-        module: Identifier::new("coin")?,
-        name: Identifier::new("Coin")?,
-        type_params: vec![sui_type],
-    }));
-
-    // Build the PTB inputs
-    let inputs = vec![
-        // Input 0: The coin we're splitting (as an owned object)
-        InputValue::Object(ObjectInput::Owned {
-            id: coin_id,
-            bytes: coin_obj.bcs_bytes.clone(),
-            type_tag: Some(coin_type),
-            version: None,
-        }),
-        // Input 1: Amount to split off (1 SUI = 1 billion MIST)
-        InputValue::Pure(bcs::to_bytes(&1_000_000_000u64)?),
-        // Input 2: Recipient address
-        InputValue::Pure(bcs::to_bytes(&recipient)?),
-    ];
-
-    // Build the PTB commands
-    let commands = vec![
-        // Command 0: Split 1 SUI from the coin
-        // SplitCoins(coin, [amount]) -> [new_coin]
-        Command::SplitCoins {
-            coin: Argument::Input(0),
-            amounts: vec![Argument::Input(1)],
-        },
-        // Command 1: Transfer the split coin to recipient
-        // TransferObjects([objects], address)
-        Command::TransferObjects {
-            objects: vec![Argument::NestedResult(0, 0)], // First result from command 0
-            address: Argument::Input(2),
-        },
-    ];
+    let mut ptb = ReplayOrchestrator::ptb_builder();
+    let coin_input = ptb.owned_object_from_env(&env, &coin_id.to_hex_literal())?;
+    let amount_input = ptb.pure(1_000_000_000u64)?;
+    let recipient_input = ptb.pure(recipient)?;
+    let split_result = ptb.command(Command::SplitCoins {
+        coin: coin_input,
+        amounts: vec![amount_input],
+    })?;
+    let split_coin = ReplayOrchestrator::nested_result(split_result, 0)?;
+    ptb.command(Command::TransferObjects {
+        objects: vec![split_coin],
+        address: recipient_input,
+    })?;
 
     println!("   PTB Structure:");
     println!("   ├─ Input 0: Coin (10 SUI)");
@@ -129,7 +97,7 @@ fn main() -> Result<()> {
 
     println!("\nStep 4: Executing PTB...\n");
 
-    let result = env.execute_ptb(inputs, commands);
+    let result = ptb.execute(&mut env);
 
     if result.success {
         println!("   ✓ Transaction succeeded!");

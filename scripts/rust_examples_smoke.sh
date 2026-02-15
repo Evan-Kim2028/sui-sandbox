@@ -45,7 +45,9 @@ fi
 for ex in \
   state_json_offline_replay \
   walrus_ptb_universe \
-  deepbook_margin_state
+  deepbook_margin_state \
+  deepbook_timeseries \
+  deepbook_spot_offline_ptb
 do
   echo "[rust-smoke] cargo check --example $ex"
   cargo check --example "$ex" >/dev/null
@@ -64,6 +66,10 @@ if [[ "$RUN_NETWORK" == "1" ]]; then
     --latest 1 --top-packages 1 --max-ptbs 1 >/dev/null
   echo "[rust-smoke] network run check for deepbook_margin_state"
   cargo run --quiet --example deepbook_margin_state >/dev/null
+  echo "[rust-smoke] network run check for deepbook_spot_offline_ptb (best effort)"
+  if ! cargo run --quiet --example deepbook_spot_offline_ptb >/dev/null; then
+    echo "[rust-smoke] WARN deepbook_spot_offline_ptb run failed (endpoint/state dependent); continuing"
+  fi
 fi
 
 echo "[rust-smoke] PASS"

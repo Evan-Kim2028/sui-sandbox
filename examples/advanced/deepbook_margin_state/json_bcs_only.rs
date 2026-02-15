@@ -16,14 +16,14 @@
 use anyhow::{anyhow, Result};
 use move_core_types::account_address::AccountAddress;
 use serde::Deserialize;
-use std::collections::HashMap;
-use sui_sandbox_core::bootstrap::create_mainnet_provider;
-use sui_sandbox_core::utilities::collect_required_package_roots_from_type_strings;
-use sui_sandbox_core::utilities::json_to_bcs::JsonToBcsConverter;
+use sui_sandbox_core::utilities::{
+    validate_json_bcs_reconstruction, JsonBcsValidationObject, JsonBcsValidationPlan,
+    JsonBcsValidationStatus,
+};
 
 // Package addresses to fetch bytecode from
 const MARGIN_PACKAGE: &str = "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b";
-const DEFAULT_DATA_FILE: &str = "./examples/advanced/deepbook_margin_state/data/object_json.json";
+const DEFAULT_DATA_FILE: &str = "./examples/data/deepbook_margin_state/object_json.json";
 
 // =============================================================================
 // Data Structures
@@ -98,110 +98,87 @@ fn main() -> Result<()> {
         checkpoint
     );
 
-    // 2. Fetch bytecode and build converter
+    // 2. Run generic JSON->BCS reconstruction validator
     let rt = tokio::runtime::Runtime::new()?;
-    let provider = rt.block_on(create_mainnet_provider(data.checkpoint.is_some()))?;
-    println!("Using gRPC endpoint: {}", provider.grpc_endpoint());
-
-    let explicit_roots = vec![AccountAddress::from_hex_literal(MARGIN_PACKAGE)?];
-    let type_roots: Vec<String> = data
-        .objects
-        .iter()
-        .map(|object| object.object_type.clone())
-        .collect();
-    let package_ids: Vec<AccountAddress> =
-        collect_required_package_roots_from_type_strings(&explicit_roots, &type_roots)?
-            .into_iter()
-            .collect();
-
+    let report = rt.block_on(validate_json_bcs_reconstruction(&JsonBcsValidationPlan {
+        package_roots: vec![AccountAddress::from_hex_literal(MARGIN_PACKAGE)?],
+        type_refs: data
+            .objects
+            .iter()
+            .map(|object| object.object_type.clone())
+            .collect(),
+        objects: data
+            .objects
+            .iter()
+            .map(|object| JsonBcsValidationObject {
+                object_id: object.object_id.clone(),
+                version: object.version,
+                object_type: object.object_type.clone(),
+                object_json: object.object_json.clone(),
+            })
+            .collect(),
+        historical_mode: data.checkpoint.is_some(),
+    }))?;
+    println!("Using gRPC endpoint: {}", report.grpc_endpoint);
     println!(
         "Resolved {} package roots from explicit + type-inferred dependencies",
-        package_ids.len()
+        report.resolved_package_roots
     );
-    let packages = rt.block_on(async {
-        provider
-            .fetch_packages_with_deps(&package_ids, None, None)
-            .await
-    })?;
-
-    let mut converter = JsonToBcsConverter::new();
-    let mut total_modules = 0;
-    for (_, pkg) in &packages {
-        let bytecode: Vec<Vec<u8>> = pkg.modules.iter().map(|(_, b)| b.clone()).collect();
-        converter.add_modules_from_bytes(&bytecode)?;
-        total_modules += bytecode.len();
-    }
     println!(
         "Loaded {} modules from {} packages\n",
-        total_modules,
-        packages.len()
+        report.module_count, report.package_count
     );
 
-    // 3. Fetch actual BCS for validation
-    let grpc = provider.grpc();
-    let mut actual_bcs: HashMap<String, Vec<u8>> = HashMap::new();
-    for obj in &data.objects {
-        if let Ok(Some(grpc_obj)) = rt.block_on(async {
-            grpc.get_object_at_version(&obj.object_id, Some(obj.version))
-                .await
-        }) {
-            if let Some(bcs) = grpc_obj.bcs {
-                actual_bcs.insert(obj.object_id.clone(), bcs);
-            }
-        }
-    }
-
-    // 4. Test BCS reconstruction
+    // 3. Report validation outcomes
     println!("Results:");
     println!("─────────────────────────────────────────────────────────────────");
 
-    let mut passed = 0;
-    let mut failed = 0;
-
-    for obj in &data.objects {
-        let type_short = obj
+    for entry in &report.entries {
+        let type_short = entry
             .object_type
             .split("::")
             .last()
-            .unwrap_or(&obj.object_type);
-        let id_short = &obj.object_id[..16];
+            .unwrap_or(&entry.object_type);
+        let id_short_len = 16.min(entry.object_id.len());
+        let id_short = &entry.object_id[..id_short_len];
 
-        match converter.convert(&obj.object_type, &obj.object_json) {
-            Ok(reconstructed) => {
-                if let Some(actual) = actual_bcs.get(&obj.object_id) {
-                    if reconstructed == *actual {
-                        println!(
-                            "  ✓ {}... {} ({} bytes)",
-                            id_short,
-                            type_short,
-                            reconstructed.len()
-                        );
-                        passed += 1;
-                    } else {
-                        let diff_at = reconstructed
-                            .iter()
-                            .zip(actual.iter())
-                            .position(|(a, b)| a != b)
-                            .unwrap_or(0);
-                        println!(
-                            "  ✗ {}... {} (mismatch at byte {})",
-                            id_short, type_short, diff_at
-                        );
-                        failed += 1;
-                    }
-                } else {
-                    println!("  ? {}... {} (no baseline)", id_short, type_short);
-                }
+        match entry.status {
+            JsonBcsValidationStatus::Match => {
+                println!(
+                    "  ✓ {}... {} ({} bytes)",
+                    id_short,
+                    type_short,
+                    entry.reconstructed_len.unwrap_or_default()
+                );
             }
-            Err(e) => {
-                println!("  ✗ {}... {} - {}", id_short, type_short, e);
-                failed += 1;
+            JsonBcsValidationStatus::Mismatch => {
+                println!(
+                    "  ✗ {}... {} (mismatch at byte {})",
+                    id_short,
+                    type_short,
+                    entry.mismatch_offset.unwrap_or_default()
+                );
+            }
+            JsonBcsValidationStatus::MissingBaseline => {
+                println!("  ? {}... {} (no baseline)", id_short, type_short);
+            }
+            JsonBcsValidationStatus::ConversionError => {
+                println!(
+                    "  ✗ {}... {} - {}",
+                    id_short,
+                    type_short,
+                    entry.error.as_deref().unwrap_or("conversion error")
+                );
             }
         }
     }
 
     println!("─────────────────────────────────────────────────────────────────");
-    println!("Total: {} passed, {} failed\n", passed, failed);
+    let failed = report.summary.mismatched + report.summary.conversion_errors;
+    println!(
+        "Total: {} passed, {} failed, {} no baseline\n",
+        report.summary.matched, failed, report.summary.missing_baseline
+    );
 
     Ok(())
 }

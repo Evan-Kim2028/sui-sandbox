@@ -1,7 +1,7 @@
 # Examples - Core Onboarding Set
 
 This index is intentionally small. It tracks a single Rust/Python path with
-four examples total.
+focused examples and one protocol-rich Rust demo.
 
 Canonical CLI names are:
 - `context` (alias: `flow`)
@@ -83,6 +83,59 @@ Python:
 ```bash
 python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 ```
+
+### 5) DeepBook margin time series (Rust)
+
+Rust:
+
+```bash
+cargo run --example deepbook_timeseries
+```
+
+Optional override:
+
+```bash
+TIMESERIES_FILE=examples/data/deepbook_margin_state/position_b_daily_timeseries.json \
+REQUEST_FILE=examples/data/deepbook_margin_state/manager_state_request.json \
+SCHEMA_FILE=examples/data/deepbook_margin_state/manager_state_schema.json \
+MAX_CONCURRENCY=4 \
+  cargo run --example deepbook_timeseries
+```
+
+Core API: `sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_series_from_files_with_options(...)`
+
+CLI equivalent:
+
+```bash
+sui-sandbox context historical-series \
+  --request-file examples/data/deepbook_margin_state/manager_state_request.json \
+  --series-file examples/data/deepbook_margin_state/position_b_daily_timeseries.json \
+  --schema-file examples/data/deepbook_margin_state/manager_state_schema.json \
+  --max-concurrency 4
+```
+
+Historical view/series execution now auto-hydrates dynamic-field wrapper objects by default.
+Useful tuning knobs:
+
+```bash
+SUI_HISTORICAL_AUTO_HYDRATE_DYNAMIC_FIELDS=0   # disable auto-hydration
+SUI_HISTORICAL_DYNAMIC_FIELD_DEPTH=2            # recursive parent depth
+SUI_HISTORICAL_DYNAMIC_FIELD_LIMIT=64           # per-parent dynamic field scan cap
+SUI_HISTORICAL_DYNAMIC_FIELD_MAX_OBJECTS=512    # max prefetched wrapper objects
+SUI_HISTORICAL_DYNAMIC_FIELD_PARENT_SCAN_LIMIT=512  # parent-ID discovery cap from object JSON
+SUI_HISTORICAL_DYNAMIC_FIELD_LOG=1              # emit hydration diagnostics
+```
+
+### 6) DeepBook spot offline PTB (Rust)
+
+Rust:
+
+```bash
+cargo run --example deepbook_spot_offline_ptb
+```
+
+This regular example demonstrates a full protocol PTB flow (pool creation +
+orders) using first-class orchestrator/bootstrap helpers.
 
 ## Additional Rust Advanced Example
 

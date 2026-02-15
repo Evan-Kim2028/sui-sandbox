@@ -73,14 +73,18 @@ sui-sandbox pipeline run --spec examples/data/workflow_walrus_multi_swap_flash_l
 
 ## Advanced Rust Examples
 
-Some of these remain intentionally deep/protocol-specific, but not all.
-`deepbook_margin_state` is now a thin wrapper over generic first-class Rust
-historical-view orchestration helpers.
-`ReplayOrchestrator` also now exposes generic batch historical-view execution
-and reusable PTB return-value decoders used by advanced examples.
-`fork_state` and `deepbook_spot_offline_ptb` now share generic
-`environment_bootstrap` helpers for package/object hydration and local
-environment setup.
+Some of these remain intentionally deep/protocol-specific.
+The DeepBook margin runnable examples were migrated to the regular examples set
+(`deepbook_margin_state`, `deepbook_timeseries`) and now use shared first-class
+historical-view helpers.
+The DeepBook spot offline PTB demo was also promoted to the regular examples
+set (`deepbook_spot_offline_ptb`) after migration to first-class orchestrator
+and bootstrap surfaces.
+`fork_state` uses generic `environment_bootstrap` helpers for
+package/object hydration and local setup.
+`deepbook_json_bcs_only` now uses the generic core validator
+`utilities::validate_json_bcs_reconstruction(...)` so the same JSON->BCS
+validation flow can be reused across any protocol/package.
 
 ### Fork Mainnet State + Custom Contract
 
@@ -88,37 +92,10 @@ environment setup.
 cargo run --example fork_state
 ```
 
-### DeepBook Margin Manager Historical Reconstruction
+### DeepBook Margin JSON-to-BCS Reconstruction
 
 ```bash
-cargo run --example deepbook_margin_state
-cargo run --example deepbook_timeseries
 cargo run --example deepbook_json_bcs_only
-```
-
-### DeepBook Spot Offline PTB (Pool + Orders)
-
-```bash
-cargo run --example deepbook_spot_offline_ptb
-```
-
-This example fetches live DeepBook package/state once, then runs locally to:
-
-- create a permissionless SUI/STABLECOIN pool
-- create a balance manager + deposits
-- place bid/ask limit orders
-- query locked balances
-
-Data and docs:
-
-- `examples/advanced/deepbook_margin_state/README.md`
-- `examples/advanced/deepbook_margin_state/data/`
-
-Validation helper:
-
-```bash
-./scripts/rust_examples_smoke.sh
-./scripts/rust_examples_smoke.sh --network
 ```
 
 ## Notes
