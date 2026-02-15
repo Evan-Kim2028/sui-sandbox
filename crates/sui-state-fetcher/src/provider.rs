@@ -2594,6 +2594,7 @@ impl HistoricalStateProvider {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_single_package_with_deps_step(
         &self,
         pkg_id: AccountAddress,
