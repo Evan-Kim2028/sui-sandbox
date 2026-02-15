@@ -1562,7 +1562,7 @@ fn plan_token(module: &CompiledModule, token: &SignatureToken) -> Result<MockArg
             let addr = AccountAddress::from_hex_literal("0xa11ce").unwrap_or(AccountAddress::ONE);
             Ok(MockArgPlan::Pure {
                 move_type,
-                value: format!("{}", canonical_address(&addr)),
+                value: canonical_address(&addr).to_string(),
                 bcs_bytes: bcs::to_bytes(&addr).map_err(|e| e.to_string())?,
             })
         }
