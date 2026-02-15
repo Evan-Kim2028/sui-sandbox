@@ -4,6 +4,50 @@ All notable changes to the sui-sandbox project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-02-15
+
+### Added
+
+- **Canonical orchestration surfaces**: stabilized `context` / `adapter` / `pipeline` as first-class CLI families (with compatibility aliases preserved).
+- **Context bootstrap/runtime helpers**: expanded package/object hydration and local runtime bootstrap coverage for protocol-agnostic replay workflows.
+- **Python parity surfaces**: exposed native Python bindings for context/adapter/pipeline/session/snapshot flows with alias compatibility.
+
+### Changed
+
+- **Endpoint defaults**: standardized archive mainnet gRPC defaults and clarified archive fallback policy in docs/error guidance.
+- **Examples curation**: reduced onboarding set to focused Rust/Python parity flows and moved power-user workflows to advanced/internal paths.
+- **Historical series UX**: documented `context historical-series` as canonical surface (tools alias retained for compatibility).
+
+### Fixed
+
+- **Cross-surface consistency**: aligned replay/discovery/hydration behaviors across Rust CLI and native Python bindings.
+- **Documentation alignment**: refreshed top-level docs and references to match canonical command naming and current onboarding path.
+
+## [0.20.0] - 2026-02-14
+
+### Added
+
+- **Pipeline auto draft generation**: package-first `pipeline auto` scaffolding with template inference and replay seed discovery options.
+- **Shared replay planning/reporting modules**: expanded core workflow/replay planning utilities used by both CLI and Python.
+- **DeepBook native examples**: improved parity examples for margin state and historical series execution.
+
+### Changed
+
+- **Orchestration unification**: consolidated replay target discovery and runtime profile handling in shared core modules.
+- **Default UX posture**: more sensible defaults for replay hydration and package dependency handling to reduce required flags.
+
+## [0.19.0] - 2026-02-13
+
+### Added
+
+- **Adapter family**: protocol-first adapter command surface (`adapter` / `protocol`) layered on top of generic context flows.
+- **Context flow primitives**: reusable prepare/replay/discover building blocks for package-first replay workflows.
+
+### Changed
+
+- **Python architecture**: continued migration toward native in-process PyO3 execution paths and away from shell-style orchestration.
+- **Docs and examples**: updated references for context/adapter/workflow transitions and compatibility aliases.
+
 ## [0.18.0] - 2026-02-13
 
 ### Added
@@ -18,7 +62,7 @@ All notable changes to the sui-sandbox project will be documented in this file.
 - **DRY consolidation**: deduplicated `normalize_address`, `load_bytecode_modules`, `decode_graphql_modules`, `extract_package_ids_from_type`, and system object constants across crates.
 - **Replay refactor**: extracted `resolve_key_type_via_graphql()` and `build_execution_path()` from 2000+ line `execute_inner()`, eliminating duplicated closure bodies and struct construction.
 - **Consolidated examples**: reduced Rust examples from 12 to 6 with shared common module.
-- **Python bindings**: migrated to subprocess wrappers for improved isolation.
+- **Python bindings**: refactored native binding internals into focused modules for maintainability.
 - **Standardized parking_lot::Mutex**: replaced all `std::sync::Mutex` usage with `parking_lot::Mutex` to eliminate `.lock().unwrap()` patterns.
 - **Deprecated alias removal**: removed `object_runtime`, `ExecutionTrace`, and `AbortInfo` deprecated type aliases.
 - **String-based type checking**: replaced `to_string()` comparisons with `as_str()` in natives.rs.

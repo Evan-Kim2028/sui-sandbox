@@ -80,6 +80,7 @@ Out of scope (fullnode/validator responsibilities):
 | `WorkflowSpec` | `crates/sui-sandbox-core/src/workflow.rs` | Typed replay/analyze workflow contract |
 | `checkpoint_discovery` | `crates/sui-sandbox-core/src/checkpoint_discovery.rs` | Shared digest/checkpoint target discovery planner |
 | `workflow_planner` | `crates/sui-sandbox-core/src/workflow_planner.rs` | Shared workflow auto-inference, command planning, and profile parsing |
+| `workflow_command_builder` | `crates/sui-sandbox-core/src/workflow_command_builder.rs` | Shared replay/analyze argv builders for typed workflow steps |
 | `context_contract` | `crates/sui-sandbox-core/src/context_contract.rs` | Portable context JSON contract used by CLI + Python |
 | `replay_support` | `crates/sui-sandbox-core/src/replay_support.rs` | Shared replay hydration/runtime wiring used by CLI + Python |
 | `replay_reporting` | `crates/sui-sandbox-core/src/replay_reporting.rs` | Shared replay analysis, diagnostics, classification |

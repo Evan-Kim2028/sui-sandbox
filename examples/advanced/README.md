@@ -22,9 +22,9 @@ sui-sandbox pipeline run --spec examples/data/workflow_cli_quickstart.json
 # package-agnostic two-step replay flow
 sui-sandbox context run --package-id 0x2 --digest <DIGEST> --checkpoint <CP>
 sui-sandbox context run --package-id 0x2 --discover-latest 5 --analyze-only
-sui-sandbox context prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
-sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
-sui-sandbox context replay --context examples/out/flow_context/flow_context.2.json --discover-latest 5 --analyze-only
+sui-sandbox context prepare --package-id 0x2 --output examples/out/contexts/context.2.json --force
+sui-sandbox context replay <DIGEST> --context examples/out/contexts/context.2.json --checkpoint <CP>
+sui-sandbox context replay --context examples/out/contexts/context.2.json --discover-latest 5 --analyze-only
 ```
 
 ### Package Analysis

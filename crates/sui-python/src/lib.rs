@@ -125,10 +125,11 @@ use sui_state_fetcher::{
     ReplayState,
 };
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient, GrpcOwner};
+use sui_transport::grpc::{resolve_historical_endpoint_and_api_key, GrpcClient, GrpcOwner};
 use sui_transport::network::resolve_graphql_endpoint;
 use sui_transport::walrus::WalrusClient;
 
+mod module_registration;
 mod replay_api;
 mod replay_core;
 mod replay_output;
@@ -136,6 +137,7 @@ mod session_api;
 mod transport_helpers;
 mod workflow_api;
 mod workflow_native;
+use module_registration::register_module;
 use replay_api::*;
 use replay_core::*;
 use replay_output::{
@@ -3588,68 +3590,5 @@ mod tests {
 /// Python module: sui_sandbox
 #[pymodule]
 fn sui_sandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add_function(wrap_pyfunction!(extract_interface, m)?)?;
-    m.add_function(wrap_pyfunction!(get_latest_checkpoint, m)?)?;
-    m.add_function(wrap_pyfunction!(get_checkpoint, m)?)?;
-    m.add_function(wrap_pyfunction!(doctor, m)?)?;
-    m.add_function(wrap_pyfunction!(session_status, m)?)?;
-    m.add_function(wrap_pyfunction!(session_reset, m)?)?;
-    m.add_function(wrap_pyfunction!(session_clean, m)?)?;
-    m.add_function(wrap_pyfunction!(snapshot_save, m)?)?;
-    m.add_function(wrap_pyfunction!(snapshot_load, m)?)?;
-    m.add_function(wrap_pyfunction!(snapshot_list, m)?)?;
-    m.add_function(wrap_pyfunction!(snapshot_delete, m)?)?;
-    m.add_function(wrap_pyfunction!(ptb_universe, m)?)?;
-    m.add_function(wrap_pyfunction!(discover_checkpoint_targets, m)?)?;
-    m.add_function(wrap_pyfunction!(context_discover, m)?)?;
-    m.add_function(wrap_pyfunction!(protocol_discover, m)?)?;
-    m.add_function(wrap_pyfunction!(adapter_discover, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_validate, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_init, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_auto, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_run, m)?)?;
-    m.add_function(wrap_pyfunction!(pipeline_run_inline, m)?)?;
-    m.add_function(wrap_pyfunction!(workflow_validate, m)?)?;
-    m.add_function(wrap_pyfunction!(workflow_init, m)?)?;
-    m.add_function(wrap_pyfunction!(workflow_auto, m)?)?;
-    m.add_function(wrap_pyfunction!(workflow_run, m)?)?;
-    m.add_function(wrap_pyfunction!(workflow_run_inline, m)?)?;
-    m.add_function(wrap_pyfunction!(fetch_object_bcs, m)?)?;
-    m.add_function(wrap_pyfunction!(fetch_historical_package_bytecodes, m)?)?;
-    m.add_function(wrap_pyfunction!(import_state, m)?)?;
-    m.add_function(wrap_pyfunction!(deserialize_transaction, m)?)?;
-    m.add_function(wrap_pyfunction!(deserialize_package, m)?)?;
-    m.add_function(wrap_pyfunction!(fetch_package_bytecodes, m)?)?;
-    m.add_function(wrap_pyfunction!(prepare_package_context, m)?)?;
-    m.add_function(wrap_pyfunction!(context_prepare, m)?)?;
-    m.add_function(wrap_pyfunction!(protocol_prepare, m)?)?;
-    m.add_function(wrap_pyfunction!(adapter_prepare, m)?)?;
-    m.add_function(wrap_pyfunction!(json_to_bcs, m)?)?;
-    m.add_function(wrap_pyfunction!(transaction_json_to_bcs, m)?)?;
-    m.add_function(wrap_pyfunction!(call_view_function, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_view_from_versions, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_series_from_points, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_series_from_files, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_decode_return_u64, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_decode_return_u64s, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_decode_returns_typed, m)?)?;
-    m.add_function(wrap_pyfunction!(historical_decode_with_schema, m)?)?;
-    m.add_function(wrap_pyfunction!(fuzz_function, m)?)?;
-    m.add_function(wrap_pyfunction!(replay, m)?)?;
-    m.add_function(wrap_pyfunction!(replay_transaction, m)?)?;
-    m.add_function(wrap_pyfunction!(analyze_replay, m)?)?;
-    m.add_function(wrap_pyfunction!(replay_analyze, m)?)?;
-    m.add_function(wrap_pyfunction!(replay_effects, m)?)?;
-    m.add_function(wrap_pyfunction!(classify_replay_result, m)?)?;
-    m.add_function(wrap_pyfunction!(dynamic_field_diagnostics, m)?)?;
-    m.add_function(wrap_pyfunction!(context_replay, m)?)?;
-    m.add_function(wrap_pyfunction!(context_run, m)?)?;
-    m.add_function(wrap_pyfunction!(protocol_run, m)?)?;
-    m.add_function(wrap_pyfunction!(adapter_run, m)?)?;
-    m.add_class::<OrchestrationSession>()?;
-    let orchestration_session = m.getattr("OrchestrationSession")?;
-    m.add("FlowSession", orchestration_session.clone())?;
-    m.add("ContextSession", orchestration_session)?;
-    Ok(())
+    register_module(m)
 }

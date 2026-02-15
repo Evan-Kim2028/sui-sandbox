@@ -34,6 +34,7 @@ pub struct GrpcClient {
 }
 
 const MAINNET_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
+const MAINNET_LIVE_ENDPOINT_HOST: &str = "fullnode.mainnet.sui.io";
 const TESTNET_ENDPOINT: &str = "https://fullnode.testnet.sui.io:443";
 const MYSTEN_ARCHIVE_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
 const SURFLUX_ARCHIVE_ENDPOINT: &str = "https://grpc.surflux.dev:443";
@@ -86,6 +87,48 @@ pub fn historical_endpoint_and_api_key_from_env() -> (String, Option<String>) {
     let endpoint = MYSTEN_ARCHIVE_ENDPOINT.to_string();
     let api_key = resolve_api_key_for_endpoint(&endpoint);
     (endpoint, api_key)
+}
+
+/// Resolve endpoint and API key for historical fetch paths.
+///
+/// Behavior:
+/// - Applies [`historical_endpoint_and_api_key_from_env`] defaults when endpoint is not explicit.
+/// - Normalizes explicit `fullnode.mainnet.sui.io` endpoints to archive endpoint.
+/// - API key precedence with explicit endpoint:
+///   explicit `api_key` arg > `SUI_GRPC_API_KEY` > none.
+/// - API key precedence without explicit endpoint:
+///   explicit `api_key` arg > inferred env/default key.
+pub fn resolve_historical_endpoint_and_api_key(
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> (String, Option<String>) {
+    let endpoint_explicit = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
+    let mut resolved_endpoint = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(default_endpoint);
+    if resolved_endpoint
+        .to_ascii_lowercase()
+        .contains(MAINNET_LIVE_ENDPOINT_HOST)
+    {
+        resolved_endpoint = MYSTEN_ARCHIVE_ENDPOINT.to_string();
+    }
+    let explicit_api_key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let env_api_key = env_nonempty("SUI_GRPC_API_KEY");
+    let resolved_api_key = if endpoint_explicit {
+        explicit_api_key.or(env_api_key)
+    } else {
+        explicit_api_key.or(default_api_key)
+    };
+    (resolved_endpoint, resolved_api_key)
 }
 
 impl GrpcClient {

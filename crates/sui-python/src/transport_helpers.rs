@@ -77,37 +77,5 @@ pub(crate) fn resolve_grpc_endpoint_and_key(
     endpoint: Option<&str>,
     api_key: Option<&str>,
 ) -> (String, Option<String>) {
-    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
-    let endpoint_explicit = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some();
-    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
-    let mut resolved_endpoint = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or(default_endpoint);
-    if resolved_endpoint
-        .to_ascii_lowercase()
-        .contains("fullnode.mainnet.sui.io")
-    {
-        resolved_endpoint = MAINNET_ARCHIVE_GRPC.to_string();
-    }
-    let explicit_api_key = api_key
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let sui_api_key = std::env::var("SUI_GRPC_API_KEY")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let resolved_api_key = if endpoint_explicit {
-        // Keep explicit endpoint behavior predictable:
-        // explicit arg > SUI_GRPC_API_KEY > no key.
-        explicit_api_key.or(sui_api_key)
-    } else {
-        explicit_api_key.or(default_api_key)
-    };
-    (resolved_endpoint, resolved_api_key)
+    resolve_historical_endpoint_and_api_key(endpoint, api_key)
 }

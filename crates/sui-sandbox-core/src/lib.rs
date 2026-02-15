@@ -77,6 +77,7 @@ pub mod vm;
 pub mod well_known;
 pub mod workflow;
 pub mod workflow_adapter;
+pub mod workflow_command_builder;
 pub mod workflow_planner;
 pub mod workflow_runner;
 

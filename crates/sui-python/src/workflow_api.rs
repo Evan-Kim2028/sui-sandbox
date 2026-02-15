@@ -404,7 +404,7 @@ pub(super) fn workflow_auto(
 /// Run a typed workflow spec natively via Python bindings.
 ///
 /// Supports replay, analyze_replay, and command steps without shelling out to
-/// `sui-sandbox workflow run`.
+/// `sui-sandbox pipeline run` (compatibility alias: `workflow run`).
 #[pyfunction]
 #[pyo3(signature = (
     spec_path,

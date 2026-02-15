@@ -20,7 +20,8 @@ They are maintainer/power-user helpers for workflows that are not yet first-clas
 
 Preferred user-facing surfaces are:
 
-1. `sui-sandbox` native subcommands (`replay`, `analyze`, `workflow`, `test`).
+1. `sui-sandbox` native subcommands (`replay`, `analyze`, `pipeline`, `test`).
+   compatibility alias: `workflow`
 2. Typed workflow specs under `examples/data/`.
 3. Rust examples under `examples/*.rs`.
 

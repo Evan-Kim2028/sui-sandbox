@@ -45,13 +45,16 @@ Changes are considered integrated only when all gates pass:
 - `crates/sui-sandbox-core/src/workflow.rs`
 - `crates/sui-sandbox-core/src/workflow_runner.rs`
 - `crates/sui-sandbox-core/src/workflow_planner.rs`
+- `crates/sui-sandbox-core/src/workflow_command_builder.rs`
 - `src/bin/sandbox_cli/workflow.rs`
 - `crates/sui-python/src/workflow_native.rs`
 - `crates/sui-python/src/workflow_api.rs`
 - `crates/sui-python/src/session_api.rs`
+- `crates/sui-python/src/module_registration.rs`
 - `crates/sui-python/src/transport_helpers.rs`
 - `crates/sui-python/src/replay_output.rs`
 - `crates/sui-python/src/replay_api.rs`
 - `crates/sui-python/src/replay_core.rs`
 - `src/bin/sandbox_cli/workflow/native_exec.rs`
 - `src/bin/sandbox_cli/flow/context_io.rs`
+- `src/bin/sandbox_cli/flow/runtime.rs`

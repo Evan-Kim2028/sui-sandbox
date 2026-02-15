@@ -10,22 +10,24 @@ workflow spec and rely on Rust-side replay/analyze implementations for execution
 
 ## Layering
 
-1. **Spec + validation (core)**  
+1. **Spec + validation (core)**
    `crates/sui-sandbox-core/src/workflow.rs`
-2. **Template planners (core)**  
+2. **Template planners (core)**
    `crates/sui-sandbox-core/src/workflow_adapter.rs`
-3. **Workflow planner helpers (core)**  
+3. **Workflow planner helpers (core)**
    `crates/sui-sandbox-core/src/workflow_planner.rs`
-4. **Replay orchestration helpers (core)**  
+4. **Workflow command builders (core)**
+   `crates/sui-sandbox-core/src/workflow_command_builder.rs`
+5. **Replay orchestration helpers (core)**
    `crates/sui-sandbox-core/src/orchestrator.rs`
-5. **CLI adapter (execution/init/auto)**  
+6. **CLI adapter (execution/init/auto)**
    `src/bin/sandbox_cli/workflow.rs`
-6. **Existing engines (unchanged)**  
+7. **Existing engines (unchanged)**
    `replay`, `analyze replay`, and other subcommands
 
 The workflow adapter resolves each typed step into a deterministic `sui-sandbox` argv
 sequence, then executes it. Replay/analyze argv planning is shared via
-`ReplayOrchestrator` so CLI and Python bindings keep the same flag resolution behavior.
+`workflow_command_builder` so CLI and Python bindings keep the same flag resolution behavior.
 This keeps behavior aligned with existing commands while providing a stable
 machine-oriented contract.
 

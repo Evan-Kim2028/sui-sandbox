@@ -7,12 +7,15 @@ use sui_sandbox_core::workflow_planner::{
     parse_workflow_profile as core_parse_workflow_profile,
     short_package_id as core_short_package_id,
     summarize_failure_output as core_summarize_failure_output,
-    workflow_build_analyze_replay_command as core_workflow_build_analyze_replay_command,
-    workflow_build_replay_command as core_workflow_build_replay_command,
     workflow_build_step_command as core_workflow_build_step_command,
     workflow_step_kind as core_workflow_step_kind, workflow_step_label as core_workflow_step_label,
     WorkflowEnvGuard as CoreWorkflowEnvGuard,
     WorkflowTemplateInference as CoreWorkflowTemplateInference,
+};
+#[cfg(test)]
+use sui_sandbox_core::workflow_planner::{
+    workflow_build_analyze_replay_command as core_workflow_build_analyze_replay_command,
+    workflow_build_replay_command as core_workflow_build_replay_command,
 };
 
 pub(crate) fn parse_workflow_template(template: &str) -> Result<BuiltinWorkflowTemplate> {
@@ -179,6 +182,7 @@ pub(crate) fn workflow_build_step_command(
     core_workflow_build_step_command(defaults, step)
 }
 
+#[cfg(test)]
 pub(crate) fn workflow_build_replay_command(
     defaults: &WorkflowDefaults,
     replay: &WorkflowReplayStep,
@@ -186,6 +190,7 @@ pub(crate) fn workflow_build_replay_command(
     core_workflow_build_replay_command(defaults, replay)
 }
 
+#[cfg(test)]
 pub(crate) fn workflow_build_analyze_replay_command(
     defaults: &WorkflowDefaults,
     analyze: &WorkflowAnalyzeReplayStep,

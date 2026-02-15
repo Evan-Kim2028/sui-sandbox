@@ -3,7 +3,7 @@
 //! This surface keeps protocol-specific runtime inputs explicit while reusing
 //! the generic flow runtime for package preparation and replay execution.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use sui_sandbox_core::adapter::{
@@ -167,7 +167,8 @@ impl ProtocolPrepareCmd {
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
-        let package_id = resolve_required_package_id(self.protocol, self.package_id.as_deref())?;
+        let package_id =
+            core_resolve_required_package_id(self.protocol.as_core(), self.package_id.as_deref())?;
         FlowPrepareCmd {
             package_id,
             with_deps: self.with_deps,
@@ -186,7 +187,8 @@ impl ProtocolRunCmd {
         json_output: bool,
         verbose: bool,
     ) -> Result<()> {
-        let package_id = resolve_required_package_id(self.protocol, self.package_id.as_deref())?;
+        let package_id =
+            core_resolve_required_package_id(self.protocol.as_core(), self.package_id.as_deref())?;
         FlowRunCmd {
             package_id,
             digest: self.digest.clone(),
@@ -204,8 +206,10 @@ impl ProtocolRunCmd {
 
 impl ProtocolDiscoverCmd {
     async fn execute(&self, json_output: bool) -> Result<()> {
-        let package_id =
-            resolve_discovery_package_filter(self.protocol, self.package_id.as_deref())?;
+        let package_id = core_resolve_discovery_package_filter(
+            self.protocol.as_core(),
+            self.package_id.as_deref(),
+        )?;
         FlowDiscoverCmd {
             checkpoint: self.checkpoint.clone(),
             latest: self.latest,
@@ -219,41 +223,14 @@ impl ProtocolDiscoverCmd {
     }
 }
 
-fn resolve_required_package_id(protocol: ProtocolName, package_id: Option<&str>) -> Result<String> {
-    core_resolve_required_package_id(protocol.as_core(), package_id).map_err(|err| {
-        let message = err.to_string();
-        if message.contains("requires package_id") {
-            anyhow!(
-                "protocol `{}` requires --package-id (no built-in protocol package defaults)",
-                protocol.as_core().as_str()
-            )
-        } else {
-            err
-        }
-    })
-}
-
-fn resolve_discovery_package_filter(
-    protocol: ProtocolName,
-    package_id: Option<&str>,
-) -> Result<Option<String>> {
-    core_resolve_discovery_package_filter(protocol.as_core(), package_id).map_err(|err| {
-        let message = err.to_string();
-        if message.contains("requires package_id") {
-            anyhow!(
-                "protocol `{}` requires --package-id (no built-in protocol package defaults)",
-                protocol.as_core().as_str()
-            )
-        } else {
-            err
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{resolve_discovery_package_filter, resolve_required_package_id, ProtocolCli};
+    use super::{ProtocolCli, ProtocolName};
     use clap::Parser;
+    use sui_sandbox_core::adapter::{
+        resolve_discovery_package_filter as core_resolve_discovery_package_filter,
+        resolve_required_package_id as core_resolve_required_package_id,
+    };
 
     #[test]
     fn parses_protocol_run() {
@@ -293,14 +270,14 @@ mod tests {
 
     #[test]
     fn generic_discover_allows_no_package_filter() {
-        let filter = resolve_discovery_package_filter(super::ProtocolName::Generic, None)
+        let filter = core_resolve_discovery_package_filter(ProtocolName::Generic.as_core(), None)
             .expect("generic discovery should allow broad scan");
         assert!(filter.is_none());
     }
 
     #[test]
     fn non_generic_requires_package_override() {
-        let err = resolve_required_package_id(super::ProtocolName::Deepbook, None)
+        let err = core_resolve_required_package_id(ProtocolName::Deepbook.as_core(), None)
             .expect_err("non-generic adapters should require package id");
         assert!(err.to_string().contains("requires --package-id"));
     }

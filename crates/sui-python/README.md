@@ -350,7 +350,7 @@ Prepare a portable package context payload for replay workflows.
 - `count`
 
 ```python
-ctx = sui_sandbox.context_prepare("0x2", output_path="flow_context.json")
+ctx = sui_sandbox.context_prepare("0x2", output_path="context.json")
 print(ctx["count"])
 ```
 
@@ -362,7 +362,7 @@ Protocol-first prepare wrapper (non-generic protocols require `package_id`):
 ctx = sui_sandbox.adapter_prepare(
     protocol="deepbook",
     package_id="0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
-    output_path="flow_context.deepbook.json",
+    output_path="context.deepbook.json",
 )
 print(ctx["package_id"], ctx["count"])
 ```
@@ -716,7 +716,7 @@ Compact replay helper with source inference:
 out = sui_sandbox.context_replay(
     digest="At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
     checkpoint=239615926,
-    context_path="flow_context.json",
+    context_path="context.json",
 )
 print(out["local_success"])
 
@@ -724,7 +724,7 @@ print(out["local_success"])
 out = sui_sandbox.context_replay(
     discover_latest=5,
     discover_package_id="0x2",
-    context_path="flow_context.json",
+    context_path="context.json",
 )
 print(out["digest"], out["local_success"])
 ```

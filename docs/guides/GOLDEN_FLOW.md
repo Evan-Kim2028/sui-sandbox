@@ -1,91 +1,68 @@
-# Golden Flow: CLI End-to-End
+# Golden Flow: Context/Adapter/Pipeline
 
 This is the recommended, repeatable CLI workflow for local development.
-It uses a dedicated state file so the session is deterministic and easy to debug.
+It centers on canonical orchestration surfaces:
 
-## 1) Create an isolated session
+- `context` (generic package-first replay)
+- `adapter` (protocol-labeled wrapper over context)
+- `pipeline` (typed multi-step orchestration)
+
+## 1) Prepare a deterministic workspace
 
 ```bash
 export SUI_SANDBOX_HOME=/tmp/sui-sandbox-demo
-export STATE_FILE="$SUI_SANDBOX_HOME/state.json"
 mkdir -p "$SUI_SANDBOX_HOME"
 ```
 
-## 2) Publish a package (optional but recommended)
+## 2) Discover replay candidates for a package
 
 ```bash
-./target/debug/sui-sandbox publish ./examples/convertible_debt --state-file "$STATE_FILE" --json > publish.json
+sui-sandbox context discover --latest 5 --package-id 0x2
 ```
 
-If you want the published package ID:
+Pick one `<DIGEST>` and `<CP>` from the output.
+
+## 3) Prepare a reusable context artifact
 
 ```bash
-python3 - <<'PY'
-import json
-print(json.load(open("publish.json"))["package_address"])
-PY
+sui-sandbox context prepare --package-id 0x2 --output "$SUI_SANDBOX_HOME/contexts/context.2.json" --force
 ```
 
-## 3) Inspect module interfaces
+## 4) Replay with the prepared context
 
 ```bash
-./target/debug/sui-sandbox view module 0x2::coin --state-file "$STATE_FILE"
+sui-sandbox context replay <DIGEST> \
+  --context "$SUI_SANDBOX_HOME/contexts/context.2.json" \
+  --checkpoint <CP> \
+  --compare
 ```
 
-## 4) Create a PTB spec
-
-This spec creates a zero SUI coin and then reads its value.
+## 5) If replay fails, run hydration/readiness analysis
 
 ```bash
-cat > ptb.json <<'JSON'
-{
-  "inputs": [],
-  "calls": [
-    {
-      "target": "0x2::coin::zero",
-      "type_args": ["0x2::sui::SUI"],
-      "args": []
-    },
-    {
-      "target": "0x2::coin::value",
-      "type_args": ["0x2::sui::SUI"],
-      "args": [{"result": 0}]
-    }
-  ]
-}
-JSON
+sui-sandbox analyze replay <DIGEST> --checkpoint <CP> --json
 ```
 
-## 5) Execute the PTB
+## 6) Protocol-labeled wrapper (optional)
 
 ```bash
-./target/debug/sui-sandbox ptb --spec ptb.json --sender 0x1 --state-file "$STATE_FILE" --json
+sui-sandbox adapter run \
+  --protocol deepbook \
+  --package-id 0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b \
+  --discover-latest 5 \
+  --analyze-only
 ```
 
-## 6) Generate a real `sui client` command (bridge)
+## 7) Typed automation flow (optional)
 
 ```bash
-./target/debug/sui-sandbox bridge ptb --spec ptb.json --state-file "$STATE_FILE"
-```
-
-## 7) Check session status
-
-```bash
-./target/debug/sui-sandbox status --state-file "$STATE_FILE"
-```
-
-## 8) Replay + Analyze loop (debugging)
-
-```bash
-# Replay a historical transaction and view PTB-style effects
-./target/debug/sui-sandbox replay <DIGEST> --compare
-
-# If replay fails, analyze readiness + missing inputs/packages
-./target/debug/sui-sandbox analyze replay <DIGEST>
+sui-sandbox pipeline init --template generic --output examples/out/workflow_templates/workflow.generic.json --force
+sui-sandbox pipeline validate --spec examples/out/workflow_templates/workflow.generic.json
+sui-sandbox pipeline run --spec examples/out/workflow_templates/workflow.generic.json --dry-run
 ```
 
 ## Notes
 
-- Always pass `--state-file` for reproducibility. Without it, each run starts fresh.
-- Package IDs are session-specific in the sandbox. Re-publishing in a new session yields a new ID.
-- If a PTB fails, the CLI error will tell you which command index caused it. Use that index to inspect the relevant call in `ptb.json`.
+- `flow`, `protocol`, and `workflow` remain compatibility aliases.
+- Use `--state-json` for fully offline deterministic replay fixtures.
+- Use archive-capable endpoints for historical hydration. Default archive endpoint is `https://archive.mainnet.sui.io:443`.

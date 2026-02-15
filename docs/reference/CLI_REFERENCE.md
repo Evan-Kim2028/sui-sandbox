@@ -39,7 +39,7 @@ sui-sandbox bridge publish ./my_package       # Generate real deploy command
 | `view` | Inspect modules, objects, packages |
 | `bridge` | Generate `sui client` commands for real deployment |
 | `test` | Test Move functions (fuzz) |
-| `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs/call-view-function/historical-series) |
+| `tools` | Utility commands (poll/stream/tx-sim/json-to-bcs/call-view-function/historical-series compatibility alias) |
 | `context` | Generic package/replay context flow (alias: `flow`) |
 | `adapter` | First-class protocol adapter flow (alias: `protocol`) |
 | `init` | Compatibility scaffold for legacy YAML flow templates |
@@ -677,10 +677,10 @@ sui-sandbox context run --package-id 0x2 --discover-latest 5 --analyze-only
 sui-sandbox context run --package-id 0x2 --state-json examples/data/state_json_synthetic_ptb_demo.json
 
 # Two-step context flow
-sui-sandbox context prepare --package-id 0x2 --output examples/out/flow_context/flow_context.2.json --force
-sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --checkpoint <CP>
-sui-sandbox context replay --context examples/out/flow_context/flow_context.2.json --discover-latest 5 --analyze-only
-sui-sandbox context replay <DIGEST> --context examples/out/flow_context/flow_context.2.json --state-json <STATE_FILE>
+sui-sandbox context prepare --package-id 0x2 --output examples/out/contexts/context.2.json --force
+sui-sandbox context replay <DIGEST> --context examples/out/contexts/context.2.json --checkpoint <CP>
+sui-sandbox context replay --context examples/out/contexts/context.2.json --discover-latest 5 --analyze-only
+sui-sandbox context replay <DIGEST> --context examples/out/contexts/context.2.json --state-json <STATE_FILE>
 
 # Historical series execution (canonical surface; tools historical-series also supported)
 sui-sandbox context historical-series \
@@ -712,8 +712,11 @@ sui-sandbox context historical-series \
 |------|-------------|---------|
 | `--package-id <ID>` | Root package id to prepare | required |
 | `--with-deps <BOOL>` | Fetch transitive package closure | `true` |
-| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json` |
+| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/contexts/context.<pkg>.json` |
 | `--force` | Overwrite existing context file | `false` |
+
+Compatibility note: legacy paths under `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json`
+are still accepted on read.
 
 `context replay` flags:
 
@@ -826,7 +829,7 @@ sui-sandbox adapter run --protocol generic --package-id 0x2 --digest <DIGEST> --
 | `--protocol <generic\|deepbook\|cetus\|suilend\|scallop>` | Protocol adapter family | `generic` |
 | `--package-id <ID>` | Package id (required for non-generic protocols) | protocol-specific |
 | `--with-deps <BOOL>` | Fetch transitive package closure | `true` |
-| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/flow_contexts/flow_context.<pkg>.json` |
+| `--output <PATH>` | Context output file | `$SUI_SANDBOX_HOME/contexts/context.<pkg>.json` |
 | `--force` | Overwrite existing context file | `false` |
 
 `adapter run` flags:

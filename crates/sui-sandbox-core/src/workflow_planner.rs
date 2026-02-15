@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 
-use crate::orchestrator::ReplayOrchestrator;
 use crate::workflow::{
     normalize_command_args, WorkflowAnalyzeReplayStep, WorkflowDefaults, WorkflowFetchStrategy,
     WorkflowReplayProfile, WorkflowReplayStep, WorkflowStep, WorkflowStepAction,
 };
 use crate::workflow_adapter::BuiltinWorkflowTemplate;
+use crate::workflow_command_builder;
 
 #[derive(Debug, Clone)]
 pub struct WorkflowTemplateInference {
@@ -161,14 +161,14 @@ pub fn workflow_build_replay_command(
     defaults: &WorkflowDefaults,
     replay: &WorkflowReplayStep,
 ) -> Vec<String> {
-    ReplayOrchestrator::build_replay_command(defaults, replay)
+    workflow_command_builder::build_replay_command(defaults, replay)
 }
 
 pub fn workflow_build_analyze_replay_command(
     defaults: &WorkflowDefaults,
     analyze: &WorkflowAnalyzeReplayStep,
 ) -> Vec<String> {
-    ReplayOrchestrator::build_analyze_replay_command(defaults, analyze)
+    workflow_command_builder::build_analyze_replay_command(defaults, analyze)
 }
 
 pub fn workflow_build_step_command(

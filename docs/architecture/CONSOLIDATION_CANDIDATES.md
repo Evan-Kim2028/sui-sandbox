@@ -1,5 +1,10 @@
 # Consolidation Candidates (2026-02-10)
 
+Status note (2026-02-15):
+- This document is primarily a historical decision log.
+- Code-size values and command-footprint counts below were captured on 2026-02-10 and are not a live telemetry view.
+- Canonical orchestration surfaces are now `context` / `adapter` / `pipeline`; legacy aliases remain for compatibility.
+
 This review focuses on reducing command/features that add maintenance cost but are not central to the replay-first architecture.
 
 Status update (2026-02-10): `tools ptb-replay-harness` and `tools walrus-warmup` were removed from the main CLI surface, and the igloo loader path was removed from core `replay` command wiring while retaining source for future extraction.

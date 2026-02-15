@@ -21,7 +21,7 @@ use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
 use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::decode_graphql_modules;
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient};
+use sui_transport::grpc::{resolve_historical_endpoint_and_api_key, GrpcClient};
 use sui_transport::network::resolve_graphql_endpoint;
 
 #[derive(Debug, Parser)]
@@ -356,24 +356,6 @@ fn load_package_modules_into_resolver(
     Ok(())
 }
 
-fn resolve_grpc_endpoint_and_key(
-    endpoint: Option<&str>,
-    api_key: Option<&str>,
-) -> (String, Option<String>) {
-    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
-    let endpoint = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or(default_endpoint);
-    let api_key = api_key
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or(default_api_key);
-    (endpoint, api_key)
-}
-
 async fn fetch_historical_packages_with_closure(
     roots: &BTreeSet<AccountAddress>,
     checkpoint: u64,
@@ -393,7 +375,7 @@ async fn fetch_historical_packages_with_closure(
     }
 
     let (resolved_endpoint, resolved_api_key) =
-        resolve_grpc_endpoint_and_key(grpc_endpoint, grpc_api_key);
+        resolve_historical_endpoint_and_api_key(grpc_endpoint, grpc_api_key);
     let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
     let grpc = GrpcClient::with_api_key(&resolved_endpoint, resolved_api_key)
         .await

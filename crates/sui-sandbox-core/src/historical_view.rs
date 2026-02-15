@@ -20,7 +20,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sui_resolver::address::normalize_address;
 use sui_state_fetcher::{HistoricalStateProvider, PackageData};
 use sui_transport::graphql::GraphQLClient;
-use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient, GrpcOwner};
+use sui_transport::grpc::{resolve_historical_endpoint_and_api_key, GrpcClient, GrpcOwner};
 use sui_transport::network::resolve_graphql_endpoint;
 
 use crate::bootstrap::archive_runtime_gap_hint;
@@ -237,7 +237,7 @@ fn execute_historical_view_from_snapshot_with_label(
     let checkpoint = snapshot.checkpoint;
     let mut historical_versions = snapshot.versions.clone();
     let (resolved_endpoint, resolved_api_key) =
-        resolve_grpc_endpoint_and_key(grpc_endpoint, grpc_api_key);
+        resolve_historical_endpoint_and_api_key(grpc_endpoint, grpc_api_key);
 
     let package_roots = if request.package_roots.is_empty() {
         vec![request.package_id.clone()]
@@ -1006,44 +1006,6 @@ fn lookup_version(historical_versions: &HashMap<String, u64>, object_id: &str) -
                 .ok()
                 .and_then(|addr| historical_versions.get(&addr.to_hex_literal()).copied())
         })
-}
-
-fn resolve_grpc_endpoint_and_key(
-    endpoint: Option<&str>,
-    api_key: Option<&str>,
-) -> (String, Option<String>) {
-    const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
-    let endpoint_explicit = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some();
-    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
-    let mut resolved_endpoint = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or(default_endpoint);
-    if resolved_endpoint
-        .to_ascii_lowercase()
-        .contains("fullnode.mainnet.sui.io")
-    {
-        resolved_endpoint = MAINNET_ARCHIVE_GRPC.to_string();
-    }
-
-    let explicit_api_key = api_key
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let env_api_key = std::env::var("SUI_GRPC_API_KEY")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let resolved_api_key = if endpoint_explicit {
-        explicit_api_key.or(env_api_key)
-    } else {
-        explicit_api_key.or(default_api_key)
-    };
-    (resolved_endpoint, resolved_api_key)
 }
 
 #[cfg(test)]

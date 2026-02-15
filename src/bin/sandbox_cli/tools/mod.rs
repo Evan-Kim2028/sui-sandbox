@@ -33,7 +33,7 @@ pub enum ToolsSubcommand {
     JsonToBcs(JsonToBcsCmd),
     /// Execute a Move function in a local VM using supplied bytecode
     CallViewFunction(CallViewFunctionCmd),
-    /// Execute a historical view function across a checkpoint/version series
+    /// Compatibility alias for `context historical-series`
     HistoricalSeries(HistoricalSeriesCmd),
 }
 

@@ -168,7 +168,7 @@ fn main() -> Result<()> {
     println!("   - Arguments: Input(n), Result(n), NestedResult(cmd, idx)");
     println!("\nNext steps:");
     println!("   - Try fork_state to work with real mainnet data");
-    println!("   - See cetus_swap or deepbook_replay for transaction replay");
+    println!("   - See deepbook_margin_state or deepbook_spot_offline_ptb for protocol flows");
 
     println!("\n{}\n", "=".repeat(74));
 

@@ -426,6 +426,8 @@ fn test_protocol_run_requires_target_selection() {
         .arg("run")
         .arg("--protocol")
         .arg("deepbook")
+        .arg("--package-id")
+        .arg("0x2")
         .assert()
         .failure()
         .stderr(

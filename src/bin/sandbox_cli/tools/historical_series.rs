@@ -9,7 +9,7 @@ use sui_sandbox_core::orchestrator::{HistoricalSeriesExecutionOptions, ReplayOrc
 #[derive(Debug, Parser)]
 #[command(
     name = "historical-series",
-    about = "Execute a historical Move view function across a checkpoint/version series"
+    about = "Compatibility alias for `context historical-series`"
 )]
 pub struct HistoricalSeriesCmd {
     /// Request spec file (JSON or YAML) matching HistoricalViewRequest
