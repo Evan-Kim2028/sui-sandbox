@@ -53,6 +53,7 @@ use sandbox_cli::{
     fetch::FetchCmd,
     flow::{FlowCli, InitCmd, RunFlowCmd},
     import::ImportCmd,
+    protocol::ProtocolCli,
     ptb::PtbCmd,
     publish::PublishCmd,
     replay::ReplayCli,
@@ -143,17 +144,24 @@ enum Commands {
     /// Validate local environment and endpoint connectivity
     Doctor(DoctorCmd),
 
-    /// Generic package/replay developer flow (prepare + replay)
-    Flow(FlowCli),
+    /// Generic package/replay developer context flow (prepare + replay)
+    #[command(name = "context", visible_alias = "flow")]
+    Context(FlowCli),
+
+    /// First-class protocol adapter flow
+    #[command(name = "adapter", visible_alias = "protocol")]
+    Adapter(ProtocolCli),
 
     /// Scaffold a task-oriented project/workflow template
     Init(InitCmd),
 
-    /// Execute a YAML flow file with deterministic step sequencing
-    RunFlow(RunFlowCmd),
+    /// Execute a YAML script file with deterministic step sequencing
+    #[command(name = "script", visible_alias = "run-flow")]
+    Script(RunFlowCmd),
 
-    /// Validate/run typed workflow specs for replay/analyze automation
-    Workflow(WorkflowCmd),
+    /// Validate/run typed pipeline specs for replay/analyze automation
+    #[command(name = "pipeline", visible_alias = "workflow")]
+    Pipeline(WorkflowCmd),
 
     /// Save/list/load/delete named local sandbox snapshots
     Snapshot(SnapshotCmd),
@@ -184,10 +192,11 @@ impl Commands {
             Commands::Test(_) => "test",
             Commands::Tools(_) => "tools",
             Commands::Doctor(_) => "doctor",
-            Commands::Flow(_) => "flow",
+            Commands::Context(_) => "context",
+            Commands::Adapter(_) => "adapter",
             Commands::Init(_) => "init",
-            Commands::RunFlow(_) => "run-flow",
-            Commands::Workflow(_) => "workflow",
+            Commands::Script(_) => "script",
+            Commands::Pipeline(_) => "pipeline",
             Commands::Snapshot(_) => "snapshot",
             Commands::Reset => "reset",
             Commands::Clean => "clean",
@@ -249,10 +258,11 @@ async fn main() -> Result<()> {
         Commands::Test(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Tools(cmd) => cmd.execute(json).await,
         Commands::Doctor(_) => unreachable!(),
-        Commands::Flow(cmd) => cmd.execute(&mut state, json, verbose).await,
+        Commands::Context(cmd) => cmd.execute(&mut state, json, verbose).await,
+        Commands::Adapter(cmd) => cmd.execute(&mut state, json, verbose).await,
         Commands::Init(cmd) => cmd.execute().await,
-        Commands::RunFlow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
-        Commands::Workflow(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
+        Commands::Script(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
+        Commands::Pipeline(cmd) => cmd.execute(&state_file, &rpc_url, json, verbose).await,
         Commands::Snapshot(cmd) => cmd.execute(&mut state, &state_file, json).await,
         Commands::Reset => {
             state.reset_session()?;

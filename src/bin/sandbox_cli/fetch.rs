@@ -195,6 +195,16 @@ pub(crate) fn fetch_package_into_state(
     fetch_package(state, package_id, with_deps, false, verbose)
 }
 
+/// Reusable package fetch helper that also includes base64 module bytecodes.
+pub(crate) fn fetch_package_with_bytecodes_into_state(
+    state: &mut SandboxState,
+    package_id: &str,
+    with_deps: bool,
+    verbose: bool,
+) -> Result<FetchResult> {
+    fetch_package(state, package_id, with_deps, true, verbose)
+}
+
 #[derive(Debug, Serialize)]
 pub struct FetchResult {
     pub success: bool,
@@ -330,7 +340,7 @@ fn encode_module_bytecodes(modules: &[(String, Vec<u8>)]) -> Vec<String> {
         .collect()
 }
 
-fn fetch_package(
+pub(crate) fn fetch_package(
     state: &mut SandboxState,
     package_id: &str,
     with_deps: bool,

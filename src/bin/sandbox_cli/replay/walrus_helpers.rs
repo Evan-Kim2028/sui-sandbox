@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 
+use crate::sandbox_cli::checkpoint_spec::parse_checkpoint_spec_with_limit;
 use sui_transport::graphql::GraphQLClient;
 
 type ObjectBcsCache = parking_lot::Mutex<HashMap<String, (String, Vec<u8>, u64)>>;
@@ -12,47 +13,7 @@ type ObjectBcsCache = parking_lot::Mutex<HashMap<String, (String, Vec<u8>, u64)>
 ///   - Range:  "239615920..239615926" (inclusive)
 ///   - List:   "239615920,239615923,239615926"
 pub(super) fn parse_checkpoint_spec(spec: &str) -> Result<Vec<u64>> {
-    if spec.contains("..") {
-        let parts: Vec<&str> = spec.split("..").collect();
-        if parts.len() != 2 {
-            return Err(anyhow!(
-                "Invalid range format '{}', expected START..END",
-                spec
-            ));
-        }
-        let start: u64 = parts[0]
-            .trim()
-            .parse()
-            .with_context(|| format!("Invalid range start '{}'", parts[0]))?;
-        let end: u64 = parts[1]
-            .trim()
-            .parse()
-            .with_context(|| format!("Invalid range end '{}'", parts[1]))?;
-        if end < start {
-            return Err(anyhow!("Range end {} < start {}", end, start));
-        }
-        if end - start > 100 {
-            return Err(anyhow!(
-                "Checkpoint range too large ({} checkpoints, max 100)",
-                end - start + 1
-            ));
-        }
-        Ok((start..=end).collect())
-    } else if spec.contains(',') {
-        spec.split(',')
-            .map(|s| {
-                s.trim()
-                    .parse::<u64>()
-                    .with_context(|| format!("Invalid checkpoint number '{}'", s.trim()))
-            })
-            .collect()
-    } else {
-        let cp: u64 = spec
-            .trim()
-            .parse()
-            .with_context(|| format!("Invalid checkpoint number '{}'", spec))?;
-        Ok(vec![cp])
-    }
+    parse_checkpoint_spec_with_limit(spec, Some(100))
 }
 
 /// Resolve the checkpoint number via GraphQL, fetch that checkpoint from Walrus,

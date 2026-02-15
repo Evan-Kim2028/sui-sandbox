@@ -5,7 +5,7 @@ use base64::Engine;
 use clap::{Args, Subcommand, ValueEnum};
 use move_binary_format::CompiledModule;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -121,6 +121,10 @@ pub struct ReplayCmd {
     #[arg(long)]
     pub compare: bool,
 
+    /// Hydration-only mode (skip VM execution and return replay state summary)
+    #[arg(long, alias = "hydrate-only", default_value_t = false)]
+    pub analyze_only: bool,
+
     /// Show detailed execution trace
     #[arg(long, short)]
     pub verbose: bool,
@@ -170,9 +174,13 @@ pub struct ReplayOutput {
     pub local_success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ReplayDiagnostics>,
     pub execution_path: ReplayExecutionPath,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<ReplayEffectsSummary>,
     #[serde(skip)]
@@ -241,6 +249,24 @@ pub struct ComparisonResult {
     pub local_status: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct ReplayDiagnostics {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub missing_input_objects: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub missing_packages: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub suggestions: Vec<String>,
+}
+
+impl ReplayDiagnostics {
+    fn is_empty(&self) -> bool {
+        self.missing_input_objects.is_empty()
+            && self.missing_packages.is_empty()
+            && self.suggestions.is_empty()
+    }
 }
 
 /// Shared object cache for batch replay: id_hex → (type_str, bcs_bytes, version)
@@ -388,6 +414,9 @@ impl ReplayCmd {
         let debug_json = env_bool_opt("SUI_SANDBOX_DEBUG_JSON").unwrap_or(false);
         let allow_fallback = self.hydration.allow_fallback && !self.vm_only;
 
+        if self.analyze_only && self.compare {
+            return Err(anyhow!("--analyze-only cannot be combined with --compare"));
+        }
         if (self.synthesize_missing || self.self_heal_dynamic_fields) && !cfg!(feature = "mm2") {
             return Err(anyhow!(
                 "dynamic field synthesis requires the `mm2` feature"
@@ -600,6 +629,11 @@ impl ReplayCmd {
         // --latest N: auto-discover tip checkpoint and replay the latest N checkpoints
         #[cfg(feature = "walrus")]
         if let Some(count) = self.latest {
+            if self.analyze_only {
+                return Err(anyhow!(
+                    "--analyze-only supports single-digest replay; do not combine with --latest"
+                ));
+            }
             use sui_transport::walrus::WalrusClient;
             if count == 0 {
                 return Err(anyhow!("--latest must be at least 1"));
@@ -639,6 +673,13 @@ impl ReplayCmd {
         if let Some(ref checkpoint_str) = self.checkpoint {
             let checkpoints = parse_checkpoint_spec(checkpoint_str)?;
             let digest_filter = self.digest_display();
+            if self.analyze_only
+                && (checkpoints.len() != 1 || digest_filter == "*" || digest_filter.contains(','))
+            {
+                return Err(anyhow!(
+                    "--analyze-only supports a single digest with a single checkpoint"
+                ));
+            }
             if replay_progress || verbose {
                 self.print_effective_runtime_config(
                     json_output,
@@ -737,6 +778,19 @@ impl ReplayCmd {
         .await?;
         if replay_progress {
             eprintln!("[replay] state built");
+        }
+
+        if self.analyze_only {
+            return Ok(build_analyze_replay_output(
+                self,
+                &replay_state,
+                self.hydration.source.as_str(),
+                self.hydration.source.as_str(),
+                allow_fallback,
+                enable_dynamic_fields,
+                self.hydration.prefetch_depth,
+                self.hydration.prefetch_limit,
+            ));
         }
 
         if verbose {
@@ -1068,30 +1122,52 @@ impl ReplayCmd {
                         eprintln!("[replay_fallback] {}", line);
                     }
                 }
+                let diagnostics = if result.local_success {
+                    None
+                } else {
+                    build_replay_diagnostics(
+                        &replay_state,
+                        &cached_objects,
+                        &resolver,
+                        allow_fallback,
+                    )
+                };
 
                 Ok(ReplayOutput {
                     digest: self.digest_display().to_string(),
                     local_success: result.local_success,
                     local_error: result.local_error,
+                    diagnostics,
                     execution_path,
                     comparison,
+                    analysis: None,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
                     batch_summary_printed: false,
                 })
             }
-            Err(e) => Ok(ReplayOutput {
-                digest: self.digest_display().to_string(),
-                local_success: false,
-                local_error: Some(e.to_string()),
-                execution_path,
-                comparison: None,
-                effects: None,
-                effects_full: None,
-                commands_executed: 0,
-                batch_summary_printed: false,
-            }),
+            Err(e) => {
+                let diagnostics = build_replay_diagnostics(
+                    &replay_state,
+                    &cached_objects,
+                    &resolver,
+                    allow_fallback,
+                );
+                Ok(ReplayOutput {
+                    digest: self.digest_display().to_string(),
+                    local_success: false,
+                    local_error: Some(e.to_string()),
+                    diagnostics,
+                    execution_path,
+                    comparison: None,
+                    analysis: None,
+                    effects: None,
+                    effects_full: None,
+                    commands_executed: 0,
+                    batch_summary_printed: false,
+                })
+            }
         }
     }
 
@@ -1183,6 +1259,19 @@ impl ReplayCmd {
 
         if replay_progress {
             eprintln!("[walrus] replay state built");
+        }
+
+        if self.analyze_only {
+            return Ok(build_analyze_replay_output(
+                self,
+                &replay_state,
+                "walrus",
+                "walrus_checkpoint",
+                allow_fallback,
+                false,
+                0,
+                0,
+            ));
         }
 
         if verbose {
@@ -2016,11 +2105,22 @@ impl ReplayCmd {
                 } else {
                     None
                 };
+                let diagnostics = if result.local_success {
+                    None
+                } else {
+                    build_replay_diagnostics(
+                        &replay_state,
+                        &cached_objects,
+                        &resolver,
+                        allow_fallback,
+                    )
+                };
 
                 Ok(ReplayOutput {
                     digest: digest.to_string(),
                     local_success: result.local_success,
                     local_error: result.local_error,
+                    diagnostics,
                     execution_path: ReplayExecutionPath {
                         requested_source: self
                             .hydration
@@ -2041,41 +2141,52 @@ impl ReplayCmd {
                         synthetic_inputs: 0,
                     },
                     comparison,
+                    analysis: None,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
                     batch_summary_printed: false,
                 })
             }
-            Err(e) => Ok(ReplayOutput {
-                digest: digest.to_string(),
-                local_success: false,
-                local_error: Some(e.to_string()),
-                execution_path: ReplayExecutionPath {
-                    requested_source: self
-                        .hydration
-                        .source
-                        .to_possible_value()
-                        .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
-                    effective_source: "walrus_checkpoint".to_string(),
-                    vm_only: self.vm_only,
+            Err(e) => {
+                let diagnostics = build_replay_diagnostics(
+                    &replay_state,
+                    &cached_objects,
+                    &resolver,
                     allow_fallback,
-                    auto_system_objects: self.hydration.auto_system_objects,
-                    fallback_used: false,
-                    fallback_reasons: Vec::new(),
-                    dynamic_field_prefetch: false,
-                    prefetch_depth: 0,
-                    prefetch_limit: 0,
-                    dependency_fetch_mode: "walrus_checkpoint".to_string(),
-                    dependency_packages_fetched,
-                    synthetic_inputs: 0,
-                },
-                comparison: None,
-                effects: None,
-                effects_full: None,
-                commands_executed: 0,
-                batch_summary_printed: false,
-            }),
+                );
+                Ok(ReplayOutput {
+                    digest: digest.to_string(),
+                    local_success: false,
+                    local_error: Some(e.to_string()),
+                    diagnostics,
+                    execution_path: ReplayExecutionPath {
+                        requested_source: self
+                            .hydration
+                            .source
+                            .to_possible_value()
+                            .map_or_else(|| "hybrid".to_string(), |v| v.get_name().to_string()),
+                        effective_source: "walrus_checkpoint".to_string(),
+                        vm_only: self.vm_only,
+                        allow_fallback,
+                        auto_system_objects: self.hydration.auto_system_objects,
+                        fallback_used: false,
+                        fallback_reasons: Vec::new(),
+                        dynamic_field_prefetch: false,
+                        prefetch_depth: 0,
+                        prefetch_limit: 0,
+                        dependency_fetch_mode: "walrus_checkpoint".to_string(),
+                        dependency_packages_fetched,
+                        synthetic_inputs: 0,
+                    },
+                    comparison: None,
+                    analysis: None,
+                    effects: None,
+                    effects_full: None,
+                    commands_executed: 0,
+                    batch_summary_printed: false,
+                })
+            }
         }
     }
 
@@ -2138,6 +2249,19 @@ impl ReplayCmd {
         allow_fallback: bool,
         _verbose: bool,
     ) -> Result<ReplayOutput> {
+        if self.analyze_only {
+            return Ok(build_analyze_replay_output(
+                self,
+                replay_state,
+                requested_source,
+                effective_source,
+                allow_fallback,
+                false,
+                0,
+                0,
+            ));
+        }
+
         let pkg_aliases =
             build_aliases_shared(&replay_state.packages, None, replay_state.checkpoint);
         let resolver = hydrate_resolver_from_replay_state(
@@ -2208,11 +2332,22 @@ impl ReplayCmd {
                 } else {
                     None
                 };
+                let diagnostics = if result.local_success {
+                    None
+                } else {
+                    build_replay_diagnostics(
+                        replay_state,
+                        &cached_objects,
+                        &resolver,
+                        allow_fallback,
+                    )
+                };
 
                 Ok(ReplayOutput {
                     digest: replay_state.transaction.digest.0.clone(),
                     local_success: result.local_success,
                     local_error: result.local_error,
+                    diagnostics,
                     execution_path: ReplayExecutionPath {
                         requested_source: requested_source.to_string(),
                         effective_source: effective_source.to_string(),
@@ -2229,37 +2364,48 @@ impl ReplayCmd {
                         synthetic_inputs: 0,
                     },
                     comparison,
+                    analysis: None,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
                     batch_summary_printed: false,
                 })
             }
-            Err(e) => Ok(ReplayOutput {
-                digest: replay_state.transaction.digest.0.clone(),
-                local_success: false,
-                local_error: Some(e.to_string()),
-                execution_path: ReplayExecutionPath {
-                    requested_source: requested_source.to_string(),
-                    effective_source: effective_source.to_string(),
-                    vm_only: self.vm_only,
+            Err(e) => {
+                let diagnostics = build_replay_diagnostics(
+                    replay_state,
+                    &cached_objects,
+                    &resolver,
                     allow_fallback,
-                    auto_system_objects: self.hydration.auto_system_objects,
-                    fallback_used: false,
-                    fallback_reasons: Vec::new(),
-                    dynamic_field_prefetch: false,
-                    prefetch_depth: 0,
-                    prefetch_limit: 0,
-                    dependency_fetch_mode: effective_source.to_string(),
-                    dependency_packages_fetched: 0,
-                    synthetic_inputs: 0,
-                },
-                comparison: None,
-                effects: None,
-                effects_full: None,
-                commands_executed: 0,
-                batch_summary_printed: false,
-            }),
+                );
+                Ok(ReplayOutput {
+                    digest: replay_state.transaction.digest.0.clone(),
+                    local_success: false,
+                    local_error: Some(e.to_string()),
+                    diagnostics,
+                    execution_path: ReplayExecutionPath {
+                        requested_source: requested_source.to_string(),
+                        effective_source: effective_source.to_string(),
+                        vm_only: self.vm_only,
+                        allow_fallback,
+                        auto_system_objects: self.hydration.auto_system_objects,
+                        fallback_used: false,
+                        fallback_reasons: Vec::new(),
+                        dynamic_field_prefetch: false,
+                        prefetch_depth: 0,
+                        prefetch_limit: 0,
+                        dependency_fetch_mode: effective_source.to_string(),
+                        dependency_packages_fetched: 0,
+                        synthetic_inputs: 0,
+                    },
+                    comparison: None,
+                    analysis: None,
+                    effects: None,
+                    effects_full: None,
+                    commands_executed: 0,
+                    batch_summary_printed: false,
+                })
+            }
         }
     }
 
@@ -2341,6 +2487,272 @@ fn maybe_patch_replay_objects(
     );
     if progress_logging {
         eprintln!("[replay] version patcher done");
+    }
+}
+
+fn build_replay_analysis_summary(
+    replay_state: &ReplayState,
+    source: &str,
+    allow_fallback: bool,
+    auto_system_objects: bool,
+    dynamic_field_prefetch: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
+    verbose: bool,
+) -> serde_json::Value {
+    let modules_total = replay_state
+        .packages
+        .values()
+        .map(|pkg| pkg.modules.len())
+        .sum::<usize>();
+    let package_ids = replay_state
+        .packages
+        .keys()
+        .map(|id| id.to_hex_literal())
+        .collect::<Vec<_>>();
+    let object_ids = replay_state
+        .objects
+        .keys()
+        .map(|id| id.to_hex_literal())
+        .collect::<Vec<_>>();
+
+    let command_summaries = replay_state
+        .transaction
+        .commands
+        .iter()
+        .map(|cmd| match cmd {
+            PtbCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => serde_json::json!({
+                "kind": "MoveCall",
+                "target": format!("{}::{}::{}", package, module, function),
+                "type_args": type_arguments.len(),
+                "args": arguments.len(),
+            }),
+            PtbCommand::SplitCoins { amounts, .. } => serde_json::json!({
+                "kind": "SplitCoins",
+                "args": 1 + amounts.len(),
+            }),
+            PtbCommand::MergeCoins { sources, .. } => serde_json::json!({
+                "kind": "MergeCoins",
+                "args": 1 + sources.len(),
+            }),
+            PtbCommand::TransferObjects { objects, .. } => serde_json::json!({
+                "kind": "TransferObjects",
+                "args": 1 + objects.len(),
+            }),
+            PtbCommand::MakeMoveVec { elements, .. } => serde_json::json!({
+                "kind": "MakeMoveVec",
+                "args": elements.len(),
+            }),
+            PtbCommand::Publish { dependencies, .. } => serde_json::json!({
+                "kind": "Publish",
+                "args": dependencies.len(),
+            }),
+            PtbCommand::Upgrade { package, .. } => serde_json::json!({
+                "kind": "Upgrade",
+                "target": package,
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let mut pure = 0usize;
+    let mut owned = 0usize;
+    let mut shared_mutable = 0usize;
+    let mut shared_immutable = 0usize;
+    let mut immutable = 0usize;
+    let mut receiving = 0usize;
+    for input in &replay_state.transaction.inputs {
+        match input {
+            TransactionInput::Pure { .. } => pure += 1,
+            TransactionInput::Object { .. } => owned += 1,
+            TransactionInput::SharedObject { mutable, .. } => {
+                if *mutable {
+                    shared_mutable += 1;
+                } else {
+                    shared_immutable += 1;
+                }
+            }
+            TransactionInput::ImmutableObject { .. } => immutable += 1,
+            TransactionInput::Receiving { .. } => receiving += 1,
+        }
+    }
+
+    let mut result = serde_json::json!({
+        "digest": replay_state.transaction.digest.0,
+        "sender": replay_state.transaction.sender.to_hex_literal(),
+        "commands": replay_state.transaction.commands.len(),
+        "inputs": replay_state.transaction.inputs.len(),
+        "objects": replay_state.objects.len(),
+        "packages": replay_state.packages.len(),
+        "modules": modules_total,
+        "input_summary": {
+            "total": replay_state.transaction.inputs.len(),
+            "pure": pure,
+            "owned": owned,
+            "shared_mutable": shared_mutable,
+            "shared_immutable": shared_immutable,
+            "immutable": immutable,
+            "receiving": receiving,
+        },
+        "command_summaries": command_summaries,
+        "hydration": {
+            "source": source,
+            "allow_fallback": allow_fallback,
+            "auto_system_objects": auto_system_objects,
+            "dynamic_field_prefetch": dynamic_field_prefetch,
+            "prefetch_depth": prefetch_depth,
+            "prefetch_limit": prefetch_limit,
+        },
+        "epoch": replay_state.epoch,
+        "protocol_version": replay_state.protocol_version,
+    });
+    if let Some(cp) = replay_state.checkpoint {
+        result["checkpoint"] = serde_json::json!(cp);
+    }
+    if let Some(rgp) = replay_state.reference_gas_price {
+        result["reference_gas_price"] = serde_json::json!(rgp);
+    }
+    if verbose {
+        result["package_ids"] = serde_json::json!(package_ids);
+        result["object_ids"] = serde_json::json!(object_ids);
+    }
+    result
+}
+
+fn build_analyze_replay_output(
+    cmd: &ReplayCmd,
+    replay_state: &ReplayState,
+    requested_source: &str,
+    effective_source: &str,
+    allow_fallback: bool,
+    dynamic_field_prefetch: bool,
+    prefetch_depth: usize,
+    prefetch_limit: usize,
+) -> ReplayOutput {
+    let analysis = build_replay_analysis_summary(
+        replay_state,
+        effective_source,
+        allow_fallback,
+        cmd.hydration.auto_system_objects,
+        dynamic_field_prefetch,
+        prefetch_depth,
+        prefetch_limit,
+        cmd.verbose,
+    );
+    ReplayOutput {
+        digest: replay_state.transaction.digest.0.clone(),
+        local_success: true,
+        local_error: None,
+        diagnostics: None,
+        execution_path: ReplayExecutionPath {
+            requested_source: requested_source.to_string(),
+            effective_source: effective_source.to_string(),
+            vm_only: cmd.vm_only,
+            allow_fallback,
+            auto_system_objects: cmd.hydration.auto_system_objects,
+            fallback_used: false,
+            fallback_reasons: Vec::new(),
+            dynamic_field_prefetch,
+            prefetch_depth,
+            prefetch_limit,
+            dependency_fetch_mode: "hydration_only".to_string(),
+            dependency_packages_fetched: 0,
+            synthetic_inputs: 0,
+        },
+        comparison: None,
+        analysis: Some(analysis),
+        effects: None,
+        effects_full: None,
+        commands_executed: 0,
+        batch_summary_printed: false,
+    }
+}
+
+fn build_replay_diagnostics(
+    replay_state: &ReplayState,
+    cached_objects: &HashMap<String, String>,
+    resolver: &LocalModuleResolver,
+    allow_fallback: bool,
+) -> Option<ReplayDiagnostics> {
+    let missing_input_objects =
+        tx_replay::find_missing_input_objects(&replay_state.transaction, cached_objects)
+            .into_iter()
+            .map(|entry| entry.object_id)
+            .collect::<Vec<_>>();
+
+    let mut required_packages: BTreeSet<AccountAddress> = BTreeSet::new();
+    for cmd in &replay_state.transaction.commands {
+        match cmd {
+            PtbCommand::MoveCall {
+                package,
+                type_arguments,
+                ..
+            } => {
+                if let Ok(addr) = AccountAddress::from_hex_literal(package) {
+                    required_packages.insert(addr);
+                }
+                for ty in type_arguments {
+                    for pkg in sui_sandbox_core::utilities::extract_package_ids_from_type(ty) {
+                        if let Ok(addr) = AccountAddress::from_hex_literal(&pkg) {
+                            required_packages.insert(addr);
+                        }
+                    }
+                }
+            }
+            PtbCommand::Upgrade { package, .. } => {
+                if let Ok(addr) = AccountAddress::from_hex_literal(package) {
+                    required_packages.insert(addr);
+                }
+            }
+            PtbCommand::Publish { dependencies, .. } => {
+                for dep in dependencies {
+                    if let Ok(addr) = AccountAddress::from_hex_literal(dep) {
+                        required_packages.insert(addr);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let missing_packages = required_packages
+        .into_iter()
+        .filter(|address| {
+            !replay_state.packages.contains_key(address) && !resolver.has_package(address)
+        })
+        .map(|address| address.to_hex_literal())
+        .collect::<Vec<_>>();
+
+    let mut suggestions = Vec::new();
+    if !missing_input_objects.is_empty() {
+        suggestions.push(
+            "Missing input objects detected. Provide --state-json with full objects or replay from a better historical source.".to_string(),
+        );
+    }
+    if !missing_packages.is_empty() {
+        suggestions.push(
+            "Missing package bytecode detected. Run `sui-sandbox context prepare --package-id <ID>` (or `flow prepare`) and replay with --context.".to_string(),
+        );
+    }
+    if !allow_fallback {
+        suggestions.push(
+            "Fallback is disabled; rerun with --allow-fallback true to permit secondary hydration paths.".to_string(),
+        );
+    }
+
+    let diagnostics = ReplayDiagnostics {
+        missing_input_objects,
+        missing_packages,
+        suggestions,
+    };
+    if diagnostics.is_empty() {
+        None
+    } else {
+        Some(diagnostics)
     }
 }
 
@@ -3813,6 +4225,7 @@ mod tests {
             digest: "test123".to_string(),
             local_success: true,
             local_error: None,
+            diagnostics: None,
             execution_path: ReplayExecutionPath::default(),
             comparison: Some(ComparisonResult {
                 status_match: true,
@@ -3823,6 +4236,7 @@ mod tests {
                 local_status: "success".to_string(),
                 notes: Vec::new(),
             }),
+            analysis: None,
             effects: None,
             effects_full: None,
             commands_executed: 3,

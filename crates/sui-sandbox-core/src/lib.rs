@@ -43,6 +43,7 @@
 #![allow(clippy::too_many_arguments)]
 
 // Core simulation modules
+pub mod checkpoint_discovery;
 pub mod constructor_map;
 pub mod error_context;
 pub mod errors;
@@ -50,11 +51,13 @@ pub mod fetcher;
 pub mod gas;
 pub mod mm2;
 pub mod natives;
+pub mod orchestrator;
 pub mod phases;
 pub mod sandbox_runtime;
 
 pub mod predictive_prefetch;
 pub mod ptb;
+pub mod ptb_universe;
 pub mod resolver;
 pub mod sandbox_types;
 pub mod session;
@@ -69,6 +72,7 @@ pub mod vm;
 pub mod well_known;
 pub mod workflow;
 pub mod workflow_adapter;
+pub mod workflow_runner;
 
 // Package building and analysis (for creating mock contracts)
 // Note: bytecode_analyzer functionality is in mm2/bytecode_analyzer.rs

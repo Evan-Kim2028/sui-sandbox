@@ -2,6 +2,7 @@
 //! Integration tests for sui-sandbox CLI
 
 use assert_cmd::Command;
+use base64::Engine;
 use predicates::prelude::*;
 use serde_json::Value;
 use std::fs;
@@ -87,6 +88,26 @@ fn write_multi_replay_state_json(temp_dir: &TempDir) -> PathBuf {
     path
 }
 
+fn write_python_style_flow_context_json(temp_dir: &TempDir) -> PathBuf {
+    let path = temp_dir.path().join("flow_context.python.json");
+    let module_path = fixture_dir().join("build/fixture/bytecode_modules/test_module.mv");
+    let module_bytes = fs::read(&module_path).expect("read fixture module bytecode");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(module_bytes);
+    let payload = serde_json::json!({
+        "version": 1u64,
+        "package_id": "0x100",
+        "resolve_deps": false,
+        "generated_at_ms": 0u64,
+        "packages": {
+            "0x100": [encoded]
+        },
+        "count": 1u64
+    });
+    fs::write(&path, serde_json::to_string_pretty(&payload).unwrap())
+        .expect("write python-style flow context");
+    path
+}
+
 // ============================================================================
 // Help and Basic CLI Tests
 // ============================================================================
@@ -106,8 +127,11 @@ fn test_help_output() {
         .stdout(predicate::str::contains("replay"))
         .stdout(predicate::str::contains("view"))
         .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("context"))
+        .stdout(predicate::str::contains("adapter"))
         .stdout(predicate::str::contains("init"))
-        .stdout(predicate::str::contains("run-flow"))
+        .stdout(predicate::str::contains("script"))
+        .stdout(predicate::str::contains("pipeline"))
         .stdout(predicate::str::contains("snapshot"))
         .stdout(predicate::str::contains("reset"));
 }
@@ -170,6 +194,19 @@ fn test_tools_help_excludes_internal_harness_commands() {
 }
 
 #[test]
+fn test_tools_call_view_function_help_includes_historical_flags() {
+    sandbox_cmd()
+        .arg("tools")
+        .arg("call-view-function")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--checkpoint"))
+        .stdout(predicate::str::contains("--grpc-endpoint"))
+        .stdout(predicate::str::contains("--historical-packages-file"));
+}
+
+#[test]
 fn test_doctor_help() {
     sandbox_cmd()
         .arg("doctor")
@@ -178,6 +215,216 @@ fn test_doctor_help() {
         .success()
         .stdout(predicate::str::contains("Validate local environment"))
         .stdout(predicate::str::contains("--timeout-secs"));
+}
+
+#[test]
+fn test_flow_help_lists_subcommands() {
+    sandbox_cmd()
+        .arg("context")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prepare"))
+        .stdout(predicate::str::contains("replay"))
+        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("discover"));
+}
+
+#[test]
+fn test_flow_alias_help_lists_subcommands() {
+    sandbox_cmd()
+        .arg("flow")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prepare"))
+        .stdout(predicate::str::contains("replay"))
+        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("discover"));
+}
+
+#[test]
+fn test_protocol_help_lists_subcommands() {
+    sandbox_cmd()
+        .arg("adapter")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prepare"))
+        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("discover"));
+}
+
+#[test]
+fn test_protocol_alias_help_lists_subcommands() {
+    sandbox_cmd()
+        .arg("protocol")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prepare"))
+        .stdout(predicate::str::contains("run"))
+        .stdout(predicate::str::contains("discover"));
+}
+
+#[test]
+fn test_protocol_prepare_requires_package_override_when_no_default() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("protocol")
+        .arg("prepare")
+        .arg("--protocol")
+        .arg("cetus")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("provide --package-id"));
+}
+
+#[test]
+fn test_protocol_discover_requires_package_override_when_no_default() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("protocol")
+        .arg("discover")
+        .arg("--protocol")
+        .arg("suilend")
+        .arg("--checkpoint")
+        .arg("1")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("provide --package-id"));
+}
+
+#[test]
+fn test_flow_replay_accepts_python_context_wrapper() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state = write_minimal_replay_state_json(&temp_dir);
+    let context = write_python_style_flow_context_json(&temp_dir);
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("flow")
+        .arg("replay")
+        .arg("dummy_digest")
+        .arg("--context")
+        .arg(&context)
+        .arg("--state-json")
+        .arg(&replay_state)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("flow replay should emit JSON");
+    assert_eq!(json["local_success"], true);
+    assert_eq!(json["execution_path"]["effective_source"], "state_json");
+}
+
+#[test]
+fn test_flow_discover_rejects_zero_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("flow")
+        .arg("discover")
+        .arg("--checkpoint")
+        .arg("1")
+        .arg("--limit")
+        .arg("0")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("limit must be greater than zero"));
+}
+
+#[test]
+fn test_flow_discover_rejects_invalid_package_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("flow")
+        .arg("discover")
+        .arg("--checkpoint")
+        .arg("1")
+        .arg("--package-id")
+        .arg("not-a-package")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid package id"));
+}
+
+#[test]
+fn test_flow_run_requires_target_selection() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("flow")
+        .arg("run")
+        .arg("--package-id")
+        .arg("0x2")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Provide --digest, --state-json, or --discover-latest",
+        ));
+}
+
+#[test]
+fn test_flow_replay_discover_latest_requires_package_context() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("flow")
+        .arg("replay")
+        .arg("--discover-latest")
+        .arg("5")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--discover-latest requires package context",
+        ));
+}
+
+#[test]
+fn test_protocol_run_requires_target_selection() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("protocol")
+        .arg("run")
+        .arg("--protocol")
+        .arg("deepbook")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Provide --digest, --state-json, or --discover-latest",
+        ));
 }
 
 // ============================================================================
@@ -660,7 +907,20 @@ fn test_replay_help_includes_execution_path_flags() {
         .success()
         .stdout(predicate::str::contains("--source"))
         .stdout(predicate::str::contains("--allow-fallback"))
-        .stdout(predicate::str::contains("--vm-only"));
+        .stdout(predicate::str::contains("--vm-only"))
+        .stdout(predicate::str::contains("--synthesize-missing"))
+        .stdout(predicate::str::contains("--self-heal-dynamic-fields"));
+}
+
+#[test]
+fn test_analyze_replay_help_includes_mm2_flag() {
+    sandbox_cmd()
+        .arg("analyze")
+        .arg("replay")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--mm2"));
 }
 
 #[test]
@@ -894,6 +1154,44 @@ fn test_replay_json_output_execution_path_contract_from_state_json() {
             "execution_path.{key} should be a u64"
         );
     }
+}
+
+#[test]
+fn test_replay_analyze_only_emits_analysis_payload() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let replay_state_path = write_minimal_replay_state_json(&temp_dir);
+
+    let output = sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("--json")
+        .arg("replay")
+        .arg("anydigest")
+        .arg("--state-json")
+        .arg(&replay_state_path)
+        .arg("--analyze-only")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid replay analyze JSON");
+    assert_eq!(
+        json.get("local_success").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(
+        json.get("effects").is_none(),
+        "analyze-only should not include effects"
+    );
+    let analysis = json
+        .get("analysis")
+        .and_then(Value::as_object)
+        .expect("analysis payload expected");
+    assert!(analysis.get("commands").and_then(Value::as_u64).is_some());
+    assert!(analysis.get("packages").and_then(Value::as_u64).is_some());
 }
 
 #[test]
@@ -1179,7 +1477,7 @@ fn test_init_creates_flow_template() {
         .arg(temp_dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Initialized workflow template"));
+        .stdout(predicate::str::contains("Initialized script template"));
 
     assert!(temp_dir.path().join("flow.quickstart.yaml").exists());
     assert!(temp_dir.path().join("FLOW_README.md").exists());
@@ -1251,6 +1549,20 @@ fn test_workflow_validate_core_example_spec() {
 }
 
 #[test]
+fn test_workflow_auto_help_includes_discovery_flags() {
+    sandbox_cmd()
+        .arg("workflow")
+        .arg("auto")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--discover-latest"))
+        .stdout(predicate::str::contains("--walrus-network"))
+        .stdout(predicate::str::contains("--walrus-caching-url"))
+        .stdout(predicate::str::contains("--walrus-aggregator-url"));
+}
+
+#[test]
 fn test_workflow_run_core_example_dry_run() {
     let temp_dir = TempDir::new().unwrap();
     let state_file = temp_dir.path().join("state.json");
@@ -1268,6 +1580,77 @@ fn test_workflow_run_core_example_dry_run() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Workflow complete"));
+}
+
+#[test]
+fn test_workflow_run_dry_run_report_includes_native_flags() {
+    let temp_dir = TempDir::new().unwrap();
+    let state_file = temp_dir.path().join("state.json");
+    let spec_path = temp_dir.path().join("workflow.flags.json");
+    let report_path = temp_dir.path().join("workflow.report.json");
+
+    let spec = serde_json::json!({
+        "version": 1,
+        "defaults": {
+            "source": "hybrid",
+            "vm_only": true,
+            "synthesize_missing": true,
+            "self_heal_dynamic_fields": true,
+            "mm2": true
+        },
+        "steps": [
+            {
+                "id": "inspect",
+                "kind": "analyze_replay",
+                "digest": "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+                "checkpoint": 239615926
+            },
+            {
+                "id": "replay",
+                "kind": "replay",
+                "digest": "At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2",
+                "checkpoint": "239615926"
+            }
+        ]
+    });
+    fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+
+    sandbox_cmd()
+        .arg("--state-file")
+        .arg(&state_file)
+        .arg("workflow")
+        .arg("run")
+        .arg("--spec")
+        .arg(&spec_path)
+        .arg("--dry-run")
+        .arg("--report")
+        .arg(&report_path)
+        .assert()
+        .success();
+
+    let report_raw = fs::read_to_string(&report_path).expect("read workflow report");
+    let report: Value = serde_json::from_str(&report_raw).expect("parse report json");
+    let steps = report
+        .get("steps")
+        .and_then(Value::as_array)
+        .expect("steps array");
+    assert_eq!(steps.len(), 2);
+
+    let analyze_cmd = steps[0]
+        .get("command")
+        .and_then(Value::as_array)
+        .expect("analyze command");
+    let replay_cmd = steps[1]
+        .get("command")
+        .and_then(Value::as_array)
+        .expect("replay command");
+
+    let analyze_tokens: Vec<&str> = analyze_cmd.iter().filter_map(Value::as_str).collect();
+    let replay_tokens: Vec<&str> = replay_cmd.iter().filter_map(Value::as_str).collect();
+    assert!(analyze_tokens.contains(&"--mm2"));
+    assert!(replay_tokens.contains(&"--vm-only"));
+    assert!(replay_tokens.contains(&"--synthesize-missing"));
+    assert!(replay_tokens.contains(&"--self-heal-dynamic-fields"));
 }
 
 // ============================================================================

@@ -1,6 +1,6 @@
 //! Execute a Move function via the local VM from supplied bytecode.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use clap::Parser;
 use move_binary_format::CompiledModule;
@@ -10,6 +10,7 @@ use move_core_types::language_storage::TypeTag;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
 
 use sui_package_extractor::extract_module_dependency_ids;
 use sui_package_extractor::utils::is_framework_address;
@@ -17,13 +18,16 @@ use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
 use sui_sandbox_core::resolver::{LocalModuleResolver, ModuleProvider};
 use sui_sandbox_core::types::parse_type_tag;
 use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
+use sui_state_fetcher::HistoricalStateProvider;
 use sui_transport::decode_graphql_modules;
 use sui_transport::graphql::GraphQLClient;
+use sui_transport::grpc::{historical_endpoint_and_api_key_from_env, GrpcClient};
+use sui_transport::network::resolve_graphql_endpoint;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "call-view-function",
-    about = "Execute a Move function using local module bytecode and return base64 return values"
+    about = "Execute a Move function with local or historical package bytecode and return base64 return values"
 )]
 pub struct CallViewFunctionCmd {
     /// Package ID containing the target view function
@@ -58,6 +62,22 @@ pub struct CallViewFunctionCmd {
     #[arg(long, value_name = "JSON")]
     package_bytecodes: Option<String>,
 
+    /// Historical package payload JSON file from `fetch_historical_package_bytecodes(...)`
+    #[arg(long, value_name = "PATH", conflicts_with = "checkpoint")]
+    historical_packages_file: Option<PathBuf>,
+
+    /// Checkpoint for historical package hydration (package bytecode + deps)
+    #[arg(long, value_name = "SEQ", conflicts_with = "historical_packages_file")]
+    checkpoint: Option<u64>,
+
+    /// gRPC endpoint for historical hydration (defaults to env/archive endpoint)
+    #[arg(long, value_name = "URL")]
+    grpc_endpoint: Option<String>,
+
+    /// Optional gRPC API key for historical hydration
+    #[arg(long, value_name = "KEY")]
+    grpc_api_key: Option<String>,
+
     /// Resolve transitive dependencies using GraphQL
     #[arg(long, default_value_t = true, value_name = "BOOL")]
     fetch_deps: bool,
@@ -89,7 +109,7 @@ struct PackageBytecodeMap(HashMap<String, Vec<String>>);
 
 impl CallViewFunctionCmd {
     pub async fn execute(&self, json_output: bool) -> Result<()> {
-        let value = run(self)?;
+        let value = run(self).await?;
         let _ = json_output;
         let output = serde_json::to_string_pretty(&value)?;
         println!("{}", output);
@@ -230,7 +250,168 @@ fn parse_module_names(modules: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-fn run(cmd: &CallViewFunctionCmd) -> Result<serde_json::Value> {
+fn extract_type_packages(type_str: &str) -> BTreeSet<AccountAddress> {
+    let mut out = BTreeSet::new();
+    for package_id in sui_sandbox_core::utilities::extract_package_ids_from_type(type_str) {
+        if let Ok(addr) = AccountAddress::from_hex_literal(&package_id) {
+            out.insert(addr);
+        }
+    }
+    out
+}
+
+fn parse_string_map_field(
+    payload: &serde_json::Value,
+    field: &str,
+) -> Result<HashMap<String, String>> {
+    let Some(value) = payload.get(field) else {
+        return Ok(HashMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("historical package payload `{}` must be a map", field))?;
+    let mut out = HashMap::new();
+    for (k, v) in object {
+        let val = v.as_str().ok_or_else(|| {
+            anyhow!(
+                "historical package payload `{}` entry `{}` is not a string",
+                field,
+                k
+            )
+        })?;
+        out.insert(k.clone(), val.to_string());
+    }
+    Ok(out)
+}
+
+fn parse_historical_package_payload_file(
+    path: &PathBuf,
+) -> Result<(HashMap<String, Vec<Vec<u8>>>, HashMap<String, String>)> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("read historical package file {}", path.display()))?;
+    let payload: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parse historical package file {}", path.display()))?;
+
+    let packages_obj = payload
+        .get("packages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("historical package payload missing `packages` map"))?;
+
+    let mut packages = HashMap::new();
+    for (package_id, modules) in packages_obj {
+        let modules_array = modules.as_array().ok_or_else(|| {
+            anyhow!(
+                "historical package `{}` modules is not an array",
+                package_id
+            )
+        })?;
+        let mut decoded_modules = Vec::with_capacity(modules_array.len());
+        for (idx, module_b64) in modules_array.iter().enumerate() {
+            let encoded = module_b64.as_str().ok_or_else(|| {
+                anyhow!(
+                    "historical package `{}` module {} is not base64 string",
+                    package_id,
+                    idx
+                )
+            })?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded.as_bytes())
+                .with_context(|| {
+                    format!(
+                        "invalid base64 module payload for package {} module {}",
+                        package_id, idx
+                    )
+                })?;
+            decoded_modules.push(bytes);
+        }
+        packages.insert(package_id.clone(), decoded_modules);
+    }
+
+    let package_runtime_ids = parse_string_map_field(&payload, "package_runtime_ids")?;
+    Ok((packages, package_runtime_ids))
+}
+
+fn load_package_modules_into_resolver(
+    resolver: &mut LocalModuleResolver,
+    loaded: &mut BTreeSet<AccountAddress>,
+    fetch_queue: &mut VecDeque<AccountAddress>,
+    package_addr: AccountAddress,
+    module_sources: Vec<(String, Vec<u8>)>,
+) -> Result<()> {
+    if is_framework_address(&package_addr) {
+        return Ok(());
+    }
+
+    let named_modules = parse_module_names(&module_sources);
+    let dep_addrs = extract_module_dependency_ids(&named_modules);
+    resolver.load_package_at(named_modules, package_addr)?;
+    loaded.insert(package_addr);
+
+    for dep_addr in dep_addrs {
+        if !loaded.contains(&dep_addr) {
+            fetch_queue.push_back(dep_addr);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_grpc_endpoint_and_key(
+    endpoint: Option<&str>,
+    api_key: Option<&str>,
+) -> (String, Option<String>) {
+    let (default_endpoint, default_api_key) = historical_endpoint_and_api_key_from_env();
+    let endpoint = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(default_endpoint);
+    let api_key = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or(default_api_key);
+    (endpoint, api_key)
+}
+
+async fn fetch_historical_packages_with_closure(
+    roots: &BTreeSet<AccountAddress>,
+    checkpoint: u64,
+    grpc_endpoint: Option<&str>,
+    grpc_api_key: Option<&str>,
+) -> Result<(
+    HashMap<AccountAddress, sui_state_fetcher::types::PackageData>,
+    String,
+)> {
+    let root_vec: Vec<AccountAddress> = roots
+        .iter()
+        .copied()
+        .filter(|addr| !is_framework_address(addr))
+        .collect();
+    if root_vec.is_empty() {
+        return Ok((HashMap::new(), String::new()));
+    }
+
+    let (resolved_endpoint, resolved_api_key) =
+        resolve_grpc_endpoint_and_key(grpc_endpoint, grpc_api_key);
+    let graphql_endpoint = resolve_graphql_endpoint("https://fullnode.mainnet.sui.io:443");
+    let grpc = GrpcClient::with_api_key(&resolved_endpoint, resolved_api_key)
+        .await
+        .context("failed to create gRPC client for historical package hydration")?;
+    let graphql = GraphQLClient::new(&graphql_endpoint);
+    let provider = HistoricalStateProvider::with_clients(grpc, graphql);
+    let packages = provider
+        .fetch_packages_with_deps(&root_vec, None, Some(checkpoint))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch historical package closure at checkpoint {}",
+                checkpoint
+            )
+        })?;
+    Ok((packages, resolved_endpoint))
+}
+
+async fn run(cmd: &CallViewFunctionCmd) -> Result<serde_json::Value> {
     let object_inputs = parse_object_inputs(&cmd.object_inputs)?;
     let pure_inputs = parse_pure_inputs(&cmd.pure_inputs)?;
     let child_inputs = parse_child_objects(&cmd.child_objects)?;
@@ -242,69 +423,121 @@ fn run(cmd: &CallViewFunctionCmd) -> Result<serde_json::Value> {
     let mut loaded = BTreeSet::new();
     let mut fetch_queue = VecDeque::new();
     let mut missing = HashSet::new();
+    let mut package_roots = BTreeSet::new();
+    let mut historical_checkpoint_used = None;
+    let mut historical_endpoint_used: Option<String> = None;
+    let mut historical_packages_loaded = 0usize;
 
-    if !is_framework_address(&target_addr) {
-        fetch_queue.push_back(target_addr);
-    }
+    package_roots.insert(target_addr);
 
     for (package_id, raw_modules) in &package_bytecodes {
-        let package_addr = parse_address(package_id)?;
-        if is_framework_address(&package_addr) {
-            continue;
-        }
+        let package_addr = parse_address(package_id)
+            .with_context(|| format!("invalid package id {}", package_id))?;
+        package_roots.insert(package_addr);
 
         let package_sources: Vec<(String, Vec<u8>)> = raw_modules
             .iter()
             .enumerate()
             .map(|(idx, bytes)| (format!("module_{idx}"), bytes.clone()))
             .collect();
-        let named_modules = parse_module_names(&package_sources);
-        let dep_addrs = extract_module_dependency_ids(&named_modules);
-        resolver.load_package_at(named_modules, package_addr)?;
-        loaded.insert(package_addr);
-
-        for dep_addr in dep_addrs {
-            if !loaded.contains(&dep_addr) {
-                fetch_queue.push_back(dep_addr);
-            }
-        }
+        load_package_modules_into_resolver(
+            &mut resolver,
+            &mut loaded,
+            &mut fetch_queue,
+            package_addr,
+            package_sources,
+        )?;
     }
 
     for addr in extract_type_args_package_ids(&cmd.type_args) {
-        if !loaded.contains(&addr) {
-            fetch_queue.push_back(addr);
-        }
+        package_roots.insert(addr);
     }
     for object_input in &object_inputs {
         let type_tag = parse_type_tag(&object_input.type_tag)
             .with_context(|| format!("invalid object input type tag {}", object_input.type_tag))?;
-        for pkg_id in
-            sui_sandbox_core::utilities::extract_package_ids_from_type(&object_input.type_tag)
-        {
-            if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
-                if !loaded.contains(&addr) {
-                    fetch_queue.push_back(addr);
-                }
-            }
+        for addr in extract_type_packages(&object_input.type_tag) {
+            package_roots.insert(addr);
         }
         let _ = type_tag; // used only for compile-time type checking above
     }
 
     for child_children in child_inputs.values() {
         for child in child_children {
-            for pkg_id in
-                sui_sandbox_core::utilities::extract_package_ids_from_type(&child.type_tag)
-            {
-                if let Ok(addr) = AccountAddress::from_hex_literal(&pkg_id) {
-                    if !loaded.contains(&addr) {
-                        fetch_queue.push_back(addr);
-                    }
-                }
+            for addr in extract_type_packages(&child.type_tag) {
+                package_roots.insert(addr);
             }
         }
     }
 
-    if cmd.fetch_deps && !fetch_queue.is_empty() {
+    if let Some(path) = &cmd.historical_packages_file {
+        let (historical_packages, runtime_ids) = parse_historical_package_payload_file(path)?;
+        for (storage_id, modules) in historical_packages {
+            let runtime_id = runtime_ids
+                .get(&storage_id)
+                .map(|value| value.as_str())
+                .unwrap_or(storage_id.as_str());
+            let package_addr = parse_address(runtime_id).with_context(|| {
+                format!(
+                    "invalid historical package runtime id {} (storage id {})",
+                    runtime_id, storage_id
+                )
+            })?;
+            package_roots.insert(package_addr);
+            let package_sources: Vec<(String, Vec<u8>)> = modules
+                .into_iter()
+                .enumerate()
+                .map(|(idx, bytes)| (format!("module_{idx}"), bytes))
+                .collect();
+            load_package_modules_into_resolver(
+                &mut resolver,
+                &mut loaded,
+                &mut fetch_queue,
+                package_addr,
+                package_sources,
+            )?;
+            historical_packages_loaded += 1;
+        }
+    } else if let Some(checkpoint) = cmd.checkpoint {
+        let (packages, endpoint_used) = fetch_historical_packages_with_closure(
+            &package_roots,
+            checkpoint,
+            cmd.grpc_endpoint.as_deref(),
+            cmd.grpc_api_key.as_deref(),
+        )
+        .await?;
+
+        historical_checkpoint_used = Some(checkpoint);
+        historical_endpoint_used = Some(endpoint_used);
+
+        for (_storage_id, package) in packages {
+            let package_addr = package.runtime_id();
+            package_roots.insert(package_addr);
+            load_package_modules_into_resolver(
+                &mut resolver,
+                &mut loaded,
+                &mut fetch_queue,
+                package_addr,
+                package.modules,
+            )?;
+            historical_packages_loaded += 1;
+        }
+    }
+
+    for addr in &package_roots {
+        if !loaded.contains(addr) && !is_framework_address(addr) {
+            fetch_queue.push_back(*addr);
+        }
+    }
+
+    let mut fetch_deps = cmd.fetch_deps;
+    if (cmd.checkpoint.is_some() || cmd.historical_packages_file.is_some()) && fetch_deps {
+        eprintln!(
+            "Historical package hydration is active; disabling GraphQL dependency fetch to keep package versions consistent."
+        );
+        fetch_deps = false;
+    }
+
+    if fetch_deps && !fetch_queue.is_empty() {
         let graphql = GraphQLClient::new("https://fullnode.mainnet.sui.io:443");
         let mut visited = loaded.clone();
         let mut rounds = 0usize;
@@ -432,11 +665,20 @@ fn run(cmd: &CallViewFunctionCmd) -> Result<serde_json::Value> {
         })
         .collect();
 
-    Ok(serde_json::json!({
+    let mut result = serde_json::json!({
         "success": effects.success,
         "error": effects.error,
         "return_values": return_values,
         "return_type_tags": return_type_tags,
         "gas_used": effects.gas_used,
-    }))
+        "packages_loaded": loaded.len(),
+        "historical_packages_loaded": historical_packages_loaded,
+    });
+    if let Some(checkpoint) = historical_checkpoint_used {
+        result["historical_checkpoint"] = serde_json::json!(checkpoint);
+    }
+    if let Some(endpoint) = historical_endpoint_used {
+        result["historical_endpoint_used"] = serde_json::json!(endpoint);
+    }
+    Ok(result)
 }

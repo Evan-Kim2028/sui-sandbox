@@ -194,6 +194,7 @@ pub(super) async fn execute_walrus_batch_v2(
                 vm_only: cmd.vm_only,
                 strict: false, // don't fail-fast in batch mode
                 compare: cmd.compare,
+                analyze_only: cmd.analyze_only,
                 verbose: cmd.verbose,
                 fetch_strategy: cmd.fetch_strategy,
                 reconcile_dynamic_fields: cmd.reconcile_dynamic_fields,

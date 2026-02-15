@@ -15,6 +15,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 use tokio::time::{Duration, Instant as TokioInstant};
 
+use crate::sandbox_cli::checkpoint_spec::parse_checkpoint_spec_with_limit;
 use crate::sandbox_cli::SandboxState;
 
 const KNOWN_MUTATORS: &[&str] = &[
@@ -3266,41 +3267,7 @@ fn short_digest(digest: &str) -> String {
 }
 
 fn parse_checkpoint_spec(spec: &str) -> Result<Vec<u64>> {
-    let s = spec.trim();
-    if s.is_empty() {
-        return Err(anyhow!("checkpoint spec cannot be empty"));
-    }
-
-    if let Some((a, b)) = s.split_once("..") {
-        let start: u64 = a.trim().parse().context("invalid checkpoint range start")?;
-        let end: u64 = b.trim().parse().context("invalid checkpoint range end")?;
-        if start > end {
-            return Err(anyhow!(
-                "checkpoint range start must be <= end ({}..{})",
-                start,
-                end
-            ));
-        }
-        return Ok((start..=end).collect());
-    }
-
-    if s.contains(',') {
-        let mut out = Vec::new();
-        for part in s.split(',') {
-            let cp: u64 = part
-                .trim()
-                .parse()
-                .with_context(|| format!("invalid checkpoint in list: {}", part.trim()))?;
-            out.push(cp);
-        }
-        if out.is_empty() {
-            return Err(anyhow!("checkpoint list cannot be empty"));
-        }
-        return Ok(out);
-    }
-
-    let one: u64 = s.parse().context("invalid checkpoint")?;
-    Ok(vec![one])
+    parse_checkpoint_spec_with_limit(spec, None)
 }
 
 fn load_targets_from_json(path: &Path) -> Result<Vec<Target>> {

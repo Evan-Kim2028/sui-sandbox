@@ -9,7 +9,9 @@ const MAINNET_ARCHIVE_GRPC: &str = "https://archive.mainnet.sui.io:443";
 pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, verbose: bool) {
     println!("\x1b[1mTransaction Replay: {}\x1b[0m\n", result.digest);
 
-    if let Some(effects) = result.effects_full.as_ref() {
+    if let Some(analysis) = result.analysis.as_ref() {
+        print_hydration_analysis(analysis);
+    } else if let Some(effects) = result.effects_full.as_ref() {
         println!("\x1b[1mLocal PTB Result:\x1b[0m");
         println!("{}", format_effects(effects, verbose));
         println!("  Commands executed: {}", result.commands_executed);
@@ -22,6 +24,23 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
             println!("  Error: {}", err);
             if let Some(hint) = archive_runtime_hint(err) {
                 println!("  Hint: {}", hint);
+            }
+        }
+        if let Some(diagnostics) = result.diagnostics.as_ref() {
+            if !diagnostics.missing_input_objects.is_empty() {
+                println!(
+                    "  Missing input objects: {}",
+                    diagnostics.missing_input_objects.join(", ")
+                );
+            }
+            if !diagnostics.missing_packages.is_empty() {
+                println!(
+                    "  Missing packages: {}",
+                    diagnostics.missing_packages.join(", ")
+                );
+            }
+            if let Some(first_hint) = diagnostics.suggestions.first() {
+                println!("  Action: {}", first_hint);
             }
         }
         println!("  Commands executed: {}", result.commands_executed);
@@ -107,6 +126,45 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
     }
 }
 
+fn print_hydration_analysis(analysis: &serde_json::Value) {
+    let digest = analysis
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<unknown>");
+    let sender = analysis
+        .get("sender")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<unknown>");
+    let commands = analysis
+        .get("commands")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let inputs = analysis
+        .get("inputs")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let objects = analysis
+        .get("objects")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let packages = analysis
+        .get("packages")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let checkpoint = analysis
+        .get("checkpoint")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    println!("\x1b[32m✓ Hydration analysis complete (VM execution skipped)\x1b[0m");
+    println!("  Digest: {}", digest);
+    println!("  Sender: {}", sender);
+    println!("  Checkpoint: {}", checkpoint);
+    println!(
+        "  Summary: commands={} inputs={} objects={} packages={}",
+        commands, inputs, objects, packages
+    );
+}
+
 pub(super) fn build_replay_debug_json(
     category: &str,
     error: &str,
@@ -146,6 +204,9 @@ pub(super) fn build_replay_debug_json(
 
 fn replay_hints_from_output(output: &ReplayOutput) -> Vec<String> {
     let mut hints = Vec::new();
+    if let Some(diagnostics) = output.diagnostics.as_ref() {
+        hints.extend(diagnostics.suggestions.iter().cloned());
+    }
     if let Some(err) = output.local_error.as_deref() {
         if let Some(hint) = archive_runtime_hint(err) {
             hints.push(hint);
@@ -236,11 +297,13 @@ mod tests {
                 "ContractAbort { location: Undefined, abort_code: 1 } missing runtime object"
                     .to_string(),
             ),
+            diagnostics: None,
             execution_path: ReplayExecutionPath {
                 allow_fallback: true,
                 ..Default::default()
             },
             comparison: None,
+            analysis: None,
             effects: None,
             effects_full: None,
             commands_executed: 0,

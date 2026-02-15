@@ -13,18 +13,21 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use sui_sandbox_core::orchestrator::ReplayOrchestrator;
 use sui_sandbox_core::utilities::unresolved_package_dependencies_for_modules;
 use sui_sandbox_core::workflow::{
-    normalize_command_args, WorkflowAnalyzeReplayStep, WorkflowCommandStep, WorkflowDefaults,
-    WorkflowReplayStep, WorkflowSpec, WorkflowStep, WorkflowStepAction,
+    normalize_command_args, WorkflowCommandStep, WorkflowDefaults, WorkflowSpec, WorkflowStep,
+    WorkflowStepAction,
 };
 use sui_sandbox_core::workflow_adapter::{
     build_builtin_workflow, BuiltinWorkflowInput, BuiltinWorkflowTemplate,
 };
+use sui_sandbox_core::workflow_runner::{
+    run_prepared_workflow_steps, WorkflowPreparedStep, WorkflowRunReport, WorkflowStepExecution,
+};
 
 #[derive(Parser, Debug)]
-#[command(about = "Validate or run typed workflow specs")]
+#[command(about = "Validate or run typed pipeline specs (workflow alias)")]
 pub struct WorkflowCmd {
     #[command(subcommand)]
     command: WorkflowSubcommand,
@@ -115,9 +118,25 @@ pub struct WorkflowAutoCmd {
     #[arg(long)]
     pub digest: Option<String>,
 
+    /// Auto-discover replay digest/checkpoint from latest N checkpoints for --package-id
+    #[arg(long, conflicts_with_all = ["digest", "checkpoint"])]
+    pub discover_latest: Option<u64>,
+
     /// Checkpoint for replay/analyze replay steps
     #[arg(long)]
     pub checkpoint: Option<u64>,
+
+    /// Walrus archive network used for --discover-latest
+    #[arg(long, value_enum, default_value = "mainnet")]
+    pub walrus_network: WorkflowWalrusNetwork,
+
+    /// Override Walrus caching endpoint (requires --walrus-aggregator-url)
+    #[arg(long)]
+    pub walrus_caching_url: Option<String>,
+
+    /// Override Walrus aggregator endpoint (requires --walrus-caching-url)
+    #[arg(long)]
+    pub walrus_aggregator_url: Option<String>,
 
     /// Override generated workflow name
     #[arg(long)]
@@ -146,6 +165,21 @@ pub enum WorkflowTemplateArg {
 pub enum WorkflowSpecFormat {
     Json,
     Yaml,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum WorkflowWalrusNetwork {
+    Mainnet,
+    Testnet,
+}
+
+impl WorkflowWalrusNetwork {
+    fn as_cli_value(self) -> &'static str {
+        match self {
+            Self::Mainnet => "mainnet",
+            Self::Testnet => "testnet",
+        }
+    }
 }
 
 impl WorkflowSpecFormat {
@@ -275,6 +309,13 @@ struct WorkflowAutoOutput {
     output_file: String,
     format: WorkflowSpecFormat,
     replay_steps_included: bool,
+    replay_seed_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discover_latest: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovered_checkpoint: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_probe_error: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     missing_inputs: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -328,35 +369,19 @@ struct DependencyClosureProbe {
     unresolved_dependencies: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct WorkflowRunReport {
-    spec_file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    dry_run: bool,
-    total_steps: usize,
-    succeeded_steps: usize,
-    failed_steps: usize,
-    elapsed_ms: u128,
-    steps: Vec<WorkflowStepReport>,
+#[derive(Debug, Deserialize)]
+struct FlowDiscoverProbeOutput {
+    success: bool,
+    #[serde(default)]
+    targets: Vec<FlowDiscoverProbeTarget>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct WorkflowStepReport {
-    index: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    kind: String,
-    command: Vec<String>,
-    success: bool,
-    exit_code: i32,
-    elapsed_ms: u128,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+#[derive(Debug, Deserialize, Clone)]
+struct FlowDiscoverProbeTarget {
+    checkpoint: u64,
+    digest: String,
 }
 
 impl WorkflowCmd {
@@ -566,7 +591,7 @@ impl WorkflowInitCmd {
             }
             println!("  steps: {}", output.steps);
             println!(
-                "\nNext:\n  sui-sandbox workflow validate --spec {}\n  sui-sandbox workflow run --spec {} --dry-run",
+                "\nNext:\n  sui-sandbox pipeline validate --spec {}\n  sui-sandbox pipeline run --spec {} --dry-run",
                 output.output_file, output.output_file
             );
         }
@@ -665,23 +690,76 @@ impl WorkflowAutoCmd {
         };
         let template = inference.template.as_builtin();
 
-        let digest = self
+        let explicit_digest = self
             .digest
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
-        let include_replay = digest.is_some();
-        let checkpoint = if include_replay {
-            Some(self.checkpoint.unwrap_or(template.default_checkpoint()))
+        let mut discovery_probe_error = None;
+        let discovered_target = if let Some(latest) = self.discover_latest {
+            match probe_flow_discover_latest_target(
+                state_file,
+                rpc_url,
+                package_id,
+                latest,
+                self.walrus_network,
+                self.walrus_caching_url.as_deref(),
+                self.walrus_aggregator_url.as_deref(),
+                verbose,
+            ) {
+                Ok(target) => Some(target),
+                Err(err) => {
+                    if self.best_effort {
+                        discovery_probe_error = Some(err.to_string());
+                        None
+                    } else {
+                        return Err(anyhow!(
+                            "AUTO_DISCOVERY_EMPTY: failed to auto-discover replay target for package {}: {}\nHint: rerun with a larger --discover-latest window, provide --digest explicitly, or use --best-effort for scaffold-only output.",
+                            package_id,
+                            err
+                        ));
+                    }
+                }
+            }
         } else {
             None
+        };
+        let digest = explicit_digest.clone().or_else(|| {
+            discovered_target
+                .as_ref()
+                .map(|target| target.digest.clone())
+        });
+        let include_replay = digest.is_some();
+        let checkpoint = if include_replay {
+            if let Some(target) = discovered_target.as_ref() {
+                Some(target.checkpoint)
+            } else {
+                Some(self.checkpoint.unwrap_or(template.default_checkpoint()))
+            }
+        } else {
+            None
+        };
+        let replay_seed_source = if explicit_digest.is_some() {
+            "digest"
+        } else if discovered_target.is_some() {
+            "discover_latest"
+        } else {
+            "none"
         };
 
         let mut missing_inputs = Vec::new();
         if !include_replay {
-            missing_inputs.push("digest".to_string());
-            missing_inputs.push("checkpoint (optional; default inferred per template)".to_string());
+            if self.discover_latest.is_some() {
+                missing_inputs.push(
+                    "auto-discovery target (rerun with larger --discover-latest window)"
+                        .to_string(),
+                );
+            } else {
+                missing_inputs.push("digest".to_string());
+                missing_inputs
+                    .push("checkpoint (optional; default inferred per template)".to_string());
+            }
         }
 
         let mut spec = build_builtin_workflow(
@@ -757,6 +835,10 @@ impl WorkflowAutoCmd {
             output_file: output_path.display().to_string(),
             format: output_format,
             replay_steps_included: include_replay,
+            replay_seed_source: replay_seed_source.to_string(),
+            discover_latest: self.discover_latest,
+            discovered_checkpoint: discovered_target.as_ref().map(|target| target.checkpoint),
+            discovery_probe_error,
             missing_inputs,
             package_module_count: module_count,
             package_module_probe_error: probe_error,
@@ -800,23 +882,126 @@ impl WorkflowAutoCmd {
                 println!("  dependency_probe_warning: {err}");
             }
             println!("  replay_steps_included: {}", output.replay_steps_included);
+            println!("  replay_seed_source: {}", output.replay_seed_source);
+            if let Some(window) = output.discover_latest {
+                println!("  discover_latest: {}", window);
+            }
+            if let Some(checkpoint) = output.discovered_checkpoint {
+                println!("  discovered_checkpoint: {}", checkpoint);
+            }
+            if let Some(err) = output.discovery_probe_error.as_deref() {
+                println!("  discovery_probe_warning: {err}");
+            }
             if !output.missing_inputs.is_empty() {
                 println!("  missing_inputs: {}", output.missing_inputs.join(", "));
             }
             println!(
-                "\nNext:\n  sui-sandbox workflow validate --spec {}\n  sui-sandbox workflow run --spec {} --dry-run",
+                "\nNext:\n  sui-sandbox pipeline validate --spec {}\n  sui-sandbox pipeline run --spec {} --dry-run",
                 output.output_file, output.output_file
             );
             if !output.replay_steps_included {
                 println!(
-                    "\nTo include replay steps:\n  sui-sandbox workflow auto --package-id {} --digest <DIGEST> --checkpoint <CHECKPOINT> --output {} --force",
-                    output.package_id, output.output_file
+                    "\nTo include replay steps:\n  sui-sandbox pipeline auto --package-id {} --discover-latest 25 --output {} --force\n  # or explicit input path:\n  sui-sandbox pipeline auto --package-id {} --digest <DIGEST> --checkpoint <CHECKPOINT> --output {} --force",
+                    output.package_id, output.output_file, output.package_id, output.output_file
                 );
             }
         }
 
         Ok(())
     }
+}
+
+fn probe_flow_discover_latest_target(
+    state_file: &Path,
+    rpc_url: &str,
+    package_id: &str,
+    latest: u64,
+    walrus_network: WorkflowWalrusNetwork,
+    walrus_caching_url: Option<&str>,
+    walrus_aggregator_url: Option<&str>,
+    verbose: bool,
+) -> Result<FlowDiscoverProbeTarget> {
+    if latest == 0 {
+        return Err(anyhow!("discover_latest must be greater than zero"));
+    }
+    match (
+        walrus_caching_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        walrus_aggregator_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    ) {
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(anyhow!(
+                "provide both --walrus-caching-url and --walrus-aggregator-url for custom endpoints"
+            ));
+        }
+        _ => {}
+    }
+
+    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("--state-file")
+        .arg(state_file)
+        .arg("--rpc-url")
+        .arg(rpc_url)
+        .arg("--json");
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    cmd.arg("context")
+        .arg("discover")
+        .arg("--latest")
+        .arg(latest.to_string())
+        .arg("--package-id")
+        .arg(package_id)
+        .arg("--limit")
+        .arg("1")
+        .arg("--walrus-network")
+        .arg(walrus_network.as_cli_value());
+
+    if let Some(caching) = walrus_caching_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        cmd.arg("--walrus-caching-url").arg(caching);
+    }
+    if let Some(aggregator) = walrus_aggregator_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        cmd.arg("--walrus-aggregator-url").arg(aggregator);
+    }
+
+    let output = cmd
+        .output()
+        .context("Failed to execute context discovery probe")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "context discovery probe failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+    let payload = serde_json::from_slice::<FlowDiscoverProbeOutput>(&output.stdout)
+        .context("Failed to parse flow discovery JSON output")?;
+    if !payload.success {
+        return Err(anyhow!(
+            "context discovery probe reported failure: {}",
+            payload
+                .error
+                .unwrap_or_else(|| "unknown discovery error".to_string())
+        ));
+    }
+    payload.targets.into_iter().next().ok_or_else(|| {
+        anyhow!(
+            "no candidate transactions discovered for package {} in latest {} checkpoint(s)",
+            package_id,
+            latest
+        )
+    })
 }
 
 fn probe_package_modules(
@@ -1111,120 +1296,114 @@ impl WorkflowRunCmd {
             }
         }
 
-        let start = Instant::now();
-        let mut reports = Vec::with_capacity(spec.steps.len());
-
-        for (idx, step) in spec.steps.iter().enumerate() {
-            let step_start = Instant::now();
-            let argv = build_step_argv(&spec.defaults, step)?;
-            let display_cmd = argv.join(" ");
-            let kind = step_kind(&step.action).to_string();
-            let step_number = idx + 1;
-
-            if !json_output {
-                let label = step_display_label(step, step_number);
-                println!("[workflow:{label}] {display_cmd}");
-            }
-
-            if self.dry_run {
-                reports.push(WorkflowStepReport {
-                    index: step_number,
-                    id: step.id.clone(),
-                    name: step.name.clone(),
-                    kind,
-                    command: argv,
-                    success: true,
-                    exit_code: 0,
-                    elapsed_ms: step_start.elapsed().as_millis(),
-                    error: None,
-                });
-                continue;
-            }
-
-            let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-            let mut cmd = Command::new(exe);
-            cmd.arg("--state-file")
-                .arg(state_file)
-                .arg("--rpc-url")
-                .arg(rpc_url);
-            if verbose {
-                cmd.arg("--verbose");
-            }
-            cmd.args(&argv);
-
-            let output = cmd.output().with_context(|| {
-                format!(
-                    "Failed to execute workflow step {} ({})",
-                    step_number, display_cmd
-                )
-            })?;
-
-            let ok = output.status.success();
-            let exit_code = output.status.code().unwrap_or(-1);
-            let failure_summary = if ok {
-                None
-            } else {
-                summarize_failure_output(&output.stdout, &output.stderr)
-            };
-
-            if !json_output {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !stdout.trim().is_empty() {
-                    print!("{stdout}");
-                }
-                if !stderr.trim().is_empty() {
-                    eprint!("{stderr}");
-                }
-            }
-
-            let error = if ok {
-                None
-            } else {
-                Some(match failure_summary.as_deref() {
-                    Some(summary) => format!(
-                        "step {} failed with exit code {}: {}",
-                        step_number, exit_code, summary
-                    ),
-                    None => format!("step {} failed with exit code {}", step_number, exit_code),
-                })
-            };
-            reports.push(WorkflowStepReport {
-                index: step_number,
+        let prepared_steps = spec
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| WorkflowPreparedStep {
+                index: idx + 1,
                 id: step.id.clone(),
                 name: step.name.clone(),
-                kind,
-                command: argv,
-                success: ok,
-                exit_code,
-                elapsed_ms: step_start.elapsed().as_millis(),
-                error: error.clone(),
-            });
+                kind: step_kind(&step.action).to_string(),
+                continue_on_error: step.continue_on_error,
+                command: build_step_argv(&spec.defaults, step).map_err(|err| err.to_string()),
+            })
+            .collect::<Vec<_>>();
 
-            if !(ok || self.continue_on_error || step.continue_on_error) {
-                let report =
-                    build_report(&self.spec, &spec, self.dry_run, &reports, start.elapsed());
-                maybe_write_report(self.report.as_ref(), &report, json_output)?;
-                if json_output {
-                    println!("{}", serde_json::to_string_pretty(&report)?);
+        let executable = if self.dry_run {
+            None
+        } else {
+            Some(std::env::current_exe().context("Failed to resolve current executable")?)
+        };
+
+        let report = run_prepared_workflow_steps(
+            self.spec.display().to_string(),
+            &spec,
+            prepared_steps,
+            self.dry_run,
+            self.continue_on_error,
+            |step, prepared| {
+                if !json_output {
+                    let label = step_display_label(step, prepared.index);
+                    println!("[workflow:{label}] {}", prepared.command_display());
+                }
+            },
+            |_step, prepared| {
+                let argv = prepared.command.clone().map_err(anyhow::Error::msg)?;
+                let display_cmd = argv.join(" ");
+                let exe = executable
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("workflow executable path missing"))?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("--state-file")
+                    .arg(state_file)
+                    .arg("--rpc-url")
+                    .arg(rpc_url);
+                if verbose {
+                    cmd.arg("--verbose");
+                }
+                cmd.args(&argv);
+
+                let output = cmd.output().with_context(|| {
+                    format!(
+                        "Failed to execute workflow step {} ({})",
+                        prepared.index, display_cmd
+                    )
+                })?;
+
+                let ok = output.status.success();
+                let exit_code = output.status.code().unwrap_or(-1);
+                let failure_summary = if ok {
+                    None
                 } else {
-                    println!(
-                        "Workflow stopped at step {} (use --continue-on-error to continue)",
-                        step_number
-                    );
-                }
-                if let Some(last_error) = reports.last().and_then(|entry| entry.error.clone()) {
-                    return Err(anyhow!("workflow execution failed: {}", last_error));
-                }
-                return Err(anyhow!("workflow execution failed at step {}", step_number));
-            }
-        }
+                    summarize_failure_output(&output.stdout, &output.stderr)
+                };
 
-        let report = build_report(&self.spec, &spec, self.dry_run, &reports, start.elapsed());
+                if !json_output {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stdout.trim().is_empty() {
+                        print!("{stdout}");
+                    }
+                    if !stderr.trim().is_empty() {
+                        eprint!("{stderr}");
+                    }
+                }
+
+                let error = if ok {
+                    None
+                } else {
+                    Some(match failure_summary.as_deref() {
+                        Some(summary) => format!(
+                            "step {} failed with exit code {}: {}",
+                            prepared.index, exit_code, summary
+                        ),
+                        None => format!(
+                            "step {} failed with exit code {}",
+                            prepared.index, exit_code
+                        ),
+                    })
+                };
+                Ok(WorkflowStepExecution {
+                    exit_code,
+                    output: None,
+                    error,
+                })
+            },
+        );
+
         maybe_write_report(self.report.as_ref(), &report, json_output)?;
         if json_output {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
+            if report.stopped_early {
+                if let Some(last) = report.steps.last() {
+                    println!(
+                        "Workflow stopped at step {} (use --continue-on-error to continue)",
+                        last.index
+                    );
+                }
+            }
             println!(
                 "Workflow complete: {}/{} succeeded ({} failed)",
                 report.succeeded_steps, report.total_steps, report.failed_steps
@@ -1232,6 +1411,9 @@ impl WorkflowRunCmd {
         }
 
         if report.failed_steps > 0 {
+            if let Some(last_error) = report.steps.last().and_then(|entry| entry.error.clone()) {
+                return Err(anyhow!("workflow execution failed: {}", last_error));
+            }
             Err(anyhow!(
                 "workflow completed with {} failed step(s)",
                 report.failed_steps
@@ -1239,28 +1421,6 @@ impl WorkflowRunCmd {
         } else {
             Ok(())
         }
-    }
-}
-
-fn build_report(
-    spec_file: &Path,
-    spec: &WorkflowSpec,
-    dry_run: bool,
-    reports: &[WorkflowStepReport],
-    elapsed: std::time::Duration,
-) -> WorkflowRunReport {
-    let succeeded = reports.iter().filter(|entry| entry.success).count();
-    let failed = reports.len().saturating_sub(succeeded);
-    WorkflowRunReport {
-        spec_file: spec_file.display().to_string(),
-        name: spec.name.clone(),
-        description: spec.description.clone(),
-        dry_run,
-        total_steps: reports.len(),
-        succeeded_steps: succeeded,
-        failed_steps: failed,
-        elapsed_ms: elapsed.as_millis(),
-        steps: reports.to_vec(),
     }
 }
 
@@ -1308,7 +1468,9 @@ fn first_nonempty_output_line(bytes: &[u8]) -> Option<String> {
 
 fn build_step_argv(defaults: &WorkflowDefaults, step: &WorkflowStep) -> Result<Vec<String>> {
     match &step.action {
-        WorkflowStepAction::Replay(replay) => Ok(build_replay_argv(defaults, replay)),
+        WorkflowStepAction::Replay(replay) => {
+            Ok(ReplayOrchestrator::build_replay_command(defaults, replay))
+        }
         WorkflowStepAction::AnalyzeReplay(analyze) => {
             #[cfg(not(feature = "analysis"))]
             {
@@ -1319,146 +1481,13 @@ fn build_step_argv(defaults: &WorkflowDefaults, step: &WorkflowStep) -> Result<V
             }
             #[cfg(feature = "analysis")]
             {
-                Ok(build_analyze_replay_argv(defaults, analyze))
+                Ok(ReplayOrchestrator::build_analyze_replay_command(
+                    defaults, analyze,
+                ))
             }
         }
         WorkflowStepAction::Command(command) => build_command_argv(command),
     }
-}
-
-fn build_replay_argv(defaults: &WorkflowDefaults, replay: &WorkflowReplayStep) -> Vec<String> {
-    let mut args = vec!["replay".to_string()];
-    let digest = replay
-        .digest
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    if let Some(digest) = digest {
-        args.push(digest);
-    } else if replay.latest.is_some() || replay.checkpoint.is_some() {
-        args.push("*".to_string());
-    }
-
-    if let Some(path) = replay.state_json.as_ref() {
-        args.push("--state-json".to_string());
-        args.push(path.display().to_string());
-    }
-    if let Some(checkpoint) = replay.checkpoint.as_deref() {
-        args.push("--checkpoint".to_string());
-        args.push(checkpoint.to_string());
-    }
-    if let Some(latest) = replay.latest {
-        args.push("--latest".to_string());
-        args.push(latest.to_string());
-    }
-    if let Some(source) = replay.source.or(defaults.source) {
-        args.push("--source".to_string());
-        args.push(source.as_cli_value().to_string());
-    }
-    if let Some(profile) = replay.profile.or(defaults.profile) {
-        args.push("--profile".to_string());
-        args.push(profile.as_cli_value().to_string());
-    }
-    if let Some(fetch_strategy) = replay.fetch_strategy.or(defaults.fetch_strategy) {
-        args.push("--fetch-strategy".to_string());
-        args.push(fetch_strategy.as_cli_value().to_string());
-    }
-    if let Some(allow_fallback) = replay.allow_fallback.or(defaults.allow_fallback) {
-        args.push("--allow-fallback".to_string());
-        args.push(allow_fallback.to_string());
-    }
-    if let Some(auto_system_objects) = replay.auto_system_objects.or(defaults.auto_system_objects) {
-        args.push("--auto-system-objects".to_string());
-        args.push(auto_system_objects.to_string());
-    }
-    if let Some(prefetch_depth) = replay.prefetch_depth.or(defaults.prefetch_depth) {
-        args.push("--prefetch-depth".to_string());
-        args.push(prefetch_depth.to_string());
-    }
-    if let Some(prefetch_limit) = replay.prefetch_limit.or(defaults.prefetch_limit) {
-        args.push("--prefetch-limit".to_string());
-        args.push(prefetch_limit.to_string());
-    }
-
-    if replay.no_prefetch.or(defaults.no_prefetch).unwrap_or(false) {
-        args.push("--no-prefetch".to_string());
-    }
-    if replay.compare.or(defaults.compare).unwrap_or(false) {
-        args.push("--compare".to_string());
-    }
-    if replay.strict.or(defaults.strict).unwrap_or(false) {
-        args.push("--strict".to_string());
-    }
-    if replay.vm_only.or(defaults.vm_only).unwrap_or(false) {
-        args.push("--vm-only".to_string());
-    }
-    if replay
-        .synthesize_missing
-        .or(defaults.synthesize_missing)
-        .unwrap_or(false)
-    {
-        args.push("--synthesize-missing".to_string());
-    }
-    if replay
-        .self_heal_dynamic_fields
-        .or(defaults.self_heal_dynamic_fields)
-        .unwrap_or(false)
-    {
-        args.push("--self-heal-dynamic-fields".to_string());
-    }
-
-    args
-}
-
-fn build_analyze_replay_argv(
-    defaults: &WorkflowDefaults,
-    analyze: &WorkflowAnalyzeReplayStep,
-) -> Vec<String> {
-    let mut args = vec![
-        "analyze".to_string(),
-        "replay".to_string(),
-        analyze.digest.clone(),
-    ];
-
-    if let Some(checkpoint) = analyze.checkpoint {
-        args.push("--checkpoint".to_string());
-        args.push(checkpoint.to_string());
-    }
-    if let Some(source) = analyze.source.or(defaults.source) {
-        args.push("--source".to_string());
-        args.push(source.as_cli_value().to_string());
-    }
-    if let Some(allow_fallback) = analyze.allow_fallback.or(defaults.allow_fallback) {
-        args.push("--allow-fallback".to_string());
-        args.push(allow_fallback.to_string());
-    }
-    if let Some(auto_system_objects) = analyze.auto_system_objects.or(defaults.auto_system_objects)
-    {
-        args.push("--auto-system-objects".to_string());
-        args.push(auto_system_objects.to_string());
-    }
-    if let Some(prefetch_depth) = analyze.prefetch_depth.or(defaults.prefetch_depth) {
-        args.push("--prefetch-depth".to_string());
-        args.push(prefetch_depth.to_string());
-    }
-    if let Some(prefetch_limit) = analyze.prefetch_limit.or(defaults.prefetch_limit) {
-        args.push("--prefetch-limit".to_string());
-        args.push(prefetch_limit.to_string());
-    }
-
-    if analyze
-        .no_prefetch
-        .or(defaults.no_prefetch)
-        .unwrap_or(false)
-    {
-        args.push("--no-prefetch".to_string());
-    }
-    if analyze.mm2.or(defaults.mm2).unwrap_or(false) {
-        args.push("--mm2".to_string());
-    }
-
-    args
 }
 
 fn build_command_argv(command: &WorkflowCommandStep) -> Result<Vec<String>> {

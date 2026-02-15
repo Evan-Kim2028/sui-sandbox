@@ -246,22 +246,6 @@ impl WorkflowSpec {
             issues.push("steps must contain at least one entry".to_string());
         }
 
-        validate_true_only("defaults.compare", self.defaults.compare, issues);
-        validate_true_only("defaults.strict", self.defaults.strict, issues);
-        validate_true_only("defaults.vm_only", self.defaults.vm_only, issues);
-        validate_true_only("defaults.no_prefetch", self.defaults.no_prefetch, issues);
-        validate_true_only(
-            "defaults.synthesize_missing",
-            self.defaults.synthesize_missing,
-            issues,
-        );
-        validate_true_only(
-            "defaults.self_heal_dynamic_fields",
-            self.defaults.self_heal_dynamic_fields,
-            issues,
-        );
-        validate_true_only("defaults.mm2", self.defaults.mm2, issues);
-
         let mut seen_step_ids = HashSet::new();
         for (idx, step) in self.steps.iter().enumerate() {
             let step_number = idx + 1;
@@ -316,24 +300,6 @@ impl WorkflowSpec {
                             "{step_label}: replay cannot set both `state_json` and `checkpoint`"
                         ));
                     }
-                    validate_true_only(&format!("{step_label}.compare"), replay.compare, issues);
-                    validate_true_only(&format!("{step_label}.strict"), replay.strict, issues);
-                    validate_true_only(&format!("{step_label}.vm_only"), replay.vm_only, issues);
-                    validate_true_only(
-                        &format!("{step_label}.no_prefetch"),
-                        replay.no_prefetch,
-                        issues,
-                    );
-                    validate_true_only(
-                        &format!("{step_label}.synthesize_missing"),
-                        replay.synthesize_missing,
-                        issues,
-                    );
-                    validate_true_only(
-                        &format!("{step_label}.self_heal_dynamic_fields"),
-                        replay.self_heal_dynamic_fields,
-                        issues,
-                    );
                 }
                 WorkflowStepAction::AnalyzeReplay(analyze) => {
                     if analyze.digest.trim().is_empty() {
@@ -346,12 +312,6 @@ impl WorkflowSpec {
                             "{step_label}: analyze_replay `checkpoint` must be >= 1"
                         ));
                     }
-                    validate_true_only(&format!("{step_label}.mm2"), analyze.mm2, issues);
-                    validate_true_only(
-                        &format!("{step_label}.no_prefetch"),
-                        analyze.no_prefetch,
-                        issues,
-                    );
                 }
                 WorkflowStepAction::Command(command) => {
                     if command.args.is_empty() {
@@ -379,14 +339,6 @@ fn format_step_label(step: &WorkflowStep, index: usize) -> String {
         }
     }
     format!("step {index}")
-}
-
-fn validate_true_only(field: &str, value: Option<bool>, issues: &mut Vec<String>) {
-    if value == Some(false) {
-        issues.push(format!(
-            "{field} only supports `true` (omit the field for default false)"
-        ));
-    }
 }
 
 fn default_workflow_version() -> u32 {
@@ -486,13 +438,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_false_for_positive_only_flags() {
+    fn allows_explicit_false_boolean_flags() {
         let spec = WorkflowSpec {
             version: SUPPORTED_WORKFLOW_VERSION,
             name: None,
             description: None,
             defaults: WorkflowDefaults {
                 compare: Some(false),
+                strict: Some(false),
+                vm_only: Some(false),
+                no_prefetch: Some(false),
+                synthesize_missing: Some(false),
+                self_heal_dynamic_fields: Some(false),
+                mm2: Some(false),
                 ..WorkflowDefaults::default()
             },
             steps: vec![WorkflowStep {
@@ -512,18 +470,15 @@ mod tests {
                     no_prefetch: None,
                     prefetch_depth: None,
                     prefetch_limit: None,
-                    compare: None,
-                    strict: None,
-                    vm_only: None,
-                    synthesize_missing: None,
-                    self_heal_dynamic_fields: None,
+                    compare: Some(false),
+                    strict: Some(false),
+                    vm_only: Some(false),
+                    synthesize_missing: Some(false),
+                    self_heal_dynamic_fields: Some(false),
                 }),
             }],
         };
 
-        let err = spec
-            .validate()
-            .expect_err("expected false positive flag validation failure");
-        assert!(err.to_string().contains("defaults.compare"));
+        assert!(spec.validate().is_ok());
     }
 }
