@@ -86,7 +86,16 @@ jobs:
           assert hasattr(sui_sandbox, "deserialize_transaction")
           assert hasattr(sui_sandbox, "deserialize_package")
           assert hasattr(sui_sandbox, "prepare_package_context")
+          assert hasattr(sui_sandbox, "protocol_prepare")
           assert hasattr(sui_sandbox, "replay_transaction")
+          assert hasattr(sui_sandbox, "protocol_run")
+          assert hasattr(sui_sandbox, "discover_checkpoint_targets")
+          assert hasattr(sui_sandbox, "protocol_discover")
+          assert hasattr(sui_sandbox, "workflow_validate")
+          assert hasattr(sui_sandbox, "workflow_init")
+          assert hasattr(sui_sandbox, "workflow_auto")
+          assert hasattr(sui_sandbox, "workflow_run")
+          assert hasattr(sui_sandbox, "FlowSession")
           assert isinstance(sui_sandbox.__version__, str)
 
           with tempfile.TemporaryDirectory() as td:
@@ -127,6 +136,9 @@ jobs:
                   analyze_only=True,
               )
               assert replay["digest"] == "dummy_digest"
+              assert replay["local_success"] is True
+              assert "analysis" in replay
+              assert replay["analysis"]["digest"] == "dummy_digest"
           PY
 
       - name: Python examples smoke (offline)

@@ -3,11 +3,262 @@ from typing import Any, Dict, List, Optional
 __version__: str
 
 
-def extract_interface(*, package_id: Optional[str] = ..., bytecode_dir: Optional[str] = ..., rpc_url: str = ...) -> Dict[str, Any]: ...
+class FlowSession:
+    def __init__(self) -> None: ...
+    def prepare(
+        self,
+        package_id: str,
+        *,
+        resolve_deps: bool = ...,
+        output_path: Optional[str] = ...,
+    ) -> Dict[str, Any]: ...
+    def load_context(self, context_path: str) -> Dict[str, Any]: ...
+    def save_context(self, context_path: str) -> None: ...
+    def has_context(self) -> bool: ...
+    def package_id(self) -> Optional[str]: ...
+    def context(self) -> Optional[Dict[str, Any]]: ...
+    def replay(
+        self,
+        digest: Optional[str] = ...,
+        *,
+        checkpoint: Optional[int] = ...,
+        discover_latest: Optional[int] = ...,
+        source: Optional[str] = ...,
+        state_file: Optional[str] = ...,
+        cache_dir: Optional[str] = ...,
+        walrus_network: str = ...,
+        walrus_caching_url: Optional[str] = ...,
+        walrus_aggregator_url: Optional[str] = ...,
+        rpc_url: str = ...,
+        profile: Optional[str] = ...,
+        fetch_strategy: Optional[str] = ...,
+        vm_only: bool = ...,
+        allow_fallback: bool = ...,
+        prefetch_depth: int = ...,
+        prefetch_limit: int = ...,
+        auto_system_objects: bool = ...,
+        no_prefetch: bool = ...,
+        compare: bool = ...,
+        analyze_only: bool = ...,
+        synthesize_missing: bool = ...,
+        self_heal_dynamic_fields: bool = ...,
+        analyze_mm2: bool = ...,
+        verbose: bool = ...,
+    ) -> Dict[str, Any]: ...
+
+
+class ContextSession(FlowSession): ...
+
+
+def extract_interface(
+    *,
+    package_id: Optional[str] = ...,
+    bytecode_dir: Optional[str] = ...,
+    rpc_url: str = ...,
+) -> Dict[str, Any]: ...
+
 
 def get_latest_checkpoint() -> int: ...
 
+
 def get_checkpoint(checkpoint: int) -> Dict[str, Any]: ...
+
+
+def ptb_universe(
+    *,
+    source: str = ...,
+    latest: int = ...,
+    top_packages: int = ...,
+    max_ptbs: int = ...,
+    out_dir: Optional[str] = ...,
+    grpc_endpoint: Optional[str] = ...,
+    stream_timeout_secs: int = ...,
+) -> Dict[str, Any]: ...
+
+
+def discover_checkpoint_targets(
+    *,
+    checkpoint: Optional[str] = ...,
+    latest: Optional[int] = ...,
+    package_id: Optional[str] = ...,
+    include_framework: bool = ...,
+    limit: int = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def protocol_discover(
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    checkpoint: Optional[str] = ...,
+    latest: Optional[int] = ...,
+    include_framework: bool = ...,
+    limit: int = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def context_discover(
+    *,
+    checkpoint: Optional[str] = ...,
+    latest: Optional[int] = ...,
+    package_id: Optional[str] = ...,
+    include_framework: bool = ...,
+    limit: int = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def adapter_discover(
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    checkpoint: Optional[str] = ...,
+    latest: Optional[int] = ...,
+    include_framework: bool = ...,
+    limit: int = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def workflow_validate(spec_path: str) -> Dict[str, Any]: ...
+
+
+def pipeline_validate(spec_path: str) -> Dict[str, Any]: ...
+
+
+def workflow_init(
+    *,
+    template: str = ...,
+    output_path: Optional[str] = ...,
+    format: Optional[str] = ...,
+    digest: Optional[str] = ...,
+    checkpoint: Optional[int] = ...,
+    include_analyze_step: bool = ...,
+    strict_replay: bool = ...,
+    name: Optional[str] = ...,
+    package_id: Optional[str] = ...,
+    view_objects: List[str] = ...,
+    force: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def pipeline_init(
+    *,
+    template: str = ...,
+    output_path: Optional[str] = ...,
+    format: Optional[str] = ...,
+    digest: Optional[str] = ...,
+    checkpoint: Optional[int] = ...,
+    include_analyze_step: bool = ...,
+    strict_replay: bool = ...,
+    name: Optional[str] = ...,
+    package_id: Optional[str] = ...,
+    view_objects: List[str] = ...,
+    force: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def workflow_auto(
+    package_id: str,
+    *,
+    template: Optional[str] = ...,
+    output_path: Optional[str] = ...,
+    format: Optional[str] = ...,
+    digest: Optional[str] = ...,
+    discover_latest: Optional[int] = ...,
+    checkpoint: Optional[int] = ...,
+    name: Optional[str] = ...,
+    best_effort: bool = ...,
+    force: bool = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def pipeline_auto(
+    package_id: str,
+    *,
+    template: Optional[str] = ...,
+    output_path: Optional[str] = ...,
+    format: Optional[str] = ...,
+    digest: Optional[str] = ...,
+    discover_latest: Optional[int] = ...,
+    checkpoint: Optional[int] = ...,
+    name: Optional[str] = ...,
+    best_effort: bool = ...,
+    force: bool = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def workflow_run(
+    spec_path: str,
+    *,
+    dry_run: bool = ...,
+    continue_on_error: bool = ...,
+    report_path: Optional[str] = ...,
+    rpc_url: str = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def pipeline_run(
+    spec_path: str,
+    *,
+    dry_run: bool = ...,
+    continue_on_error: bool = ...,
+    report_path: Optional[str] = ...,
+    rpc_url: str = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def workflow_run_inline(
+    spec: Any,
+    *,
+    dry_run: bool = ...,
+    continue_on_error: bool = ...,
+    report_path: Optional[str] = ...,
+    rpc_url: str = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def pipeline_run_inline(
+    spec: Any,
+    *,
+    dry_run: bool = ...,
+    continue_on_error: bool = ...,
+    report_path: Optional[str] = ...,
+    rpc_url: str = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
 
 def fetch_object_bcs(
     object_id: str,
@@ -17,13 +268,63 @@ def fetch_object_bcs(
     api_key: Optional[str] = ...,
 ) -> Dict[str, Any]: ...
 
-def import_state(*, state: Optional[str] = ..., transactions: Optional[str] = ..., objects: Optional[str] = ..., packages: Optional[str] = ..., cache_dir: Optional[str] = ...) -> Dict[str, Any]: ...
+
+def import_state(
+    *,
+    state: Optional[str] = ...,
+    transactions: Optional[str] = ...,
+    objects: Optional[str] = ...,
+    packages: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
 
 def deserialize_transaction(raw_bcs: bytes) -> Dict[str, Any]: ...
 
+
 def deserialize_package(bcs: bytes) -> Dict[str, Any]: ...
 
-def fetch_package_bytecodes(package_id: str, *, resolve_deps: bool = ...) -> Dict[str, Any]: ...
+
+def fetch_package_bytecodes(
+    package_id: str,
+    *,
+    resolve_deps: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def prepare_package_context(
+    package_id: str,
+    *,
+    resolve_deps: bool = ...,
+    output_path: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def context_prepare(
+    package_id: str,
+    *,
+    resolve_deps: bool = ...,
+    output_path: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def protocol_prepare(
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    resolve_deps: bool = ...,
+    output_path: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
+def adapter_prepare(
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    resolve_deps: bool = ...,
+    output_path: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
 
 def fetch_historical_package_bytecodes(
     package_ids: List[str],
@@ -34,9 +335,12 @@ def fetch_historical_package_bytecodes(
     api_key: Optional[str] = ...,
 ) -> Dict[str, Any]: ...
 
+
 def json_to_bcs(type_str: str, object_json: str, package_bytecodes: List[bytes]) -> bytes: ...
 
+
 def transaction_json_to_bcs(transaction_json: str) -> bytes: ...
+
 
 def call_view_function(
     package_id: str,
@@ -55,6 +359,15 @@ def call_view_function(
     fetch_deps: bool = ...,
 ) -> Dict[str, Any]: ...
 
+
+def deepbook_margin_state(
+    *,
+    versions_file: str = ...,
+    grpc_endpoint: Optional[str] = ...,
+    grpc_api_key: Optional[str] = ...,
+) -> Dict[str, Any]: ...
+
+
 def fuzz_function(
     package_id: str,
     module: str,
@@ -71,6 +384,7 @@ def fuzz_function(
     fetch_deps: bool = ...,
 ) -> Dict[str, Any]: ...
 
+
 def replay(
     digest: Optional[str] = ...,
     *,
@@ -78,7 +392,11 @@ def replay(
     source: str = ...,
     checkpoint: Optional[int] = ...,
     state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
     cache_dir: Optional[str] = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
     allow_fallback: bool = ...,
     prefetch_depth: int = ...,
     prefetch_limit: int = ...,
@@ -86,5 +404,168 @@ def replay(
     no_prefetch: bool = ...,
     compare: bool = ...,
     analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def replay_transaction(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def context_replay(
+    digest: Optional[str] = ...,
+    *,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    discover_package_id: Optional[str] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    context_path: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def protocol_run(
+    digest: Optional[str] = ...,
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    resolve_deps: bool = ...,
+    context_path: Optional[str] = ...,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def adapter_run(
+    digest: Optional[str] = ...,
+    *,
+    protocol: str = ...,
+    package_id: Optional[str] = ...,
+    resolve_deps: bool = ...,
+    context_path: Optional[str] = ...,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
+    verbose: bool = ...,
+) -> Dict[str, Any]: ...
+
+
+def context_run(
+    package_id: str,
+    digest: Optional[str] = ...,
+    *,
+    resolve_deps: bool = ...,
+    context_path: Optional[str] = ...,
+    checkpoint: Optional[int] = ...,
+    discover_latest: Optional[int] = ...,
+    source: Optional[str] = ...,
+    state_file: Optional[str] = ...,
+    cache_dir: Optional[str] = ...,
+    walrus_network: str = ...,
+    walrus_caching_url: Optional[str] = ...,
+    walrus_aggregator_url: Optional[str] = ...,
+    rpc_url: str = ...,
+    profile: Optional[str] = ...,
+    fetch_strategy: Optional[str] = ...,
+    vm_only: bool = ...,
+    allow_fallback: bool = ...,
+    prefetch_depth: int = ...,
+    prefetch_limit: int = ...,
+    auto_system_objects: bool = ...,
+    no_prefetch: bool = ...,
+    compare: bool = ...,
+    analyze_only: bool = ...,
+    synthesize_missing: bool = ...,
+    self_heal_dynamic_fields: bool = ...,
+    analyze_mm2: bool = ...,
     verbose: bool = ...,
 ) -> Dict[str, Any]: ...
