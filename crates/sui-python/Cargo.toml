@@ -1,6 +1,6 @@
 [package]
 name = "sui-python"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2021"
 description = "Python bindings for Sui Move package analysis and transaction replay"
 
