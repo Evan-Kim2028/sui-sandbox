@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sui-sandbox"
-version = "0.19.0"
+version = "0.20.0"
 description = "Python bindings for Sui Move package analysis and transaction replay"
 requires-python = ">=3.9"
 readme = "README.md"
