@@ -1,7 +1,7 @@
 # sui-sandbox
 
-[![Version](https://img.shields.io/badge/version-0.21.0-green.svg)](Cargo.toml)
-[![Sui](https://img.shields.io/badge/sui-mainnet--v1.64.2-blue.svg)](https://github.com/MystenLabs/sui)
+[![Version](https://img.shields.io/badge/version-0.22.1-green.svg)](Cargo.toml)
+[![Sui](https://img.shields.io/badge/sui-mainnet--v1.64.2-blue.svg)](https://github.com/MystenLabs/sui/releases/tag/mainnet-v1.64.2)
 
 Local Sui execution and replay harness. Run the real Move VM locally, hydrate historical state, and compare local effects against on-chain results.
 

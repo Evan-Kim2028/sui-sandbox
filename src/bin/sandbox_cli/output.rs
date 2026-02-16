@@ -482,6 +482,20 @@ mod tests {
     use super::*;
     use anyhow::anyhow;
 
+    fn with_archive_grpc_endpoint<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let previous = std::env::var("SUI_GRPC_ENDPOINT").ok();
+        std::env::set_var("SUI_GRPC_ENDPOINT", "https://archive.mainnet.sui.io:443");
+        let result = f();
+        match previous {
+            Some(value) => std::env::set_var("SUI_GRPC_ENDPOINT", value),
+            None => std::env::remove_var("SUI_GRPC_ENDPOINT"),
+        }
+        result
+    }
+
     #[test]
     fn test_format_address() {
         let addr = AccountAddress::from_hex_literal("0x2").unwrap();
@@ -493,13 +507,15 @@ mod tests {
 
     #[test]
     fn test_default_diagnostic_hints_archive_runtime_gap() {
-        let err = anyhow!(
-            "ContractAbort {{ location: Undefined, abort_code: 1 }} (unchanged_loaded_runtime_objects missing)"
-        );
-        let hints = default_diagnostic_hints("replay", &err);
-        assert!(hints.iter().any(|hint| {
-            hint.contains("archive runtime-object gap")
-                && hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")
-        }));
+        with_archive_grpc_endpoint(|| {
+            let err = anyhow!(
+                "ContractAbort {{ location: Undefined, abort_code: 1 }} (unchanged_loaded_runtime_objects missing)"
+            );
+            let hints = default_diagnostic_hints("replay", &err);
+            assert!(hints.iter().any(|hint| {
+                hint.contains("archive runtime-object gap")
+                    && hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")
+            }));
+        });
     }
 }

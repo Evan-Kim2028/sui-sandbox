@@ -83,12 +83,12 @@ Query a margin position at a specific checkpoint:
 
 ```bash
 # Use pre-computed versions from Snowflake
-VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
+DEEPBOOK_SCENARIO=position_a_snapshot \
   cargo run --example deepbook_margin_state
 
 # If archive endpoint misses runtime objects, use a historical gRPC endpoint
 SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
-VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
+DEEPBOOK_SCENARIO=position_a_snapshot \
   cargo run --example deepbook_margin_state
 ```
 
@@ -97,8 +97,9 @@ VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.
 Track margin position evolution across 8 consecutive daily snapshots:
 
 ```bash
-# Run with default time series file
-cargo run --example deepbook_timeseries
+# Run default time series scenario
+DEEPBOOK_SCENARIO=position_b_timeseries \
+  cargo run --example deepbook_timeseries
 ```
 
 This example iterates through all 8 daily checkpoints and outputs a summary table showing:
@@ -162,7 +163,7 @@ Each JSON file contains pre-computed object versions from Snowflake:
 
 ```bash
 # Use pre-computed versions, fetch from gRPC
-VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
+DEEPBOOK_SCENARIO=position_a_snapshot \
   cargo run --example deepbook_margin_state
 ```
 
@@ -170,7 +171,7 @@ VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.
 
 ```bash
 SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443 \
-VERSIONS_FILE=./examples/data/deepbook_margin_state/deepbook_versions_240733000.json \
+DEEPBOOK_SCENARIO=position_a_snapshot \
   cargo run --example deepbook_margin_state
 ```
 
@@ -269,7 +270,7 @@ If your environment still points at `https://fullnode.mainnet.sui.io:443`, the h
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `VERSIONS_FILE` | Path to pre-computed JSON manifest | For historical mode |
+| `DEEPBOOK_SCENARIO` | Scenario selector (`position_a_snapshot`, `position_b_timeseries`, `position_a_json_bcs`) | Required |
 | `SUI_GRPC_ENDPOINT` | gRPC endpoint URL override | Optional (historical mode auto-selects archival default when unset) |
 | `SUI_GRPC_API_KEY` | gRPC API key | Recommended |
 

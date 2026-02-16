@@ -8,15 +8,12 @@
 //! cargo run --example deepbook_timeseries
 //! ```
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
 use sui_sandbox_core::orchestrator::{HistoricalSeriesExecutionOptions, ReplayOrchestrator};
 
-const DEFAULT_REQUEST_FILE: &str = "examples/data/deepbook_margin_state/manager_state_request.json";
-const DEFAULT_SERIES_FILE: &str =
-    "examples/data/deepbook_margin_state/position_b_daily_timeseries.json";
-const DEFAULT_SCHEMA_FILE: &str = "examples/data/deepbook_margin_state/manager_state_schema.json";
+mod deepbook_scenarios;
 
 #[derive(Debug, Clone, Default)]
 struct MarginState {
@@ -57,21 +54,41 @@ fn env_usize(name: &str, default: usize) -> usize {
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    let request_file =
-        std::env::var("REQUEST_FILE").unwrap_or_else(|_| DEFAULT_REQUEST_FILE.to_string());
-    let series_file =
-        std::env::var("TIMESERIES_FILE").unwrap_or_else(|_| DEFAULT_SERIES_FILE.to_string());
-    let schema_file =
-        std::env::var("SCHEMA_FILE").unwrap_or_else(|_| DEFAULT_SCHEMA_FILE.to_string());
+    let scenario = deepbook_scenarios::resolve_scenario(Some("position_b_timeseries"))
+        .and_then(|scenario| deepbook_scenarios::require_kind(&scenario, "timeseries").cloned())
+        .map_err(|err| anyhow!("{}", err))?;
+    let request_file = scenario
+        .request_file
+        .as_deref()
+        .map(deepbook_scenarios::scenario_data_path)
+        .ok_or_else(|| anyhow!("Scenario '{}' is missing 'request_file'", scenario.id))?;
+    let series_file = scenario
+        .series_file
+        .as_deref()
+        .map(deepbook_scenarios::scenario_data_path)
+        .ok_or_else(|| anyhow!("Scenario '{}' is missing 'series_file'", scenario.id))?;
+    let schema_file = scenario
+        .schema_file
+        .as_deref()
+        .map(deepbook_scenarios::scenario_data_path)
+        .ok_or_else(|| anyhow!("Scenario '{}' is missing 'schema_file'", scenario.id))?;
     let max_concurrency = env_usize("MAX_CONCURRENCY", 4).max(1);
 
     let grpc_endpoint = std::env::var("SUI_GRPC_ENDPOINT").ok();
     let grpc_api_key = std::env::var("SUI_GRPC_API_KEY").ok();
 
     println!("DeepBook historical manager_state series");
-    println!("  request: {}", request_file);
-    println!("  series:  {}", series_file);
-    println!("  schema:  {}", schema_file);
+    println!(
+        "scenario: {} ({})",
+        scenario.id,
+        scenario
+            .description
+            .clone()
+            .unwrap_or_else(|| "no description".to_string())
+    );
+    println!("  request: {}", request_file.display());
+    println!("  series:  {}", series_file.display());
+    println!("  schema:  {}", schema_file.display());
     let options = HistoricalSeriesExecutionOptions {
         max_concurrency: Some(max_concurrency),
     };

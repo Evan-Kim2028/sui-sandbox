@@ -1,0 +1,42 @@
+{
+  "default_scenario": "position_a_snapshot",
+  "scenarios": [
+    {
+      "id": "position_a_snapshot",
+      "kind": "snapshot",
+      "description": "Single-position snapshot query for DeepBook margin manager (240733000 checkpoint snapshot)",
+      "versions_file": "examples/data/deepbook_margin_state/deepbook_versions_240733000.json",
+      "request_file": "examples/data/deepbook_margin_state/manager_state_request_position_a.json",
+      "schema_file": "examples/data/deepbook_margin_state/manager_state_schema.json",
+      "target_margin_manager": "0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80",
+      "package_roots": [
+        "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+        "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497"
+      ]
+    },
+    {
+      "id": "position_b_timeseries",
+      "kind": "timeseries",
+      "description": "8-day DeepBook margin manager timeseries for SUI/USDC position",
+      "request_file": "examples/data/deepbook_margin_state/manager_state_request.json",
+      "series_file": "examples/data/deepbook_margin_state/position_b_daily_timeseries.json",
+      "schema_file": "examples/data/deepbook_margin_state/manager_state_schema.json",
+      "target_margin_manager": "0xbcb8ee0447179ea67787dfca1d4d0c54ff82ffe67794f851a0329e40306bfa60",
+      "package_roots": [
+        "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+        "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497"
+      ]
+    },
+    {
+      "id": "position_a_json_bcs",
+      "kind": "json_bcs",
+      "description": "JSON-to-BCS reconstruction fixtures for DeepBook margin manager",
+      "object_json_file": "examples/data/deepbook_margin_state/object_json.json",
+      "target_margin_manager": "0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80",
+      "package_roots": [
+        "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+        "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497"
+      ]
+    }
+  ]
+}

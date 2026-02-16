@@ -44,7 +44,7 @@ has_required_api() {
 import sui_sandbox
 assert hasattr(sui_sandbox, "context_run")
 assert hasattr(sui_sandbox, "context_prepare")
-assert hasattr(sui_sandbox, "deepbook_margin_state")
+assert hasattr(sui_sandbox, "historical_view_from_versions")
 PY
 }
 
@@ -82,7 +82,7 @@ Build/install it first, for example:
   maturin develop --release
 EOF
   cat >&2 <<'EOF'
-[python-smoke] Required API not found: expected `context_run`, `context_prepare`, and `deepbook_margin_state`.
+[python-smoke] Required API not found: expected `context_run`, `context_prepare`, and `historical_view_from_versions`.
 Make sure the installed extension was built from this workspace revision.
 EOF
   if [[ "$PY_MINOR" == "3.14" ]]; then

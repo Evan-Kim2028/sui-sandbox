@@ -6,24 +6,28 @@
 //! ## Usage
 //!
 //! ```bash
-//! # Default test data
+//! # Default manifest scenario
 //! cargo run --example deepbook_json_bcs_only
 //!
-//! # Custom data file
-//! DATA_FILE="./path/to/data.json" cargo run --example deepbook_json_bcs_only
+//! # Or supply a custom OBJECT_JSON file
+//! DATA_FILE=./path/to/object_json.json cargo run --example deepbook_json_bcs_only
 //! ```
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use move_core_types::account_address::AccountAddress;
 use serde::Deserialize;
+use std::path::PathBuf;
 use sui_sandbox_core::utilities::{
     validate_json_bcs_reconstruction, JsonBcsValidationObject, JsonBcsValidationPlan,
     JsonBcsValidationStatus,
 };
+#[path = "../../deepbook_scenarios.rs"]
+mod deepbook_scenarios;
 
-// Package addresses to fetch bytecode from
-const MARGIN_PACKAGE: &str = "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b";
-const DEFAULT_DATA_FILE: &str = "./examples/data/deepbook_margin_state/object_json.json";
+const DEFAULT_FALLBACK_PACKAGE_ROOTS: [&str; 2] = [
+    "0x97d9473771b01f77b0940c589484184b49f6444627ec121314fae6a6d36fb86b",
+    "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497",
+];
 
 // =============================================================================
 // Data Structures
@@ -58,19 +62,56 @@ struct ObjectData {
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
+    let scenario = deepbook_scenarios::resolve_scenario(Some("position_a_json_bcs"))
+        .and_then(|scenario| deepbook_scenarios::require_kind(&scenario, "json_bcs").cloned())
+        .map_err(|err| anyhow!("{}", err))?;
+    let scenario_description = scenario
+        .description
+        .unwrap_or_else(|| "no description".to_string());
+    let data_path = std::env::var("DATA_FILE")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            scenario
+                .object_json_file
+                .as_deref()
+                .map(deepbook_scenarios::scenario_data_path)
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "Scenario '{}' is missing 'object_json_file' (and DATA_FILE is unset)",
+                scenario.id
+            )
+        })?;
+    let package_roots = scenario.package_roots.clone().unwrap_or_else(|| {
+        DEFAULT_FALLBACK_PACKAGE_ROOTS
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    });
+
+    println!();
+    println!(
+        "DeepBook JSON/BCS scenario: {} - {}",
+        scenario.id, scenario_description
+    );
+
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║        JSON-to-BCS Reconstruction Demo                       ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // 1. Load test data
-    let data_file = std::env::var("DATA_FILE").unwrap_or_else(|_| DEFAULT_DATA_FILE.to_string());
-    let data = match load_object_json_data(&data_file) {
+    let data = match load_object_json_data(&data_path) {
         Ok(d) => d,
         Err(e) => {
             println!("Data file not found: {}\n", e);
             println!("This example requires OBJECT_JSON data.");
+            println!("Scenario '{}': {}", scenario.id, scenario_description);
+            println!("Expected fixture file: {}", data_path.display());
             println!("Provide your own data file:");
-            println!("  DATA_FILE=\"./my_data.json\" cargo run --example deepbook_json_bcs_only\n");
+            println!(
+                "  DATA_FILE=./my_object_json.json cargo run --example deepbook_json_bcs_only\n"
+            );
             println!("Expected JSON format:");
             println!("  {{");
             println!("    \"description\": \"...\",");
@@ -101,7 +142,10 @@ fn main() -> Result<()> {
     // 2. Run generic JSON->BCS reconstruction validator
     let rt = tokio::runtime::Runtime::new()?;
     let report = rt.block_on(validate_json_bcs_reconstruction(&JsonBcsValidationPlan {
-        package_roots: vec![AccountAddress::from_hex_literal(MARGIN_PACKAGE)?],
+        package_roots: package_roots
+            .into_iter()
+            .map(|root| AccountAddress::from_hex_literal(root.as_str()))
+            .collect::<std::result::Result<Vec<_>, _>>()?,
         type_refs: data
             .objects
             .iter()
@@ -183,8 +227,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_object_json_data(path: &str) -> Result<ObjectJsonData> {
-    let content =
-        std::fs::read_to_string(path).map_err(|e| anyhow!("Failed to read {}: {}", path, e))?;
-    serde_json::from_str(&content).map_err(|e| anyhow!("Failed to parse {}: {}", path, e))
+fn load_object_json_data(path: &PathBuf) -> Result<ObjectJsonData> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    serde_json::from_str(&content).map_err(|e| anyhow!("Failed to parse {}: {}", path.display(), e))
 }

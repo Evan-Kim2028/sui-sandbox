@@ -260,6 +260,20 @@ mod tests {
     use super::*;
     use crate::sandbox_cli::replay::ReplayExecutionPath;
 
+    fn with_archive_grpc_endpoint<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let previous = std::env::var("SUI_GRPC_ENDPOINT").ok();
+        std::env::set_var("SUI_GRPC_ENDPOINT", "https://archive.mainnet.sui.io:443");
+        let result = f();
+        match previous {
+            Some(value) => std::env::set_var("SUI_GRPC_ENDPOINT", value),
+            None => std::env::remove_var("SUI_GRPC_ENDPOINT"),
+        }
+        result
+    }
+
     #[test]
     fn replay_hints_include_archive_runtime_hint() {
         let output = ReplayOutput {
@@ -282,9 +296,11 @@ mod tests {
             batch_summary_printed: false,
         };
 
-        let hints = replay_hints_from_output(&output);
-        assert!(hints
-            .iter()
-            .any(|hint| hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")));
+        with_archive_grpc_endpoint(|| {
+            let hints = replay_hints_from_output(&output);
+            assert!(hints
+                .iter()
+                .any(|hint| hint.contains("SUI_GRPC_ENDPOINT=https://grpc.surflux.dev:443")));
+        });
     }
 }

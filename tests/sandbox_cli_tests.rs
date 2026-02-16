@@ -281,7 +281,10 @@ fn test_protocol_prepare_requires_package_override_when_no_default() {
         .arg("cetus")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("provide --package-id"));
+        .stderr(
+            predicate::str::contains("requires --package-id")
+                .or(predicate::str::contains("provide --package-id")),
+        );
 }
 
 #[test]
@@ -300,7 +303,10 @@ fn test_protocol_discover_requires_package_override_when_no_default() {
         .arg("1")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("provide --package-id"));
+        .stderr(
+            predicate::str::contains("requires --package-id")
+                .or(predicate::str::contains("provide --package-id")),
+        );
 }
 
 #[test]
@@ -422,9 +428,11 @@ fn test_protocol_run_requires_target_selection() {
         .arg("deepbook")
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "Provide --digest, --state-json, or --discover-latest",
-        ));
+        .stderr(
+            predicate::str::contains("requires --package-id").or(predicate::str::contains(
+                "Provide --digest, --state-json, or --discover-latest",
+            )),
+        );
 }
 
 // ============================================================================

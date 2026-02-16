@@ -73,7 +73,7 @@ python3 python_sui_sandbox/examples/03_context_replay_native.py
 Rust:
 
 ```bash
-cargo run --example deepbook_margin_state
+DEEPBOOK_SCENARIO=position_a_snapshot cargo run --example deepbook_margin_state
 ```
 
 Core API: `sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_view_from_versions(...)`
@@ -89,17 +89,7 @@ python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 Rust:
 
 ```bash
-cargo run --example deepbook_timeseries
-```
-
-Optional override:
-
-```bash
-TIMESERIES_FILE=examples/data/deepbook_margin_state/position_b_daily_timeseries.json \
-REQUEST_FILE=examples/data/deepbook_margin_state/manager_state_request.json \
-SCHEMA_FILE=examples/data/deepbook_margin_state/manager_state_schema.json \
-MAX_CONCURRENCY=4 \
-  cargo run --example deepbook_timeseries
+DEEPBOOK_SCENARIO=position_b_timeseries cargo run --example deepbook_timeseries
 ```
 
 Core API: `sui_sandbox_core::orchestrator::ReplayOrchestrator::execute_historical_series_from_files_with_options(...)`
