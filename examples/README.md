@@ -43,6 +43,7 @@ Python:
 python3 python_sui_sandbox/examples/02_extract_interface.py
 # Optional override:
 # BYTECODE_DIR=tests/fixture/build/fixture python3 python_sui_sandbox/examples/02_extract_interface.py
+# PACKAGE_ID=0x2 RPC_URL=https://fullnode.mainnet.sui.io:443 python3 python_sui_sandbox/examples/02_extract_interface.py
 ```
 
 ### 3) Context replay flow
@@ -61,12 +62,7 @@ cargo run --example state_json_offline_replay
 ```
 
 Python:
-
-```bash
-python3 python_sui_sandbox/examples/03_context_replay_native.py
-# Optional overrides:
-# PACKAGE_ID=0x2 DIGEST=<DIGEST> CHECKPOINT=<CP> python3 python_sui_sandbox/examples/03_context_replay_native.py
-```
+No dedicated Python example (use the Rust CLI / Rust example above).
 
 ### 4) DeepBook margin state
 

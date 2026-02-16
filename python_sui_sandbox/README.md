@@ -26,7 +26,7 @@ Optional smoke check:
 ./scripts/python_examples_smoke.sh --network
 ```
 
-## Core Example Set (4 files)
+## Core Example Set (3 files)
 
 ### 1) Walrus checkpoint summary
 
@@ -38,20 +38,12 @@ python3 python_sui_sandbox/examples/01_walrus_checkpoint.py
 
 ```bash
 python3 python_sui_sandbox/examples/02_extract_interface.py
-# Optional override:
-# BYTECODE_DIR=tests/fixture/build/fixture python3 python_sui_sandbox/examples/02_extract_interface.py
-```
-
-### 3) Context replay flow (native bindings)
-
-```bash
-python3 python_sui_sandbox/examples/03_context_replay_native.py
 # Optional overrides:
-# PACKAGE_ID=0x2 DIGEST=<DIGEST> CHECKPOINT=<CP> ANALYZE_ONLY=true \
-#   python3 python_sui_sandbox/examples/03_context_replay_native.py
+# BYTECODE_DIR=tests/fixture/build/fixture python3 python_sui_sandbox/examples/02_extract_interface.py
+# PACKAGE_ID=0x2 RPC_URL=https://fullnode.mainnet.sui.io:443 python3 python_sui_sandbox/examples/02_extract_interface.py
 ```
 
-### 4) DeepBook margin state (native bindings)
+### 3) DeepBook margin state (native bindings)
 
 ```bash
 python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py

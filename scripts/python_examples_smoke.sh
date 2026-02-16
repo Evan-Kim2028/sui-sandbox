@@ -94,10 +94,9 @@ EOF
   exit 1
 fi
 
-echo "[python-smoke] Syntax check examples 01/02/03/04"
+echo "[python-smoke] Syntax check examples 01/02/04"
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/01_walrus_checkpoint.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/02_extract_interface.py
-"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/03_context_replay_native.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 
 echo "[python-smoke] Offline execution check for example 02 (local bytecode)"
@@ -105,12 +104,9 @@ BYTECODE_DIR=tests/fixture/build/fixture \
   "$PYTHON_BIN" python_sui_sandbox/examples/02_extract_interface.py >/dev/null
 
 if [[ "$RUN_NETWORK" == "1" ]]; then
-  echo "[python-smoke] Network execution checks for examples 01 and 03"
+  echo "[python-smoke] Network execution checks for examples 01 and 04"
   "$PYTHON_BIN" python_sui_sandbox/examples/01_walrus_checkpoint.py >/dev/null
-  DIGEST=At8M8D7QoW3HHXUBHHvrsdhko8hEDdLAeqkZBjNSKFk2 \
-    CHECKPOINT=239615926 \
-    ANALYZE_ONLY=true \
-    "$PYTHON_BIN" python_sui_sandbox/examples/03_context_replay_native.py >/dev/null
+  "$PYTHON_BIN" python_sui_sandbox/examples/04_deepbook_margin_state_native.py >/dev/null
 fi
 
 echo "[python-smoke] PASS"
