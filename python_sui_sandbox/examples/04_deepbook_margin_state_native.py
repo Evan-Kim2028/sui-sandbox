@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Replay DeepBook margin_manager::manager_state at a historical checkpoint.
+
+Example output (run on 2026-02-16):
+{'success': True, 'gas_used': 28850, 'decoded': {'risk_ratio_pct': 0.0,
+'base_asset_sui': 0.0, 'quote_asset_usdc': 0.0, 'base_debt_sui': 0.0,
+'quote_debt_usdc': 1.180196, 'current_price': 1.118303}, 'hint': None}
+"""
+
 import os, sui_sandbox
 
 VERSIONS_FILE = os.getenv(
@@ -56,7 +64,30 @@ OBJS = [
     OBJECTS["clock"],
 ]
 
-out = sui_sandbox.historical_view_from_versions(versions_file=VERSIONS_FILE, package_id=MARGIN_PKG, module="margin_manager", function="manager_state", required_objects=OBJS, type_args=[SUI, USDC], package_roots=[MARGIN_PKG, SPOT_PKG], type_refs=[SUI, USDC], grpc_endpoint=os.getenv("SUI_GRPC_ENDPOINT"), grpc_api_key=os.getenv("SUI_GRPC_API_KEY"))
-SCHEMA = [{"index": 2, "name": "risk_ratio_pct", "type_hint": "u64", "scale": 1e7}, {"index": 3, "name": "base_asset_sui", "type_hint": "u64", "scale": 1e9}, {"index": 4, "name": "quote_asset_usdc", "type_hint": "u64", "scale": 1e6}, {"index": 5, "name": "base_debt_sui", "type_hint": "u64", "scale": 1e9}, {"index": 6, "name": "quote_debt_usdc", "type_hint": "u64", "scale": 1e6}, {"index": 11, "name": "current_price", "type_hint": "u64", "scale": 1e6}]
+# Build and run the historical view call pinned by versions_file.
+out = sui_sandbox.historical_view_from_versions(
+    versions_file=VERSIONS_FILE,
+    package_id=MARGIN_PKG,
+    module="margin_manager",
+    function="manager_state",
+    required_objects=OBJS,
+    type_args=[SUI, USDC],
+    package_roots=[MARGIN_PKG, SPOT_PKG],
+    type_refs=[SUI, USDC],
+    grpc_endpoint=os.getenv("SUI_GRPC_ENDPOINT"),
+    grpc_api_key=os.getenv("SUI_GRPC_API_KEY"),
+)
+
+# Decode selected return-value slots into human units.
+SCHEMA = [
+    {"index": 2, "name": "risk_ratio_pct", "type_hint": "u64", "scale": 1e7},
+    {"index": 3, "name": "base_asset_sui", "type_hint": "u64", "scale": 1e9},
+    {"index": 4, "name": "quote_asset_usdc", "type_hint": "u64", "scale": 1e6},
+    {"index": 5, "name": "base_debt_sui", "type_hint": "u64", "scale": 1e9},
+    {"index": 6, "name": "quote_debt_usdc", "type_hint": "u64", "scale": 1e6},
+    {"index": 11, "name": "current_price", "type_hint": "u64", "scale": 1e6},
+]
 decoded = sui_sandbox.historical_decode_with_schema(out, SCHEMA) if out.get("success") else None
+
+# Print execution status and decoded values.
 print({"success": out.get("success"), "gas_used": out.get("gas_used"), "decoded": decoded, "hint": out.get("hint")})
