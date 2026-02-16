@@ -26,15 +26,9 @@ Optional smoke check:
 ./scripts/python_examples_smoke.sh --network
 ```
 
-## Core Example Set (3 files)
+## Core Example Set (DeepBook, 3 files)
 
-### 1) Walrus checkpoint summary
-
-```bash
-python3 python_sui_sandbox/examples/01_walrus_checkpoint.py
-```
-
-### 2) Package interface extraction
+### 1) Controls: DeepBook interface extraction
 
 ```bash
 python3 python_sui_sandbox/examples/02_extract_interface.py
@@ -43,7 +37,16 @@ python3 python_sui_sandbox/examples/02_extract_interface.py
 # PACKAGE_ID=0x2 RPC_URL=https://fullnode.mainnet.sui.io:443 python3 python_sui_sandbox/examples/02_extract_interface.py
 ```
 
-### 3) DeepBook margin state (native bindings)
+### 2) Safety: DeepBook context preparation
+
+```bash
+python3 python_sui_sandbox/examples/03_deepbook_context_safety.py
+# Optional:
+# CONTEXT_PATH=examples/out/contexts/context.deepbook_margin.custom.json \
+#   python3 python_sui_sandbox/examples/03_deepbook_context_safety.py
+```
+
+### 3) Power: DeepBook margin state (native bindings)
 
 ```bash
 python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
@@ -51,6 +54,14 @@ python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 
 This example uses `historical_decode_with_schema(...)` to decode historical
 view return values into a named object without manual index unpacking.
+
+## Optional Utility Example
+
+### Walrus checkpoint summary
+
+```bash
+python3 python_sui_sandbox/examples/01_walrus_checkpoint.py
+```
 
 ## Canonical API Names
 

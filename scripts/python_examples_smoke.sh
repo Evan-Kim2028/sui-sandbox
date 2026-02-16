@@ -94,9 +94,10 @@ EOF
   exit 1
 fi
 
-echo "[python-smoke] Syntax check examples 01/02/04"
+echo "[python-smoke] Syntax check examples 01/02/03/04"
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/01_walrus_checkpoint.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/02_extract_interface.py
+"$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/03_deepbook_context_safety.py
 "$PYTHON_BIN" -m py_compile python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 
 echo "[python-smoke] Offline execution check for example 02 (local bytecode)"

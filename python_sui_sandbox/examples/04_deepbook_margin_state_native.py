@@ -7,7 +7,8 @@ Example output (run on 2026-02-16):
 'quote_debt_usdc': 1.180196, 'current_price': 1.118303}, 'hint': None}
 """
 
-import os, sui_sandbox
+import os
+import sui_sandbox
 
 VERSIONS_FILE = os.getenv(
     "VERSIONS_FILE",
@@ -18,21 +19,7 @@ SPOT_PKG = "0x337f4f4f6567fcd778d5454f27c16c70e2f274cc6377ea6249ddf491482ef497"
 SUI = "0x2::sui::SUI"
 USDC = "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC"
 
-# Retrieved from:
-# - examples/data/deepbook_margin_state/deepbook_versions_240733000.json
-# - examples/data/deepbook_margin_state/manager_state_request_position_a.json
-#
-# These are the required object arguments for:
-# margin_manager::manager_state<B, Q>(
-#   &Clock,
-#   &MarginManager<B, Q>,
-#   &Pool<B, Q>,
-#   &MarginPool<B>,
-#   &MarginPool<Q>,
-#   &PriceInfoObject,  # base oracle
-#   &PriceInfoObject,  # quote oracle
-#   &MarginRegistry,
-# )
+# Required object IDs for margin_manager::manager_state<SUI, USDC>.
 OBJECTS = {
     # 0x97d947...::margin_manager::MarginManager<SUI, USDC>
     "margin_manager": "0xed7a38b242141836f99f16ea62bd1182bcd8122d1de2f1ae98b80acbc2ad5c80",
@@ -52,7 +39,7 @@ OBJECTS = {
     "clock": "0x6",
 }
 
-# Preserve parameter order expected by manager_state(...) above.
+# Preserve the parameter order expected by manager_state(...).
 OBJS = [
     OBJECTS["margin_manager"],
     OBJECTS["margin_registry"],
@@ -89,5 +76,12 @@ SCHEMA = [
 ]
 decoded = sui_sandbox.historical_decode_with_schema(out, SCHEMA) if out.get("success") else None
 
-# Print execution status and decoded values.
-print({"success": out.get("success"), "gas_used": out.get("gas_used"), "decoded": decoded, "hint": out.get("hint")})
+summary = {
+    "success": out.get("success"),
+    "gas_used": out.get("gas_used"),
+    "decoded": decoded,
+    "hint": out.get("hint"),
+}
+print(summary)
+# Example output:
+# {'success': True, 'gas_used': 28850, 'decoded': {'risk_ratio_pct': 0.0, 'base_asset_sui': 0.0, 'quote_asset_usdc': 0.0, 'base_debt_sui': 0.0, 'quote_debt_usdc': 1.180196, 'current_price': 1.118303}, 'hint': None}
