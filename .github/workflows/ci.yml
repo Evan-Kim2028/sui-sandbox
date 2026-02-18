@@ -44,7 +44,7 @@ jobs:
           cache-on-failure: true
 
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-features --exclude sui-python -- -D warnings
+      - run: cargo clippy --workspace --all-features --exclude sui-python --exclude sui-napi -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -57,7 +57,7 @@ jobs:
         with:
           cache-on-failure: true
 
-      - run: cargo test --locked --workspace --tests --exclude sui-python
+      - run: cargo test --locked --workspace --tests --exclude sui-python --exclude sui-napi
       - name: Rust examples smoke (offline)
         run: ./scripts/rust_examples_smoke.sh
 
@@ -179,6 +179,52 @@ jobs:
                   f"{script} should use extract_interface(...) where package extraction is needed"
               )
           PY
+
+  node-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install @napi-rs/cli
+        working-directory: crates/sui-napi
+        run: npm install
+
+      - name: Build native addon
+        working-directory: crates/sui-napi
+        run: npx napi build --release --platform
+
+      - name: Node.js smoke test
+        working-directory: crates/sui-napi
+        run: |
+          node -e "
+            const m = require('./sui-sandbox.node');
+            console.log('version:', m.version());
+            const keys = Object.keys(m).sort();
+            console.log('exports:', keys.length);
+            // Verify key functions exist
+            const required = [
+              'version', 'getLatestCheckpoint', 'getCheckpoint',
+              'extractInterface', 'replay', 'replayTransaction',
+              'doctor', 'sessionStatus', 'sessionReset',
+              'preparePackageContext', 'fetchPackageBytecodes',
+              'workflowValidate', 'workflowRun',
+              'fuzzFunction', 'callViewFunction',
+              'OrchestrationSession',
+            ];
+            for (const fn of required) {
+              if (!(fn in m)) throw new Error('Missing export: ' + fn);
+            }
+            console.log('All required exports present');
+          "
 
   unification-gates:
     runs-on: ubuntu-latest

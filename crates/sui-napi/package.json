@@ -1,0 +1,24 @@
+{
+  "name": "sui-sandbox-node",
+  "version": "0.22.1",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "sui-sandbox",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-unknown-linux-gnu"
+      ]
+    }
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "scripts": {
+    "build": "napi build --release --platform",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm"
+  }
+}

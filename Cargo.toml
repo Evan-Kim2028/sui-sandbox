@@ -15,6 +15,7 @@ members = [
     "crates/sui-historical-cache",
     "crates/sui-sandbox-integration-tests",
     "crates/sui-python",
+    "crates/sui-napi",
 ]
 
 [features]

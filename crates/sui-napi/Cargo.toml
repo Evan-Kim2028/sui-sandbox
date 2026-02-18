@@ -1,0 +1,47 @@
+[package]
+name = "sui-napi"
+version = "0.22.1"
+edition = "2021"
+description = "Node.js/TypeScript bindings for Sui Move package analysis and transaction replay"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["walrus"]
+walrus = []
+mm2 = []
+
+[dependencies]
+# NAPI-RS bindings
+napi = { version = "2", features = ["async", "serde-json", "napi9"] }
+napi-derive = "2"
+
+# Core utilities
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+base64.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+
+# Move bytecode parsing
+move-binary-format.workspace = true
+move-core-types.workspace = true
+
+# Sui types (for CheckpointData, TransactionDataAPI)
+sui-types.workspace = true
+
+# Async runtime (for replay state fetching)
+tokio.workspace = true
+
+# Workspace crates
+sui-package-extractor.workspace = true
+sui-transport.workspace = true
+sui-sandbox-core.workspace = true
+sui-sandbox-types.workspace = true
+sui-state-fetcher.workspace = true
+
+[build-dependencies]
+napi-build = "2"

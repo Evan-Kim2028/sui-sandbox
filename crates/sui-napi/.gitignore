@@ -1,0 +1,11 @@
+# Build artifacts
+*.node
+target/
+
+# Node.js
+node_modules/
+package-lock.json
+
+# NAPI-RS generated files
+index.js
+index.d.ts
