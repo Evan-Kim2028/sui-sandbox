@@ -1187,6 +1187,7 @@ fn call_view_function_inner(
     package_linkage: HashMap<String, HashMap<String, String>>,
     package_versions: HashMap<String, u64>,
     fetch_deps: bool,
+    bytecode_dirs: &HashMap<String, String>,
 ) -> Result<serde_json::Value> {
     use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
     use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
@@ -1194,6 +1195,23 @@ fn call_view_function_inner(
 
     // 1. Build LocalModuleResolver with sui framework
     let mut resolver = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
+
+    // 1a. Load any local bytecode directories
+    let zero_addr = AccountAddress::from_hex_literal("0x0").unwrap();
+    for (pkg_addr_str, dir_path) in bytecode_dirs {
+        let count = resolver.load_from_dir(std::path::Path::new(dir_path))
+            .with_context(|| format!("Failed to load bytecode from directory: {}", dir_path))?;
+        if count == 0 {
+            eprintln!("Warning: no .mv files found in {}", dir_path);
+            continue;
+        }
+        // Set up alias from the deployed address to 0x0 (local build address)
+        let addr = AccountAddress::from_hex_literal(pkg_addr_str)
+            .with_context(|| format!("invalid package address for bytecode_dir: {}", pkg_addr_str))?;
+        if addr != zero_addr {
+            resolver.add_address_alias(addr, zero_addr);
+        }
+    }
 
     // 2. Load provided package bytecodes
     let mut loaded_packages = HashSet::new();
@@ -1558,6 +1576,9 @@ fn call_view_function_inner(
 /// historical_versions: Map object_id -> version
 /// package_bytecodes: Map package_id -> [module_bytes_buffer or base64_string]
 ///   OR full payload from fetchHistoricalPackageBytecodes(...)
+/// bytecode_dirs: Map package_address -> local_build_dir_path
+///   Load modules from local build directories instead of fetching from network.
+///   Each directory should contain a `bytecode_modules/` subdirectory with `.mv` files.
 #[napi]
 pub async fn call_view_function(
     package_id: String,
@@ -1573,6 +1594,7 @@ pub async fn call_view_function(
     grpc_api_key: Option<String>,
     package_bytecodes: Option<serde_json::Value>,
     fetch_deps: Option<bool>,
+    bytecode_dirs: Option<serde_json::Value>,
 ) -> napi::Result<serde_json::Value> {
     // Parse object_inputs from JSON
     let mut parsed_obj_inputs: Vec<(String, Vec<u8>, String, bool, bool)> = Vec::new();
@@ -1723,6 +1745,25 @@ pub async fn call_view_function(
 
     let effective_fetch_deps = if historical_payload_mode { false } else { fetch_deps.unwrap_or(true) };
 
+    // Parse bytecode_dirs: { "0xaddr": "/path/to/build/pkg" }
+    let mut parsed_bytecode_dirs: HashMap<String, String> = HashMap::new();
+    if let Some(bd) = bytecode_dirs {
+        if let Some(obj) = bd.as_object() {
+            for (addr, path_val) in obj {
+                if let Some(p) = path_val.as_str() {
+                    parsed_bytecode_dirs.insert(addr.clone(), p.to_string());
+                }
+            }
+        }
+    }
+
+    // If bytecode_dirs are provided, disable network fetch by default
+    let effective_fetch_deps = if !parsed_bytecode_dirs.is_empty() && fetch_deps.is_none() {
+        false
+    } else {
+        effective_fetch_deps
+    };
+
     call_view_function_inner(
         &package_id,
         &module,
@@ -1742,6 +1783,7 @@ pub async fn call_view_function(
         parsed_pkg_linkage,
         parsed_pkg_versions,
         effective_fetch_deps,
+        &parsed_bytecode_dirs,
     )
     .map_err(to_napi_err)
 }
@@ -2009,10 +2051,33 @@ fn fuzz_function_inner(
     max_vector_len: usize,
     dry_run: bool,
     fetch_deps: bool,
+    bytecode_dir: Option<&str>,
 ) -> Result<serde_json::Value> {
     use sui_sandbox_core::fuzz::{classify_params, FuzzConfig, FuzzRunner};
 
-    let (resolver, _loaded) = if fetch_deps {
+    let (resolver, _loaded) = if let Some(dir) = bytecode_dir {
+        // Load modules from local build directory (no network needed)
+        let mut r = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
+        let mut loaded = HashSet::new();
+        for fw in ["0x1", "0x2", "0x3"] {
+            loaded.insert(AccountAddress::from_hex_literal(fw).unwrap());
+        }
+        let count = r.load_from_dir(std::path::Path::new(dir))
+            .with_context(|| format!("Failed to load bytecode from directory: {}", dir))?;
+        if count == 0 {
+            return Err(anyhow!("No .mv files found in {}", dir));
+        }
+        // If the requested package_id differs from 0x0 (the default local build address),
+        // set up an address alias so lookups by deployed address find the local modules.
+        let target_addr = AccountAddress::from_hex_literal(package_id)
+            .with_context(|| format!("invalid package address: {}", package_id))?;
+        let zero_addr = AccountAddress::from_hex_literal("0x0").unwrap();
+        if target_addr != zero_addr {
+            r.add_address_alias(target_addr, zero_addr);
+        }
+        loaded.insert(target_addr);
+        (r, loaded)
+    } else if fetch_deps {
         build_resolver_with_deps(package_id, &type_args)?
     } else {
         let r = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
@@ -2085,6 +2150,11 @@ fn fuzz_function_inner(
 }
 
 /// Fuzz a Move function with randomly generated inputs.
+///
+/// When `bytecode_dir` is provided, modules are loaded from the local build directory
+/// (e.g., "build/my_package") instead of fetching from the network. This enables
+/// fuzzing testnet-only or locally-compiled contracts without network access.
+/// The directory should contain a `bytecode_modules/` subdirectory with `.mv` files.
 #[napi]
 pub async fn fuzz_function(
     package_id: String,
@@ -2099,6 +2169,7 @@ pub async fn fuzz_function(
     max_vector_len: Option<u32>,
     dry_run: Option<bool>,
     fetch_deps: Option<bool>,
+    bytecode_dir: Option<String>,
 ) -> napi::Result<serde_json::Value> {
     let actual_seed = seed.map(|v| v as u64).unwrap_or_else(|| {
         SystemTime::now()
@@ -2120,6 +2191,7 @@ pub async fn fuzz_function(
         max_vector_len.map(|v| v as usize).unwrap_or(32),
         dry_run.unwrap_or(false),
         fetch_deps.unwrap_or(true),
+        bytecode_dir.as_deref(),
     )
     .map_err(to_napi_err)
 }
