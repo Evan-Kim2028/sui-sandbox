@@ -2799,9 +2799,21 @@ fn add_dynamic_field_natives(
             {
                 if let Some((fetched_tag, fetched_bytes)) = shared.try_fetch_child(parent, child_id)
                 {
-                    // Verify the type matches before adding
-                    // Note: We do a simple match here - could be more lenient if needed
-                    let type_matches = fetched_tag == child_tag;
+                    // Verify the type matches before adding.
+                    // The fetcher returns the VALUE type of the dynamic field (e.g. V__0_2_0),
+                    // but the VM expects the full Field<K, V> wrapper type. We accept a match
+                    // if fetched_tag equals child_tag directly, OR if child_tag is
+                    // Field<K, V> and fetched_tag matches V (the value type parameter).
+                    let type_matches = if fetched_tag == child_tag {
+                        true
+                    } else if let TypeTag::Struct(ref st) = child_tag {
+                        st.module.as_str() == "dynamic_field"
+                            && st.name.as_str() == "Field"
+                            && st.type_params.len() == 2
+                            && st.type_params[1] == fetched_tag
+                    } else {
+                        false
+                    };
             debug_native!("[has_child_object_with_ty] fetched_tag={:?}", fetched_tag);
             debug_native!("[has_child_object_with_ty] child_tag={:?}", child_tag);
             debug_native!("[has_child_object_with_ty] type_matches={}", type_matches);

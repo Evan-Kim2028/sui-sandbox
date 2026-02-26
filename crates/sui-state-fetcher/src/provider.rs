@@ -38,8 +38,11 @@ use tracing::debug;
 
 use sui_prefetch::grpc_to_fetched_transaction;
 use sui_resolver::address::normalize_address;
-use sui_transport::graphql::{GraphQLClient, GraphQLPackage};
-use sui_transport::grpc::GrpcClient;
+use sui_transport::graphql::{
+    GraphQLClient, GraphQLCommand, GraphQLPackage, GraphQLTransaction, GraphQLTransactionInput,
+    ObjectOwner,
+};
+use sui_transport::grpc::{GrpcArgument, GrpcClient, GrpcCommand, GrpcInput, GrpcTransaction};
 use sui_transport::walrus::WalrusClient;
 use sui_types::move_package::MovePackage;
 
@@ -90,6 +93,9 @@ pub struct HistoricalStateProvider {
 
     /// Walrus checkpoint fetch pool for deduped, concurrent fetches.
     walrus_pool: Arc<WalrusCheckpointPool>,
+
+    /// When true, skip gRPC calls and use GraphQL as the primary data source.
+    graphql_only: bool,
 }
 
 /// Default mainnet gRPC endpoint
@@ -548,6 +554,7 @@ impl HistoricalStateProvider {
             local_dynamic_fields: None,
             local_package_index: None,
             walrus_pool: Arc::new(WalrusCheckpointPool::new()),
+            graphql_only: false,
         })
     }
 
@@ -568,6 +575,7 @@ impl HistoricalStateProvider {
             local_dynamic_fields: None,
             local_package_index: None,
             walrus_pool: Arc::new(WalrusCheckpointPool::new()),
+            graphql_only: false,
         })
     }
 
@@ -595,6 +603,7 @@ impl HistoricalStateProvider {
             local_dynamic_fields: None,
             local_package_index: None,
             walrus_pool: Arc::new(WalrusCheckpointPool::new()),
+            graphql_only: false,
         })
     }
 
@@ -616,7 +625,14 @@ impl HistoricalStateProvider {
             local_dynamic_fields: None,
             local_package_index: None,
             walrus_pool: Arc::new(WalrusCheckpointPool::new()),
+            graphql_only: false,
         }
+    }
+
+    /// Skip all gRPC calls and use GraphQL as the primary data source.
+    pub fn with_graphql_only(mut self) -> Self {
+        self.graphql_only = true;
+        self
     }
 
     /// Enable disk caching at the specified directory.
@@ -1016,21 +1032,77 @@ impl HistoricalStateProvider {
             let _ = self.resolve_checkpoint_for_tx_digest(digest).await;
         }
 
-        // 1. Fetch transaction via gRPC (has unchanged_loaded_runtime_objects)
+        // 1. Fetch transaction via gRPC (has unchanged_loaded_runtime_objects).
+        //    Falls back to GraphQL if gRPC is unavailable or in graphql_only mode.
         let tx_start = std::time::Instant::now();
-        let mut grpc_tx = self
-            .grpc
-            .get_transaction(digest)
-            .await?
-            .ok_or_else(|| anyhow!("Transaction not found: {}", digest))?;
+        let mut grpc_tx = if self.graphql_only {
+            // GraphQL-only mode: skip gRPC entirely
+            let gql_tx = self
+                .graphql
+                .fetch_transaction(digest)
+                .map_err(|e| anyhow!("GraphQL transaction fetch failed for {}: {}", digest, e))?;
+            debug!(
+                digest = digest,
+                elapsed_ms = tx_start.elapsed().as_millis(),
+                "fetched transaction via GraphQL (graphql_only mode)"
+            );
+            if timing {
+                eprintln!(
+                    "[timing] stage=graphql_get_transaction digest={} elapsed_ms={}",
+                    digest,
+                    tx_start.elapsed().as_millis()
+                );
+            }
+            graphql_tx_to_grpc_tx(&gql_tx)
+        } else {
+            match self.grpc.get_transaction(digest).await {
+                Ok(Some(tx)) => tx,
+                other => {
+                    // Log the gRPC failure
+                    match &other {
+                        Ok(None) => debug!(digest = digest, "gRPC returned no transaction, trying GraphQL"),
+                        Err(e) => debug!(digest = digest, error = %e, "gRPC transaction fetch failed, trying GraphQL"),
+                        _ => {}
+                    }
+                    // Fall back to GraphQL
+                    let gql_tx = self
+                        .graphql
+                        .fetch_transaction(digest)
+                        .map_err(|gql_err| {
+                            let grpc_msg = match other {
+                                Ok(None) => "not found".to_string(),
+                                Err(e) => format!("{}", e),
+                                _ => "unknown".to_string(),
+                            };
+                            anyhow!(
+                                "Transaction {} not available via gRPC ({}) or GraphQL ({})",
+                                digest, grpc_msg, gql_err
+                            )
+                        })?;
+                    debug!(
+                        digest = digest,
+                        elapsed_ms = tx_start.elapsed().as_millis(),
+                        "fetched transaction via GraphQL fallback"
+                    );
+                    if timing {
+                        eprintln!(
+                            "[timing] stage=graphql_get_transaction digest={} elapsed_ms={}",
+                            digest,
+                            tx_start.elapsed().as_millis()
+                        );
+                    }
+                    graphql_tx_to_grpc_tx(&gql_tx)
+                }
+            }
+        };
         debug!(
             digest = digest,
             elapsed_ms = tx_start.elapsed().as_millis(),
-            "fetched transaction via gRPC"
+            "fetched transaction"
         );
         if timing {
             eprintln!(
-                "[timing] stage=grpc_get_transaction digest={} elapsed_ms={}",
+                "[timing] stage=get_transaction digest={} elapsed_ms={}",
                 digest,
                 tx_start.elapsed().as_millis()
             );
@@ -1074,7 +1146,9 @@ impl HistoricalStateProvider {
         let mut unchanged_loaded_runtime_objects = grpc_tx.unchanged_loaded_runtime_objects.clone();
         let mut unchanged_consensus_objects = grpc_tx.unchanged_consensus_objects.clone();
 
-        let checkpoint_data = if let Some(seq) = grpc_tx.checkpoint {
+        let checkpoint_data = if self.graphql_only {
+            None
+        } else if let Some(seq) = grpc_tx.checkpoint {
             let cp_start = std::time::Instant::now();
             match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -1196,7 +1270,7 @@ impl HistoricalStateProvider {
             }
         }
 
-        if epoch > 0 {
+        if epoch > 0 && !self.graphql_only {
             let epoch_start = std::time::Instant::now();
             if let Ok(Ok(Some(ep))) = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -1216,6 +1290,34 @@ impl HistoricalStateProvider {
                     epoch,
                     epoch_start.elapsed().as_millis()
                 );
+            }
+        }
+
+        // GraphQL fallback for epoch metadata if gRPC didn't provide it
+        if protocol_version == 0 || reference_gas_price.is_none() {
+            // Try fetching epoch data via GraphQL
+            let gql_epoch_query = format!(
+                r#"{{ epoch(epochId: {}) {{ epochId referenceGasPrice protocolConfigs {{ protocolVersion }} }} }}"#,
+                epoch
+            );
+            if let Ok(data) = self.graphql.raw_query(&gql_epoch_query) {
+                if let Some(ep) = data.get("epoch") {
+                    if protocol_version == 0 {
+                        if let Some(pv) = ep
+                            .get("protocolConfigs")
+                            .and_then(|pc| pc.get("protocolVersion"))
+                            .and_then(|v| v.as_u64())
+                        {
+                            protocol_version = pv;
+                        }
+                    }
+                    if reference_gas_price.is_none() {
+                        reference_gas_price = ep
+                            .get("referenceGasPrice")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse().ok());
+                    }
+                }
             }
         }
 
@@ -1414,10 +1516,11 @@ impl HistoricalStateProvider {
             }
         }
 
-        // 4. Convert to object requests
+        // 4. Convert to object requests, skipping objects we already prefetched
         let object_requests: Vec<(ObjectID, u64)> = historical_versions
             .iter()
             .filter_map(|(id_str, version)| parse_object_id(id_str).ok().map(|id| (id, *version)))
+            .filter(|(id, _)| !prefetched_children.contains_key(id))
             .collect();
 
         // 5. Fetch objects (cache-first, then gRPC), skipping those we already prefetched
@@ -1907,15 +2010,28 @@ impl HistoricalStateProvider {
                             } else {
                                 continue;
                             }
-                        } else if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await
-                        {
-                            if snapshot_used || obj.version <= max_lamport_version {
-                                Some(obj.version)
+                        } else if !self.graphql_only {
+                            if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await
+                            {
+                                if snapshot_used || obj.version <= max_lamport_version {
+                                    Some(obj.version)
+                                } else {
+                                    continue;
+                                }
                             } else {
-                                continue;
+                                None
                             }
                         } else {
-                            None
+                            // In graphql_only mode, try to get version from GraphQL
+                            if let Ok(obj) = self.graphql.fetch_object(&child_normalized) {
+                                if snapshot_used || obj.version <= max_lamport_version {
+                                    Some(obj.version)
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                None
+                            }
                         };
 
                         let Some(version) = version_opt else {
@@ -2246,34 +2362,43 @@ impl HistoricalStateProvider {
             stream::iter(to_fetch.iter().copied())
                 .map(|(id, version)| {
                     let graphql = self.graphql.clone();
+                    let skip_grpc = self.graphql_only;
                     async move {
                         let id_str = format!("0x{}", hex::encode(id.as_ref()));
 
-                        let grpc_start = std::time::Instant::now();
-                        let grpc_result = self
-                            .grpc
-                            .get_object_at_version(&id_str, Some(version))
-                            .await;
-                        let grpc_ms = grpc_start.elapsed().as_millis();
+                        // Try gRPC first unless in graphql_only mode
+                        let (grpc_ms, grpc_hit) = if !skip_grpc {
+                            let grpc_start = std::time::Instant::now();
+                            let grpc_result = self
+                                .grpc
+                                .get_object_at_version(&id_str, Some(version))
+                                .await;
+                            let grpc_ms = grpc_start.elapsed().as_millis();
 
-                        match grpc_result {
-                            Ok(Some(grpc_obj)) => {
-                                let obj = grpc_object_to_versioned(&grpc_obj, id, version)?;
-                                Result::<ObjectFetchItem>::Ok((
-                                    id,
-                                    version,
-                                    id_str,
-                                    Some(obj),
-                                    1usize,
-                                    0usize,
-                                    0usize,
-                                    0usize,
-                                    grpc_ms,
-                                    0u128,
-                                    false,
-                                ))
+                            match grpc_result {
+                                Ok(Some(grpc_obj)) => {
+                                    let obj = grpc_object_to_versioned(&grpc_obj, id, version)?;
+                                    return Result::<ObjectFetchItem>::Ok((
+                                        id,
+                                        version,
+                                        id_str,
+                                        Some(obj),
+                                        1usize,
+                                        0usize,
+                                        0usize,
+                                        0usize,
+                                        grpc_ms,
+                                        0u128,
+                                        false,
+                                    ));
+                                }
+                                _ => (grpc_ms, false),
                             }
-                            Ok(None) | Err(_) => {
+                        } else {
+                            (0u128, false)
+                        };
+                        let _ = grpc_hit; // suppress unused warning
+                        {
                                 let gql_start = std::time::Instant::now();
                                 let gql_result = tokio::task::spawn_blocking({
                                     let id_for_fetch = id_str.clone();
@@ -2288,6 +2413,12 @@ impl HistoricalStateProvider {
 
                                 match gql_result {
                                     Ok(Ok(gql_obj)) => {
+                                        // Extract owner info before fields are moved
+                                        let (is_shared, is_immutable) = match &gql_obj.owner {
+                                            ObjectOwner::Shared { .. } => (true, false),
+                                            ObjectOwner::Immutable => (false, true),
+                                            _ => (false, false),
+                                        };
                                         if let (Some(type_str), Some(bcs_b64)) =
                                             (gql_obj.type_string, gql_obj.bcs_base64)
                                         {
@@ -2297,12 +2428,12 @@ impl HistoricalStateProvider {
                                             {
                                                 let obj = VersionedObject {
                                                     id,
-                                                    version: gql_obj.version, // Use current version
+                                                    version: gql_obj.version,
                                                     digest: None,
                                                     type_tag: Some(type_str),
                                                     bcs_bytes: bcs,
-                                                    is_shared: false, // GraphQL doesn't give us owner info easily
-                                                    is_immutable: false,
+                                                    is_shared,
+                                                    is_immutable,
                                                 };
                                                 return Result::<ObjectFetchItem>::Ok((
                                                     id,
@@ -2330,7 +2461,6 @@ impl HistoricalStateProvider {
                                         grpc_ms, gql_ms, true,
                                     )),
                                 }
-                            }
                         }
                     }
                 })
@@ -3896,11 +4026,285 @@ pub fn package_data_from_move_package(pkg: &MovePackage) -> PackageData {
 fn graphql_package_to_data(pkg_id: AccountAddress, pkg: GraphQLPackage) -> Result<PackageData> {
     let modules = sui_transport::decode_graphql_modules(&pkg_id.to_string(), &pkg.modules)?;
 
+    // Convert GraphQL linkage entries: original_id (runtime) -> upgraded_id (storage)
+    let mut linkage = HashMap::new();
+    for entry in &pkg.linkage {
+        if let (Ok(orig_id), Ok(upg_id)) = (
+            parse_object_id(&entry.original_id),
+            parse_object_id(&entry.upgraded_id),
+        ) {
+            linkage.insert(orig_id, upg_id);
+        }
+    }
+
+    // Derive original_id from typeOrigins: if any type's definingId differs
+    // from this package's address, that definingId is the original package.
+    let original_id = pkg
+        .type_origins
+        .iter()
+        .find_map(|origin| {
+            let defining = parse_object_id(&origin.defining_id).ok()?;
+            if defining != pkg_id {
+                Some(defining)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            // All typeOrigins point to this address — this IS the original package.
+            if !pkg.type_origins.is_empty() {
+                Some(pkg_id)
+            } else {
+                None
+            }
+        });
+
     Ok(PackageData {
         address: pkg_id,
         version: pkg.version,
         modules,
-        linkage: HashMap::new(),
-        original_id: None,
+        linkage,
+        original_id,
     })
+}
+
+/// Convert a GraphQL argument to a gRPC argument.
+fn graphql_arg_to_grpc(arg: &sui_transport::graphql::GraphQLArgument) -> GrpcArgument {
+    use sui_transport::graphql::GraphQLArgument;
+    match arg {
+        GraphQLArgument::Input(i) => GrpcArgument::Input(*i as u32),
+        GraphQLArgument::Result(i) => GrpcArgument::Result(*i as u32),
+        GraphQLArgument::NestedResult(i, j) => GrpcArgument::NestedResult(*i as u32, *j as u32),
+        GraphQLArgument::GasCoin => GrpcArgument::GasCoin,
+    }
+}
+
+/// Convert a GraphQLTransaction into a synthetic GrpcTransaction for the replay pipeline.
+///
+/// This enables the GraphQL fallback path in `fetch_replay_state_with_config()`:
+/// when gRPC is unavailable, we fetch the transaction via GraphQL and convert it
+/// to the GrpcTransaction format that the rest of the pipeline expects.
+///
+/// Some fields that only gRPC provides (`objects`, `unchanged_loaded_runtime_objects`)
+/// are left empty — they will be filled by other mechanisms (object fetching, dynamic
+/// field prefetching).
+fn graphql_tx_to_grpc_tx(gql: &GraphQLTransaction) -> GrpcTransaction {
+    // Convert inputs
+    let inputs: Vec<GrpcInput> = gql
+        .inputs
+        .iter()
+        .map(|input| match input {
+            GraphQLTransactionInput::Pure { bytes_base64 } => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(bytes_base64)
+                    .unwrap_or_default();
+                GrpcInput::Pure { bytes }
+            }
+            GraphQLTransactionInput::OwnedObject {
+                address,
+                version,
+                digest,
+            } => GrpcInput::Object {
+                object_id: address.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+            GraphQLTransactionInput::SharedObject {
+                address,
+                initial_shared_version,
+                mutable,
+            } => GrpcInput::SharedObject {
+                object_id: address.clone(),
+                initial_version: *initial_shared_version,
+                mutable: *mutable,
+            },
+            GraphQLTransactionInput::Receiving {
+                address,
+                version,
+                digest,
+            } => GrpcInput::Receiving {
+                object_id: address.clone(),
+                version: *version,
+                digest: digest.clone(),
+            },
+        })
+        .collect();
+
+    // Convert commands
+    let commands: Vec<GrpcCommand> = gql
+        .commands
+        .iter()
+        .filter_map(|cmd| match cmd {
+            GraphQLCommand::MoveCall {
+                package,
+                module,
+                function,
+                type_arguments,
+                arguments,
+            } => Some(GrpcCommand::MoveCall {
+                package: package.clone(),
+                module: module.clone(),
+                function: function.clone(),
+                type_arguments: type_arguments.clone(),
+                arguments: arguments.iter().map(graphql_arg_to_grpc).collect(),
+            }),
+            GraphQLCommand::SplitCoins { coin, amounts } => Some(GrpcCommand::SplitCoins {
+                coin: graphql_arg_to_grpc(coin),
+                amounts: amounts.iter().map(graphql_arg_to_grpc).collect(),
+            }),
+            GraphQLCommand::MergeCoins {
+                destination,
+                sources,
+            } => Some(GrpcCommand::MergeCoins {
+                coin: graphql_arg_to_grpc(destination),
+                sources: sources.iter().map(graphql_arg_to_grpc).collect(),
+            }),
+            GraphQLCommand::TransferObjects { objects, address } => {
+                Some(GrpcCommand::TransferObjects {
+                    objects: objects.iter().map(graphql_arg_to_grpc).collect(),
+                    address: graphql_arg_to_grpc(address),
+                })
+            }
+            GraphQLCommand::MakeMoveVec { type_arg, elements } => {
+                Some(GrpcCommand::MakeMoveVec {
+                    element_type: type_arg.clone(),
+                    elements: elements.iter().map(graphql_arg_to_grpc).collect(),
+                })
+            }
+            GraphQLCommand::Publish {
+                modules,
+                dependencies,
+            } => Some(GrpcCommand::Publish {
+                modules: modules
+                    .iter()
+                    .filter_map(|m| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(m)
+                            .ok()
+                    })
+                    .collect(),
+                dependencies: dependencies.clone(),
+            }),
+            GraphQLCommand::Upgrade {
+                modules,
+                dependencies,
+                package,
+                ticket,
+            } => Some(GrpcCommand::Upgrade {
+                modules: modules
+                    .iter()
+                    .filter_map(|m| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(m)
+                            .ok()
+                    })
+                    .collect(),
+                dependencies: dependencies.clone(),
+                package: package.clone(),
+                ticket: graphql_arg_to_grpc(ticket),
+            }),
+            GraphQLCommand::Other { .. } => None,
+        })
+        .collect();
+
+    // Build changed_objects from effects (mutated objects with input versions)
+    let mut changed_objects = Vec::new();
+    let mut created_objects = Vec::new();
+    if let Some(effects) = &gql.effects {
+        // First, try effectsJson.changedObjects which is complete (not paginated)
+        let mut from_effects_json = false;
+        if let Some(ej_raw) = &effects.effects_json {
+            let ej = if ej_raw.is_string() {
+                serde_json::from_str::<Value>(ej_raw.as_str().unwrap_or("{}")).ok()
+            } else {
+                Some(ej_raw.clone())
+            };
+            if let Some(ej) = ej {
+                if let Some(items) = ej.get("changedObjects").and_then(|v| v.as_array()) {
+                    for item in items {
+                        let obj_id = item
+                            .get("objectId")
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input_state = item
+                            .get("inputState")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("");
+                        let input_version = item
+                            .get("inputVersion")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .or_else(|| item.get("inputVersion").and_then(|v| v.as_u64()));
+
+                        if !obj_id.is_empty() {
+                            if input_state == "INPUT_OBJECT_STATE_EXISTS" {
+                                if let Some(ver) = input_version {
+                                    changed_objects.push((obj_id, ver));
+                                }
+                            } else if input_state == "INPUT_OBJECT_STATE_DOES_NOT_EXIST" {
+                                // Created object - get output version
+                                let output_version = item
+                                    .get("outputVersion")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                    .or_else(|| item.get("outputVersion").and_then(|v| v.as_u64()));
+                                if let Some(ver) = output_version {
+                                    created_objects.push((obj_id, ver));
+                                }
+                            }
+                        }
+                    }
+                    from_effects_json = true;
+                }
+            }
+        }
+
+        // Fallback to objectChanges connection if effectsJson wasn't available
+        if !from_effects_json {
+            for obj in &effects.mutated {
+                if let Some(input_ver) = obj.input_version {
+                    changed_objects.push((obj.address.clone(), input_ver));
+                }
+            }
+            for obj in &effects.created {
+                if let Some(ver) = obj.version {
+                    created_objects.push((obj.address.clone(), ver));
+                }
+            }
+        }
+    }
+
+    let status = gql.effects.as_ref().map(|e| {
+        if e.status == "SUCCESS" {
+            "success".to_string()
+        } else {
+            "failure".to_string()
+        }
+    });
+
+    let epoch = gql.effects.as_ref().and_then(|e| e.epoch);
+
+    GrpcTransaction {
+        digest: gql.digest.clone(),
+        sender: gql.sender.clone(),
+        gas_budget: gql.gas_budget,
+        gas_price: gql.gas_price,
+        checkpoint: gql.checkpoint,
+        timestamp_ms: gql.timestamp_ms,
+        epoch,
+        inputs,
+        commands,
+        status,
+        objects: Vec::new(), // Objects fetched separately via versioned fetch
+        execution_error: None,
+        unchanged_loaded_runtime_objects: Vec::new(), // Filled by dynamic field prefetching
+        changed_objects,
+        created_objects,
+        unchanged_consensus_objects: gql
+            .effects
+            .as_ref()
+            .map(|e| e.unchanged_consensus_objects.clone())
+            .unwrap_or_default(),
+    }
 }

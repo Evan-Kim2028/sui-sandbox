@@ -281,6 +281,7 @@ pub enum ReplaySource {
     Walrus,
     Hybrid,
     Local,
+    Graphql,
 }
 
 impl ReplaySource {
@@ -290,6 +291,7 @@ impl ReplaySource {
             Self::Walrus => "walrus",
             Self::Hybrid => "hybrid",
             Self::Local => "local",
+            Self::Graphql => "graphql",
         }
     }
 }

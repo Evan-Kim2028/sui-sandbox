@@ -255,6 +255,10 @@ pub struct GraphQLPackage {
     pub address: String,
     pub version: u64,
     pub modules: Vec<GraphQLModule>,
+    /// Package dependency linkage table.
+    pub linkage: Vec<GraphQLLinkage>,
+    /// Type origins for this package (used to derive original_id).
+    pub type_origins: Vec<GraphQLTypeOrigin>,
 }
 
 /// Module data within a package.
@@ -262,6 +266,28 @@ pub struct GraphQLPackage {
 pub struct GraphQLModule {
     pub name: String,
     pub bytecode_base64: Option<String>,
+}
+
+/// Linkage entry for package dependency resolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphQLLinkage {
+    /// The original (runtime) package ID of the dependency.
+    pub original_id: String,
+    /// The upgraded (storage) package ID this version depends on.
+    pub upgraded_id: String,
+    /// The version of the dependency.
+    pub version: u64,
+}
+
+/// Type origin entry for tracking which package version introduced a type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphQLTypeOrigin {
+    /// Module name where this type is defined.
+    pub module: String,
+    /// Struct name of the type.
+    pub struct_name: String,
+    /// The package ID that first defined this type (the original/runtime ID).
+    pub defining_id: String,
 }
 
 /// Decode a slice of [`GraphQLModule`]s into `(name, bytecode)` pairs.
@@ -521,6 +547,16 @@ pub struct GraphQLEffects {
     pub created: Vec<GraphQLObjectChange>,
     pub mutated: Vec<GraphQLObjectChange>,
     pub deleted: Vec<String>,
+    /// Epoch this transaction executed in (from effects.epoch).
+    pub epoch: Option<u64>,
+    /// Protocol version for the epoch (from effects.epoch.protocolConfigs).
+    pub protocol_version: Option<u64>,
+    /// Reference gas price for the epoch (from effects.epoch).
+    pub reference_gas_price: Option<u64>,
+    /// Unchanged consensus objects (shared objects read but not modified).
+    pub unchanged_consensus_objects: Vec<(String, u64)>,
+    /// Raw effectsJson for extracting additional data.
+    pub effects_json: Option<Value>,
 }
 
 /// Object change in effects
@@ -529,6 +565,9 @@ pub struct GraphQLObjectChange {
     pub address: String,
     pub version: Option<u64>,
     pub digest: Option<String>,
+    /// Input version (before the transaction modified this object).
+    /// Only available when `inputState` is requested in the query.
+    pub input_version: Option<u64>,
 }
 
 impl GraphQLClient {
@@ -1002,6 +1041,8 @@ impl GraphQLClient {
     /// Fetch a package with all its modules (handles pagination for large packages).
     pub fn fetch_package(&self, address: &str) -> Result<GraphQLPackage> {
         let mut all_modules: Vec<GraphQLModule> = Vec::new();
+        let mut all_linkage: Vec<GraphQLLinkage> = Vec::new();
+        let mut all_type_origins: Vec<GraphQLTypeOrigin> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pkg_address = address.to_string();
         let mut pkg_version = 1u64;
@@ -1030,6 +1071,8 @@ impl GraphQLClient {
                                     endCursor
                                 }}
                             }}
+                            linkage {{ originalId upgradedId version }}
+                            typeOrigins {{ module struct definingId }}
                         }}
                     }}
                 }}
@@ -1064,6 +1107,31 @@ impl GraphQLClient {
             let pkg = obj
                 .get("asMovePackage")
                 .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
+
+            // Parse linkage and typeOrigins on first page (they are not paginated)
+            if cursor.is_none() {
+                if let Some(linkage_arr) = pkg.get("linkage").and_then(|l| l.as_array()) {
+                    for entry in linkage_arr {
+                        let original_id = entry.get("originalId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let upgraded_id = entry.get("upgradedId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let version = entry.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if !original_id.is_empty() && !upgraded_id.is_empty() {
+                            all_linkage.push(GraphQLLinkage { original_id, upgraded_id, version });
+                        }
+                    }
+                }
+
+                if let Some(origins_arr) = pkg.get("typeOrigins").and_then(|o| o.as_array()) {
+                    for entry in origins_arr {
+                        let module = entry.get("module").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let struct_name = entry.get("struct").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let defining_id = entry.get("definingId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty() {
+                            all_type_origins.push(GraphQLTypeOrigin { module, struct_name, defining_id });
+                        }
+                    }
+                }
+            }
 
             let modules_data = pkg
                 .get("modules")
@@ -1111,6 +1179,8 @@ impl GraphQLClient {
             address: pkg_address,
             version: pkg_version,
             modules: all_modules,
+            linkage: all_linkage,
+            type_origins: all_type_origins,
         })
     }
 
@@ -1255,6 +1325,8 @@ impl GraphQLClient {
         checkpoint: u64,
     ) -> Result<GraphQLPackage> {
         let mut all_modules: Vec<GraphQLModule> = Vec::new();
+        let mut all_linkage: Vec<GraphQLLinkage> = Vec::new();
+        let mut all_type_origins: Vec<GraphQLTypeOrigin> = Vec::new();
         let mut cursor: Option<String> = None;
         let mut pkg_address = address.to_string();
         let mut pkg_version = 1u64;
@@ -1285,6 +1357,8 @@ impl GraphQLClient {
                                     endCursor
                                 }}
                             }}
+                            linkage {{ originalId upgradedId version }}
+                            typeOrigins {{ module struct definingId }}
                         }}
                     }}
                 }}
@@ -1310,6 +1384,8 @@ impl GraphQLClient {
                                     endCursor
                                 }}
                             }}
+                            linkage {{ originalId upgradedId version }}
+                            typeOrigins {{ module struct definingId }}
                         }}
                     }}
                 }}
@@ -1365,6 +1441,31 @@ impl GraphQLClient {
                 .get("asMovePackage")
                 .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
 
+            // Parse linkage and typeOrigins on first page (they are not paginated)
+            if cursor.is_none() {
+                if let Some(linkage_arr) = pkg.get("linkage").and_then(|l| l.as_array()) {
+                    for entry in linkage_arr {
+                        let original_id = entry.get("originalId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let upgraded_id = entry.get("upgradedId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let version = entry.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if !original_id.is_empty() && !upgraded_id.is_empty() {
+                            all_linkage.push(GraphQLLinkage { original_id, upgraded_id, version });
+                        }
+                    }
+                }
+
+                if let Some(origins_arr) = pkg.get("typeOrigins").and_then(|o| o.as_array()) {
+                    for entry in origins_arr {
+                        let module = entry.get("module").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let struct_name = entry.get("struct").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let defining_id = entry.get("definingId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty() {
+                            all_type_origins.push(GraphQLTypeOrigin { module, struct_name, defining_id });
+                        }
+                    }
+                }
+            }
+
             let modules_data = pkg
                 .get("modules")
                 .ok_or_else(|| anyhow!("No modules field in package: {}", address))?;
@@ -1407,6 +1508,8 @@ impl GraphQLClient {
             address: pkg_address,
             version: pkg_version,
             modules: all_modules,
+            linkage: all_linkage,
+            type_origins: all_type_origins,
         })
     }
 
@@ -1468,17 +1571,51 @@ impl GraphQLClient {
                         status
                         checkpoint { sequenceNumber }
                         timestamp
+                        epoch {
+                            epochId
+                            referenceGasPrice
+                            protocolConfigs { protocolVersion }
+                        }
                         objectChanges {
                             nodes {
                                 address
                                 idCreated
                                 idDeleted
+                                inputState {
+                                    version
+                                }
                                 outputState {
                                     version
                                     digest
                                 }
                             }
                         }
+                        unchangedConsensusObjects {
+                            nodes {
+                                ... on ConsensusObjectRead {
+                                    __typename
+                                    object { address version }
+                                }
+                                ... on MutateConsensusStreamEnded {
+                                    __typename
+                                    address
+                                    sequenceNumber
+                                }
+                                ... on ReadConsensusStreamEnded {
+                                    __typename
+                                    address
+                                    sequenceNumber
+                                }
+                                ... on ConsensusObjectCancelled {
+                                    __typename
+                                    address
+                                }
+                                ... on PerEpochConfig {
+                                    __typename
+                                }
+                            }
+                        }
+                        effectsJson
                     }
                 }
             }
@@ -2243,12 +2380,19 @@ impl GraphQLClient {
                     .and_then(|d| d.as_str())
                     .map(|s| s.to_string());
 
+                // Extract input version from inputState if available
+                let input_version = change
+                    .get("inputState")
+                    .and_then(|s| s.get("version"))
+                    .and_then(|v| v.as_u64());
+
                 if id_created && !id_deleted {
                     // Created
                     created.push(GraphQLObjectChange {
                         address: addr,
                         version,
                         digest,
+                        input_version,
                     });
                 } else if id_deleted && !id_created {
                     // Deleted
@@ -2259,7 +2403,92 @@ impl GraphQLClient {
                         address: addr,
                         version,
                         digest,
+                        input_version,
                     });
+                }
+            }
+        }
+
+        // Extract epoch metadata from effects
+        let epoch_data = effects.get("epoch");
+        let epoch = epoch_data
+            .and_then(|e| e.get("epochId"))
+            .and_then(|v| v.as_u64());
+        let reference_gas_price = epoch_data
+            .and_then(|e| e.get("referenceGasPrice"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok());
+        let protocol_version = epoch_data
+            .and_then(|e| e.get("protocolConfigs"))
+            .and_then(|pc| pc.get("protocolVersion"))
+            .and_then(|v| v.as_u64());
+
+        // Extract unchanged consensus objects
+        let mut unchanged_consensus_objects = Vec::new();
+        if let Some(unchanged) = effects
+            .get("unchangedConsensusObjects")
+            .and_then(|c| c.get("nodes"))
+            .and_then(|n| n.as_array())
+        {
+            for item in unchanged {
+                // ConsensusObjectRead and PerEpochConfig have { object { address version } }
+                if let Some(obj) = item.get("object") {
+                    let addr = obj
+                        .get("address")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let version = obj
+                        .get("version")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if !addr.is_empty() && version > 0 {
+                        unchanged_consensus_objects.push((addr, version));
+                    }
+                }
+                // MutateConsensusStreamEnded and ReadConsensusStreamEnded have { address, sequenceNumber }
+                else if let Some(addr_val) = item.get("address") {
+                    let addr = addr_val.as_str().unwrap_or("").to_string();
+                    let version = item
+                        .get("sequenceNumber")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if !addr.is_empty() && version > 0 {
+                        unchanged_consensus_objects.push((addr, version));
+                    }
+                }
+            }
+        }
+
+        // Also try to extract unchanged consensus objects from effectsJson
+        // (more reliable, includes version info directly)
+        let effects_json_val = effects.get("effectsJson").cloned();
+        if unchanged_consensus_objects.is_empty() {
+            if let Some(ej_raw) = &effects_json_val {
+                let ej = if ej_raw.is_string() {
+                    serde_json::from_str::<Value>(ej_raw.as_str().unwrap_or("{}")).ok()
+                } else {
+                    Some(ej_raw.clone())
+                };
+                if let Some(ej) = ej {
+                    if let Some(items) = ej.get("unchangedConsensusObjects").and_then(|v| v.as_array()) {
+                        for item in items {
+                            let addr = item
+                                .get("objectId")
+                                .and_then(|a| a.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let version = item
+                                .get("version")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse().ok())
+                                .or_else(|| item.get("version").and_then(|v| v.as_u64()))
+                                .unwrap_or(0);
+                            if !addr.is_empty() && version > 0 {
+                                unchanged_consensus_objects.push((addr, version));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2269,6 +2498,11 @@ impl GraphQLClient {
             created,
             mutated,
             deleted,
+            epoch,
+            protocol_version,
+            reference_gas_price,
+            unchanged_consensus_objects,
+            effects_json: effects_json_val,
         })
     }
 

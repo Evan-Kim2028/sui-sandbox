@@ -81,7 +81,12 @@ pub(crate) async fn build_historical_state_provider(
         eprintln!("[grpc] using endpoint override {}", grpc_endpoint);
     }
 
-    let grpc_client = GrpcClient::with_api_key(&grpc_endpoint, api_key).await?;
+    let grpc_client = if matches!(source, ReplaySource::Graphql) {
+        // In GraphQL-only mode, use lazy gRPC connection (won't actually connect)
+        GrpcClient::lazy(&grpc_endpoint, api_key)?
+    } else {
+        GrpcClient::with_api_key(&grpc_endpoint, api_key).await?
+    };
     let graphql_client = GraphQLClient::new(&graphql_endpoint);
 
     if matches!(source, ReplaySource::Walrus) && !allow_fallback {
@@ -90,6 +95,9 @@ pub(crate) async fn build_historical_state_provider(
 
     let mut provider =
         HistoricalStateProvider::with_clients(grpc_client, graphql_client).with_cache(cache);
+    if matches!(source, ReplaySource::Graphql) {
+        provider = provider.with_graphql_only();
+    }
     if matches!(source, ReplaySource::Walrus | ReplaySource::Hybrid) {
         for key in [
             "SUI_WALRUS_ENABLED",
@@ -269,6 +277,7 @@ fn maybe_auto_enable_walrus(source: ReplaySource, network: &str, verbose: bool) 
             ReplaySource::Hybrid => "hybrid",
             ReplaySource::Grpc => "grpc",
             ReplaySource::Local => "local",
+            ReplaySource::Graphql => "graphql",
         };
         eprintln!(
             "[walrus] auto-enabled for --source {} (set SUI_WALRUS_ENABLED=0 to disable)",

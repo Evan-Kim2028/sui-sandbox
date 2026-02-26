@@ -166,6 +166,24 @@ impl GrpcClient {
         Self::with_api_key(endpoint, None).await
     }
 
+    /// Create a client with lazy connection (doesn't connect until first use).
+    ///
+    /// Useful when gRPC may not be needed (e.g., GraphQL-only mode).
+    pub fn lazy(endpoint: &str, api_key: Option<String>) -> Result<Self> {
+        let channel = if endpoint.starts_with("https://") {
+            Channel::from_shared(endpoint.to_string())?
+                .tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots())?
+                .connect_lazy()
+        } else {
+            Channel::from_shared(endpoint.to_string())?.connect_lazy()
+        };
+        Ok(Self {
+            endpoint: endpoint.to_string(),
+            channel,
+            api_key,
+        })
+    }
+
     /// Create a client with a custom endpoint and API key.
     /// The API key is included as an `x-api-key` header on all requests.
     pub async fn with_api_key(endpoint: &str, api_key: Option<String>) -> Result<Self> {
