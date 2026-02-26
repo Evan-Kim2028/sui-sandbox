@@ -26,7 +26,7 @@ Optional smoke check:
 ./scripts/python_examples_smoke.sh --network
 ```
 
-## Core Example Set (DeepBook, 3 files)
+## Core Example Set (DeepBook, 4 files)
 
 ### 1) Controls: DeepBook interface extraction
 
@@ -54,6 +54,20 @@ python3 python_sui_sandbox/examples/04_deepbook_margin_state_native.py
 
 This example uses `historical_decode_with_schema(...)` to decode historical
 view return values into a named object without manual index unpacking.
+
+### 4) Live custom views (DeepBook + framework)
+
+```bash
+python3 python_sui_sandbox/examples/05_live_custom_views_poc.py
+```
+
+This example verifies current object versions from a live fullnode JSON-RPC
+endpoint, executes existing Move view functions in the local VM via
+`call_view_function(...)`, and composes deterministic virtual views from
+the results (`pool_liquidity_snapshot`, `pool_health_snapshot`,
+`margin_state_snapshot`, `manager_compact_snapshot`).
+It also emits a `transformation_trace` with per-call input object summaries,
+raw return bytes, and decoded values.
 
 ## Optional Utility Example
 

@@ -49,4 +49,29 @@ module balance_helper::manager {
             0
         }
     }
+
+    /// Get gross turnover (deposited + withdrawn)
+    public fun gross_turnover(account: &TradingAccount): u64 {
+        account.total_deposited + account.total_withdrawn
+    }
+
+    /// Whether account has a positive net position
+    public fun is_net_positive(account: &TradingAccount): bool {
+        account.total_deposited > account.total_withdrawn
+    }
+
+    /// Compact account summary:
+    /// (total_deposited, total_withdrawn, net_position, gross_turnover, is_net_positive)
+    public fun account_summary(account: &TradingAccount): (u64, u64, u64, u64, bool) {
+        let deposited = account.total_deposited;
+        let withdrawn = account.total_withdrawn;
+        let net = if (deposited > withdrawn) {
+            deposited - withdrawn
+        } else {
+            0
+        };
+        let turnover = deposited + withdrawn;
+        let positive = deposited > withdrawn;
+        (deposited, withdrawn, net, turnover, positive)
+    }
 }
