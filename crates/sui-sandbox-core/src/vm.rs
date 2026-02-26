@@ -721,7 +721,7 @@ impl StructuredVMError {
         Self {
             major_status: error.major_status(),
             sub_status: error.sub_status(),
-            message: error.message().cloned(),
+            message: error.message().map(|s| s.to_string()),
             abort_info: StructuredAbortInfo::from_vm_error(error),
         }
     }
