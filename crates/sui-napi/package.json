@@ -1,6 +1,6 @@
 {
   "name": "sui-sandbox-node",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {

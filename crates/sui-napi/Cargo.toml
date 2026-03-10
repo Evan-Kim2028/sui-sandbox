@@ -1,6 +1,6 @@
 [package]
 name = "sui-napi"
-version = "0.22.1"
+version = "0.23.0"
 edition = "2021"
 description = "Node.js/TypeScript bindings for Sui Move package analysis and transaction replay"
 
