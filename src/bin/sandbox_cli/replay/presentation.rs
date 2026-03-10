@@ -81,6 +81,12 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
         result.execution_path.dependency_fetch_mode,
         result.execution_path.dependency_packages_fetched
     );
+    if result.execution_path.graphql_requests > 0 || result.execution_path.grpc_requests > 0 {
+        println!(
+            "  API calls: graphql={} grpc={}",
+            result.execution_path.graphql_requests, result.execution_path.grpc_requests
+        );
+    }
 
     if show_comparison {
         if let Some(cmp) = &result.comparison {
@@ -121,6 +127,53 @@ pub(super) fn print_replay_result(result: &ReplayOutput, show_comparison: bool, 
             );
         } else {
             println!("\n\x1b[33mNote: No on-chain effects available for comparison\x1b[0m");
+        }
+    }
+
+    if let Some(src) = &result.source_comparison {
+        println!("\n\x1b[1mSource Comparison (GraphQL vs Hybrid):\x1b[0m");
+        println!(
+            "  Results: {}",
+            if src.results_match {
+                "\x1b[32m\u{2713} match\x1b[0m"
+            } else {
+                "\x1b[31m\u{2717} mismatch\x1b[0m"
+            }
+        );
+        println!(
+            "  GraphQL: {} ({}ms, gql={} grpc={})",
+            if src.graphql_success {
+                "\x1b[32msuccess\x1b[0m"
+            } else {
+                "\x1b[31mfailed\x1b[0m"
+            },
+            src.graphql_duration_ms,
+            src.graphql_api_calls.graphql,
+            src.graphql_api_calls.grpc,
+        );
+        println!(
+            "  Hybrid:  {} ({}ms, gql={} grpc={})",
+            if src.hybrid_success {
+                "\x1b[32msuccess\x1b[0m"
+            } else {
+                "\x1b[31mfailed\x1b[0m"
+            },
+            src.hybrid_duration_ms,
+            src.hybrid_api_calls.graphql,
+            src.hybrid_api_calls.grpc,
+        );
+        if !src.notes.is_empty() {
+            for note in &src.notes {
+                println!("  Note: {}", note);
+            }
+        }
+        if !src.results_match {
+            if let Some(err) = &src.graphql_error {
+                println!("  GraphQL error: {}", err);
+            }
+            if let Some(err) = &src.hybrid_error {
+                println!("  Hybrid error: {}", err);
+            }
         }
     }
 }
@@ -293,6 +346,7 @@ mod tests {
             effects: None,
             effects_full: None,
             commands_executed: 0,
+            source_comparison: None,
             batch_summary_printed: false,
         };
 

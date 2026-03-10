@@ -35,6 +35,7 @@ use sui_types::effects::TransactionEffectsAPI;
 
 mod analysis;
 mod batch;
+mod compare;
 mod deps;
 mod dynamic_fields;
 mod effects;
@@ -127,6 +128,10 @@ pub struct ReplayCmd {
     #[arg(long)]
     pub compare: bool,
 
+    /// Run GraphQL-only and hybrid replays concurrently and compare results
+    #[arg(long, default_value_t = false)]
+    pub compare_sources: bool,
+
     /// Hydration-only mode (skip VM execution and return replay state summary)
     #[arg(long, alias = "hydrate-only", default_value_t = false)]
     pub analyze_only: bool,
@@ -192,6 +197,8 @@ pub struct ReplayOutput {
     #[serde(skip)]
     pub effects_full: Option<sui_sandbox_core::ptb::TransactionEffects>,
     pub commands_executed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_comparison: Option<SourceComparisonResult>,
     /// When true, the batch summary was already printed; skip individual output.
     #[serde(skip)]
     pub batch_summary_printed: bool,
@@ -213,6 +220,8 @@ pub struct ReplayExecutionPath {
     pub dependency_fetch_mode: String,
     pub dependency_packages_fetched: usize,
     pub synthetic_inputs: usize,
+    pub graphql_requests: u64,
+    pub grpc_requests: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,6 +264,31 @@ pub struct ComparisonResult {
     pub local_status: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub notes: Vec<String>,
+}
+
+/// Result of running GraphQL-only vs hybrid concurrently on the same transaction.
+#[derive(Debug, Serialize)]
+pub struct SourceComparisonResult {
+    pub graphql_success: bool,
+    pub hybrid_success: bool,
+    pub results_match: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_error: Option<String>,
+    pub graphql_api_calls: SourceApiCalls,
+    pub hybrid_api_calls: SourceApiCalls,
+    pub graphql_duration_ms: u128,
+    pub hybrid_duration_ms: u128,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub notes: Vec<String>,
+}
+
+/// API call counts for a single replay run.
+#[derive(Debug, Serialize)]
+pub struct SourceApiCalls {
+    pub graphql: u64,
+    pub grpc: u64,
 }
 
 /// Shared object cache for batch replay: id_hex → (type_str, bcs_bytes, version)
@@ -591,6 +625,11 @@ impl ReplayCmd {
 
         if verbose {
             eprintln!("Fetching transaction {}...", self.digest_display());
+        }
+
+        // Concurrent source comparison mode: run GraphQL-only and hybrid side-by-side
+        if self.compare_sources {
+            return self.execute_compare_sources(state, verbose).await;
         }
 
         // JSON state path: --state-json provided, load from file (no network)
@@ -1061,6 +1100,8 @@ impl ReplayCmd {
             }
         }
 
+        let graphql_requests = provider.graphql().request_count();
+        let grpc_requests = provider.grpc().request_count();
         let execution_path = build_execution_path(
             self,
             allow_fallback,
@@ -1070,6 +1111,8 @@ impl ReplayCmd {
             fallback_used,
             fallback_reasons,
             synthetic_logs.len(),
+            graphql_requests,
+            grpc_requests,
         );
 
         match replay_result {
@@ -1133,6 +1176,7 @@ impl ReplayCmd {
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
+                    source_comparison: None,
                     batch_summary_printed: false,
                 })
             }
@@ -1154,6 +1198,7 @@ impl ReplayCmd {
                     effects: None,
                     effects_full: None,
                     commands_executed: 0,
+                    source_comparison: None,
                     batch_summary_printed: false,
                 })
             }
@@ -2128,12 +2173,14 @@ impl ReplayCmd {
                         dependency_fetch_mode: "walrus_checkpoint".to_string(),
                         dependency_packages_fetched,
                         synthetic_inputs: 0,
+                        ..Default::default()
                     },
                     comparison,
                     analysis: None,
                     effects: Some(effects_summary),
                     effects_full: Some(execution.effects),
                     commands_executed: result.commands_executed,
+                    source_comparison: None,
                     batch_summary_printed: false,
                 })
             }
@@ -2167,12 +2214,14 @@ impl ReplayCmd {
                         dependency_fetch_mode: "walrus_checkpoint".to_string(),
                         dependency_packages_fetched,
                         synthetic_inputs: 0,
+                        ..Default::default()
                     },
                     comparison: None,
                     analysis: None,
                     effects: None,
                     effects_full: None,
                     commands_executed: 0,
+                    source_comparison: None,
                     batch_summary_printed: false,
                 })
             }
@@ -2256,6 +2305,7 @@ mod tests {
             effects: None,
             effects_full: None,
             commands_executed: 3,
+            source_comparison: None,
             batch_summary_printed: false,
         };
 

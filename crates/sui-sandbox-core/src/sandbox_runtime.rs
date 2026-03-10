@@ -1815,6 +1815,15 @@ impl SharedObjectRuntime {
         parent_id: AccountAddress,
         child_id: AccountAddress,
     ) -> Option<(TypeTag, Vec<u8>)> {
+        if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+            eprintln!(
+                "[try_fetch_child] parent={} child={} has_fetcher={} has_key_fetcher={}",
+                parent_id.to_hex_literal(),
+                child_id.to_hex_literal(),
+                self.child_fetcher.is_some(),
+                self.key_based_child_fetcher.is_some(),
+            );
+        }
         // Always record the access for tracing
         self.record_child_access(child_id);
 
@@ -1838,6 +1847,13 @@ impl SharedObjectRuntime {
             }
         }
 
+        if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+            eprintln!(
+                "[try_fetch_child] MISS parent={} child={}",
+                parent_id.to_hex_literal(),
+                child_id.to_hex_literal()
+            );
+        }
         None
     }
 }

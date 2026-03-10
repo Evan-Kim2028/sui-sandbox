@@ -61,7 +61,11 @@ def main() -> int:
 
     # Ignore generated/build artifacts and vendored docs.
     ignored = {base / ".git", base / "target", base / ".venv"}
-    md_files = [p for p in md_files if not any(parent in ignored for parent in p.parents)]
+    md_files = [
+        p
+        for p in md_files
+        if not any(parent in ignored or parent.name == "node_modules" for parent in p.parents)
+    ]
 
     missing = []
     for md in md_files:

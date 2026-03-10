@@ -263,6 +263,25 @@ pub(super) fn fetch_child_object_by_key(
         }
     }
 
+    // Fallback: use objectVersionsBefore when @snapshot fails or version exceeds max
+    if max_version > 0 {
+        if let Ok(obj) = gql.fetch_object_version_before(&child_hex, max_version + 1) {
+            if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&bcs_b64) {
+                    if let Ok(tag) = parse_type_tag(&type_str) {
+                        if debug_df {
+                            eprintln!(
+                                "[df_fetch] version_before child={} version={} type={}",
+                                child_hex, obj.version, type_str
+                            );
+                        }
+                        return Some((tag, bytes));
+                    }
+                }
+            }
+        }
+    }
+
     let parent_hex = parent_id.to_hex_literal();
     let miss_key = miss_cache.map(|_| {
         let key_type_str = format_type_tag(key_type);
@@ -450,7 +469,10 @@ pub(super) fn fetch_child_object_by_key(
                         }
                     }
                 }
-                if self_heal_dynamic_fields {
+                // Try fetching the computed child ID via GraphQL.
+                // This is needed when the locally computed hash differs from the
+                // original child ID due to package address aliasing.
+                {
                     if let Some((tag, bytes, _)) =
                         fetch_child_object_shared(provider, computed_id, checkpoint, max_version)
                     {

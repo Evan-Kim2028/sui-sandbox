@@ -49,8 +49,7 @@ pub fn workflow_init(
     let force = force.unwrap_or(false);
     let checkpoint_u64 = checkpoint.map(|v| v as u64);
 
-    let parsed_template =
-        parse_workflow_template(template_str).map_err(to_napi_err)?;
+    let parsed_template = parse_workflow_template(template_str).map_err(to_napi_err)?;
     let resolved_digest = digest
         .as_deref()
         .map(str::trim)
@@ -85,8 +84,7 @@ pub fn workflow_init(
     }
     spec.validate().map_err(to_napi_err)?;
 
-    let parsed_format =
-        parse_workflow_output_format(format.as_deref()).map_err(to_napi_err)?;
+    let parsed_format = parse_workflow_output_format(format.as_deref()).map_err(to_napi_err)?;
     let format_hint = parsed_format.unwrap_or(WorkflowOutputFormat::Json);
     let resolved_output_path = output_path
         .as_deref()
@@ -245,9 +243,11 @@ pub fn workflow_auto(
         None
     };
 
-    let resolved_digest = explicit_digest
-        .clone()
-        .or_else(|| discovered_target.as_ref().map(|target| target.digest.clone()));
+    let resolved_digest = explicit_digest.clone().or_else(|| {
+        discovered_target
+            .as_ref()
+            .map(|target| target.digest.clone())
+    });
     let include_replay = resolved_digest.is_some();
     let resolved_checkpoint = if include_replay {
         if let Some(target) = discovered_target.as_ref() {
@@ -274,8 +274,7 @@ pub fn workflow_auto(
             );
         } else {
             missing_inputs.push("digest".to_string());
-            missing_inputs
-                .push("checkpoint (optional; default inferred per template)".to_string());
+            missing_inputs.push("checkpoint (optional; default inferred per template)".to_string());
         }
     }
 
@@ -294,9 +293,8 @@ pub fn workflow_auto(
     .map_err(to_napi_err)?;
 
     let pkg_suffix = short_package_id(package_id_trimmed);
-    spec.name = Some(
-        name.unwrap_or_else(|| format!("auto_{}_{}", inferred_template.key(), pkg_suffix)),
-    );
+    spec.name =
+        Some(name.unwrap_or_else(|| format!("auto_{}_{}", inferred_template.key(), pkg_suffix)));
     spec.description = Some(format!(
         "Auto draft adapter generated from package {} (template: {}).",
         package_id_trimmed,
@@ -304,8 +302,7 @@ pub fn workflow_auto(
     ));
     spec.validate().map_err(to_napi_err)?;
 
-    let parsed_format =
-        parse_workflow_output_format(format.as_deref()).map_err(to_napi_err)?;
+    let parsed_format = parse_workflow_output_format(format.as_deref()).map_err(to_napi_err)?;
     let format_hint = parsed_format.unwrap_or(WorkflowOutputFormat::Json);
     let resolved_output_path = output_path
         .as_deref()

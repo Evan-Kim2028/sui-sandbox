@@ -1932,6 +1932,9 @@ fn add_dynamic_field_natives(
         "hash_type_and_key",
         make_native(move |ctx, mut ty_args, mut args| {
             use crate::sandbox_runtime::SharedObjectRuntime;
+            if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+                eprintln!("[hash_type_and_key] ENTERED native");
+            }
 
             let key_ty = ty_args.pop().ok_or_else(|| {
                 move_binary_format::errors::PartialVMError::new(
@@ -2181,6 +2184,9 @@ fn add_dynamic_field_natives(
             use move_vm_types::values::StructRef;
 
             debug_native!("[borrow_child_object] ENTERING NATIVE, ty_args={}, args={}", ty_args.len(), args.len());
+            if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+                eprintln!("[borrow_child_object] ENTERED native");
+            }
             use std::io::Write;
             std::io::stderr().flush().ok();
 
@@ -2817,6 +2823,12 @@ fn add_dynamic_field_natives(
             debug_native!("[has_child_object_with_ty] fetched_tag={:?}", fetched_tag);
             debug_native!("[has_child_object_with_ty] child_tag={:?}", child_tag);
             debug_native!("[has_child_object_with_ty] type_matches={}", type_matches);
+                    if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() && !type_matches {
+                        eprintln!(
+                            "[has_child_object_with_ty] TYPE_MISMATCH parent={} child={}\n  fetched_tag={:?}\n  child_tag={:?}",
+                            parent.to_hex_literal(), child_id.to_hex_literal(), fetched_tag, child_tag
+                        );
+                    }
                     if type_matches {
                         // Add to shared state for future lookups
                         {
@@ -2846,6 +2858,12 @@ fn add_dynamic_field_natives(
                     }
                 } else {
             debug_native!("[has_child_object_with_ty] try_fetch_child returned None");
+                    if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+                        eprintln!(
+                            "[has_child_object_with_ty] MISS parent={} child={} expected_tag={:?}",
+                            parent.to_hex_literal(), child_id.to_hex_literal(), child_tag
+                        );
+                    }
                     false
                 }
             } else {

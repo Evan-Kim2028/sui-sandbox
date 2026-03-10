@@ -206,7 +206,13 @@ jobs:
         working-directory: crates/sui-napi
         run: |
           node -e "
-            const m = require('./sui-sandbox.node');
+            const fs = require('fs');
+            const path = require('path');
+            const candidates = fs.readdirSync('.').filter((name) => name.endsWith('.node'));
+            if (candidates.length !== 1) {
+              throw new Error('Expected exactly one built .node artifact, found: ' + candidates.join(', '));
+            }
+            const m = require(path.resolve(candidates[0]));
             console.log('version:', m.version());
             const keys = Object.keys(m).sort();
             console.log('exports:', keys.length);

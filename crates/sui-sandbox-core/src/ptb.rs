@@ -2858,7 +2858,19 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
                 args,
             } => self.execute_move_call(package, module, function, type_args, args),
 
-            Command::SplitCoins { coin, amounts } => self.execute_split_coins(coin, amounts),
+            Command::SplitCoins {
+                ref coin,
+                ref amounts,
+            } => {
+                if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+                    eprintln!(
+                        "[execute_command] SplitCoins coin={:?} amounts={}",
+                        coin,
+                        amounts.len()
+                    );
+                }
+                self.execute_split_coins(*coin, amounts.clone())
+            }
 
             Command::MergeCoins {
                 destination,
@@ -2905,6 +2917,14 @@ impl<'a, 'b> PTBExecutor<'a, 'b> {
         type_args: Vec<TypeTag>,
         args: Vec<Argument>,
     ) -> Result<CommandResult> {
+        if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+            eprintln!(
+                "[execute_move_call] {}::{}::{}",
+                package.to_hex_literal(),
+                module,
+                function,
+            );
+        }
         // GAS COIN CHECK: Gas coin can only be used with TransferObjects
         self.check_gas_coin_usage(&args, "MoveCall")?;
 

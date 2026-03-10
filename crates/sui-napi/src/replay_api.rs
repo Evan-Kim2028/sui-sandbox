@@ -25,9 +25,7 @@ fn parse_analysis_u64(value: &serde_json::Value, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn parse_analysis_lists(
-    value: &serde_json::Value,
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+fn parse_analysis_lists(value: &serde_json::Value) -> (Vec<String>, Vec<String>, Vec<String>) {
     let missing_inputs = parse_json_string_list(
         value
             .get("analysis")
@@ -125,10 +123,7 @@ fn replay_impl(
             .map(PathBuf::from)
             .unwrap_or_else(default_local_cache_dir);
         let provider = FileStateProvider::new(&cache_path).with_context(|| {
-            format!(
-                "Failed to open local replay cache {}",
-                cache_path.display()
-            )
+            format!("Failed to open local replay cache {}", cache_path.display())
         })?;
         let replay_state = provider.get_state(digest)?;
         return replay_loaded_state_inner(
@@ -205,12 +200,8 @@ fn protocol_run_impl(
 ) -> napi::Result<serde_json::Value> {
     let resolved_package_id =
         resolve_protocol_package_id(protocol, package_id).map_err(to_napi_err)?;
-    let prepared = prepare_package_context_inner(
-        &resolved_package_id,
-        resolve_deps,
-        context_path,
-    )
-    .map_err(to_napi_err)?;
+    let prepared = prepare_package_context_inner(&resolved_package_id, resolve_deps, context_path)
+        .map_err(to_napi_err)?;
 
     let context_tmp = if context_path.is_some() {
         None
@@ -503,10 +494,10 @@ pub fn analyze_replay(
         prefetch_limit,
         auto_system_objects,
         no_prefetch,
-        Some(false),  // compare
-        Some(true),   // analyze_only
-        Some(false),  // synthesize_missing
-        Some(false),  // self_heal_dynamic_fields
+        Some(false), // compare
+        Some(true),  // analyze_only
+        Some(false), // synthesize_missing
+        Some(false), // self_heal_dynamic_fields
         analyze_mm2,
         verbose,
     )
@@ -617,10 +608,10 @@ pub fn replay_effects(
         auto_system_objects,
         no_prefetch,
         compare,
-        Some(false),  // analyze_only
+        Some(false), // analyze_only
         synthesize_missing,
         self_heal_dynamic_fields,
-        Some(false),  // analyze_mm2
+        Some(false), // analyze_mm2
         verbose,
     )?;
 
@@ -663,9 +654,7 @@ pub fn replay_effects(
 ///
 /// Accepts a replay result JSON value and returns a classification object.
 #[napi]
-pub fn classify_replay_result(
-    result: serde_json::Value,
-) -> napi::Result<serde_json::Value> {
+pub fn classify_replay_result(result: serde_json::Value) -> napi::Result<serde_json::Value> {
     let classified = classify_replay_output(&result);
     Ok(classified)
 }
@@ -722,11 +711,11 @@ pub fn dynamic_field_diagnostics(
         Some(pd),
         Some(pl),
         auto_system_objects,
-        Some(true),   // no_prefetch = true (baseline)
-        Some(false),  // compare
-        Some(true),   // analyze_only
-        Some(false),  // synthesize_missing
-        Some(false),  // self_heal_dynamic_fields
+        Some(true),  // no_prefetch = true (baseline)
+        Some(false), // compare
+        Some(true),  // analyze_only
+        Some(false), // synthesize_missing
+        Some(false), // self_heal_dynamic_fields
         analyze_mm2,
         verbose,
     )?;
@@ -774,11 +763,11 @@ pub fn dynamic_field_diagnostics(
         Some(pd),
         Some(pl),
         auto_system_objects,
-        Some(false),  // no_prefetch = false (prefetch enabled)
-        Some(false),  // compare
-        Some(true),   // analyze_only
-        Some(false),  // synthesize_missing
-        Some(false),  // self_heal_dynamic_fields
+        Some(false), // no_prefetch = false (prefetch enabled)
+        Some(false), // compare
+        Some(true),  // analyze_only
+        Some(false), // synthesize_missing
+        Some(false), // self_heal_dynamic_fields
         analyze_mm2,
         verbose,
     )?;

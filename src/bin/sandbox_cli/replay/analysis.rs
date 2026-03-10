@@ -50,12 +50,14 @@ pub(super) fn build_analyze_replay_output(
             dependency_fetch_mode: "hydration_only".to_string(),
             dependency_packages_fetched: 0,
             synthetic_inputs: 0,
+            ..Default::default()
         },
         comparison: None,
         analysis: Some(analysis),
         effects: None,
         effects_full: None,
         commands_executed: 0,
+        source_comparison: None,
         batch_summary_printed: false,
     }
 }
