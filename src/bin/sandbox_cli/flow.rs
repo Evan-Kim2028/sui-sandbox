@@ -349,6 +349,7 @@ impl ReplayExecutionArgs {
             state_json,
             export_state: None,
             latest: None,
+            compare_sources: false,
         }
     }
 }

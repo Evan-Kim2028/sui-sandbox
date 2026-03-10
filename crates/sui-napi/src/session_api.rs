@@ -185,10 +185,7 @@ pub fn snapshot_save(
 
 /// Load a named snapshot into the session state file (CLI parity for `snapshot load`).
 #[napi]
-pub fn snapshot_load(
-    name: String,
-    state_file: Option<String>,
-) -> napi::Result<serde_json::Value> {
+pub fn snapshot_load(name: String, state_file: Option<String>) -> napi::Result<serde_json::Value> {
     let state_path = state_file
         .map(PathBuf::from)
         .unwrap_or_else(default_state_file_path);

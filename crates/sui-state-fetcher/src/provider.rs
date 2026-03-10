@@ -635,6 +635,11 @@ impl HistoricalStateProvider {
         self
     }
 
+    /// Returns true if this provider is in graphql-only mode (no gRPC).
+    pub fn is_graphql_only(&self) -> bool {
+        self.graphql_only
+    }
+
     /// Enable disk caching at the specified directory.
     pub fn with_cache_dir(mut self, cache_dir: impl AsRef<Path>) -> Result<Self> {
         self.cache = Arc::new(VersionedCache::with_storage(cache_dir)?);
@@ -921,14 +926,15 @@ impl HistoricalStateProvider {
             );
         }
 
-        let allow_grpc = !matches!(
-            std::env::var("SUI_CHECKPOINT_LOOKUP_GRPC")
-                .ok()
-                .as_deref()
-                .map(|v| v.to_ascii_lowercase())
-                .as_deref(),
-            Some("0") | Some("false") | Some("no") | Some("off")
-        );
+        let allow_grpc = !self.graphql_only
+            && !matches!(
+                std::env::var("SUI_CHECKPOINT_LOOKUP_GRPC")
+                    .ok()
+                    .as_deref()
+                    .map(|v| v.to_ascii_lowercase())
+                    .as_deref(),
+                Some("0") | Some("false") | Some("no") | Some("off")
+            );
         if allow_grpc {
             match self.grpc.get_transaction(digest).await {
                 Ok(Some(tx)) => {
@@ -1060,25 +1066,29 @@ impl HistoricalStateProvider {
                 other => {
                     // Log the gRPC failure
                     match &other {
-                        Ok(None) => debug!(digest = digest, "gRPC returned no transaction, trying GraphQL"),
-                        Err(e) => debug!(digest = digest, error = %e, "gRPC transaction fetch failed, trying GraphQL"),
+                        Ok(None) => debug!(
+                            digest = digest,
+                            "gRPC returned no transaction, trying GraphQL"
+                        ),
+                        Err(e) => {
+                            debug!(digest = digest, error = %e, "gRPC transaction fetch failed, trying GraphQL")
+                        }
                         _ => {}
                     }
                     // Fall back to GraphQL
-                    let gql_tx = self
-                        .graphql
-                        .fetch_transaction(digest)
-                        .map_err(|gql_err| {
-                            let grpc_msg = match other {
-                                Ok(None) => "not found".to_string(),
-                                Err(e) => format!("{}", e),
-                                _ => "unknown".to_string(),
-                            };
-                            anyhow!(
-                                "Transaction {} not available via gRPC ({}) or GraphQL ({})",
-                                digest, grpc_msg, gql_err
-                            )
-                        })?;
+                    let gql_tx = self.graphql.fetch_transaction(digest).map_err(|gql_err| {
+                        let grpc_msg = match other {
+                            Ok(None) => "not found".to_string(),
+                            Err(e) => format!("{}", e),
+                            _ => "unknown".to_string(),
+                        };
+                        anyhow!(
+                            "Transaction {} not available via gRPC ({}) or GraphQL ({})",
+                            digest,
+                            grpc_msg,
+                            gql_err
+                        )
+                    })?;
                     debug!(
                         digest = digest,
                         elapsed_ms = tx_start.elapsed().as_millis(),
@@ -1216,6 +1226,12 @@ impl HistoricalStateProvider {
                 unchanged_loaded_runtime_objects.len(),
                 unchanged_consensus_objects.len()
             );
+            for (id, ver) in &unchanged_loaded_runtime_objects {
+                eprintln!("[runtime_objects]   ulro {} = {}", id, ver);
+            }
+            for (id, ver) in &unchanged_consensus_objects {
+                eprintln!("[runtime_objects]   uco {} = {}", id, ver);
+            }
         }
 
         if let Ok(target_id) = std::env::var("SUI_CHECK_OBJECT_ID") {
@@ -1356,6 +1372,15 @@ impl HistoricalStateProvider {
         for (id_str, version) in &unchanged_consensus_objects {
             let normalized = normalize_address(id_str);
             historical_versions.insert(normalized, *version);
+        }
+
+        if std::env::var("SUI_DUMP_RUNTIME_OBJECTS").ok().as_deref() == Some("1") {
+            let mut sorted: Vec<_> = historical_versions.iter().collect();
+            sorted.sort_by_key(|(k, _)| k.as_str());
+            eprintln!("[hist_versions] digest={} count={}", digest, sorted.len());
+            for (id, ver) in &sorted {
+                eprintln!("[hist_versions]   {} = {}", id, ver);
+            }
         }
 
         // 2b. Opportunistic Walrus checkpoint ingest (input/output objects)
@@ -1526,6 +1551,23 @@ impl HistoricalStateProvider {
         // 5. Fetch objects (cache-first, then gRPC), skipping those we already prefetched
         let obj_start = std::time::Instant::now();
         let mut objects = self.fetch_objects_versioned(&object_requests).await?;
+        if std::env::var("SUI_DUMP_RUNTIME_OBJECTS").ok().as_deref() == Some("1") {
+            use std::hash::{Hash, Hasher};
+            let mut sorted: Vec<_> = objects.iter().collect();
+            sorted.sort_by_key(|(k, _)| k.to_hex_literal());
+            for (id, obj) in &sorted {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                obj.bcs_bytes.hash(&mut hasher);
+                let bcs_hash = hasher.finish();
+                eprintln!(
+                    "[obj_bcs] id={} version={} bcs_len={} bcs_hash={:016x}",
+                    id.to_hex_literal(),
+                    obj.version,
+                    obj.bcs_bytes.len(),
+                    bcs_hash,
+                );
+            }
+        }
         debug!(
             digest = digest,
             elapsed_ms = obj_start.elapsed().as_millis(),
@@ -2011,8 +2053,7 @@ impl HistoricalStateProvider {
                                 continue;
                             }
                         } else if !self.graphql_only {
-                            if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await
-                            {
+                            if let Ok(Some(obj)) = self.grpc.get_object(&child_normalized).await {
                                 if snapshot_used || obj.version <= max_lamport_version {
                                     Some(obj.version)
                                 } else {
@@ -2405,7 +2446,17 @@ impl HistoricalStateProvider {
                                     move || {
                                         graphql
                                             .fetch_object_at_version(&id_for_fetch, version)
-                                            .or_else(|_| graphql.fetch_object(&id_for_fetch))
+                                            .or_else(|_| {
+                                                // Historical version may be pruned from the
+                                                // direct object(address, version) index.
+                                                // Use objectVersionsBefore to find the closest
+                                                // version at or before the requested one, which
+                                                // is far safer than fetching the latest version.
+                                                graphql.fetch_object_version_before(
+                                                    &id_for_fetch,
+                                                    version + 1,
+                                                )
+                                            })
                                     }
                                 })
                                 .await;
@@ -2413,6 +2464,12 @@ impl HistoricalStateProvider {
 
                                 match gql_result {
                                     Ok(Ok(gql_obj)) => {
+                                        if gql_obj.version != version && data_gap_debug_enabled() {
+                                            eprintln!(
+                                                "[data_gap] version_mismatch obj={} requested={} got={}",
+                                                id_str, version, gql_obj.version
+                                            );
+                                        }
                                         // Extract owner info before fields are moved
                                         let (is_shared, is_immutable) = match &gql_obj.owner {
                                             ObjectOwner::Shared { .. } => (true, false),
@@ -2996,7 +3053,11 @@ impl HistoricalStateProvider {
 
         let pkg_id_str = format!("0x{}", hex::encode(pkg_id.as_ref()));
         let mut gql_pkg: Option<GraphQLPackage> = None;
-        if version_hint.is_none() {
+        // In graphql_only mode, always fetch from GraphQL (even when version_hint
+        // is known) because we need linkage data for dependency walking.
+        // In hybrid mode, only fetch from GraphQL when version_hint is unknown.
+        let should_fetch_gql = version_hint.is_none() || self.graphql_only;
+        if should_fetch_gql {
             if let Some(cp) = checkpoint {
                 if allow_package_graphql {
                     let gql_start = std::time::Instant::now();
@@ -3027,7 +3088,9 @@ impl HistoricalStateProvider {
         }
 
         let grpc_start = std::time::Instant::now();
-        let grpc_result = if let Some(ver) = version_hint {
+        let grpc_result = if self.graphql_only {
+            Ok(None) // Skip gRPC in graphql_only mode
+        } else if let Some(ver) = version_hint {
             self.grpc
                 .get_object_at_version(&pkg_id_str, Some(ver))
                 .await
@@ -3250,7 +3313,7 @@ impl HistoricalStateProvider {
                     }
                     return Ok(package_success_outcome(pkg_id, pkg_data, stats));
                 }
-                if !strict_checkpoint && version_hint.is_some() {
+                if !self.graphql_only && !strict_checkpoint && version_hint.is_some() {
                     let grpc_start = std::time::Instant::now();
                     let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
                     stats.grpc_elapsed += grpc_start.elapsed().as_millis();
@@ -3279,7 +3342,7 @@ impl HistoricalStateProvider {
                     }
                     return Ok(package_success_outcome(pkg_id, pkg_data, stats));
                 }
-                if !strict_checkpoint && version_hint.is_some() {
+                if !self.graphql_only && !strict_checkpoint && version_hint.is_some() {
                     let grpc_start = std::time::Instant::now();
                     let grpc_latest = self.grpc.get_object(&pkg_id_str).await;
                     stats.grpc_elapsed += grpc_start.elapsed().as_millis();
@@ -3641,6 +3704,7 @@ fn ingest_walrus_objects(
 ) -> usize {
     let mut ingested = 0usize;
     for key in ["input_objects", "output_objects"] {
+        let is_input = key == "input_objects";
         let Some(arr) = tx_json.get(key).and_then(|v| v.as_array()) else {
             continue;
         };
@@ -3664,9 +3728,12 @@ fn ingest_walrus_objects(
                             prev_tx.clone(),
                         );
                     }
-                    if let Some(historical_versions) = historical_versions.as_deref_mut() {
-                        let pkg_str = format!("0x{}", hex::encode(pkg_data.address.as_ref()));
-                        historical_versions.insert(normalize_address(&pkg_str), pkg_data.version);
+                    if is_input {
+                        if let Some(historical_versions) = historical_versions.as_deref_mut() {
+                            let pkg_str = format!("0x{}", hex::encode(pkg_data.address.as_ref()));
+                            historical_versions
+                                .insert(normalize_address(&pkg_str), pkg_data.version);
+                        }
                     }
                     if cache.is_some() {
                         ingested += 1;
@@ -3717,8 +3784,10 @@ fn ingest_walrus_objects(
                     is_immutable,
                 });
             }
-            if let Some(historical_versions) = historical_versions.as_deref_mut() {
-                historical_versions.insert(normalize_address(&id.to_hex_literal()), version);
+            if is_input {
+                if let Some(historical_versions) = historical_versions.as_deref_mut() {
+                    historical_versions.insert(normalize_address(&id.to_hex_literal()), version);
+                }
             }
             if let Some(store) = store {
                 if let Some(type_tag) = type_tag.clone() {
@@ -4037,27 +4106,21 @@ fn graphql_package_to_data(pkg_id: AccountAddress, pkg: GraphQLPackage) -> Resul
         }
     }
 
-    // Derive original_id from typeOrigins: if any type's definingId differs
-    // from this package's address, that definingId is the original package.
-    let original_id = pkg
-        .type_origins
-        .iter()
-        .find_map(|origin| {
-            let defining = parse_object_id(&origin.defining_id).ok()?;
-            if defining != pkg_id {
-                Some(defining)
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            // All typeOrigins point to this address — this IS the original package.
-            if !pkg.type_origins.is_empty() {
-                Some(pkg_id)
-            } else {
-                None
-            }
-        });
+    // Derive original_id from module bytecode self_id — this is the most reliable
+    // source since the bytecode embeds the true original/runtime package address.
+    // Using typeOrigins is unreliable because for packages with complex upgrade
+    // chains, the first non-self definingId may be an intermediate upgrade address
+    // rather than the true original.
+    let original_id = if !modules.is_empty() {
+        use move_binary_format::CompiledModule;
+        CompiledModule::deserialize_with_defaults(&modules[0].1)
+            .ok()
+            .map(|m| *m.self_id().address())
+    } else if !pkg.type_origins.is_empty() {
+        Some(pkg_id)
+    } else {
+        None
+    };
 
     Ok(PackageData {
         address: pkg_id,
@@ -4089,6 +4152,22 @@ fn graphql_arg_to_grpc(arg: &sui_transport::graphql::GraphQLArgument) -> GrpcArg
 /// are left empty — they will be filled by other mechanisms (object fetching, dynamic
 /// field prefetching).
 fn graphql_tx_to_grpc_tx(gql: &GraphQLTransaction) -> GrpcTransaction {
+    let debug = std::env::var("SUI_DEBUG_DF_FETCH").is_ok();
+    if debug {
+        eprintln!(
+            "[graphql_tx_to_grpc_tx] inputs={} commands={} digest={}",
+            gql.inputs.len(),
+            gql.commands.len(),
+            gql.digest,
+        );
+        for (i, cmd) in gql.commands.iter().enumerate() {
+            eprintln!(
+                "[graphql_tx_to_grpc_tx]   cmd[{}] = {:?}",
+                i,
+                std::mem::discriminant(cmd)
+            );
+        }
+    }
     // Convert inputs
     let inputs: Vec<GrpcInput> = gql
         .inputs
@@ -4165,23 +4244,17 @@ fn graphql_tx_to_grpc_tx(gql: &GraphQLTransaction) -> GrpcTransaction {
                     address: graphql_arg_to_grpc(address),
                 })
             }
-            GraphQLCommand::MakeMoveVec { type_arg, elements } => {
-                Some(GrpcCommand::MakeMoveVec {
-                    element_type: type_arg.clone(),
-                    elements: elements.iter().map(graphql_arg_to_grpc).collect(),
-                })
-            }
+            GraphQLCommand::MakeMoveVec { type_arg, elements } => Some(GrpcCommand::MakeMoveVec {
+                element_type: type_arg.clone(),
+                elements: elements.iter().map(graphql_arg_to_grpc).collect(),
+            }),
             GraphQLCommand::Publish {
                 modules,
                 dependencies,
             } => Some(GrpcCommand::Publish {
                 modules: modules
                     .iter()
-                    .filter_map(|m| {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(m)
-                            .ok()
-                    })
+                    .filter_map(|m| base64::engine::general_purpose::STANDARD.decode(m).ok())
                     .collect(),
                 dependencies: dependencies.clone(),
             }),
@@ -4193,19 +4266,54 @@ fn graphql_tx_to_grpc_tx(gql: &GraphQLTransaction) -> GrpcTransaction {
             } => Some(GrpcCommand::Upgrade {
                 modules: modules
                     .iter()
-                    .filter_map(|m| {
-                        base64::engine::general_purpose::STANDARD
-                            .decode(m)
-                            .ok()
-                    })
+                    .filter_map(|m| base64::engine::general_purpose::STANDARD.decode(m).ok())
                     .collect(),
                 dependencies: dependencies.clone(),
                 package: package.clone(),
                 ticket: graphql_arg_to_grpc(ticket),
             }),
-            GraphQLCommand::Other { .. } => None,
+            GraphQLCommand::Other { typename } => {
+                if debug {
+                    eprintln!(
+                        "[graphql_tx_to_grpc_tx] DROPPING command with typename={}",
+                        typename
+                    );
+                }
+                None
+            }
         })
         .collect();
+
+    if debug {
+        eprintln!(
+            "[graphql_tx_to_grpc_tx] converted {} grpc commands, {} inputs",
+            commands.len(),
+            inputs.len(),
+        );
+        for (i, cmd) in commands.iter().enumerate() {
+            let desc = match cmd {
+                GrpcCommand::MoveCall {
+                    package,
+                    module,
+                    function,
+                    ..
+                } => {
+                    format!("MoveCall {}::{}::{}", package, module, function)
+                }
+                GrpcCommand::SplitCoins { coin, amounts } => {
+                    format!("SplitCoins coin={:?} amounts={}", coin, amounts.len())
+                }
+                GrpcCommand::MergeCoins { coin, sources } => {
+                    format!("MergeCoins coin={:?} sources={}", coin, sources.len())
+                }
+                GrpcCommand::TransferObjects { objects, address } => {
+                    format!("TransferObjects objs={} addr={:?}", objects.len(), address)
+                }
+                _ => format!("{:?}", std::mem::discriminant(cmd)),
+            };
+            eprintln!("[graphql_tx_to_grpc_tx]   grpc_cmd[{}] = {}", i, desc);
+        }
+    }
 
     // Build changed_objects from effects (mutated objects with input versions)
     let mut changed_objects = Vec::new();

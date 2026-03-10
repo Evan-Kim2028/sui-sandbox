@@ -179,12 +179,14 @@ pub(super) fn execute_replay_state(
                     dependency_fetch_mode: effective_source.to_string(),
                     dependency_packages_fetched: 0,
                     synthetic_inputs: 0,
+                    ..Default::default()
                 },
                 comparison,
                 analysis: None,
                 effects: Some(effects_summary),
                 effects_full: Some(execution.effects),
                 commands_executed: result.commands_executed,
+                source_comparison: None,
                 batch_summary_printed: false,
             })
         }
@@ -210,12 +212,14 @@ pub(super) fn execute_replay_state(
                     dependency_fetch_mode: effective_source.to_string(),
                     dependency_packages_fetched: 0,
                     synthetic_inputs: 0,
+                    ..Default::default()
                 },
                 comparison: None,
                 analysis: None,
                 effects: None,
                 effects_full: None,
                 commands_executed: 0,
+                source_comparison: None,
                 batch_summary_printed: false,
             })
         }

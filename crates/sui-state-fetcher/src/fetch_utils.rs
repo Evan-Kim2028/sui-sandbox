@@ -143,21 +143,23 @@ pub fn fetch_child_object(
     let gql = provider.graphql();
     let id_str = child_id.to_hex_literal();
 
-    // Try GraphQL at checkpoint
-    if let Some(cp) = checkpoint {
-        if let Ok(obj) = gql.fetch_object_at_checkpoint(&id_str, cp) {
-            if obj.version <= max_version {
-                if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&bcs_b64) {
-                        if let Some(tag) = sui_sandbox_types::parse_type_tag(&type_str) {
-                            if debug_df {
-                                eprintln!(
-                                    "[df_fetch] checkpoint child={} version={}",
-                                    id_str, obj.version
-                                );
-                            }
-                            return Some((tag, bytes, obj.version));
+    // Use objectVersionsBefore to find the most recent version at or before
+    // max_version. This is the primary historical lookup — we skip the
+    // @snapshot-based fetch_object_at_checkpoint because mainnet's GraphQL
+    // endpoint does not support the @snapshot directive, and the wasted API
+    // call adds latency without benefit.
+    if max_version > 0 {
+        if let Ok(obj) = gql.fetch_object_version_before(&id_str, max_version + 1) {
+            if let (Some(type_str), Some(bcs_b64)) = (obj.type_string, obj.bcs_base64) {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&bcs_b64) {
+                    if let Some(tag) = sui_sandbox_types::parse_type_tag(&type_str) {
+                        if debug_df {
+                            eprintln!(
+                                "[df_fetch] version_before child={} version={}",
+                                id_str, obj.version
+                            );
                         }
+                        return Some((tag, bytes, obj.version));
                     }
                 }
             }
@@ -174,16 +176,18 @@ pub fn fetch_child_object(
         return None;
     }
 
-    // Try gRPC latest
-    if let Some((tag, bytes, version)) = fetch_object_via_grpc(provider, &id_str, None) {
-        if version <= max_version {
-            if debug_df {
-                eprintln!(
-                    "[df_fetch] grpc latest child={} version={}",
-                    id_str, version
-                );
+    // Try gRPC latest (skip in graphql-only mode)
+    if !provider.is_graphql_only() {
+        if let Some((tag, bytes, version)) = fetch_object_via_grpc(provider, &id_str, None) {
+            if version <= max_version {
+                if debug_df {
+                    eprintln!(
+                        "[df_fetch] grpc latest child={} version={}",
+                        id_str, version
+                    );
+                }
+                return Some((tag, bytes, version));
             }
-            return Some((tag, bytes, version));
         }
     }
 
@@ -203,6 +207,14 @@ pub fn fetch_child_object(
         }
     }
 
+    if debug_df {
+        eprintln!(
+            "[df_fetch] MISS child={} checkpoint={:?} max_version={}",
+            child_id.to_hex_literal(),
+            checkpoint,
+            max_version
+        );
+    }
     None
 }
 

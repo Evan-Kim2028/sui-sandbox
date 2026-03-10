@@ -12,6 +12,8 @@ pub(super) fn build_execution_path(
     fallback_used: bool,
     fallback_reasons: Vec<String>,
     synthetic_inputs: usize,
+    graphql_requests: u64,
+    grpc_requests: u64,
 ) -> ReplayExecutionPath {
     ReplayExecutionPath {
         requested_source: cmd
@@ -35,6 +37,8 @@ pub(super) fn build_execution_path(
         dependency_fetch_mode,
         dependency_packages_fetched: fetched_deps,
         synthetic_inputs,
+        graphql_requests,
+        grpc_requests,
     }
 }
 

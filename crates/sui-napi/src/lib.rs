@@ -64,8 +64,7 @@ use sui_sandbox_core::orchestrator::{
 };
 use sui_sandbox_core::ptb_universe::{
     run_with_args as core_run_ptb_universe, Args as CorePtbUniverseArgs,
-    CheckpointSource as CoreCheckpointSource,
-    DEFAULT_LATEST as CORE_PTB_UNIVERSE_DEFAULT_LATEST,
+    CheckpointSource as CoreCheckpointSource, DEFAULT_LATEST as CORE_PTB_UNIVERSE_DEFAULT_LATEST,
     DEFAULT_MAX_PTBS as CORE_PTB_UNIVERSE_DEFAULT_MAX_PTBS,
     DEFAULT_STREAM_TIMEOUT_SECS as CORE_PTB_UNIVERSE_DEFAULT_STREAM_TIMEOUT_SECS,
     DEFAULT_TOP_PACKAGES as CORE_PTB_UNIVERSE_DEFAULT_TOP_PACKAGES,
@@ -394,10 +393,18 @@ pub async fn ptb_universe(
 ) -> napi::Result<serde_json::Value> {
     let source_str = source.as_deref().unwrap_or("walrus");
     let source_parsed = CoreCheckpointSource::parse(source_str).map_err(to_napi_err)?;
-    let latest_val = latest.map(|v| v as u64).unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_LATEST);
-    let top_packages_val = top_packages.map(|v| v as usize).unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_TOP_PACKAGES);
-    let max_ptbs_val = max_ptbs.map(|v| v as usize).unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_MAX_PTBS);
-    let stream_timeout_val = stream_timeout_secs.map(|v| v as u64).unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_STREAM_TIMEOUT_SECS);
+    let latest_val = latest
+        .map(|v| v as u64)
+        .unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_LATEST);
+    let top_packages_val = top_packages
+        .map(|v| v as usize)
+        .unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_TOP_PACKAGES);
+    let max_ptbs_val = max_ptbs
+        .map(|v| v as usize)
+        .unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_MAX_PTBS);
+    let stream_timeout_val = stream_timeout_secs
+        .map(|v| v as u64)
+        .unwrap_or(CORE_PTB_UNIVERSE_DEFAULT_STREAM_TIMEOUT_SECS);
     let out_dir_path = PathBuf::from(
         out_dir
             .as_deref()
@@ -640,7 +647,9 @@ pub async fn extract_interface(
     extract_interface_inner(
         package_id.as_deref(),
         bytecode_dir.as_deref(),
-        rpc_url.as_deref().unwrap_or("https://fullnode.mainnet.sui.io:443"),
+        rpc_url
+            .as_deref()
+            .unwrap_or("https://fullnode.mainnet.sui.io:443"),
     )
     .map_err(to_napi_err)
 }
@@ -677,10 +686,16 @@ pub async fn replay(
     analyze_mm2: Option<bool>,
     verbose: Option<bool>,
 ) -> napi::Result<serde_json::Value> {
-    let rpc = rpc_url.as_deref().unwrap_or("https://fullnode.mainnet.sui.io:443");
+    let rpc = rpc_url
+        .as_deref()
+        .unwrap_or("https://fullnode.mainnet.sui.io:443");
     let source_str = source.as_deref().unwrap_or("hybrid");
     let vm_only_val = vm_only.unwrap_or(false);
-    let allow_fallback_val = if vm_only_val { false } else { allow_fallback.unwrap_or(true) };
+    let allow_fallback_val = if vm_only_val {
+        false
+    } else {
+        allow_fallback.unwrap_or(true)
+    };
     let no_prefetch_val = no_prefetch.unwrap_or(false);
     let verbose_val = verbose.unwrap_or(false);
     let compare_val = compare.unwrap_or(false);
@@ -694,8 +709,10 @@ pub async fn replay(
 
     let profile_parsed = parse_replay_profile(profile.as_deref()).map_err(to_napi_err)?;
     let _profile_env = workflow_apply_profile_env(profile_parsed);
-    let fetch_strategy_parsed = parse_replay_fetch_strategy(fetch_strategy.as_deref()).map_err(to_napi_err)?;
-    let no_prefetch_effective = no_prefetch_val || fetch_strategy_parsed == WorkflowFetchStrategy::Eager;
+    let fetch_strategy_parsed =
+        parse_replay_fetch_strategy(fetch_strategy.as_deref()).map_err(to_napi_err)?;
+    let no_prefetch_effective =
+        no_prefetch_val || fetch_strategy_parsed == WorkflowFetchStrategy::Eager;
 
     let source_is_local = source_str.eq_ignore_ascii_case("local");
     let use_local_cache = source_is_local || cache_dir.is_some();
@@ -734,9 +751,11 @@ pub async fn replay(
     }
 
     if use_local_cache {
-        let d = digest
-            .as_deref()
-            .ok_or_else(|| to_napi_err(anyhow!("digest is required when replaying from cache_dir/source='local'")))?;
+        let d = digest.as_deref().ok_or_else(|| {
+            to_napi_err(anyhow!(
+                "digest is required when replaying from cache_dir/source='local'"
+            ))
+        })?;
         let cache = cache_dir
             .as_deref()
             .map(PathBuf::from)
@@ -814,7 +833,9 @@ pub async fn import_state(
 
 /// Deserialize transaction BCS bytes into structured replay transaction JSON.
 #[napi]
-pub fn deserialize_transaction(raw_bcs: napi::bindgen_prelude::Buffer) -> napi::Result<serde_json::Value> {
+pub fn deserialize_transaction(
+    raw_bcs: napi::bindgen_prelude::Buffer,
+) -> napi::Result<serde_json::Value> {
     deserialize_transaction_inner(&raw_bcs).map_err(to_napi_err)
 }
 
@@ -859,7 +880,9 @@ pub fn json_to_bcs(
 
 /// Convert Sui TransactionData JSON into raw transaction BCS bytes.
 #[napi]
-pub fn transaction_json_to_bcs(transaction_json: String) -> napi::Result<napi::bindgen_prelude::Buffer> {
+pub fn transaction_json_to_bcs(
+    transaction_json: String,
+) -> napi::Result<napi::bindgen_prelude::Buffer> {
     let bytes = transaction_json_to_bcs_inner(&transaction_json).map_err(to_napi_err)?;
     Ok(napi::bindgen_prelude::Buffer::from(bytes))
 }
@@ -1025,7 +1048,8 @@ pub async fn protocol_prepare(
     output_path: Option<String>,
 ) -> napi::Result<serde_json::Value> {
     let proto = protocol.as_deref().unwrap_or("generic");
-    let resolved = resolve_protocol_package_id(proto, package_id.as_deref()).map_err(to_napi_err)?;
+    let resolved =
+        resolve_protocol_package_id(proto, package_id.as_deref()).map_err(to_napi_err)?;
     prepare_package_context_inner(
         &resolved,
         resolve_deps.unwrap_or(true),
@@ -1189,9 +1213,9 @@ fn call_view_function_inner(
     fetch_deps: bool,
     bytecode_dirs: &HashMap<String, String>,
 ) -> Result<serde_json::Value> {
+    use move_core_types::identifier::Identifier;
     use sui_sandbox_core::ptb::{Argument, Command, ObjectInput, PTBExecutor};
     use sui_sandbox_core::vm::{SimulationConfig, VMHarness};
-    use move_core_types::identifier::Identifier;
 
     // 1. Build LocalModuleResolver with sui framework
     let mut resolver = sui_sandbox_core::resolver::LocalModuleResolver::with_sui_framework()?;
@@ -1199,15 +1223,17 @@ fn call_view_function_inner(
     // 1a. Load any local bytecode directories
     let zero_addr = AccountAddress::from_hex_literal("0x0").unwrap();
     for (pkg_addr_str, dir_path) in bytecode_dirs {
-        let count = resolver.load_from_dir(std::path::Path::new(dir_path))
+        let count = resolver
+            .load_from_dir(std::path::Path::new(dir_path))
             .with_context(|| format!("Failed to load bytecode from directory: {}", dir_path))?;
         if count == 0 {
             eprintln!("Warning: no .mv files found in {}", dir_path);
             continue;
         }
         // Set up alias from the deployed address to 0x0 (local build address)
-        let addr = AccountAddress::from_hex_literal(pkg_addr_str)
-            .with_context(|| format!("invalid package address for bytecode_dir: {}", pkg_addr_str))?;
+        let addr = AccountAddress::from_hex_literal(pkg_addr_str).with_context(|| {
+            format!("invalid package address for bytecode_dir: {}", pkg_addr_str)
+        })?;
         if addr != zero_addr {
             resolver.add_address_alias(addr, zero_addr);
         }
@@ -1415,8 +1441,10 @@ fn call_view_function_inner(
 
     // 5. Set up child fetcher
     if !child_objects.is_empty() || fetch_child_objects {
-        let mut child_map: HashMap<(AccountAddress, AccountAddress), (move_core_types::language_storage::TypeTag, Vec<u8>)> =
-            HashMap::new();
+        let mut child_map: HashMap<
+            (AccountAddress, AccountAddress),
+            (move_core_types::language_storage::TypeTag, Vec<u8>),
+        > = HashMap::new();
         for (parent_id_str, children) in &child_objects {
             let parent_addr = AccountAddress::from_hex_literal(parent_id_str)
                 .with_context(|| format!("invalid parent_id: {}", parent_id_str))?;
@@ -1600,28 +1628,41 @@ pub async fn call_view_function(
     let mut parsed_obj_inputs: Vec<(String, Vec<u8>, String, bool, bool)> = Vec::new();
     if let Some(inputs) = object_inputs {
         for obj in &inputs {
-            let object_id = obj.get("objectId").or(obj.get("object_id"))
+            let object_id = obj
+                .get("objectId")
+                .or(obj.get("object_id"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| to_napi_err(anyhow!("missing 'objectId' in objectInputs")))?
                 .to_string();
-            let bcs_b64 = obj.get("bcsBytes").or(obj.get("bcs_bytes"))
+            let bcs_b64 = obj
+                .get("bcsBytes")
+                .or(obj.get("bcs_bytes"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| to_napi_err(anyhow!("missing 'bcsBytes' in objectInputs")))?;
             let bcs_bytes = base64::engine::general_purpose::STANDARD
                 .decode(bcs_b64)
                 .map_err(|e| to_napi_err(anyhow!("invalid base64 in bcsBytes: {}", e)))?;
-            let type_tag = obj.get("typeTag").or(obj.get("type_tag"))
+            let type_tag = obj
+                .get("typeTag")
+                .or(obj.get("type_tag"))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| to_napi_err(anyhow!("missing 'typeTag' in objectInputs")))?
                 .to_string();
-            let is_shared = obj.get("isShared").or(obj.get("is_shared"))
-                .and_then(|v| v.as_bool()).unwrap_or(false);
-            let mutable = obj.get("mutable")
-                .and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_shared = obj
+                .get("isShared")
+                .or(obj.get("is_shared"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mutable = obj
+                .get("mutable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             // Legacy owner field
             let owner = obj.get("owner").and_then(|v| v.as_str());
-            let (final_shared, final_mutable) = if obj.get("isShared").is_none() && obj.get("is_shared").is_none() {
+            let (final_shared, final_mutable) = if obj.get("isShared").is_none()
+                && obj.get("is_shared").is_none()
+            {
                 match owner.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
                     Some("shared") => (true, obj.get("mutable").and_then(|v| v.as_bool()).unwrap_or(true)),
                     Some("immutable") | Some("address_owned") => (false, mutable),
@@ -1652,17 +1693,23 @@ pub async fn call_view_function(
                 if let Some(children) = children_val.as_array() {
                     let mut child_vec = Vec::new();
                     for child in children {
-                        let child_id = child.get("childId").or(child.get("child_id"))
+                        let child_id = child
+                            .get("childId")
+                            .or(child.get("child_id"))
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| to_napi_err(anyhow!("missing 'childId'")))?
                             .to_string();
-                        let bcs_b64 = child.get("bcsBytes").or(child.get("bcs_bytes"))
+                        let bcs_b64 = child
+                            .get("bcsBytes")
+                            .or(child.get("bcs_bytes"))
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| to_napi_err(anyhow!("missing 'bcsBytes'")))?;
                         let bcs = base64::engine::general_purpose::STANDARD
                             .decode(bcs_b64)
                             .map_err(|e| to_napi_err(anyhow!("invalid base64: {}", e)))?;
-                        let tt = child.get("typeTag").or(child.get("type_tag"))
+                        let tt = child
+                            .get("typeTag")
+                            .or(child.get("type_tag"))
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| to_napi_err(anyhow!("missing 'typeTag'")))?
                             .to_string();
@@ -1711,7 +1758,9 @@ pub async fn call_view_function(
                         if let Some(s) = m.as_str() {
                             let bytes = base64::engine::general_purpose::STANDARD
                                 .decode(s)
-                                .map_err(|e| to_napi_err(anyhow!("invalid base64 module: {}", e)))?;
+                                .map_err(|e| {
+                                    to_napi_err(anyhow!("invalid base64 module: {}", e))
+                                })?;
                             bytecodes.push(bytes);
                         }
                     }
@@ -1720,30 +1769,54 @@ pub async fn call_view_function(
             }
 
             if let Some(a) = obj.get("aliases").and_then(|v| v.as_object()) {
-                for (k, v) in a { if let Some(s) = v.as_str() { parsed_aliases.insert(k.clone(), s.to_string()); } }
+                for (k, v) in a {
+                    if let Some(s) = v.as_str() {
+                        parsed_aliases.insert(k.clone(), s.to_string());
+                    }
+                }
             }
             if let Some(lu) = obj.get("linkage_upgrades").and_then(|v| v.as_object()) {
-                for (k, v) in lu { if let Some(s) = v.as_str() { parsed_linkage_upgrades.insert(k.clone(), s.to_string()); } }
+                for (k, v) in lu {
+                    if let Some(s) = v.as_str() {
+                        parsed_linkage_upgrades.insert(k.clone(), s.to_string());
+                    }
+                }
             }
             if let Some(ri) = obj.get("package_runtime_ids").and_then(|v| v.as_object()) {
-                for (k, v) in ri { if let Some(s) = v.as_str() { parsed_runtime_ids.insert(k.clone(), s.to_string()); } }
+                for (k, v) in ri {
+                    if let Some(s) = v.as_str() {
+                        parsed_runtime_ids.insert(k.clone(), s.to_string());
+                    }
+                }
             }
             if let Some(pl) = obj.get("package_linkage").and_then(|v| v.as_object()) {
                 for (k, v) in pl {
                     if let Some(inner) = v.as_object() {
                         let mut map = HashMap::new();
-                        for (ik, iv) in inner { if let Some(s) = iv.as_str() { map.insert(ik.clone(), s.to_string()); } }
+                        for (ik, iv) in inner {
+                            if let Some(s) = iv.as_str() {
+                                map.insert(ik.clone(), s.to_string());
+                            }
+                        }
                         parsed_pkg_linkage.insert(k.clone(), map);
                     }
                 }
             }
             if let Some(pv) = obj.get("package_versions").and_then(|v| v.as_object()) {
-                for (k, v) in pv { if let Some(n) = v.as_u64() { parsed_pkg_versions.insert(k.clone(), n); } }
+                for (k, v) in pv {
+                    if let Some(n) = v.as_u64() {
+                        parsed_pkg_versions.insert(k.clone(), n);
+                    }
+                }
             }
         }
     }
 
-    let effective_fetch_deps = if historical_payload_mode { false } else { fetch_deps.unwrap_or(true) };
+    let effective_fetch_deps = if historical_payload_mode {
+        false
+    } else {
+        fetch_deps.unwrap_or(true)
+    };
 
     // Parse bytecode_dirs: { "0xaddr": "/path/to/build/pkg" }
     let mut parsed_bytecode_dirs: HashMap<String, String> = HashMap::new();
@@ -1872,14 +1945,24 @@ pub async fn historical_series_from_points(
 
     let runs = if let Some(fields) = schema_fields.as_ref() {
         ReplayOrchestrator::execute_historical_series_with_schema_and_options(
-            &parsed_points, &request, cmd_idx, fields,
-            grpc_endpoint.as_deref(), grpc_api_key.as_deref(), &options,
-        ).map_err(to_napi_err)?
+            &parsed_points,
+            &request,
+            cmd_idx,
+            fields,
+            grpc_endpoint.as_deref(),
+            grpc_api_key.as_deref(),
+            &options,
+        )
+        .map_err(to_napi_err)?
     } else {
         ReplayOrchestrator::execute_historical_series_with_options(
-            &parsed_points, &request,
-            grpc_endpoint.as_deref(), grpc_api_key.as_deref(), &options,
-        ).map_err(to_napi_err)?
+            &parsed_points,
+            &request,
+            grpc_endpoint.as_deref(),
+            grpc_api_key.as_deref(),
+            &options,
+        )
+        .map_err(to_napi_err)?
     };
     let summary = ReplayOrchestrator::summarize_historical_series_runs(&runs);
     Ok(serde_json::json!({
@@ -1978,7 +2061,9 @@ pub fn historical_decode_return_u64s(
                 values
                     .into_iter()
                     .map(|bytes| {
-                        if bytes.len() < 8 { return None; }
+                        if bytes.len() < 8 {
+                            return None;
+                        }
                         let mut buf = [0u8; 8];
                         buf.copy_from_slice(&bytes[..8]);
                         Some(u64::from_le_bytes(buf) as f64)
@@ -2062,7 +2147,8 @@ fn fuzz_function_inner(
         for fw in ["0x1", "0x2", "0x3"] {
             loaded.insert(AccountAddress::from_hex_literal(fw).unwrap());
         }
-        let count = r.load_from_dir(std::path::Path::new(dir))
+        let count = r
+            .load_from_dir(std::path::Path::new(dir))
             .with_context(|| format!("Failed to load bytecode from directory: {}", dir))?;
         if count == 0 {
             return Err(anyhow!("No .mv files found in {}", dir));
@@ -2100,7 +2186,9 @@ fn fuzz_function_inner(
         .ok_or_else(|| {
             anyhow!(
                 "Function '{}::{}::{}' not found",
-                package_id, module, function
+                package_id,
+                module,
+                function
             )
         })?;
 
@@ -2346,7 +2434,10 @@ impl OrchestrationSession {
             discover_package_id,
             source,
             state_file,
-            context_tmp.as_ref().and_then(|p| p.to_str()).map(String::from),
+            context_tmp
+                .as_ref()
+                .and_then(|p| p.to_str())
+                .map(String::from),
             cache_dir,
             walrus_network,
             walrus_caching_url,

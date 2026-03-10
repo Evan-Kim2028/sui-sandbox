@@ -2574,6 +2574,14 @@ impl<'a> VMHarness<'a> {
     /// Create VM extensions with a SharedObjectRuntime that syncs with our persistent state.
     /// This allows dynamic field operations to persist across multiple MoveCall executions.
     fn create_extensions(&self) -> NativeContextExtensions<'static> {
+        if std::env::var("SUI_DEBUG_DF_FETCH").is_ok() {
+            eprintln!(
+                "[create_extensions] use_sui_natives={} has_child_fetcher={} has_key_fetcher={}",
+                self.config.use_sui_natives,
+                self.child_fetcher.is_some(),
+                self.key_based_child_fetcher.is_some(),
+            );
+        }
         let mut extensions = NativeContextExtensions::default();
 
         // If using Sui natives mode and we have Sui extensions, use those

@@ -59,6 +59,7 @@ pub struct GraphQLClient {
     endpoint: String,
     agent: ureq::Agent,
     circuit_state: Arc<GraphQLCircuitState>,
+    request_count: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Default)]
@@ -701,11 +702,18 @@ impl GraphQLClient {
             endpoint: endpoint.to_string(),
             agent: Self::build_agent(timeout, connect_timeout),
             circuit_state: Arc::new(GraphQLCircuitState::default()),
+            request_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Total number of GraphQL HTTP requests made through this client.
+    pub fn request_count(&self) -> u64 {
+        self.request_count.load(Ordering::Relaxed)
     }
 
     /// Execute a GraphQL query.
     fn query(&self, query: &str, variables: Option<Value>) -> Result<Value> {
+        self.request_count.fetch_add(1, Ordering::Relaxed);
         if Self::circuit_breaker_enabled() {
             if let Some(remaining_ms) = self.circuit_open_remaining_ms() {
                 return Err(anyhow!(
@@ -953,9 +961,9 @@ impl GraphQLClient {
         address: &str,
         checkpoint: u64,
     ) -> Result<GraphQLObject> {
-        let snapshot_query = r#"
+        let query = r#"
             query GetObjectAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
-                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                object(address: $address, atCheckpoint: $checkpoint) {
                     address
                     version
                     digest
@@ -988,7 +996,7 @@ impl GraphQLClient {
             "checkpoint": checkpoint
         });
 
-        let data = self.query(snapshot_query, Some(variables))?;
+        let data = self.query(query, Some(variables))?;
 
         let obj = data
             .get("object")
@@ -1001,6 +1009,117 @@ impl GraphQLClient {
                 address
             ));
         }
+
+        let owner = self.parse_owner(obj.get("owner"));
+        let move_obj = obj.get("asMoveObject").and_then(|m| m.get("contents"));
+        let type_string = move_obj
+            .and_then(|c| c.get("type"))
+            .and_then(|t| t.get("repr"))
+            .and_then(|r| r.as_str())
+            .map(|s| s.to_string());
+        let bcs_base64 = move_obj
+            .and_then(|c| c.get("bcs"))
+            .and_then(|b| b.as_str())
+            .map(|s| s.to_string());
+        let content_json = move_obj.and_then(|c| c.get("json")).cloned();
+
+        Ok(GraphQLObject {
+            address: obj
+                .get("address")
+                .and_then(|a| a.as_str())
+                .unwrap_or(address)
+                .to_string(),
+            version: obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1),
+            digest: obj
+                .get("digest")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string()),
+            type_string,
+            owner,
+            bcs_base64,
+            content_json,
+            previous_transaction: obj
+                .get("previousTransaction")
+                .and_then(|p| p.get("digest"))
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string()),
+        })
+    }
+
+    /// Fetch the most recent version of an object at or before a given version.
+    ///
+    /// Uses the `objectVersionsBefore` query to find historical object state.
+    /// This is useful as a fallback when `@snapshot` is not supported.
+    pub fn fetch_object_version_before(
+        &self,
+        address: &str,
+        before_version: u64,
+    ) -> Result<GraphQLObject> {
+        // Use top-level objectVersions query instead of nesting under object().
+        // The nested approach fails for deleted/wrapped objects because
+        // object(address: ...) returns null, making the nested query unreachable.
+        let query = r#"
+            query GetObjectVersionBefore($address: SuiAddress!, $beforeVersion: UInt53!) {
+                objectVersions(
+                    address: $address,
+                    last: 1,
+                    filter: { beforeVersion: $beforeVersion }
+                ) {
+                    nodes {
+                        address
+                        version
+                        digest
+                        previousTransaction { digest }
+                        owner {
+                            __typename
+                            ... on AddressOwner {
+                                address { address }
+                            }
+                            ... on Shared {
+                                initialSharedVersion
+                            }
+                            ... on ObjectOwner {
+                                address { address }
+                            }
+                        }
+                        asMoveObject {
+                            contents {
+                                type { repr }
+                                bcs
+                                json
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "address": address,
+            "beforeVersion": before_version
+        });
+
+        let data = self.query(query, Some(variables))?;
+
+        let nodes = data
+            .get("objectVersions")
+            .and_then(|v| v.get("nodes"))
+            .and_then(|n| n.as_array())
+            .ok_or_else(|| {
+                anyhow!(
+                    "No version found before {} for object {}",
+                    before_version,
+                    address
+                )
+            })?;
+
+        let obj = nodes.first().ok_or_else(|| {
+            anyhow!(
+                "No version found before {} for object {}",
+                before_version,
+                address
+            )
+        })?;
 
         let owner = self.parse_owner(obj.get("owner"));
         let move_obj = obj.get("asMoveObject").and_then(|m| m.get("contents"));
@@ -1112,22 +1231,51 @@ impl GraphQLClient {
             if cursor.is_none() {
                 if let Some(linkage_arr) = pkg.get("linkage").and_then(|l| l.as_array()) {
                     for entry in linkage_arr {
-                        let original_id = entry.get("originalId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let upgraded_id = entry.get("upgradedId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let original_id = entry
+                            .get("originalId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let upgraded_id = entry
+                            .get("upgradedId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let version = entry.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                         if !original_id.is_empty() && !upgraded_id.is_empty() {
-                            all_linkage.push(GraphQLLinkage { original_id, upgraded_id, version });
+                            all_linkage.push(GraphQLLinkage {
+                                original_id,
+                                upgraded_id,
+                                version,
+                            });
                         }
                     }
                 }
 
                 if let Some(origins_arr) = pkg.get("typeOrigins").and_then(|o| o.as_array()) {
                     for entry in origins_arr {
-                        let module = entry.get("module").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let struct_name = entry.get("struct").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let defining_id = entry.get("definingId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty() {
-                            all_type_origins.push(GraphQLTypeOrigin { module, struct_name, defining_id });
+                        let module = entry
+                            .get("module")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let struct_name = entry
+                            .get("struct")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let defining_id = entry
+                            .get("definingId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty()
+                        {
+                            all_type_origins.push(GraphQLTypeOrigin {
+                                module,
+                                struct_name,
+                                defining_id,
+                            });
                         }
                     }
                 }
@@ -1340,53 +1488,21 @@ impl GraphQLClient {
             let query = format!(
                 r#"
                 query GetPackageAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {{
-                    checkpoint(sequenceNumber: $checkpoint) {{
-                        sequenceNumber
-                    }}
-                    object(address: $address, version: null) @snapshot(at: $checkpoint) {{
+                    package(address: $address, atCheckpoint: $checkpoint) {{
                         address
                         version
-                        asMovePackage {{
-                            modules(first: 50{}) {{
-                                nodes {{
-                                    name
-                                    bytes
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
+                        modules(first: 50{}) {{
+                            nodes {{
+                                name
+                                bytes
                             }}
-                            linkage {{ originalId upgradedId version }}
-                            typeOrigins {{ module struct definingId }}
-                        }}
-                    }}
-                }}
-                "#,
-                after_clause
-            );
-
-            // Try alternative query format if @snapshot doesn't work
-            let alt_query = format!(
-                r#"
-                query GetPackageAtCheckpoint($address: SuiAddress!) {{
-                    object(address: $address) {{
-                        address
-                        version
-                        asMovePackage {{
-                            modules(first: 50{}) {{
-                                nodes {{
-                                    name
-                                    bytes
-                                }}
-                                pageInfo {{
-                                    hasNextPage
-                                    endCursor
-                                }}
+                            pageInfo {{
+                                hasNextPage
+                                endCursor
                             }}
-                            linkage {{ originalId upgradedId version }}
-                            typeOrigins {{ module struct definingId }}
                         }}
+                        linkage {{ originalId upgradedId version }}
+                        typeOrigins {{ module struct definingId }}
                     }}
                 }}
                 "#,
@@ -1398,21 +1514,9 @@ impl GraphQLClient {
                 "checkpoint": checkpoint
             });
 
-            let data = match self.query(&query, Some(variables.clone())) {
-                Ok(d) => d,
-                Err(_) => {
-                    let simple_vars = serde_json::json!({ "address": address });
-                    match self.query(&alt_query, Some(simple_vars)) {
-                        Ok(d) => d,
-                        Err(_) => {
-                            // Fallback to latest with full pagination.
-                            return self.fetch_package(address);
-                        }
-                    }
-                }
-            };
+            let data = self.query(&query, Some(variables))?;
 
-            let obj = data.get("object").ok_or_else(|| {
+            let pkg = data.get("package").ok_or_else(|| {
                 anyhow!(
                     "Package not found at checkpoint {}: {}",
                     checkpoint,
@@ -1420,7 +1524,7 @@ impl GraphQLClient {
                 )
             })?;
 
-            if obj.is_null() {
+            if pkg.is_null() {
                 return Err(anyhow!(
                     "Package not found at checkpoint {}: {}",
                     checkpoint,
@@ -1429,38 +1533,63 @@ impl GraphQLClient {
             }
 
             if cursor.is_none() {
-                pkg_address = obj
+                pkg_address = pkg
                     .get("address")
                     .and_then(|a| a.as_str())
                     .unwrap_or(address)
                     .to_string();
-                pkg_version = obj.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
+                pkg_version = pkg.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
             }
-
-            let pkg = obj
-                .get("asMovePackage")
-                .ok_or_else(|| anyhow!("Object is not a package: {}", address))?;
 
             // Parse linkage and typeOrigins on first page (they are not paginated)
             if cursor.is_none() {
                 if let Some(linkage_arr) = pkg.get("linkage").and_then(|l| l.as_array()) {
                     for entry in linkage_arr {
-                        let original_id = entry.get("originalId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let upgraded_id = entry.get("upgradedId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let original_id = entry
+                            .get("originalId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let upgraded_id = entry
+                            .get("upgradedId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let version = entry.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                         if !original_id.is_empty() && !upgraded_id.is_empty() {
-                            all_linkage.push(GraphQLLinkage { original_id, upgraded_id, version });
+                            all_linkage.push(GraphQLLinkage {
+                                original_id,
+                                upgraded_id,
+                                version,
+                            });
                         }
                     }
                 }
 
                 if let Some(origins_arr) = pkg.get("typeOrigins").and_then(|o| o.as_array()) {
                     for entry in origins_arr {
-                        let module = entry.get("module").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let struct_name = entry.get("struct").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let defining_id = entry.get("definingId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty() {
-                            all_type_origins.push(GraphQLTypeOrigin { module, struct_name, defining_id });
+                        let module = entry
+                            .get("module")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let struct_name = entry
+                            .get("struct")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let defining_id = entry
+                            .get("definingId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !module.is_empty() && !struct_name.is_empty() && !defining_id.is_empty()
+                        {
+                            all_type_origins.push(GraphQLTypeOrigin {
+                                module,
+                                struct_name,
+                                defining_id,
+                            });
                         }
                     }
                 }
@@ -1524,11 +1653,8 @@ impl GraphQLClient {
     ) -> Result<Option<u64>> {
         let query = r#"
             query GetPackageVersionAtCheckpoint($address: SuiAddress!, $checkpoint: UInt53!) {
-                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                package(address: $address, atCheckpoint: $checkpoint) {
                     version
-                    asMovePackage {
-                        address
-                    }
                 }
             }
         "#;
@@ -1539,17 +1665,14 @@ impl GraphQLClient {
         });
 
         let data = self.query(query, Some(variables))?;
-        let obj = match data.get("object") {
+        let pkg = match data.get("package") {
             Some(v) => v,
             None => return Ok(None),
         };
-        if obj.is_null() {
+        if pkg.is_null() {
             return Ok(None);
         }
-        if obj.get("asMovePackage").is_none() {
-            return Ok(None);
-        }
-        Ok(obj.get("version").and_then(|v| v.as_u64()))
+        Ok(pkg.get("version").and_then(|v| v.as_u64()))
     }
 
     /// Fetch a transaction by digest with full PTB details.
@@ -1896,12 +2019,13 @@ impl GraphQLClient {
                         .unwrap_or_default();
                     commands.push(GraphQLCommand::SplitCoins { coin, amounts });
                 } else if let Some(mc) = node.get("mergeCoins") {
+                    // transactionJson uses "coin" for destination and "coinsToMerge" for sources
                     let destination = mc
-                        .get("destination")
+                        .get("coin")
                         .map(|c| self.parse_json_argument(c))
                         .unwrap_or(GraphQLArgument::GasCoin);
                     let sources: Vec<GraphQLArgument> = mc
-                        .get("sources")
+                        .get("coinsToMerge")
                         .and_then(|s| s.as_array())
                         .map(|arr| arr.iter().map(|a| self.parse_json_argument(a)).collect())
                         .unwrap_or_default();
@@ -1996,6 +2120,8 @@ impl GraphQLClient {
     }
 
     /// Parse argument from transactionJson format.
+    /// transactionJson uses: "kind"="INPUT"/"RESULT"/"GAS_COIN",
+    /// "input" for input index, "result" for command index, "subresult" for nested result index.
     fn parse_json_argument(&self, arg: &Value) -> GraphQLArgument {
         let kind = arg.get("kind").and_then(|k| k.as_str()).unwrap_or("");
         match kind {
@@ -2005,12 +2131,34 @@ impl GraphQLClient {
                 GraphQLArgument::Input(index)
             }
             "RESULT" => {
-                let index = arg.get("cmd").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
-                GraphQLArgument::Result(index)
+                // transactionJson uses "result" for command index and optional "subresult"
+                let cmd = arg
+                    .get("result")
+                    .or_else(|| arg.get("cmd"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0) as u16;
+                if let Some(sub) = arg
+                    .get("subresult")
+                    .or_else(|| arg.get("ix"))
+                    .and_then(|s| s.as_u64())
+                {
+                    GraphQLArgument::NestedResult(cmd, sub as u16)
+                } else {
+                    GraphQLArgument::Result(cmd)
+                }
             }
             "NESTED_RESULT" => {
-                let cmd = arg.get("cmd").and_then(|c| c.as_u64()).unwrap_or(0) as u16;
-                let result_idx = arg.get("ix").and_then(|i| i.as_u64()).unwrap_or(0) as u16;
+                // Legacy format support
+                let cmd = arg
+                    .get("cmd")
+                    .or_else(|| arg.get("result"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0) as u16;
+                let result_idx = arg
+                    .get("ix")
+                    .or_else(|| arg.get("subresult"))
+                    .and_then(|i| i.as_u64())
+                    .unwrap_or(0) as u16;
                 GraphQLArgument::NestedResult(cmd, result_idx)
             }
             _ => GraphQLArgument::GasCoin,
@@ -2438,10 +2586,7 @@ impl GraphQLClient {
                         .and_then(|a| a.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let version = obj
-                        .get("version")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let version = obj.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                     if !addr.is_empty() && version > 0 {
                         unchanged_consensus_objects.push((addr, version));
                     }
@@ -2471,7 +2616,10 @@ impl GraphQLClient {
                     Some(ej_raw.clone())
                 };
                 if let Some(ej) = ej {
-                    if let Some(items) = ej.get("unchangedConsensusObjects").and_then(|v| v.as_array()) {
+                    if let Some(items) = ej
+                        .get("unchangedConsensusObjects")
+                        .and_then(|v| v.as_array())
+                    {
                         for item in items {
                             let addr = item
                                 .get("objectId")
@@ -2992,7 +3140,6 @@ impl GraphQLClient {
     }
 
     /// Fetch a dynamic field by name at a specific checkpoint (for historical replay).
-    /// Falls back to the latest state if snapshot queries are unsupported.
     pub fn fetch_dynamic_field_by_name_at_checkpoint(
         &self,
         parent_address: &str,
@@ -3009,7 +3156,7 @@ impl GraphQLClient {
                 $nameType: String!,
                 $nameBcs: Base64!
             ) {
-                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                object(address: $address, atCheckpoint: $checkpoint) {
                     dynamicField(name: { type: $nameType, bcs: $nameBcs }) {
                         name {
                             type { repr }
@@ -3046,12 +3193,7 @@ impl GraphQLClient {
             "nameBcs": name_bcs_b64,
         });
 
-        let data = match self.query(query, Some(variables)) {
-            Ok(data) => data,
-            Err(_) => {
-                return self.fetch_dynamic_field_by_name(parent_address, name_type, name_bcs);
-            }
-        };
+        let data = self.query(query, Some(variables))?;
         let node = data
             .get("object")
             .and_then(|o| o.get("dynamicField"))
@@ -3208,7 +3350,7 @@ impl GraphQLClient {
                 $after: String,
                 $checkpoint: UInt53!
             ) {
-                object(address: $address, version: null) @snapshot(at: $checkpoint) {
+                object(address: $address, atCheckpoint: $checkpoint) {
                     dynamicFields(first: $limit, after: $after) {
                         pageInfo {
                             hasNextPage

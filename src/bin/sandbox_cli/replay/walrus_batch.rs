@@ -205,6 +205,7 @@ pub(super) async fn execute_walrus_batch_v2(
                 state_json: None,
                 export_state: None,
                 latest: None,
+                compare_sources: false,
             };
 
             let output = single

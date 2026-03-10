@@ -73,3 +73,4 @@ sui-official/
 
 # gRPC object cache (generated at runtime)
 grpc_object_cache.json
+sui_schema.graphql

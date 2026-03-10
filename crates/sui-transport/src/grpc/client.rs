@@ -9,6 +9,8 @@
 
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tonic::transport::Channel;
 
 use super::generated::sui_rpc_v2::{
@@ -31,6 +33,7 @@ pub struct GrpcClient {
     endpoint: String,
     channel: Channel,
     api_key: Option<String>,
+    request_count: Arc<AtomicU64>,
 }
 
 const MAINNET_ENDPOINT: &str = "https://archive.mainnet.sui.io:443";
@@ -181,6 +184,7 @@ impl GrpcClient {
             endpoint: endpoint.to_string(),
             channel,
             api_key,
+            request_count: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -211,11 +215,18 @@ impl GrpcClient {
             endpoint: endpoint.to_string(),
             channel,
             api_key,
+            request_count: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Total number of gRPC requests made through this client.
+    pub fn request_count(&self) -> u64 {
+        self.request_count.load(Ordering::Relaxed)
     }
 
     /// Wrap a request with the API key header if configured.
     fn wrap_request<T>(&self, req: T) -> tonic::Request<T> {
+        self.request_count.fetch_add(1, Ordering::Relaxed);
         let mut request = tonic::Request::new(req);
         if let Some(ref key) = self.api_key {
             if let Ok(value) = key.parse() {
@@ -423,6 +434,7 @@ impl GrpcClient {
             endpoint: self.endpoint.clone(),
             channel: self.channel.clone(),
             api_key: self.api_key.clone(),
+            request_count: self.request_count.clone(),
         }
     }
 
