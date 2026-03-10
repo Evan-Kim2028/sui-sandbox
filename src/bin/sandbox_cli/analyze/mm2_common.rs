@@ -315,7 +315,7 @@ pub(super) fn build_mm2_summary(
     #[cfg(feature = "mm2")]
     {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            sui_sandbox_core::mm2::TypeModel::from_modules(modules)
+            sui_sandbox_core::mm2::TypeModel::from_modules(modules).map_err(Box::new)
         }));
         match result {
             Ok(Ok(_)) => (Some(true), None),
